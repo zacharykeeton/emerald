@@ -2,6 +2,8 @@
 
 Emerald is a Windows desktop app for running and supervising several Claude Code sessions at once: each session gets a pane, the sidebar shows which ones are working, waiting on you or done, and the `emmer` command drives them from any terminal. This repository holds the installers, this README and the issues; the code is private.
 
+![Emerald with sessions in the sidebar, two panes and the Files rail](screenshots/window.png)
+
 ## Requirements
 
 - Windows 10 or 11, on arm64 or x64.
