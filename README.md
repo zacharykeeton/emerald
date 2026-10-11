@@ -26,11 +26,11 @@ A banner offers to install Emerald's hooks into Claude Code's `~/.claude/setting
 
 ## Updates
 
-The app checks this repository's latest release at launch and every four hours. When there is a newer one, a badge at the right of the title row reads `0.1.N available`. Its first click downloads the installer and the badge reads `Restart to install`; the second closes the window, installs the update and opens it again.
+The app checks this repository's latest release at launch and every four hours. When there is a newer one it downloads the installer on its own, and a badge at the right of the title row reads `Restart to update`. A click closes the window, installs the update and opens it again. If the download fails the badge reads `0.1.N available`; click it to try again.
 
 ## Uninstalling
 
-Run `emmer hooks uninstall` first: it removes the hooks and restores your previous status line, which would otherwise point at a program that is no longer there. Then Settings, Apps, Installed apps, Emerald, Uninstall. `%USERPROFILE%\.emerald` is left in place; delete it for a clean slate.
+Settings, Apps, Installed apps, Emerald, Uninstall. That also takes Emerald's hooks out of Claude Code's settings and puts your previous status line back; an Emerald older than 0.1.620 does not, so run `emmer hooks uninstall` first there. `%USERPROFILE%\.emerald` is left in place; delete it for a clean slate.
 
 ## Reporting a bug
 
