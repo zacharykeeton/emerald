@@ -1,0 +1,1031 @@
+import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, powerMonitor, screen, session, shell } from 'electron';
+import type { WebContents } from 'electron';
+import { BROWSER_PARTITION } from '@emerald/shared';
+import { attachRefusal, forceGuestPreferences, guestNavigationAllowed } from './browser-guard.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { ClientMessage, RequestType, Requests, ServerMessage, UsageEdge } from '@emerald/shared';
+import type { AttentionRequest, ChimeMode, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, NotifyRequest, RendererPush, SearchMode, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
+import { runCliJson } from './cli.ts';
+import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
+import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, revealPath, statPath } from './files.ts';
+import { SearchRuns, searchContents, searchNames } from './search-files.ts';
+import { createFile, makeFolder, heldTrash, renameEntry, trashEntry, writeFileText } from './file-write.ts';
+import { folderIcon, folderIconForget } from './folder-icon.ts';
+import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
+import type { Runner } from './node-runner.ts';
+import { createNotifier } from './notify.ts';
+import type { NotifyOutcome } from './notify.ts';
+import { rendererLogLine } from './renderer-log.ts';
+import { awayAfterMs, IDLE_POLL_MS, PresenceTracker } from './presence.ts';
+import { createTaskbar } from './taskbar.ts';
+import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
+import { PipeClient } from './pipe-client.ts';
+import { listSchemes, windowsTerminalSettingsFiles } from './schemes.ts';
+import { HistoryWatcher, readAgentsRunning, readTranscriptCost, readTurns, readUsage, repoRoot, scanHistory } from './history.ts';
+import { startLoopDelayLog } from './loop-delay.ts';
+import { rotateLogAtStart } from './log-rotate.ts';
+import { setGitRunnerLog } from './git-runner.ts';
+import { fetchUsage } from './usage.ts';
+import { cappedEdges, cappedNow, usageByKey } from './usage-edges.ts';
+import { autoUpdater } from 'electron-updater';
+import { createUpdater, updateFeedSpec } from './updater.ts';
+import { postGapPoster, postInstallPoster } from './install-poster.ts';
+import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
+import { wireUpdateRelay } from './update-relay.ts';
+import { reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
+import { sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
+import { inspectPort } from './inspect.ts';
+import { pipePathOf, emeraldHomeOf } from '@emerald/shared/pipe-name';
+import type { UpdateState } from '../renderer/src/update-model.ts';
+import { USAGE_FLOOR_MS } from '../renderer/src/usage-model.ts';
+import type { DaemonInfo } from './pipe-client.ts';
+
+// Where emmerd's main.js lives. In development this file is bundled to
+// packages/app/out/main/index.js, so the daemon's build sits three levels up
+// (app.getAppPath() is not used because it points at the script directory
+// when Electron is launched by file path). Installed, scripts/stage.mjs put
+// the daemon under Electron's resources directory next to app.asar.
+// EMERALD_DAEMON_MAIN overrides both, the same as for the CLI.
+function resolveDaemonMain(): string {
+  const override = process.env['EMERALD_DAEMON_MAIN'];
+  if (override !== undefined) return override;
+  if (app.isPackaged) return path.join(process.resourcesPath, 'daemon', 'dist', 'main.js');
+  return path.resolve(__dirname, '..', '..', '..', 'daemon', 'dist', 'main.js');
+}
+
+// The CLI sits next to the daemon in both layouts.
+function resolveCliMain(): string {
+  const override = process.env['EMERALD_CLI_MAIN'];
+  if (override !== undefined) return override;
+  if (app.isPackaged) return path.join(process.resourcesPath, 'cli', 'dist', 'main.js');
+  return path.resolve(__dirname, '..', '..', '..', 'cli', 'dist', 'main.js');
+}
+
+// The shipped colour schemes (M9 fix 225) sit beside the daemon and the
+// CLI in the installed tree (scripts/stage.mjs copies the folder), and in
+// a checkout under packages/app/resources.
+function resolveSchemesDir(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'schemes');
+  return path.resolve(__dirname, '..', '..', 'resources', 'schemes');
+}
+
+// The release notes the What's New tab shows (M9 fix 227). Installed,
+// scripts/stage.mjs put the file under resources/ next to the daemon; in
+// development it is the checkout's docs/WHATS-NEW.md, four levels up
+// from packages/app/out/main.
+function resolveWhatsNew(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'WHATS-NEW.md');
+  return path.resolve(__dirname, '..', '..', '..', '..', 'docs', 'WHATS-NEW.md');
+}
+
+// The app's own version (M9 fix 234, the app menu's What's new hint;
+// M9 fix 239's scheme, 0.1.<first fix id of the batch it came from>):
+// app.getVersion() reads the packaged build's package.json, but in
+// development Electron is launched by file path and answers its own
+// version (44.3.0), so the checkout's packages/app/package.json is read
+// instead, two levels up from packages/app/out/main.
+function appVersion(): string {
+  if (app.isPackaged) return app.getVersion();
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')) as { version?: string };
+    if (typeof pkg.version === 'string') return pkg.version;
+  } catch {
+    // Fall through to Electron's answer.
+  }
+  return app.getVersion();
+}
+
+// The main process's log goes to stdout, which the verify scripts read,
+// and since M9 fix 99 to <EMERALD_HOME>/logs/main.log beside the daemon's
+// emmerd.log, since the installed exe's stdout goes nowhere and the one
+// line that said why the usage strip was unavailable was lost with it.
+// Appended per line, moved aside to main.1.log past 8 MB at a start (M9
+// fix 559), and a write that fails never takes the app down. The rotation
+// runs before the first line, so the whole start lands in the new file.
+const mainLogPath = path.join(emeraldHomeOf(process.env), 'logs', 'main.log');
+const mainLogRotated = rotateLogAtStart(mainLogPath);
+let mainLogDir = false;
+const log = (msg: string) => {
+  console.log(`[emerald] ${msg}`);
+  try {
+    if (!mainLogDir) {
+      fs.mkdirSync(path.dirname(mainLogPath), { recursive: true });
+      mainLogDir = true;
+    }
+    fs.appendFileSync(mainLogPath, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // A read-only home or a full disk; stdout still has the line.
+  }
+};
+if (mainLogRotated !== null) log(`main.log rotated, ${mainLogRotated} bytes moved to main.1.log`);
+const runner: Runner = app.isPackaged ? 'self' : 'node';
+startLoopDelayLog(log);
+setGitRunnerLog(log);
+// The pipe is named as the daemon and the CLI name it (M9 fix 495):
+// EMERALD_PIPE when set, else per user and per home, so a window on a
+// private home alone starts and meets a daemon of its own.
+const client = new PipeClient({
+  daemonMain: resolveDaemonMain(),
+  runner,
+  log,
+  pipePath: pipePathOf(),
+  home: path.resolve(emeraldHomeOf(process.env)),
+});
+const cli = { cliMain: resolveCliMain(), runner, log };
+let win: BrowserWindow | null = null;
+
+function pushToRenderer(msg: RendererPush): void {
+  if (win === null || win.isDestroyed()) return;
+  win.webContents.send('emerald:message', msg);
+}
+
+client.on('message', (msg: ServerMessage) => {
+  if (msg.type === 'pty.output') {
+    // Decode base64 here so the renderer only ever handles bytes.
+    const data = new Uint8Array(Buffer.from(msg.data, 'base64'));
+    pushToRenderer(msg.replay ? { type: 'pty.output', sessionId: msg.sessionId, data, replay: true } : { type: 'pty.output', sessionId: msg.sessionId, data });
+    return;
+  }
+  if (msg.type === 'reply') return;
+  // The relay's own push (M9 fix 271) is handled below; the renderer has
+  // no use for it.
+  if (msg.type === 'update.requested') return;
+  pushToRenderer(msg);
+});
+client.on('connected', (daemon: DaemonInfo) => pushToRenderer({ type: 'daemon.connected', daemon }));
+ipcMain.handle('emerald:daemon-restart', () => client.restartDaemon());
+ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
+client.on('disconnected', () => pushToRenderer({ type: 'daemon.disconnected' }));
+
+// Requests made before the first connection wait for it instead of failing;
+// after a later disconnect they fail fast and the renderer resyncs on reconnect.
+// The wait has a deadline (M9 fix 453, M75's L38): a daemon that never came
+// up left every such request pending for good.
+const READY_DEADLINE_MS = 10_000;
+ipcMain.handle('emerald:request', async (_event, type: RequestType, body: Requests[RequestType]['req']) => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('emmerd did not come up')), READY_DEADLINE_MS);
+  });
+  try {
+    await Promise.race([client.ready(), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return client.request(type, body);
+});
+ipcMain.on('emerald:send', (_event, msg: ClientMessage) => client.send(msg));
+
+// version: the app's own, from its package.json (M9 fix 234, the app
+// menu's What's new hint), which the docs commit of every batch bumps.
+ipcMain.handle('emerald:info', () => ({ homeDir: os.homedir(), config: readUserConfig(), chime: chimeMode(), usageFloorMs: usageFloorMs(), version: appVersion() }));
+
+// The update check (M9 fix 239, updater.ts), its feed chosen in four
+// steps by updateFeedSpec (fix 608): off under EMERALD_NO_UPDATE=1; a
+// non-empty EMERALD_UPDATE_URL is the feed, which is how a verify script
+// points a packed build at a stub feed, and a dev build with it set checks
+// too (M9 fix 242, electron-updater's dev config forced) so verify:menus
+// can read the hint on a port nothing serves, never downloading; off in a
+// dev build otherwise (there is no installer to run); and a packaged build
+// takes the local feed at 127.0.0.1:7420 when %LOCALAPPDATA%\emerald-feed
+// exists (the developer's box), the GitHub releases repository otherwise.
+// The relay (M9 fix 271, update-relay.ts): every state goes to the
+// daemon as well, and a click from `emmer update` comes back as act().
+const updateRelay = wireUpdateRelay(client, () => updater, log);
+const updater = createUpdater({
+  current: appVersion(),
+  feed: updateFeedSpec(process.env, app.isPackaged, fs.existsSync),
+  // Four hours, six checks a day. On the github spec each check is two or three plain github.com requests (the releases' atom feed and /releases/latest, GitHubProvider.js:43 and :158 to :162, which skips api.github.com on purpose), so the REST API's unauthenticated 60 an hour does not bind, and would not at this cadence if it did.
+  intervalMs: 4 * 60 * 60 * 1000,
+  firstDelayMs: 5000,
+  log,
+  push: (state: UpdateState) => {
+    pushToRenderer({ type: 'update.state', state });
+    updateRelay.report(state);
+  },
+  stopDaemon: () => client.stopDaemon(),
+  markInstalling: (version) => {
+    fs.mkdirSync(path.dirname(installMarker), { recursive: true });
+    writeMarker(installMarker, version, Date.now());
+  },
+  // The word from outside the install folder (M9 fix 323); held under a
+  // harness window so a verify run pops no toast on the person.
+  postPoster: (version) => postInstallPoster(emeraldHomeOf(process.env), version, log, { held: process.env['EMERALD_WINDOW'] === 'background' }),
+  updater: () => {
+    autoUpdater.forceDevUpdateConfig = !app.isPackaged;
+    return autoUpdater;
+  },
+});
+ipcMain.handle('emerald:update-state', () => updater.state());
+
+// The file open relay (M9 fix 341, file-open-relay.ts): a path from
+// `emmer open` over the daemon's app topic, or from a launch with a file
+// (fix 342), sent to the renderer once it listens, the window lifted as
+// for a notification's click.
+const openRelay = wireFileOpenRelay(client, {
+  deliver: (req) => {
+    if (win === null || win.isDestroyed()) return false;
+    win.webContents.send('emerald:open-file', req.path, req.pane, { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url });
+    return true;
+  },
+  lift: () => {
+    if (win === null || win.isDestroyed() || process.env['EMERALD_WINDOW'] === 'background') return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  },
+}, log);
+ipcMain.on('emerald:open-file-ready', () => openRelay.ready());
+
+// The install's marker (M9 fix 282, install-gap.ts): written at the
+// badge's second click, read at the next launch. A packed build started
+// while another version's install is young says so and quits with no
+// window and no daemon, since the installer is about to replace this
+// exe; the new build's own first launch, or a launch past three
+// minutes, removes the marker and goes on. The dev build never installs.
+// True when this launch is in the gap, having posted the word: the word
+// goes through the install poster's worker (M9 fix 408), which outlives
+// this process, so the caller quits at once rather than holding six
+// seconds on a show event the installer never lets it see.
+const installMarker = path.join(emeraldHomeOf(process.env), 'installing.json');
+function launchInGap(): boolean {
+  if (!app.isPackaged) return false;
+  const marker = readMarker(installMarker);
+  const now = Date.now();
+  const state = gapState(marker, appVersion(), now);
+  if (state === 'none') return false;
+  if (state === 'fresh' || marker === null) {
+    log(`installing.json${marker === null ? '' : ` (${marker.version} at ${marker.at})`} is spent: removed`);
+    try {
+      fs.rmSync(installMarker, { force: true });
+    } catch (err) {
+      log(`could not remove ${installMarker}: ${String(err)}`);
+    }
+    return false;
+  }
+  const notice = gapNotice(marker, now);
+  log(`launched while ${marker.version} is installing (since ${marker.at}): ${notice.title}: ${notice.body}; quitting with no window`);
+  postGapPoster(emeraldHomeOf(process.env), marker, now, log, { held: process.env['EMERALD_WINDOW'] === 'background' });
+  return true;
+}
+ipcMain.handle('emerald:update-act', () => updater.act());
+
+// The first launch of a new build (M9 fix 239) runs `emmer hooks install`,
+// the step the install session ran by hand, so the hook script and the
+// status line the daemon expects are the ones this build shipped.
+// installed.json under the emerald home holds the version last launched;
+// a home with no stamp yet (the first launch after a hand install, or a
+// verify script's private home) gets the stamp and no install, since the
+// install writes the person's Claude settings and a harness home must
+// never reach those on its own.
+function installHooksOnFirstLaunch(): void {
+  if (!app.isPackaged) return;
+  const stamp = path.join(emeraldHomeOf(process.env), 'installed.json');
+  const version = appVersion();
+  let last: string | null = null;
+  try {
+    last = String((JSON.parse(fs.readFileSync(stamp, 'utf8')) as { version?: unknown }).version ?? '');
+  } catch {
+    last = null;
+  }
+  const write = () => {
+    try {
+      fs.mkdirSync(path.dirname(stamp), { recursive: true });
+      fs.writeFileSync(stamp, JSON.stringify({ version, at: new Date().toISOString() }) + '\n');
+    } catch (err) {
+      log(`could not write ${stamp}: ${String(err)}`);
+    }
+  };
+  if (last === null || last === version) {
+    if (last === null) write();
+    return;
+  }
+  log(`first launch of ${version} after ${last}: running emmer hooks install`);
+  runCliJson(cli, ['hooks', 'install', '--json']).then(
+    ({ code, json }) => {
+      const r = json as Record<string, unknown>;
+      log(`emmer hooks install exited ${code}${r['changed'] === true ? ', settings changed' : ''}`);
+      if (code === 0) write();
+    },
+    (err: unknown) => log(`emmer hooks install failed: ${err instanceof Error ? err.message : String(err)}`),
+  );
+}
+
+// The updater's pending sweep (M9 fix 371, moved and retried by fix
+// 384). The installer this build came in on sits in the updater's
+// pending folder until something removes it. It ran on the stamp's
+// version change at app ready, where the installer that --force-run
+// started the window from was still alive holding its own exe (EPERM at
+// the install of fixes 352 to 371, the folder left half swept). Now it
+// runs once the daemon has connected (the window idle, the installer
+// gone by then) at every launch, since the gate reads the folder and a
+// folder with nothing to sweep costs a readdir, and a removal that
+// fails is tried once more five minutes on (EMERALD_SWEEP_RETRY_MS for a
+// script). Each path logs its own line, so the install note can say
+// which acted. Packed builds only: a dev build's LOCALAPPDATA is the
+// person's own, and a harness window must never reach their cache.
+//
+// M9 fix 409: the one retry is the ceiling. A launch whose retry fails
+// too gives up and says so, since a failed removal leaves the folder
+// whole (updater-cache.ts's gate) and the next launch sweeps it; a third
+// attempt would only be a longer timer on a window nobody is watching.
+const SWEEP_RETRY_MS = 5 * 60 * 1000;
+function sweepRetryMs(): number {
+  const raw = process.env['EMERALD_SWEEP_RETRY_MS'];
+  const ms = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(ms) && ms >= 0 ? ms : SWEEP_RETRY_MS;
+}
+let sweepRan = false;
+function sweepPendingAfterConnect(): void {
+  if (!app.isPackaged || sweepRan) return;
+  sweepRan = true;
+  const version = appVersion();
+  const first = sweepPending(updaterCacheDir(), version);
+  if (first === null) return;
+  log(sweepLine(first, 'at launch'));
+  if (first.removed) return;
+  const retryMs = sweepRetryMs();
+  log(`updater cache: retrying the sweep in ${Math.round(retryMs / 1000)} s`);
+  const timer = setTimeout(() => {
+    const second = sweepPending(updaterCacheDir(), version);
+    log(second === null ? 'updater cache: nothing left to sweep on the retry' : sweepLine(second, 'on the retry'));
+    // M9 fix 409: the retry is the last attempt this launch makes, so a
+    // second failure says which launch takes the folder instead.
+    if (second !== null && !second.removed) log(sweepGiveUpLine(second.version));
+  }, retryMs);
+  timer.unref();
+}
+client.on('connected', sweepPendingAfterConnect);
+
+// The release notes (M9 fix 227), read on every call so a dev build
+// shows an edit on the next open. A missing file is empty text, not a
+// rejection: the tab says the notes could not be read and the start
+// opens nothing, since an empty text has no heading. EMERALD_WHATS_NEW=off
+// is the harness's word that the tab must not open on its own.
+ipcMain.handle('emerald:whats-new-read', (): WhatsNewRead => {
+  const file = resolveWhatsNew();
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    log(`could not read the release notes at ${file}: ${String(err)}`);
+  }
+  return { text, autoOpen: process.env['EMERALD_WHATS_NEW'] !== 'off' };
+});
+
+// The usage strip's floor between requests (M9 fix 100). The verify
+// script presses the button seconds apart and sets it to zero; nothing
+// else should.
+function usageFloorMs(): number {
+  const raw = process.env['EMERALD_USAGE_FLOOR_MS'];
+  const ms = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(ms) && ms >= 0 ? ms : USAGE_FLOOR_MS;
+}
+
+// The real chime belongs to the real home (M9 fix 47). A window on a
+// private EMERALD_HOME is a verify script's or a click-through's, and its
+// chimes were being taken for the user's own, so it is muted unless the
+// run asks to hear one with EMERALD_CHIME, and then it gets the test chime.
+function chimeMode(): ChimeMode {
+  if (process.env['EMERALD_HOME'] === undefined) return 'real';
+  return process.env['EMERALD_CHIME'] === undefined || process.env['EMERALD_CHIME'] === '' ? 'muted' : 'test';
+}
+
+// ~/.emerald/config.json, read on every info() call so a change shows up on
+// the next renderer reload without restarting the app. Same EMERALD_HOME
+// override as the daemon.
+function readUserConfig(): UserConfig {
+  const file = path.join(emeraldHomeOf(process.env), 'config.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`could not read ${file}: ${String(err)}`);
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object');
+    const { prefixKey, promptHooks } = parsed as Record<string, unknown>;
+    return {
+      ...(typeof prefixKey === 'string' ? { prefixKey } : {}),
+      ...(typeof promptHooks === 'boolean' ? { promptHooks } : {}),
+    };
+  } catch (err) {
+    log(`${file} is unusable, using defaults: ${String(err)}`);
+    return {};
+  }
+}
+
+// Hooks are read and written by the shipped CLI (see cli.ts). The CLI
+// honours EMERALD_HOME and CLAUDE_SETTINGS from our environment, so a check
+// against a private home never touches the real settings file.
+// Since M9 fix 606 the main process also watches the settings file the
+// status read, from the renderer's first ask on (which it makes only when
+// promptHooks is not false), and pushes a fresh status on a change.
+const hooksWatch = new HooksWatch(
+  async () => parseHooksStatus((await runCliJson(cli, ['hooks', 'status', '--json'])).json),
+  (status) => {
+    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:hooks-changed', status);
+  },
+  log,
+);
+
+ipcMain.handle('emerald:hooks-status', async (): Promise<HooksStatus> => {
+  const reply = parseHooksStatus((await runCliJson(cli, ['hooks', 'status', '--json'])).json);
+  hooksWatch.follow(reply);
+  return reply.status;
+});
+
+// One Test event through the installed hook (M9 fix 606); the CLI's exit
+// code says complete-and-passed, so the answer is read off the JSON.
+ipcMain.handle('emerald:hooks-test', async (): Promise<HooksTestResult> => {
+  const { json } = await runCliJson(cli, ['hooks', 'status', '--test', '--json']);
+  const t = (json as Record<string, unknown> | null)?.['test'];
+  if (!isHookTestOutcome(t)) throw new Error('emmer hooks status --test gave no test result');
+  return { result: t };
+});
+
+ipcMain.handle('emerald:hooks-install', async (): Promise<HooksInstallResult> => {
+  const { code, json } = await runCliJson(cli, ['hooks', 'install', '--json']);
+  if (code !== 0) throw new Error(`emmer hooks install exited ${code}`);
+  const r = json as Record<string, unknown>;
+  return { changed: r['changed'] === true, settings: String(r['settings'] ?? '') };
+});
+
+// The folder chooser is modal to our window so it cannot get lost behind it.
+// EMERALD_PICK_FOLDER is a harness flag like EMERALD_PICK_FILE below (M9 fix
+// 547): a verify script cannot drive a native dialog, so under it the
+// answer is that folder and no dialog is shown.
+ipcMain.handle('emerald:pick-folder', async (_event, defaultPath: string | null) => {
+  const picked = process.env['EMERALD_PICK_FOLDER'];
+  if (picked !== undefined && picked !== '') return picked;
+  const opts = { properties: ['openDirectory' as const], ...(defaultPath !== null ? { defaultPath } : {}) };
+  const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+// The file chooser behind Open a file (M9 fix 341), modal the same way.
+// EMERALD_PICK_FILE is a harness flag, as EMERALD_WHATS_NEW is: a verify
+// script cannot drive a native dialog, so under it the answer is that
+// path and no dialog is shown.
+ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null) => {
+  const picked = process.env['EMERALD_PICK_FILE'];
+  if (picked !== undefined && picked !== '') return picked;
+  const opts = { properties: ['openFile' as const], ...(defaultPath !== null ? { defaultPath } : {}) };
+  const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
+// The files rail's file service (files.ts). The watchers push on their
+// own channel rather than through the daemon's, since the daemon never
+// hears about them.
+const watchers = new FolderWatchers((dir, renamed) => {
+  // A folder heading's icon read from here or below is read again on its
+  // next appearance (folder-icon.ts).
+  folderIconForget(dir);
+  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', dir, { renamed });
+});
+// EMERALD_LIST_CAP is read once, at start (M9 fix 436), for the verify step
+// that cuts a folder of six; a value that is not a positive whole number
+// leaves the default.
+const listCap = (() => {
+  const raw = process.env['EMERALD_LIST_CAP'];
+  return raw !== undefined && /^[1-9]\d*$/.test(raw) ? Number(raw) : LIST_CAP;
+})();
+ipcMain.handle('emerald:files-list', (_event, dir: string, keep?: string) => listFolder(dir, keep, listCap));
+ipcMain.handle('emerald:files-read', (_event, p: string) => readFile(p));
+ipcMain.handle('emerald:files-write', (_event, p: string, text: string, format: TextFormat, stamp: FileStamp) => writeFileText(p, text, format, stamp));
+ipcMain.handle('emerald:files-mkdir', (_event, p: string) => makeFolder(p));
+ipcMain.handle('emerald:files-create', (_event, p: string) => createFile(p));
+ipcMain.handle('emerald:files-rename', (_event, from: string, to: string) => renameEntry(from, to));
+// M9 fix 644: held on revealPath's rule, so a harness window's Delete
+// moves the entry into <EMERALD_HOME>/trash and not the recycle bin.
+const trashHeld = process.env['EMERALD_OPEN_LOG'] !== undefined || process.env['EMERALD_HOME'] !== undefined;
+const trasher = trashHeld
+  ? heldTrash(path.resolve(emeraldHomeOf(process.env)), log, process.env['EMERALD_OPEN_LOG'])
+  : (target: string) => shell.trashItem(target);
+ipcMain.handle('emerald:files-trash', (_event, p: string) => trashEntry(p, trasher, log));
+// One running search per window (M9 fix 519): a newer search aborts the
+// one before it, and the rail's stop aborts whatever is running, so a
+// walk the rail no longer wants ends at its next folder or file.
+const searchRuns = new SearchRuns();
+ipcMain.handle('emerald:files-search', (event, root: string, needle: string, mode: SearchMode) => {
+  const signal = searchRuns.begin(event.sender.id);
+  return (mode === 'contents' ? searchContents : searchNames)(root, needle, signal).finally(() => searchRuns.end(event.sender.id, signal));
+});
+ipcMain.handle('emerald:files-search-stop', (event) => searchRuns.stop(event.sender.id));
+ipcMain.handle('emerald:files-watch', (_event, dirs: string[]) => watchers.set(dirs));
+ipcMain.handle('emerald:files-open', (_event, p: string) => openPath(p));
+ipcMain.handle('emerald:files-reveal', (_event, p: string) => revealPath(p, log));
+ipcMain.handle('emerald:files-open-folder', (_event, p: string) => openFolder(p, log));
+ipcMain.handle('emerald:files-stat', (_event, p: string) => statPath(p));
+ipcMain.handle('emerald:files-open-external', (_event, url: string) => openExternal(url, log));
+ipcMain.handle('emerald:files-git-status', (_event, dir: string) => gitStatus(dir));
+ipcMain.handle('emerald:files-git-changes', (_event, dir: string) => gitChanges(dir));
+ipcMain.handle('emerald:files-git-log', (_event, dir: string) => gitLog(dir));
+ipcMain.handle('emerald:files-git-graph', (_event, dir: string, options: unknown) => gitGraph(dir, { remotes: typeof options === 'object' && options !== null && (options as { remotes?: unknown }).remotes === true }));
+ipcMain.handle('emerald:files-git-review', (_event, dir: string, base: string) => gitReview(dir, base));
+ipcMain.handle('emerald:files-git-show', (_event, dir: string, hash: string, rel: string) => gitShow(dir, hash, rel));
+// Revert a file's changes (M9 fix 310), from the rail's row menu.
+ipcMain.handle('emerald:files-git-revert', (_event, dir: string, rel: string) => gitRevert(dir, rel));
+// The Commits tab's watch on the repository's logs (M49): a commit pushes
+// the root as a change, which the rail's git poll refetches on. The log
+// line is the watch's only trace (M9 fix 531), one per commit per root.
+const gitLogWatcher = new GitLogWatcher((root) => {
+  log(`files-changed push for ${root}`);
+  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', root);
+});
+ipcMain.handle('emerald:git-watch', (_event, dirs: string[]) => gitLogWatcher.set(Array.isArray(dirs) ? dirs : []));
+// Initialise a repository (M9 fix 255): git init in the folder, then the
+// log watch takes the new repository and the folder is pushed as a
+// change so the rail's git poll reads it at once.
+ipcMain.handle('emerald:git-init', async (_event, dir: string) => {
+  const result = await gitInit(dir);
+  if (result.root !== null) {
+    log(`git init in ${dir}: repository at ${result.root}`);
+    gitLogWatcher.refresh();
+    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', result.root);
+  } else log(`git init in ${dir} failed: ${result.error}`);
+  return result;
+});
+ipcMain.handle('emerald:folder-icon', (_event, dir: string) => folderIcon(dir));
+
+// The terminal's colour schemes (schemes.ts, M9 fix 225): the shipped
+// ones and the person's Windows Terminal ones, read on every call.
+ipcMain.handle('emerald:schemes-list', async () => listSchemes({ shippedDir: resolveSchemesDir(), settingsFiles: await windowsTerminalSettingsFiles(process.env['LOCALAPPDATA']) }, log, currentSkin()));
+
+// The account's Claude usage for the sidebar footer (usage.ts). Read on
+// every call; the renderer decides how often to ask. Each reading is
+// held against the last for the capped edges (M9 fix 285, usage-edges.ts),
+// posted to the daemon as usage.capped and usage.freed so the activity
+// view can draw the stretches nobody could continue; a daemon before
+// level 50 has no such request, so the post is skipped, and a post that
+// fails is one log line, since the next crossing posts again. A failed
+// reading is not a reading and the last one stands.
+const CAPPED_LEVEL = 50;
+let lastUsage: Map<string, UsageWindow> | null = null;
+function postUsageEdges(edges: readonly UsageEdge[]): void {
+  const level = client.daemonInfo?.featureLevel ?? 0;
+  if (level < CAPPED_LEVEL) return;
+  for (const edge of edges) {
+    const req = edge.kind === 'capped' ? client.request('usage.capped', { window: edge.window, resetsAt: edge.resetsAt }) : client.request('usage.freed', { window: edge.window });
+    req.catch((err: unknown) => log(`usage.${edge.kind} failed: ${String(err)}`));
+  }
+}
+ipcMain.handle('emerald:usage-get', async (_event, ask: UsageAsk) => {
+  const result = await fetchUsage(log, ask);
+  if ('windows' in result) {
+    postUsageEdges(cappedEdges(lastUsage, result.windows));
+    lastUsage = usageByKey(result.windows);
+  }
+  return result;
+});
+
+// A system notification for a session that wants someone (notify.ts). The
+// click comes back to the renderer, which shows the session.
+const notifier = createNotifier(
+  () => win,
+  (sessionId) => {
+    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:notify-clicked', sessionId);
+  },
+  log,
+);
+ipcMain.on('emerald:notify', (_event, req: NotifyRequest) => notifier.post(req));
+
+// The taskbar button flashes and wears the count while sessions want
+// someone (taskbar.ts, M9 fix 104); the renderer sends its attention set
+// on every change.
+const taskbar = createTaskbar(() => win, log);
+ipcMain.on('emerald:attention', (_event, req: AttentionRequest) => taskbar.set(req));
+
+// The skin (M9 fix 569): main keeps the one the renderer last sent, in
+// skin.json beside the logs, so the next window opens in it, and repaints
+// what the renderer cannot: the window ground, the caption buttons'
+// overlay and the taskbar badge.
+initSkin(path.join(emeraldHomeOf(process.env), 'skin.json'), log);
+ipcMain.on('emerald:skin-set', (_event, skin: unknown) => applySkin(win, skin));
+// M9 fix 628: the renderer asks once, on a profile with no skin stored, so
+// the page takes the skin main painted the first frame in.
+ipcMain.on('emerald:skin-get', (event) => {
+  event.returnValue = currentSkin();
+});
+
+// The History panel's scan of Claude Code's transcripts (history.ts). The
+// watcher follows history.jsonl only while the panel is showing.
+const historyWatcher = new HistoryWatcher(() => {
+  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:history-changed');
+}, log);
+ipcMain.handle('emerald:history-scan', () => scanHistory(log));
+ipcMain.handle('emerald:history-turns', (_event, file: string) => readTurns(file, log));
+ipcMain.handle('emerald:history-usage', (_event, conversation: string, known: string | null) => readUsage(conversation, known, log));
+ipcMain.handle('emerald:history-cost', (_event, file: string) => readTranscriptCost(file, log));
+ipcMain.handle('emerald:history-agents', (_event, conversation: string) => readAgentsRunning(conversation, log));
+ipcMain.handle('emerald:history-project', (_event, dir: string) => repoRoot(dir));
+ipcMain.handle('emerald:history-watch', (_event, on: boolean) => historyWatcher.set(on));
+
+// The clipboard for Ctrl+V in a pane (M9 fix 92), Electron 44's async
+// clipboard. Text wins; an image is reported only when there is no text,
+// since a copied image often carries a text form too (a file name, HTML)
+// and the pane pastes text. Read here rather than in the renderer:
+// navigator.clipboard asks permission, and the sandboxed preload has no
+// clipboard module.
+//
+// Under a private EMERALD_HOME (a verify script's or a click-through's
+// window) the clipboard is the window's own, held here, and the box's is
+// never read or written (M9 fix 493): since fix 441 a right-click on a
+// terminal pastes, and every harness right-click that opened a pane menu
+// was pasting the person's real clipboard into a harness PowerShell, which
+// ran it and broke the step's own typing after it. The scripts that test
+// copy and paste write and read through this same bridge, so they read
+// what they wrote.
+const heldClipboard: { text: string; image: boolean } | null = process.env['EMERALD_HOME'] === undefined ? null : { text: '', image: false };
+ipcMain.handle('emerald:clipboard-read', async () => {
+  if (heldClipboard !== null) return heldClipboard.text !== '' ? { text: heldClipboard.text, image: false } : { text: null, image: heldClipboard.image };
+  const text = await clipboard.readText();
+  if (text !== '') return { text, image: false };
+  return { text: null, image: await clipboard.has('image/png') };
+});
+ipcMain.handle('emerald:clipboard-write', (_event, text: string) => {
+  if (heldClipboard !== null) {
+    heldClipboard.text = text;
+    heldClipboard.image = false;
+    return;
+  }
+  clipboard.writeText(text);
+});
+ipcMain.handle('emerald:clipboard-write-image', (_event, dataUrl: string) => {
+  if (heldClipboard !== null) {
+    heldClipboard.text = '';
+    heldClipboard.image = true;
+    return;
+  }
+  const png = nativeImage.createFromDataURL(dataUrl).toPNG();
+  return clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+});
+
+const RENDERER_LOG_LINES_PER_SECOND = 5;
+
+function createWindow(): void {
+  // A verify script's window (cdp.mjs sets EMERALD_WINDOW=background) is
+  // shown without taking focus and off the right edge of every display,
+  // with no taskbar button, so a run beside the user's own emerald neither
+  // covers it nor takes the keyboard from it (M9 fixes 48 and 49). The
+  // scripts never depend on the window being seen: they drive the state
+  // directly and read it back over CDP, and the page is told it has focus
+  // by focus emulation.
+  const background = process.env['EMERALD_WINDOW'] === 'background';
+  // The frame's title bar is the app's own 26px row (M43, TitleBar.tsx);
+  // Windows keeps drawing the caption buttons over its right end, in the
+  // chrome colours, so Snap Layouts and the system menu still work. The
+  // menu bar goes with the frame; the application menu below stays for
+  // its accelerators. The minimum keeps the three columns and the buttons
+  // from overlapping at a size nobody works at.
+  const chrome = chromeOf(currentSkin());
+  win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 640,
+    minHeight: 400,
+    backgroundColor: chrome.bg,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: chrome.overlay, symbolColor: chrome.symbol, height: TITLE_BAR_HEIGHT },
+    autoHideMenuBar: true,
+    show: !background,
+    skipTaskbar: background,
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // M9 fix 659: the browser pane's <webview>, held to one partition
+      // and stripped of node and a preload at its attach (browser-guard.ts).
+      webviewTag: true,
+    },
+  });
+  log(`window opens in the ${currentSkin()} skin`);
+  if (background) {
+    // Past the primary display alone was in plain view on a machine with
+    // a display to its right (fix 48), so the spot is past the union.
+    const right = Math.max(...screen.getAllDisplays().map((d) => d.bounds.x + d.bounds.width));
+    const spot: [number, number] = [right + 50, 50];
+    const w = win;
+    // Windows moves the windows of a display that goes away back onto one
+    // that is there, and a harness window was found over the user's own
+    // ten minutes into a run that way; the spot is held for as long as the
+    // window lives. The guard on the position is what stops the handler's
+    // own setPosition from firing it again.
+    w.on('move', () => {
+      const [x, y] = w.getPosition();
+      if (x !== spot[0] || y !== spot[1]) w.setPosition(spot[0], spot[1]);
+    });
+    w.setPosition(spot[0], spot[1]);
+    w.showInactive();
+    log(`background window at ${spot[0]},${spot[1]}, past displays ending at ${right}`);
+  }
+  // The title row hides in full screen (TitleBar.tsx). Windows leaves the
+  // caption buttons drawn and the overlay's visible flag true under both
+  // the F11 kind and the Fullscreen API kind, so the page is told here;
+  // a reload while full screen asks again on load.
+  const w = win;
+  let htmlFullscreen = false;
+  const tellFullscreen = () => pushToRenderer({ type: 'window.fullscreen', on: w.isFullScreen() || htmlFullscreen });
+  w.on('enter-full-screen', tellFullscreen);
+  w.on('leave-full-screen', tellFullscreen);
+  w.on('enter-html-full-screen', () => { htmlFullscreen = true; tellFullscreen(); });
+  w.on('leave-html-full-screen', () => { htmlFullscreen = false; tellFullscreen(); });
+  w.webContents.on('did-finish-load', tellFullscreen);
+  // M9 fix 527: a reload (a main-frame commit; never a navigation the
+  // will-navigate guard below refused) or a crashed page holds `emerald
+  // open` requests until the new page says it listens, rather than
+  // sending them to a page whose listener is not installed yet.
+  w.webContents.on('did-navigate', () => openRelay.loading());
+  w.webContents.on('render-process-gone', () => openRelay.loading());
+  // M9 fix 355: the renderer's warnings and errors reach main.log, so a
+  // fallen-back terminal renderer or a failed IPC in the installed build
+  // leaves a line somebody can read (its devtools console is nobody's).
+  // Capped, since a page in a loop would otherwise fill the log: five
+  // lines a second, then one line saying how many more went.
+  let consoleSecond = 0;
+  let consoleLines = 0;
+  let consoleDropped = 0;
+  const sayDropped = () => {
+    if (consoleDropped > 0) log(`renderer: ${consoleDropped} more lines dropped this second`);
+    consoleDropped = 0;
+  };
+  w.webContents.on('console-message', (details) => {
+    if (details.level !== 'warning' && details.level !== 'error') return;
+    const second = Math.floor(Date.now() / 1000);
+    if (second !== consoleSecond) {
+      sayDropped();
+      consoleSecond = second;
+      consoleLines = 0;
+    }
+    if (consoleLines >= RENDERER_LOG_LINES_PER_SECOND) {
+      // The count is said a second on even when the burst was the last
+      // thing the page wrote.
+      if (consoleDropped === 0) setTimeout(sayDropped, 1000);
+      consoleDropped++;
+      return;
+    }
+    consoleLines++;
+    log(rendererLogLine(details.level, details.message, details.sourceId, details.lineNumber));
+  });
+  win.on('closed', () => {
+    win = null;
+    taskbar.dispose();
+    watchers.close();
+    gitLogWatcher.close();
+    historyWatcher.close();
+  });
+  // A file dropped where nothing handles the drop would navigate the window
+  // to it, blanking the app. The renderer accepts a folder on a pane and
+  // nothing else; every other navigation is refused here.
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  // No window of emerald's is ever opened for the page (M9 fix 477, the
+  // ledger's H7): Monaco's Ctrl+click on a URL runs window.open, and so
+  // did a middle-click on a markdown link, which put a remote page in an
+  // Electron window. An http or https URL goes to the browser through the
+  // same path as a link's (held to the log under a private EMERALD_HOME);
+  // everything is denied a window. M9 fix 659: a browser pane's page gets
+  // the same handler (denyWindows, below).
+  denyWindows(win.webContents);
+  const devUrl = process.env['ELECTRON_RENDERER_URL'];
+  if (devUrl !== undefined) {
+    void win.loadURL(devUrl);
+  } else {
+    void win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  }
+}
+
+// A launch with a file on its command line (M9 fix 342): a double-click
+// on a .md or .json once the installer has registered emerald as an opener,
+// or `Emerald.exe notes.md` by hand. The file is the first plain argument
+// after the app's own: Electron's and the installer's switches start
+// with a dash (--remote-debugging-port, --user-data-dir, --updated), and
+// the dev build is `electron <main.js> [file]`, so its own path is the
+// first plain argument there. Every launch asks for the single-instance
+// lock (keyed on the profile, so a harness window never meets another
+// script's); a launch with a file that does not get it hands the path to
+// the holder as second-instance data and quits at once, while a launch
+// with no file goes on to a window of its own either way, since a second
+// window is what a second plain launch has always given.
+function fileArgument(): string | null {
+  const plain = process.argv.slice(1).filter((a) => !a.startsWith('-'));
+  const candidate = plain[app.isPackaged ? 0 : 1];
+  if (candidate === undefined) return null;
+  const p = path.resolve(candidate);
+  try {
+    return fs.statSync(p).isFile() ? p : null;
+  } catch {
+    return null;
+  }
+}
+// M9 fix 355: EMERALD_INSPECT_PORT puts the devtools server on a port so
+// the installed window can be attached and profiled; inspect.ts says
+// when the variable yields (the harness names a port on the command
+// line). The switch must be appended before the app is ready.
+const inspect = inspectPort(process.env, process.argv);
+if (inspect.port !== null) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(inspect.port));
+  log(`inspect port ${inspect.port} on 127.0.0.1`);
+} else if (inspect.reason !== 'not asked') {
+  log(`inspect port: ${inspect.reason}`);
+}
+const launchFile = fileArgument();
+let holdsLock = app.requestSingleInstanceLock({ path: launchFile });
+const handedOver = launchFile !== null && !holdsLock;
+log(`single-instance lock ${holdsLock ? 'held' : 'not held'}${launchFile === null ? '' : `, launched with ${launchFile}`}`);
+if (handedOver) {
+  log(`${launchFile} handed to the running window; quitting`);
+  app.quit();
+} else {
+  if (launchFile !== null) openRelay.open({ path: launchFile, pane: false });
+  app.on('second-instance', (_event, _argv, _cwd, additionalData) => {
+    const p = (additionalData as { path?: unknown } | undefined)?.path;
+    if (typeof p !== 'string') return;
+    log(`${p} from a second launch`);
+    openRelay.open({ path: p, pane: false });
+  });
+  // A window that went on without the lock (another window holds it, or
+  // a killed one's singleton had not gone yet) asks again for a while,
+  // so that once the holder is gone this window takes the double-clicks.
+  if (!holdsLock) {
+    let tries = 0;
+    const again = () => {
+      if (holdsLock || tries >= 20) return;
+      tries++;
+      holdsLock = app.requestSingleInstanceLock({ path: null });
+      if (holdsLock) log(`single-instance lock held on try ${tries + 1}`);
+      // Said once at the last try (M9 fix 480, L40), so a later
+      // double-click that opens a second main process has a line to
+      // explain it.
+      else if (tries >= 20) log(`single-instance lock still not held after ${tries + 1} tries; giving up`);
+      else setTimeout(again, 1000);
+    };
+    setTimeout(again, 1000);
+  }
+}
+
+// No window of emerald's for a page (M9 fix 477): an http or https URL
+// goes to the browser (held to the log under a private EMERALD_HOME),
+// anything else is refused, and no window opens either way.
+function denyWindows(contents: WebContents): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) void openExternal(url, log).catch((err: unknown) => log(`open ${url} failed: ${err instanceof Error ? err.message : String(err)}`));
+    else log(`window.open refused: ${url}`);
+    return { action: 'deny' };
+  });
+}
+
+// Every web contents, not the main window's alone (M9 fix 477): none may
+// navigate away from what the main process loaded into it, and none may
+// attach a <webview>. The main window's own handlers are in createWindow.
+// M9 fix 659 narrows the attach to the browser pane's: a <webview> on the
+// main window under persist:emerald-browser alone, with node, a preload
+// and a webview tag of its own stripped (forceGuestPreferences); a webview
+// off the main window or on any other partition is still refused. A page
+// in that webview follows its own links on the web, never to a file: or
+// javascript: URL, and opens no window.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() === 'webview') {
+    denyWindows(contents);
+    contents.on('will-navigate', (e, url) => {
+      if (guestNavigationAllowed(url)) return;
+      e.preventDefault();
+      log(`browser: navigation refused: ${url}`);
+    });
+    return;
+  }
+  contents.on('will-navigate', (e) => e.preventDefault());
+  contents.on('will-attach-webview', (e, webPreferences, params) => {
+    const refusal = attachRefusal({ partition: params['partition'], src: params['src'], fromMain: win !== null && !win.isDestroyed() && contents === win.webContents });
+    if (refusal !== null) {
+      e.preventDefault();
+      log(`webview refused: ${refusal}`);
+      return;
+    }
+    forceGuestPreferences(webPreferences as unknown as Record<string, unknown>);
+  });
+});
+
+app.whenReady().then(() => {
+  if (handedOver) return;
+  // The browser pane's partition (M9 fix 659) grants a page nothing but
+  // a sanitized clipboard write: no camera, microphone, location or
+  // notifications from a page beside the shells.
+  const browserSession = session.fromPartition(BROWSER_PARTITION);
+  browserSession.setPermissionRequestHandler((_wc, permission, done) => {
+    const ok = permission === 'clipboard-sanitized-write';
+    if (!ok) log(`browser: permission ${permission} refused`);
+    done(ok);
+  });
+  browserSession.setPermissionCheckHandler((_wc, permission) => permission === 'clipboard-sanitized-write');
+  // Electron's default menu binds Ctrl+0, Ctrl+= and Ctrl+- to page zoom
+  // in the main process, before the renderer ever sees the keys; the
+  // renderer uses them for the terminal text size instead. Reload, the
+  // devtools and full screen keep their keys. The two reloads are items of
+  // their own so the file open relay holds from the click (M9 fix 549).
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: 'fileMenu' },
+      { role: 'editMenu' },
+      {
+        label: 'View',
+        submenu: [
+          { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => { if (win !== null && !win.isDestroyed()) reloadHolding(win.webContents, openRelay, false); } },
+          { label: 'Force Reload', accelerator: 'Shift+CmdOrCtrl+R', click: () => { if (win !== null && !win.isDestroyed()) reloadHolding(win.webContents, openRelay, true); } },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' },
+        ],
+      },
+      { role: 'windowMenu' },
+    ]),
+  );
+  if (launchInGap()) {
+    // M9 fix 408: the word is with a worker outside this process now, so
+    // there is nothing to wait for; the installer is about to take this
+    // exe anyway.
+    app.quit();
+    return;
+  }
+  client.start();
+  // Registered here, after the handed-over and gap launches have quit, so
+  // those write no will-quit line (M9 fix 657).
+  app.on('will-quit', onWillQuit);
+  createWindow();
+  installHooksOnFirstLaunch();
+  updater.start();
+  watchPresence();
+});
+
+// Presence (M9 fix 245): the lock screen, sleep and the idle clock, posted
+// to the daemon as presence.away and presence.back so the waiting the
+// activity view counts is docked by the time nobody could have answered.
+// The daemon writes the app window's own coming and going itself; this
+// is for the box left on with the app open. A daemon before level 47
+// has no such request, so the post is skipped, and a post that fails
+// (the pipe dropped mid-edge) is one log line, since the next edge posts
+// again on its own.
+const PRESENCE_LEVEL = 47;
+const presence = new PresenceTracker();
+function postPresence(edge: 'away' | 'back' | null): void {
+  if (edge === null) return;
+  const level = client.daemonInfo?.featureLevel ?? 0;
+  if (level < PRESENCE_LEVEL) return;
+  client.request(edge === 'away' ? 'presence.away' : 'presence.back', {}).catch((err: unknown) => log(`presence.${edge} failed: ${String(err)}`));
+}
+function watchPresence(): void {
+  const floorMs = awayAfterMs();
+  if (floorMs === null) {
+    log('presence watching off under a private EMERALD_HOME (set EMERALD_AWAY_AFTER_MS to turn it on)');
+    return;
+  }
+  powerMonitor.on('lock-screen', () => postPresence(presence.set('locked', true)));
+  powerMonitor.on('unlock-screen', () => postPresence(presence.set('locked', false)));
+  powerMonitor.on('suspend', () => postPresence(presence.set('asleep', true)));
+  powerMonitor.on('resume', () => postPresence(presence.set('asleep', false)));
+  // Polled, since the idle time is a question and not an event; often
+  // enough that a short floor set by a script trips within a few ticks.
+  const pollMs = Math.min(IDLE_POLL_MS, Math.max(500, Math.floor(floorMs / 4)));
+  const timer = setInterval(() => postPresence(presence.set('idle', powerMonitor.getSystemIdleTime() * 1000 >= floorMs)), pollMs);
+  timer.unref();
+  // A reconnect (the daemon restarted) meets a daemon that read the
+  // window's hello as back; an absence still held is posted again.
+  client.on('connected', () => {
+    if (presence.away) postPresence('away');
+  });
+}
+// A reconnect (M9 fix 285) posts the windows still capped again. A
+// restarted daemon has already replayed its capped lines from the
+// activity log at start, so the re-post is normally a no-op
+// (`recordCapped` answers false to a band already open); it matters only
+// when the log lost the line.
+client.on('connected', () => postUsageEdges(cappedNow(lastUsage)));
+
+// M9 fix 657: app.quit() (the updater's restart through quitAndInstall,
+// the File menu's Exit) closes the windows and goes to will-quit with no
+// window-all-closed, so the line below would never be written on those
+// paths, which are where an exit hang costs most (the installer waits on
+// the exe). The flag keeps a close through window-all-closed to its one line.
+let windowsClosed = false;
+
+app.on('window-all-closed', () => {
+  windowsClosed = true;
+  client.stop();
+  // What is still alive in the main process at the quit, so a build that
+  // stays running with no window (M9 fix 243 met one) names its holder
+  // in the log rather than leaving it to be guessed.
+  log(`window-all-closed; active resources: ${process.getActiveResourcesInfo().join(', ') || 'none'}`);
+  app.quit();
+});
+
+// client.stop() is a no-op after the updater's stopDaemon (pipe-client.ts
+// already set `stopped`; stop() only ends the socket again).
+function onWillQuit(): void {
+  if (windowsClosed) return;
+  client.stop();
+  log(`will-quit; active resources: ${process.getActiveResourcesInfo().join(', ') || 'none'}`);
+}

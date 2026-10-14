@@ -1,0 +1,23 @@
+{
+  "name": "emerald gem",
+  "background": "#1A1F1D",
+  "foreground": "#D4D4D4",
+  "cursorColor": "#3ECF8E",
+  "selectionBackground": "#4A90D9",
+  "black": "#1A1F1D",
+  "red": "#E06C75",
+  "green": "#3ECF8E",
+  "yellow": "#E8B949",
+  "blue": "#4A90D9",
+  "purple": "#C586C0",
+  "cyan": "#62C3CF",
+  "white": "#D4D4D4",
+  "brightBlack": "#6B7571",
+  "brightRed": "#EF8A92",
+  "brightGreen": "#7FE0B0",
+  "brightYellow": "#F0CF7A",
+  "brightBlue": "#7FB0E8",
+  "brightPurple": "#D7A6D3",
+  "brightCyan": "#8FD9E3",
+  "brightWhite": "#FFFFFF"
+}

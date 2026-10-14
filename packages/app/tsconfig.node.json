@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  // The main and preload processes, with no DOM: a renderer file reached
+  // from here has to be pure, and the eight named below are the ones the
+  // two sides share today. A composite project lists every file it holds,
+  // so a new cross-import fails with TS6307 naming the file, which is the
+  // boundary saying no rather than a chore. The renderer's own files, its
+  // tests and models included, are tsconfig.web.json's and
+  // tsconfig.test.json's; before M9 fix 405 this project swept in every
+  // renderer test and model, which is why its half of `npm run typecheck`
+  // had never passed and nothing ran it.
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/renderer/src/files-model.ts",
+    "src/renderer/src/git-changes-model.ts",
+    "src/renderer/src/git-status-model.ts",
+    "src/renderer/src/history-model.ts",
+    "src/renderer/src/scheme-model.ts",
+    "src/renderer/src/search-model.ts",
+    "src/renderer/src/update-model.ts",
+    "src/renderer/src/usage-model.ts"
+  ]
+}

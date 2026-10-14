@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(emmer:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "PowerShell(git:*)",
+      "PowerShell(node:*)",
+      "PowerShell(npm:*)",
+      "PowerShell(emmer:*)",
+      "PowerShell(Get-ChildItem:*)",
+      "PowerShell(Set-Location:*)",
+      "PowerShell(Remove-Item:*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "TodoWrite",
+      "Agent",
+      "Skill"
+    ]
+  }
+}

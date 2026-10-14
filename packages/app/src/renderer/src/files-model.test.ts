@@ -1,0 +1,325 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
+import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, revealFolders, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import type { Row } from './files-model.ts';
+import { aSession } from './test-support.ts';
+
+// The text of a row that is not an entry. Only a note carries one; a
+// pending row is named instead, so a fixture that grows one fails on the
+// name rather than on an undefined a compare cannot explain.
+const rowText = (r: Row): string => (r.type === 'note' ? r.text : r.type === 'pending' ? `pending:${r.dir}` : r.name);
+
+const list = (names: string[], dirs: string[] = [], truncated = 0) => ({
+  entries: names.map((name) => ({ name, kind: dirs.includes(name) ? ('dir' as const) : ('file' as const) })),
+  truncated,
+});
+
+test('normalizePath: slashes, runs and a trailing separator, but not a drive root or a UNC prefix', () => {
+  assert.equal(normalizePath('C:/Users/x/'), 'C:\\Users\\x');
+  assert.equal(normalizePath('C:\\Users\\\\x'), 'C:\\Users\\x');
+  assert.equal(normalizePath('C:/'), 'C:\\');
+  assert.equal(normalizePath('C:\\'), 'C:\\');
+  assert.equal(normalizePath('\\\\server\\share\\'), '\\\\server\\share');
+  assert.equal(normalizePath('//server/share'), '\\\\server\\share');
+  assert.equal(joinPath('C:/x', 'y'), 'C:\\x\\y');
+});
+
+test('relativePath is under the root case-insensitively, else the whole path', () => {
+  assert.equal(relativePath('C:/repo', 'C:\\repo\\src\\a.ts'), 'src\\a.ts');
+  assert.equal(relativePath('c:\\REPO', 'C:\\repo\\src\\a.ts'), 'src\\a.ts');
+  assert.equal(relativePath('C:\\repo', 'D:\\other\\a.ts'), 'D:\\other\\a.ts');
+  assert.equal(relativePath('C:\\', 'C:\\a.ts'), 'a.ts');
+  assert.equal(folderName('C:/Users/x/'), 'x');
+  assert.equal(folderName('C:\\'), 'C:');
+  assert.equal(parentPath('C:/repo/src/a.ts'), 'C:\\repo\\src');
+  assert.equal(parentPath('C:\\a.ts'), 'C:\\');
+  assert.equal(parentPath('\\\\server\\share\\a.ts'), '\\\\server\\share');
+});
+
+test('pathLabel: a drive root by its path, every other folder by its name', () => {
+  assert.equal(pathLabel('C:\\Users'), 'Users');
+  assert.equal(pathLabel('C:\\'), 'C:\\');
+});
+
+test('walk: nothing without a root, the root alone before its listing arrives', () => {
+  assert.deepEqual(walk(emptyModel()), { rows: [], open: [] });
+  const m = setRoot(emptyModel(), 'C:/repo/');
+  assert.equal(m.root, 'C:\\repo');
+  assert.deepEqual(walk(m), { rows: [], open: ['C:\\repo'] });
+});
+
+test('walk: rows in listing order with depth, expanded folders visited, collapsed ones not', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['.claude', 'data', 'readme.md'], ['.claude', 'data']));
+  m = applyListing(m, 'C:\\repo\\data', list(['deep', 'a.json'], ['deep']));
+  m = applyListing(m, 'C:\\repo\\data\\deep', list(['b.json']));
+  m = toggleFolder(m, 'C:/repo/data');
+  const { rows, open } = walk(m);
+  assert.deepEqual(
+    rows.map((r) => (r.type === 'entry' ? [r.depth, r.name, r.expanded] : [r.depth, rowText(r)])),
+    [
+      [0, '.claude', false],
+      [0, 'data', true],
+      [1, 'deep', false],
+      [1, 'a.json', false],
+      [0, 'readme.md', false],
+    ],
+  );
+  assert.deepEqual(open, ['C:\\repo', 'C:\\repo\\data']);
+  // Opening deep lists its child and adds it to the open set.
+  const deeper = walk(toggleFolder(m, 'C:\\repo\\data\\deep'));
+  assert.deepEqual(
+    deeper.rows.filter((r) => r.depth === 2).map((r) => (r.type === 'entry' ? r.name : rowText(r))),
+    ['b.json'],
+  );
+  assert.deepEqual(deeper.open, ['C:\\repo', 'C:\\repo\\data', 'C:\\repo\\data\\deep']);
+  // Toggling data again closes it and deep with it, though deep stays expanded for later.
+  const closed = toggleFolder(toggleFolder(m, 'C:\\repo\\data\\deep'), 'C:\\repo\\data');
+  assert.deepEqual(walk(closed).open, ['C:\\repo']);
+  assert.ok(closed.expanded.has('C:\\repo\\data\\deep'));
+  assert.equal(collapseAll(closed).expanded.size, 0);
+});
+
+test('revealFolders: the folders down to the file, the root child first; [] in the root; null elsewhere (M9 fix 652)', () => {
+  assert.deepEqual(revealFolders('C:\\repo', 'C:\\repo\\a\\b\\f.txt'), ['C:\\repo\\a', 'C:\\repo\\a\\b']);
+  assert.deepEqual(revealFolders('C:\\repo', 'C:\\repo\\f.txt'), []);
+  assert.equal(revealFolders('C:\\repo', 'D:\\other\\f.txt'), null);
+  assert.equal(revealFolders('C:\\repo', 'C:\\repository\\f.txt'), null);
+  // Forward slashes and another case read the same.
+  assert.deepEqual(revealFolders('c:/REPO/', 'C:/repo/a/b/f.txt'), ['c:\\REPO\\a', 'c:\\REPO\\a\\b']);
+});
+
+test('revealStep: outside, waiting, missing or shown in the listing case (M9 fix 652)', () => {
+  const file = 'C:\\repo\\a\\b\\f.txt';
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  assert.deepEqual(revealStep(emptyModel(), file), { kind: 'outside' });
+  assert.deepEqual(revealStep(m, file), { kind: 'waiting' });
+  m = applyListing(m, 'C:\\repo', list(['A', 'x.txt'], ['A']));
+  m = applyListing(m, 'C:\\repo\\A', list(['B'], ['B']));
+  m = expandFolder(m, 'C:\\repo\\A');
+  // a is listed, a\b is not expanded yet.
+  assert.deepEqual(revealStep(m, file), { kind: 'waiting' });
+  m = expandFolder(m, 'C:\\repo\\A\\B');
+  assert.deepEqual(revealStep(m, file), { kind: 'waiting' });
+  m = applyListing(m, 'C:\\repo\\A\\B', list(['F.txt', 'g.txt']));
+  assert.deepEqual(revealStep(m, file), { kind: 'shown', row: 'C:\\repo\\A\\B\\F.txt' });
+  assert.deepEqual(revealStep(m, 'C:/repo/a/b/h.txt'), { kind: 'missing' });
+  // A folder of the file's name is not the file.
+  assert.deepEqual(revealStep(m, 'C:\\repo\\a'), { kind: 'missing' });
+  const failed = applyListing(m, 'C:\\repo\\A\\B', { error: 'EPERM' });
+  assert.deepEqual(revealStep(failed, file), { kind: 'missing' });
+  assert.deepEqual(revealStep(m, 'D:\\elsewhere\\f.txt'), { kind: 'outside' });
+  assert.deepEqual(revealStep(m, 'C:\\repo\\x.txt'), { kind: 'shown', row: 'C:\\repo\\x.txt' });
+});
+
+test('withPending: the name box under the root, under its expanded folder, or nowhere', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['data', 'readme.md'], ['data']));
+  m = applyListing(m, 'C:\\repo\\data', list(['a.json']));
+  const shape = (rows: ReturnType<typeof walk>['rows']) => rows.map((r) => (r.type === 'entry' ? `${r.depth}:${r.name}` : r.type === 'pending' ? `${r.depth}:+${r.kind}@${r.dir}` : `${r.depth}:${r.text}`));
+  const closed = walk(m).rows;
+  assert.deepEqual(shape(withPending(closed, m.root, null)), ['0:data', '0:readme.md']);
+  assert.deepEqual(shape(withPending(closed, m.root, { dir: 'C:/repo/', kind: 'file' })), ['0:+file@C:\\repo', '0:data', '0:readme.md']);
+  // The folder is collapsed, so the box has nowhere to go and the rows stand.
+  assert.deepEqual(shape(withPending(closed, m.root, { dir: 'C:\\repo\\data', kind: 'dir' })), ['0:data', '0:readme.md']);
+  // expandFolder opens it and leaves an open one open; the box then leads its children.
+  const opened = expandFolder(m, 'C:/repo/data');
+  assert.equal(expandFolder(opened, 'C:\\repo\\data'), opened);
+  assert.deepEqual(shape(withPending(walk(opened).rows, opened.root, { dir: 'C:\\repo\\data', kind: 'dir' })), ['0:data', '1:+dir@C:\\repo\\data', '1:a.json', '0:readme.md']);
+  assert.deepEqual(withPending(closed, null, { dir: 'C:\\repo', kind: 'file' }), closed);
+});
+
+test('walk: an error stands in for the children, a cap adds a count', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', { entries: [{ name: 'locked', kind: 'dir' }], truncated: 3 });
+  m = applyListing(m, 'C:\\repo\\locked', { error: 'Access denied' });
+  m = toggleFolder(m, 'C:\\repo\\locked');
+  const { rows } = walk(m);
+  assert.deepEqual(
+    rows.map((r) => (r.type === 'entry' ? r.name : `${r.depth}:${rowText(r)}`)),
+    ['locked', '1:Access denied', '0:3 more not shown'],
+  );
+});
+
+test('setRoot keeps the listings and the expanded set, drops the selection', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['src'], ['src']));
+  m = applyListing(m, 'C:\\repo\\src', list(['a.ts']));
+  m = toggleFolder(m, 'C:\\repo\\src');
+  m = select(m, 'C:\\repo\\src\\a.ts');
+  const moved = setRoot(m, 'C:\\repo\\src');
+  assert.equal(moved.selected, null);
+  assert.deepEqual(walk(moved).rows.map((r) => (r.type === 'entry' ? r.name : rowText(r))), ['a.ts']);
+  const back = setRoot(moved, 'C:/repo/');
+  assert.deepEqual(walk(back).rows.map((r) => (r.type === 'entry' ? `${r.depth}${r.name}` : rowText(r))), ['0src', '1a.ts']);
+  // The same root is the same model.
+  assert.equal(setRoot(back, 'C:\\repo'), back);
+  assert.equal(setRoot(back, null).root, null);
+});
+
+// The touched index (M9 fix 198) needs a session fixture the tree tests do not.
+function session(id: string, color: string, touched: SessionTouched[]): SessionInfo {
+  return aSession({ id, name: id, color, touched });
+}
+
+test('touchedIndex: two sessions on one path, newest first, looked up by either spelling; a folder gathers the sessions under it', () => {
+  const a = session('a', '#111111', [
+    { path: 'C:/repo/src/a.ts', at: 100, agentId: null },
+    { path: 'C:/repo/src/deep/b.ts', at: 300, agentId: 'ag1' },
+  ]);
+  const b = session('b', '#222222', [{ path: 'C:\\repo\\src\\A.ts', at: 200, agentId: null }]);
+  const none = session('c', '#333333', []);
+  const index = touchedIndex([a, b, none]);
+  assert.deepEqual(
+    touchedAt(index, 'C:\\repo\\src\\a.ts').map((t) => [t.sessionId, t.at, t.color]),
+    [
+      ['b', 200, '#222222'],
+      ['a', 100, '#111111'],
+    ],
+    'the later write first, the two spellings one key',
+  );
+  assert.deepEqual(touchedAt(index, 'C:/repo/src/deep/b.ts')[0]!.agentId, 'ag1', 'the member is kept');
+  assert.deepEqual(touchedAt(index, 'C:/repo/other.ts'), [], 'an untouched file');
+  // A folder: one entry per session, its latest write under the folder.
+  assert.deepEqual(
+    touchedUnder(index, 'C:/repo/src').map((t) => [t.sessionId, t.at]),
+    [
+      ['a', 300],
+      ['b', 200],
+    ],
+  );
+  assert.deepEqual(touchedUnder(index, 'C:/repo/srcx'), [], 'a sibling with a longer name is not under src');
+  assert.deepEqual(touchedUnder(index, 'C:/repo/docs'), []);
+  // A record from before the field reads as no writes. The key is taken
+  // off rather than set to undefined, which is what an older record is
+  // and what the optional field's own type allows.
+  const older: SessionInfo = { ...none };
+  delete older.touched;
+  assert.equal(touchedIndex([older]).size, 0);
+});
+
+function fileTab(id: string, paneId: string, path: string): LayoutTab {
+  return { id, name: id, focusedPaneId: paneId, root: { kind: 'pane', id: paneId, sessionId: null, view: { kind: 'file', path } } };
+}
+
+test('filePaneFolders: the parent of every file view across every tab, deduplicated, a session pane and another view kind left out (M9 fix 337)', () => {
+  const layout: Layout = {
+    revision: 1,
+    currentTabId: 't1',
+    tabs: [
+      {
+        id: 't1',
+        name: 't1',
+        focusedPaneId: 'p1',
+        root: {
+          kind: 'split',
+          id: 's1',
+          direction: 'row',
+          ratio: 0.5,
+          // A file pane with no tab of its own (M9 fix 180): the plain
+          // shell beside it carries no folder for the watch.
+          first: { kind: 'pane', id: 'p1', sessionId: null, view: { kind: 'file', path: 'C:/repo/src/a.ts' } },
+          second: { kind: 'pane', id: 'p2', sessionId: 'sess1', view: null },
+        },
+      },
+      // A second file under the same folder as the first: one entry, not two.
+      fileTab('t2', 'p3', 'C:/repo/src/b.ts'),
+      // A different folder, and a non-file view, which contributes nothing.
+      fileTab('t3', 'p4', 'C:/other/c.ts'),
+      { id: 't4', name: 't4', focusedPaneId: 'p5', root: { kind: 'pane', id: 'p5', sessionId: null, view: { kind: 'commits', folder: 'C:/repo' } } },
+    ],
+  };
+  assert.deepEqual(filePaneFolders(layout), ['C:\\repo\\src', 'C:\\other']);
+});
+
+test('watchOrder puts the root, then the tab folders, then the open folders newest first', () => {
+  const expanded = new Set(['R\\a', 'R\\b', 'R\\c']);
+  const order = watchOrder(['R', 'R\\a', 'R\\c', 'R\\b'], expanded, ['T1', 'R\\a']);
+  assert.deepEqual(order, ['R', 'T1', 'R\\a', 'R\\c', 'R\\b']);
+  // The main process keeps the front, so a cap keeps the root.
+  assert.deepEqual(order.slice(0, 3), ['R', 'T1', 'R\\a']);
+});
+
+test('liftKeep answers the chain entry whose parent is the folder listed', () => {
+  const chain = ['P\\M\\F', 'P\\M'];
+  assert.equal(liftKeep(chain, 'P\\M'), 'P\\M\\F');
+  assert.equal(liftKeep(chain, 'P'), 'P\\M');
+  assert.equal(liftKeep(chain, 'Q'), undefined);
+});
+
+// M9 fix 574: the rail's rename.
+test('renamedPath moves the path itself and anything under it, case-insensitively, and nothing else', () => {
+  assert.equal(renamedPath('C:\\r\\A', 'C:\\r\\a', 'C:\\r\\b'), 'C:\\r\\b');
+  assert.equal(renamedPath('C:\\r\\a\\x\\Y.txt', 'C:\\r\\a', 'C:\\r\\b'), 'C:\\r\\b\\x\\Y.txt');
+  assert.equal(renamedPath('C:\\r\\ab', 'C:\\r\\a', 'C:\\r\\b'), null);
+});
+
+test('renameInModel moves the expanded folders, the listings and the selection under a renamed folder and renames the entry in its parent\'s listing', () => {
+  let m = setRoot(emptyModel(), 'C:\\r');
+  m = applyListing(m, 'C:\\r', { entries: [{ name: 'a', kind: 'dir' }, { name: 'z.txt', kind: 'file' }], truncated: 0 });
+  m = applyListing(m, 'C:\\r\\a', { entries: [{ name: 'x', kind: 'dir' }], truncated: 0 });
+  m = applyListing(m, 'C:\\r\\a\\x', { entries: [{ name: 'f.txt', kind: 'file' }], truncated: 0 });
+  m = expandFolder(expandFolder(m, 'C:\\r\\a'), 'C:\\r\\a\\x');
+  m = select(m, 'C:\\r\\a\\x\\f.txt');
+  const next = renameInModel(m, 'C:\\r\\a', 'C:\\r\\b');
+  assert.deepEqual([...next.expanded].sort(), ['C:\\r\\b', 'C:\\r\\b\\x']);
+  assert.equal(next.selected, 'C:\\r\\b\\x\\f.txt');
+  const rows = walk(next).rows.filter((r) => r.type === 'entry');
+  assert.deepEqual(
+    rows.map((r) => (r.type === 'entry' ? [r.path, r.expanded] : null)),
+    [
+      ['C:\\r\\b', true],
+      ['C:\\r\\b\\x', true],
+      ['C:\\r\\b\\x\\f.txt', false],
+      ['C:\\r\\z.txt', false],
+    ],
+  );
+  const own = next.listings.get('C:\\r');
+  assert.ok(own !== undefined && !('error' in own));
+  assert.deepEqual(own.entries[0], { name: 'b', kind: 'dir' });
+});
+
+test('stemEnd stops before a file\'s last dot and takes a folder\'s whole name', () => {
+  assert.equal(stemEnd('notes.txt', 'file'), 5);
+  assert.equal(stemEnd('a.tar.gz', 'file'), 5);
+  assert.equal(stemEnd('.gitignore', 'file'), 10);
+  assert.equal(stemEnd('Makefile', 'file'), 8);
+  assert.equal(stemEnd('v1.2', 'dir'), 4);
+});
+
+test('sessionInFolder counts a live session\'s cwd or spawn folder at or under the folder, not an exited one', () => {
+  const shell = aSession({ id: 'a', state: 'working', cwd: 'C:\\r\\a\\x', spawnCwd: 'C:\\elsewhere' });
+  const claude = aSession({ id: 'b', kind: 'claude', state: 'working', spawnCwd: 'C:\\R\\A', cwd: 'C:\\elsewhere' });
+  const exited = aSession({ id: 'c', state: 'exited', cwd: 'C:\\r\\a', spawnCwd: 'C:\\r\\a' });
+  const beside = aSession({ id: 'd', state: 'working', cwd: 'C:\\r\\ab', spawnCwd: 'C:\\r\\ab' });
+  assert.equal(sessionInFolder('C:\\r\\a', [shell]), true);
+  assert.equal(sessionInFolder('C:\\r\\a', [claude]), true);
+  assert.equal(sessionInFolder('C:\\r\\a', [exited, beside]), false);
+});
+
+test('refusalWords names each refusal, the generic one by what was asked', () => {
+  assert.equal(refusalWords('exists', true), 'A file or folder of that name is already there');
+  assert.equal(refusalWords('name', false), 'A name, not a path: no slashes');
+  assert.equal(refusalWords('in-use', true), 'In use by a session');
+  assert.equal(refusalWords('refused', true), 'Could not be renamed here');
+  assert.equal(refusalWords('refused', false), 'Could not be made here');
+});
+
+test('rootIsEmpty is true only for a landed, error-free listing of the root with no entries', () => {
+  assert.equal(rootIsEmpty(emptyModel()), false);
+  const m = setRoot(emptyModel(), 'C:/empty');
+  assert.equal(rootIsEmpty(m), false);
+  assert.equal(rootIsEmpty(applyListing(m, 'C:/empty', { error: 'denied' })), false);
+  assert.equal(rootIsEmpty(applyListing(m, 'C:/empty', list(['a.txt']))), false);
+  assert.equal(rootIsEmpty(applyListing(m, 'C:/empty', list([]))), true);
+});
+
+test("canEditFrom is true for a tree row, a names hit and a Changed row and false for a contents hit, a deleted file's Changed row and the root", () => {
+  assert.equal(canEditFrom('row'), true);
+  assert.equal(canEditFrom('hit'), true);
+  assert.equal(canEditFrom('changed'), true);
+  assert.equal(canEditFrom('line'), false);
+  assert.equal(canEditFrom('gone'), false);
+  assert.equal(canEditFrom('root'), false);
+});

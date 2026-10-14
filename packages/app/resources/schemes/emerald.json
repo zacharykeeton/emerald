@@ -1,0 +1,23 @@
+{
+  "name": "emerald",
+  "background": "#1E1E1E",
+  "foreground": "#D4D4D4",
+  "cursorColor": "#E8A33D",
+  "selectionBackground": "#4A90D9",
+  "black": "#1E1E1E",
+  "red": "#E06C75",
+  "green": "#6AC47E",
+  "yellow": "#E8A33D",
+  "blue": "#4A90D9",
+  "purple": "#C586C0",
+  "cyan": "#4EC9B0",
+  "white": "#D4D4D4",
+  "brightBlack": "#6F6F6F",
+  "brightRed": "#E06C75",
+  "brightGreen": "#6AC47E",
+  "brightYellow": "#C4A36F",
+  "brightBlue": "#6F8FA8",
+  "brightPurple": "#C586C0",
+  "brightCyan": "#4EC9B0",
+  "brightWhite": "#FFFFFF"
+}

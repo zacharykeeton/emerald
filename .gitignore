@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+packages/app/stage/
+packages/app/release/
+packages/app/release-x64/

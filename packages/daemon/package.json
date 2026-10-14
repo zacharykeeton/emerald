@@ -1,0 +1,23 @@
+{
+  "name": "@emerald/daemon",
+  "version": "0.1.645",
+  "private": true,
+  "description": "emmerd: owns PTYs, scrollback, sessions and layout; serves clients over a named pipe",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "emmerd": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test --test-force-exit \"src/**/*.test.ts\"",
+    "start": "node dist/main.js",
+    "smoke": "node scripts/smoke.ts",
+    "hooks": "node ../cli/dist/main.js hooks"
+  },
+  "dependencies": {
+    "@xterm/headless": "6.0.0",
+    "@emerald/shared": "^0.1.0",
+    "node-pty": "^1.1.0"
+  }
+}

@@ -1,0 +1,45 @@
+# What scripts/export-public.mjs leaves out of the fresh repository
+# (M9 fix 611). Gitignore syntax, one path per line, each anchored at the
+# root with a leading / so a line never takes a file of the same name
+# deeper down (an unanchored .claude/ would take the demo's own settings
+# under demo/repo/.claude). Everything git tracks and no line names goes
+# in; `node scripts/export-public.mjs --list` prints that set, with
+# scripts/public/CLAUDE.md under its export name.
+#
+# docs/WHATS-NEW.md and docs/HANDBOOK.md stay: stage.mjs ships the first
+# as the What's New tab's text, and the README points at the second.
+# demo/ stays: `npm run demo` and the handbook's demo section use it.
+
+# The record of this box: designs, the hardening pass, the plans, results,
+# backlog, gotchas, retros and the routine that ran them.
+/docs/design/
+/docs/hardening/
+/docs/BACKLOG.md
+/docs/BACKLOG-INBOX.md
+/docs/BENCH-LATENCY.md
+/docs/DONE.md
+/docs/GOTCHAS.md
+/docs/PLAN.md
+/docs/RETRO-LEDGER.md
+/docs/WORKFLOW.md
+/docs/backlog-and-batch.workflow.json
+
+# The project's first brief, under its working codename Deck.
+/DECK_PROJECT_BRIEF.md
+
+# Notes for Claude sessions on this box, its paths and its habits.
+/CLAUDE.md
+
+# The contributor's notes, which the export writes as its own CLAUDE.md
+# (M9 fix 661); this box's /CLAUDE.md above stays out.
+/scripts/public/
+
+# The batch routine's skill, runners and agent definition.
+/.claude/
+
+# The M0 spike: claude.exe and a shell under node-pty, before the daemon.
+/spike/
+
+# One-time tools of the rename from zorca (fix 542).
+/scripts/migrate-from-zorca.ps1
+/scripts/rename.mjs

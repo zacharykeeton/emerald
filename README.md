@@ -1,41 +1,77 @@
 # Emerald
 
-Emerald is a Windows desktop app for running and supervising several Claude Code sessions at once: each session gets a pane, the sidebar shows which ones are working, waiting on you or done, and the `emmer` command drives them from any terminal. This repository holds the installers, this README and the issues; the code is private.
+Emerald is a desktop app for running and supervising several Claude Code sessions at once on Windows.
+Each session gets a pane in a split layout and a row in the sidebar that says whether it is working, waiting or needs you, beside the commit graph of the repository it works in.
+A daemon owns the terminals, so closing the window leaves every session running and the next window picks them up.
 
-![Emerald with sessions in the sidebar, two panes and the Files rail](screenshots/window.png)
+This repository holds Emerald's code under the MIT licence, its installers on the releases page and its issues.
+
+![Emerald with sessions in the sidebar, two panes and the Files rail](docs/screenshots/window.png)
 
 ## Requirements
 
 - Windows 10 or 11, on arm64 or x64.
-- Git on the PATH.
-- Claude Code on the PATH, so that `claude` runs in a terminal.
-
-You do not need Node; the app carries its own.
+- Git and Claude Code on the PATH.
+- Node 24 or newer, only to build from source. The installed app brings its own.
 
 ## Install
 
-Download the installer from the [latest release](https://github.com/zacharykeeton/emerald/releases/latest): `Emerald-setup-<version>-x64.exe` for most PCs, or `Emerald-setup-<version>-arm64.exe` for an Arm one (Settings, System, About, where "System type" says which). Run it.
+Download the installer from the latest release at https://github.com/zacharykeeton/emerald/releases/latest: `Emerald-setup-<version>-x64.exe` for most PCs, `Emerald-setup-<version>-arm64.exe` for an ARM PC (Settings, System, About shows the system type).
 
-The installer is not code-signed, so the first time you run it Windows SmartScreen says "Windows protected your PC": click **More info**, then **Run anyway**. Your browser may also warn that the file is not commonly downloaded; keep it.
+The installer is not signed, so Windows SmartScreen stops it the first time with "Windows protected your PC". Click **More info**, then **Run anyway**. That happens once per download. Your browser may also warn that the file is not commonly downloaded; keep it.
 
-It installs for your user alone, with no admin rights, to `%LOCALAPPDATA%\Programs\emerald`. It puts `emmer` on your PATH for terminals opened afterwards, and adds Emerald to the Start menu and the desktop.
+The install is per user and needs no admin rights. It goes to `%LOCALAPPDATA%\Programs\emerald`, adds the `emmer` command to your PATH for any terminal opened afterwards, puts Emerald in the Start menu and on the desktop, and starts it.
 
-## The first launch
+## First launch
 
-A banner offers to install Emerald's hooks into Claude Code's `~/.claude/settings.json` (**Install** or **Not now**). The hooks are how the app sees what each Claude session is doing. The install also takes Claude Code's single `statusLine` slot with a small wrapper that reports the model and how full the context is to Emerald, then runs the status line you had before, so it still shows. `emmer hooks uninstall` puts both back.
+Emerald learns what each Claude Code session is doing from Claude Code's hooks, so the first window shows a banner: "Claude Code hooks are not installed, so emerald cannot see what its sessions are doing." **Install hooks** writes them into `~/.claude/settings.json` beside any hooks you already have; **Not now** hides the banner until the next start. The banner's **Test** button sends one event through the installed hook, to check it reaches the app.
+
+Installing the hooks also takes Claude Code's status line slot, since the status line is the only place Claude Code reports the model and how full the context window is. Your previous status line is kept and still runs after Emerald's, so it shows as before, and `emmer hooks uninstall` puts it back. The same step adds the `emmer-cli` skill to `~/.claude/skills`, so a Claude session knows how to drive the other sessions with `emmer`.
+
+Sessions started before the hooks were installed report nothing; start them again, or resume them, once the banner is gone.
 
 ## Updates
 
-The app checks this repository's latest release at launch and every four hours. When there is a newer one it downloads the installer on its own, and a badge at the right of the title row reads `Restart to update`. A click closes the window, installs the update and opens it again. If the download fails the badge reads `0.1.N available`; click it to try again.
+Emerald checks the releases every few hours. When a new one is out it downloads on its own, and once it is ready a badge at the right of the title row reads **Restart to update**. Click it to close the window, install the new version and start it again, about a minute in all; every pane comes back through Resume. Nothing installs until you click. If the download fails, the badge reads `Retry <version>`; click it to try again.
 
-## Uninstalling
+## Uninstall
 
-Settings, Apps, Installed apps, Emerald, Uninstall. That also takes Emerald's hooks out of Claude Code's settings and puts your previous status line back; an Emerald older than 0.1.620 does not, so run `emmer hooks uninstall` first there. `%USERPROFILE%\.emerald` is left in place; delete it for a clean slate.
+1. Remove Emerald in Settings, Apps, Installed apps. That removes the program, the PATH entry, the "Open with" entries for `.md` and `.json`, and Emerald's hooks in `~/.claude/settings.json`, putting your previous status line back and removing the `emmer-cli` skill. An Emerald older than 0.1.620 leaves the hooks behind: there, run `emmer hooks uninstall` in a terminal first.
+2. What stays, for you to delete if you want it gone: `~/.emerald` (your layouts, the session list and the logs), `%APPDATA%\emerald` (the window's own settings) and `%LOCALAPPDATA%\emerald-updater` (downloaded installers).
+
+## Build from source
+
+With Git and Node 24 or newer:
+
+```
+git clone https://github.com/zacharykeeton/emerald.git
+cd emerald
+npm ci
+npm run build
+npm run build -w @emerald/app
+npm run dist -w @emerald/app -- --x64
+```
+
+On an x64 PC that writes `packages/app/release-x64/Emerald-setup-<version>-x64.exe`. On an ARM PC leave out `-- --x64`; the installer lands in `packages/app/release/` as `Emerald-setup-<version>-arm64.exe`. Run the installer as above. One you built yourself carries no mark of the web, so SmartScreen does not stop it.
+
+The first `dist` downloads Electron and the NSIS tools; later builds take a few minutes. A build of your own never shows the update badge; to update, `git pull`, run the four build commands again and install the new installer over the old one. Your sessions and layouts stay.
 
 ## Reporting a bug
 
-Open an issue with the **Bug report** template, and attach `main.log` (the window) and `emmerd.log` (the background service) from `%USERPROFILE%\.emerald\logs`. `hooks.jsonl` in the same folder records what your sessions did, prompt text and file paths included, so attach it only if you are happy to share that.
+Open an issue at https://github.com/zacharykeeton/emerald/issues; the template asks for what follows. Say what you did, what you expected and what happened, and include:
+
+- the version, from `emmer --version` or the app menu;
+- whether the PC is arm64 or x64;
+- the logs from `~/.emerald/logs`: `emmerd.log` (the daemon), `main.log` (the window) and `hooks.jsonl` (what Claude Code reported). They name your folders and sessions, so read them before you attach them.
+
+## Contributing
+
+Issues are welcome. Pull requests are read but not merged, since the code here is copied from a private working tree at each release; [CONTRIBUTING.md](CONTRIBUTING.md) says how a change gets in, and [SECURITY.md](SECURITY.md) how to report a security hole privately.
 
 ## Licence
 
-See [LICENSE](LICENSE).
+MIT; the full text is in [LICENSE](LICENSE), and the licences of the packages Emerald ships with are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The licence covers the code; it grants no right in the name Emerald or its icon.
+
+## More
+
+Everything else (every view, the `emmer` command line, the keys, how the app is built and tested) is in the handbook, [docs/HANDBOOK.md](docs/HANDBOOK.md).

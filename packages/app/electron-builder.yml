@@ -1,0 +1,90 @@
+# electron-builder for the Emerald app. Two targets for win32: the NSIS
+# per-user installer, and the unpacked directory the verify scripts drive.
+# The arch comes from scripts/pack.mjs (arm64, or x64 with --x64).
+# Build: npm run dist -w @emerald/app (installer) or npm run pack:dir (directory).
+appId: dev.emerald.app
+productName: Emerald
+# A one-click per-user install goes to %LOCALAPPDATA%\Programs\<package name>,
+# and the workspace package is @emerald/app, which would become "@emeraldapp".
+# Overriding the name for the build makes it Programs\emerald.
+extraMetadata:
+  name: emerald
+copyright: Zachary Keeton
+directories:
+  output: release
+  buildResources: build
+
+# The main, preload and renderer bundles are self-contained (electron-vite
+# bundles @emerald/shared and the xterm and React dependencies), so the asar
+# needs only out/ and package.json. Source maps stay out of the install.
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/node_modules/**"
+
+# scripts/stage.mjs assembles the daemon, the CLI, their node_modules and the
+# CLI shim; they land under resources/ next to app.asar, outside the archive,
+# because the daemon runs as a separate process and node-pty must load its
+# .node files from a real directory.
+# The node_modules directory gets its own entry because electron-builder's
+# copier skips any node_modules it meets inside a file set.
+extraResources:
+  - from: stage
+    to: .
+    filter:
+      - "**/*"
+      - "!node_modules/**"
+  - from: stage/node_modules
+    to: node_modules
+  # M9 fix 381: the icon the Open with entries name (build/installer.nsh
+  # writes the ProgIds by hand; electron-builder's fileAssociations block,
+  # which used to copy the icon here itself, is gone, since its macro also
+  # wrote the extension's classic default).
+  - from: build/icon.ico
+    to: icon.ico
+
+# The update feed (M9 fix 239, fix 608): the updater's github provider
+# reads the public releases repository's latest release, and with this
+# block `dist` writes app-update.yml for it into the resources and still
+# writes latest.yml into release/, which `emmer feed publish` copies for
+# the local feed. The app takes the local feed instead when
+# %LOCALAPPDATA%\emerald-feed exists, and EMERALD_UPDATE_URL overrides both
+# at run time. pack.mjs passes --publish never, so a dist never uploads
+# anything.
+publish:
+  provider: github
+  owner: zacharykeeton
+  repo: emerald
+
+asar: true
+# node-pty is N-API and ships a prebuild, and it lives in the staged tree
+# rather than the asar, so there is nothing to rebuild.
+npmRebuild: false
+nodeGypRebuild: false
+
+win:
+  target:
+    - target: nsis
+  artifactName: ${productName}-setup-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  # build/installer.nsh puts resources\bin on the user PATH and takes it off
+  # again on uninstall, and writes the .md and .json Open with entries (M9
+  # fixes 342 and 381). The app is not launched at the end of the install so
+  # a silent install (verify:install) leaves nothing running.
+  include: build/installer.nsh
+  # M9 fix 410: this holds for a plain silent install (verify:install's
+  # install half, which is why that half leaves nothing running) and not
+  # for the updater. The badge's second click reaches
+  # quitAndInstall(true, true) in updater.ts, and electron-updater then
+  # puts --force-run on the installer's own line (--updated,/S,--force-run
+  # in the main log), which starts the app at the end whatever this says.
+  # That is why the installer is still alive holding its exe when the new
+  # window's first pending sweep runs (M9 fixes 384 and 409, the head
+  # comment of updater-cache.ts).
+  runAfterFinish: false
+  artifactName: ${productName}-setup-${version}-${arch}.${ext}

@@ -1,0 +1,57 @@
+{
+  "name": "@emerald/shared",
+  "version": "0.1.645",
+  "private": true,
+  "description": "Protocol, session, layout types and limits shared by the emmer daemon, app and CLI",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./feed-server": {
+      "types": "./dist/feed-server.d.ts",
+      "default": "./dist/feed-server.js"
+    },
+    "./release": {
+      "types": "./dist/release.d.ts",
+      "default": "./dist/release.js"
+    },
+    "./hook-log": {
+      "types": "./dist/hook-log.d.ts",
+      "default": "./dist/hook-log.js"
+    },
+    "./pipe-name": {
+      "types": "./dist/pipe-name.d.ts",
+      "default": "./dist/pipe-name.js"
+    },
+    "./process-identity": {
+      "types": "./dist/process-identity.d.ts",
+      "default": "./dist/process-identity.js"
+    },
+    "./claude-home": {
+      "types": "./dist/claude-home.d.ts",
+      "default": "./dist/claude-home.js"
+    },
+    "./test-temp": {
+      "types": "./dist/test-temp.d.ts",
+      "default": "./dist/test-temp.js"
+    },
+    "./jsonlines": {
+      "types": "./dist/jsonlines.d.ts",
+      "default": "./dist/jsonlines.js"
+    },
+    "./pipe-client": {
+      "types": "./dist/pipe-client.d.ts",
+      "default": "./dist/pipe-client.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test \"src/**/*.test.ts\""
+  }
+}

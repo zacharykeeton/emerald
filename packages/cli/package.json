@@ -1,0 +1,21 @@
+{
+  "name": "@emerald/cli",
+  "version": "0.1.645",
+  "private": true,
+  "description": "emmer: command line client for emmerd, the daemon behind the Emerald app",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "emmer": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "start": "node dist/main.js",
+    "verify:cli": "node scripts/verify-cli.mjs",
+    "verify:cli-claude": "node scripts/verify-cli-claude.mjs"
+  },
+  "dependencies": {
+    "@emerald/shared": "^0.1.0"
+  }
+}
