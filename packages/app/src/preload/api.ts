@@ -98,6 +98,14 @@ export interface FileEntry {
   kind: 'dir' | 'file';
 }
 
+// One skill the chat box's `/` menu offers (M9 fix 719): the session
+// folder's `.claude/skills` or the user's own, by its frontmatter.
+export interface SkillEntry {
+  name: string;
+  description: string;
+  scope: 'project' | 'user';
+}
+
 // A folder read for the files rail: folders first, then names in case
 // insensitive order, capped with `truncated` saying how many were cut; or
 // the reason it could not be read, which the rail shows in place of the
@@ -616,6 +624,11 @@ export interface ClipboardApi {
   // A data: URL onto the clipboard as an image; the verify scripts' way
   // to put one there.
   writeImage(dataUrl: string): Promise<void>;
+  // The clipboard's image for the chat box (M9 fix 721): a 48 px high
+  // thumbnail, and the path of the PNG written for Claude Code to read,
+  // null when the key route is asked for and the clipboard is the real
+  // one; null in all when there is no image.
+  image(keyRoute: boolean): Promise<{ thumb: string; path: string | null } | null>;
 }
 
 // Design Mode's grab on a browser pane's page (M9 fix 674): the pick and
@@ -719,7 +732,10 @@ export interface EmeraldApi {
   pickFolder(defaultPath: string | null): Promise<string | null>;
   // Native file chooser (M9 fix 341), the same way; EMERALD_PICK_FILE
   // answers it for a harness.
-  pickFile(defaultPath: string | null): Promise<string | null>;
+  pickFile(defaultPath: string | null, images?: boolean): Promise<string | null>;
+  // The skills Claude Code would take in a session started in `folder`
+  // (M9 fix 719): the folder's own first, then the user's.
+  skills(folder: string | null): Promise<SkillEntry[]>;
   // Both run the shipped CLI; either rejects when it cannot be run.
   hooksStatus(): Promise<HooksStatus>;
   hooksInstall(): Promise<HooksInstallResult>;

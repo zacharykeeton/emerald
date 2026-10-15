@@ -106,3 +106,16 @@ export function PaneIcon({ size = 12, className = 'open-icon' }: IconProps) {
     </svg>
   );
 }
+
+// A terminal, a rounded box with a prompt and a cursor (M9 fix 719): the
+// chat box's `/` menu marks the commands only the terminal can draw with
+// it. The same two paths as the face button's terminal (Pane.tsx's
+// FaceIcon), which moves onto this one the next time it is touched.
+export function TerminalIcon({ size = 12, className = 'chat-menu-terminal' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4.5 6l2 2-2 2M8 10.5h3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

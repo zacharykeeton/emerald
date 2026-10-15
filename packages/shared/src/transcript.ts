@@ -148,6 +148,11 @@ export interface StepTurn {
   at: number | null;
   endAt: number | null;
   steps: Step[];
+  // M9 fix 718: the images pasted with the prompt, off the prompt line
+  // itself or, for a slash command, off the meta line Claude Code writes
+  // after it (the same promptId, or a parentUuid naming the prompt line).
+  // The memory note at StepResult.image holds for these too.
+  images: { mediaType: string; data: string }[];
 }
 
 export type Step =
@@ -165,7 +170,16 @@ export interface StepResult {
   // An edit's lines added and removed.
   added: number | null;
   removed: number | null;
-  image: { mediaType: string; bytes: number } | null;
+  // M9 fix 717: an image result with its base64 text, for the chat view's
+  // thumbnail (data empty when the block had none, and then no thumbnail
+  // is drawn). The memory it costs: the whole transcript is read and
+  // parsed on every change, and the parse already made each image's
+  // string once per pass; keeping it holds one copy per image beside the
+  // file text until the next parse replaces it (five pastes of a real
+  // session came to about 243 KB together), and a drawn thumbnail's
+  // decoded bitmap is the image's full width by height by 4 bytes,
+  // whatever its box (about 8 MB for a 1920 by 1080 screenshot).
+  image: { mediaType: string; bytes: number; data: string } | null;
 }
 
 type ToolStep = Extract<Step, { kind: 'tool' }>;
@@ -275,7 +289,7 @@ function stepResult(tool: ToolStep, part: Record<string, unknown>, extra: unknow
       const mediaType = typeof source['media_type'] === 'string' ? source['media_type'] : '';
       const data = typeof source['data'] === 'string' ? source['data'] : '';
       const bytes = file !== null && typeof file['originalSize'] === 'number' ? file['originalSize'] : Math.floor((data.length * 3) / 4);
-      image = { mediaType, bytes };
+      image = { mediaType, bytes, data };
     }
   }
   let counts: { added: number; removed: number } | null = null;
@@ -293,6 +307,10 @@ export function parseSteps(text: string): StepTurn[] {
   const turns: StepTurn[] = [];
   let turn: StepTurn | null = null;
   let tools = new Map<string, ToolStep>();
+  // The open turn's prompt line, for the meta line that carries a slash
+  // command's pasted images (M9 fix 718).
+  let promptId: string | null = null;
+  let promptUuid: string | null = null;
   for (const raw of text.split('\n')) {
     const o = parseObject(raw);
     if (o === null || o['isSidechain'] === true) continue;
@@ -305,12 +323,19 @@ export function parseSteps(text: string): StepTurn[] {
     }
     const prompt = promptOf(o);
     if (prompt !== null) {
-      turn = { prompt, at, endAt: null, steps: [] };
+      turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
       tools = new Map();
+      promptId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+      promptUuid = typeof o['uuid'] === 'string' ? o['uuid'] : null;
       turns.push(turn);
       continue;
     }
     if (turn === null) continue;
+    if (o['type'] === 'user' && o['isMeta'] === true) {
+      const sameId = promptId !== null && o['promptId'] === promptId;
+      const noIds = promptId === null || typeof o['promptId'] !== 'string';
+      if (sameId || (noIds && promptUuid !== null && o['parentUuid'] === promptUuid)) turn.images.push(...imagesOf(o));
+    }
     if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
     const message = o['message'];
     if (!isObject(message) || !Array.isArray(message['content'])) continue;
@@ -361,6 +386,22 @@ export function resultText(step: Extract<Step, { kind: 'tool' }>): string {
   if (EDIT_TOOLS.has(step.name) && r.added !== null && r.removed !== null) return `+${r.added} −${r.removed}`;
   if (AGENT_TOOLS.has(step.name)) return length === null ? 'returned' : `returned after ${length}`;
   return length ?? '';
+}
+
+// The effort the session's model answers at (M9 fix 713), off the last
+// main-chain assistant line: Claude Code 2.1.300 writes a top-level
+// `effort` on every assistant line (claim 3 of the chat claims), and the
+// status line payload carries none. The last line alone decides, so a
+// line written without it reads as unknown rather than as an older pick.
+export function effortOf(text: string): string | null {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const o = parseObject(lines[i]!);
+    if (o === null || o['isSidechain'] === true || o['type'] !== 'assistant') continue;
+    const effort = o['effort'];
+    return typeof effort === 'string' && effort !== '' ? effort : null;
+  }
+  return null;
 }
 
 // One API request of a conversation as its transcript records it (M9 fix
@@ -447,6 +488,21 @@ export function usageFold(state: UsageState, text: string, agent: string | null)
 
 export function usageList(state: UsageState): UsageMessage[] {
   return [...state.byId.values(), ...state.loose].sort((a, b) => a.at - b.at);
+}
+
+// The image parts of a user line's content, each with its base64 text;
+// one with no string data is skipped (M9 fix 718).
+function imagesOf(o: Record<string, unknown>): { mediaType: string; data: string }[] {
+  const message = o['message'];
+  if (!isObject(message) || !Array.isArray(message['content'])) return [];
+  const out: { mediaType: string; data: string }[] = [];
+  for (const part of message['content']) {
+    if (!isObject(part) || part['type'] !== 'image' || !isObject(part['source'])) continue;
+    const source = part['source'];
+    if (typeof source['data'] !== 'string') continue;
+    out.push({ mediaType: typeof source['media_type'] === 'string' ? source['media_type'] : '', data: source['data'] });
+  }
+  return out;
 }
 
 // The text of a user line that is a prompt someone typed, else null: not

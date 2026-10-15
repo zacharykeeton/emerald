@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { claudeConfigDir } from '@emerald/shared/claude-home';
@@ -31,6 +32,20 @@ export function hookOptions(settings: string | undefined): HooksInstallOptions {
   };
 }
 
+// The emerald mod (M9 fix 726), shipped beside the CLI at cli/mod in the
+// repo and the stage alike. Whether it is there is all a status can say;
+// whether it loaded only a session knows, and the daemon's log says so.
+function modShipped(): { modDir: string; modPresent: boolean } {
+  const modDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'mod');
+  let modPresent = false;
+  try {
+    modPresent = fs.statSync(path.join(modDir, 'hooks', 'register.js')).isFile();
+  } catch {
+    // Not shipped.
+  }
+  return { modDir, modPresent };
+}
+
 const command: Command = {
   name: 'hooks',
   summary: "install or remove emerald's Claude Code hooks",
@@ -61,9 +76,13 @@ const command: Command = {
         return EXIT.ok;
       }
       case 'uninstall': {
-        const { changed } = uninstallHooks(opts);
-        if (json) printJson({ changed, settings: opts.settingsPath });
-        else println(`${changed ? 'removed' : 'nothing to remove'}: emmer hooks in ${opts.settingsPath}, the scripts and the skill`);
+        const { changed, removed } = uninstallHooks(opts);
+        if (json) printJson({ changed, settings: opts.settingsPath, removed });
+        else {
+          println(`${changed ? 'removed' : 'nothing to remove'}: emmer hooks in ${opts.settingsPath}, the scripts and the skill`);
+          if (removed.length === 1) println('removed: 1 entry that pointed at a missing file');
+          else if (removed.length > 1) println(`removed: ${removed.length} entries that pointed at missing files`);
+        }
         return EXIT.ok;
       }
       case 'status': {
@@ -73,7 +92,10 @@ const command: Command = {
         const complete = s.missing.length === 0 && s.scriptPresent && !s.scriptStale && s.statusLine && s.skill && !s.dead.some((d) => d.ours);
         const test = parsed.values.test ? await runHookTest(opts.scriptDest) : null;
         const written = writtenPath(opts);
-        if (json) printJson({ ...s, complete, settings: opts.settingsPath, script: opts.scriptDest, written, ...(test !== null ? { test } : {}) });
+        // The mod never counts toward complete: the hook file is its
+        // fallback, and the banner must not rise for it.
+        const { modDir, modPresent } = modShipped();
+        if (json) printJson({ ...s, complete, settings: opts.settingsPath, script: opts.scriptDest, written, modDir, modPresent, ...(test !== null ? { test } : {}) });
         else {
           println(`settings: ${opts.settingsPath}`);
           println(`installed: ${s.installed.length}/${HOOK_EVENTS.length}${s.missing.length > 0 ? ` (missing ${s.missing.join(', ')})` : ''}`);
@@ -81,6 +103,7 @@ const command: Command = {
           const version = s.statusLineVersion === null ? 'no version, from before the bash pass-through' : `version ${s.statusLineVersion}`;
           println(`status line: ${s.statusLine ? 'set to' : 'not set to'} ${statusLinePaths(opts).cmdDest} (${version}, shipped ${s.shippedStatusLineVersion})`);
           println(`skill: ${s.skill ? 'present' : 'missing or differs from the shipped copy'} at ${skillPaths(opts).dest}`);
+          println(modPresent ? `mod: shipped at ${modDir}, loaded by Emerald's own Claude sessions` : `mod: missing at ${modDir}; Emerald's Claude sessions post through the hook file alone`);
           for (const d of s.dead) println(deadLine(d));
           if (s.fighting) println(`another writer: ${recentInstalls(opts)} installs in the last minute, and the file has changed since the last one`);
           if (test !== null) println(testLine(test, opts.scriptDest));

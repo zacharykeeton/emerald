@@ -70,7 +70,7 @@ export function Sidebar() {
   const runningShells = useRunningShells(sessions);
   // The forks' spend behind the rows' dollars (M9 fix 277), on its beat.
   useAgentsRunningBeat(sessions.values());
-  const { sidebarCollapsed, sidebarWidth, sidebarOrder, sidebarFilter, showOffscreen, tabs } = useUi();
+  const { sidebarCollapsed, sidebarWidth, sidebarOrder, sidebarFilter, showOffscreen, tabs, zoomedPaneId } = useUi();
   const now = useNow();
   // The scale every row's load sparkline shares (M9 fix 302): off each
   // listed session's five-minute peak, once a second at most with the
@@ -142,7 +142,7 @@ export function Sidebar() {
   const counts = filterCounts(sessions.values(), onPanes);
   // With a file or view tab in front (M9 fix 269) no pane is on screen,
   // so every row on the current tab reads on that tab, as one a tab away.
-  const shown = shownSessions(layout, tabs.active === PANES);
+  const shown = shownSessions(layout, tabs.active === PANES, zoomedPaneId);
   const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
   const showHere = (id: string) => void showSession(id).then(() => ackIfDone(id)).catch(warn('show'));
   const showBeside = (id: string) => void showSessionBeside(id).then(() => ackIfDone(id)).catch(warn('show beside'));
@@ -868,7 +868,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   // Where the session is (M9 fix 249): focused, on screen, on another
   // tab, or on no pane; data-shown keeps its two values (the ground and
   // the edge mean shown and focused, and the scripts read it as on
-  // screen or not), data-place carries all four for the word's dimming.
+  // screen or not), data-place carries all five for the word's dimming.
   const where = shown.get(session.id);
   const onScreen = where?.place === 'focused' || where?.place === 'shown' ? where.place : undefined;
   const place = shownData(where, session.state === 'exited');

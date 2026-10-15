@@ -3,9 +3,23 @@
 // commands/; this file only routes, prints usage, and turns errors into
 // exit codes (see cli-error.ts for the table).
 import fs from 'node:fs';
+import module from 'node:module';
 import { CliError, EXIT } from './cli-error.ts';
 import { println, watchOutput, wroteAnything } from './command.ts';
 import { commands, findCommand } from './commands/index.ts';
+
+// Node's compile cache (M9 fix 736), in NODE_COMPILE_CACHE or os.tmpdir()'s
+// node-compile-cache. ES imports are hoisted, so it covers what loads after
+// this line, the command module and its graph (the bulk), not this file's
+// own few static imports. A cache that cannot be written costs nothing but
+// the speed.
+if (typeof module.enableCompileCache === 'function') {
+  try {
+    module.enableCompileCache();
+  } catch {
+    // Run uncached.
+  }
+}
 
 // Last resorts (M9 fix 379): an error thrown out of a socket callback or a
 // promise nobody awaits is printed as one line and exits 1 rather than as
@@ -46,14 +60,15 @@ async function main(argv: string[]): Promise<number> {
   }
   if (name === undefined || name === 'help' || name === '--help' || name === '-h') {
     const topic = rest[0] !== undefined ? findCommand(rest[0]) : undefined;
-    println(topic !== undefined ? topic.usage : usage());
+    println(topic !== undefined ? (await topic.load()).usage : usage());
     return name === undefined ? EXIT.usage : EXIT.ok;
   }
-  const command = findCommand(name);
-  if (command === undefined) {
+  const entry = findCommand(name);
+  if (entry === undefined) {
     process.stderr.write(`emmer: unknown command ${JSON.stringify(name)}\n${usage()}\n`);
     return EXIT.usage;
   }
+  const command = await entry.load();
   try {
     return (await command.run(rest)) ?? EXIT.ok;
   } catch (err) {

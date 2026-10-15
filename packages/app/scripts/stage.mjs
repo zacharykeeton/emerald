@@ -6,7 +6,7 @@
 //
 //   stage/
 //     daemon/package.json, dist/*.js
-//     cli/package.json, dist/**/*.js, hooks/claude-hook.cmd and the status line files, skills/emmer-cli/SKILL.md
+//     cli/package.json, dist/**/*.js, hooks/claude-hook.cmd and the status line files, mod/ (the emerald mod, M9 fix 725), skills/emmer-cli/SKILL.md
 //     node_modules/@emerald/shared/package.json, dist/*.js
 //     node_modules/node-pty/package.json, lib/*.js, prebuilds/win32-<arch>/
 //     node_modules/@xterm/headless/package.json, lib-headless/xterm-headless.js
@@ -82,6 +82,10 @@ export function stage({ arch = 'arm64' } = {}) {
   copyTree(path.join(cli, 'dist'), path.join(stageDir, 'cli', 'dist'), isRuntimeJs);
   for (const f of ['claude-hook.cmd', 'claude-statusline.cmd', 'claude-statusline.js']) {
     copyFile(path.join(cli, 'hooks', f), path.join(stageDir, 'cli', 'hooks', f));
+  }
+  // The emerald mod (M9 fix 725), by name, so its register.test.tsx stays out.
+  for (const f of ['.claude-plugin/plugin.json', 'hooks/hooks.json', 'hooks/register.js']) {
+    copyFile(path.join(cli, 'mod', f), path.join(stageDir, 'cli', 'mod', f));
   }
   copyFile(path.join(cli, 'skills', 'emmer-cli', 'SKILL.md'), path.join(stageDir, 'cli', 'skills', 'emmer-cli', 'SKILL.md'));
 

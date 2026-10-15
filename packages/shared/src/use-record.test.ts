@@ -47,6 +47,11 @@ test('useLineOf drops an extra text field and keeps the line', () => {
   assert.deepEqual(Object.keys(close!).sort(), ['ev', 'ms', 'view']);
 });
 
+test('M9 fix 727: a drop on the strip or the rail and a drop on a session pane are known actions', () => {
+  assert.notEqual(useLineOf({ ev: 'action', name: 'drop-file-tab', from: 'click' }), null);
+  assert.notEqual(useLineOf({ ev: 'action', name: 'drop-path', from: 'click' }), null);
+});
+
 test('USE_FEATURES names are unique', () => {
   assert.equal(USE_NAMES.size, USE_FEATURES.length);
 });

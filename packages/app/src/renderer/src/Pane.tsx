@@ -62,6 +62,7 @@ import type { FileStat } from '../../preload/api.ts';
 import { TokensArrow, TokensText } from './TokensText.tsx';
 import { RollingFigure } from './RollingFigure.tsx';
 import { HushButton } from './HushButton.tsx';
+import { PREVIEW_TITLE, PREVIEW_WORD } from './preview-mark.ts';
 import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
 import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPane, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
@@ -313,9 +314,9 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // data-squeeze, which the hook sets by measuring the state word at each
   // level. A second level drops the tokens (M9 fix 146), which hold
   // until then, and the checklist count with them (M9 fix 153). Then the
-  // buttons give, in the order of M9 fix 208: the two splits at the
-  // third level (a narrow pane is not one to split, and the chord and
-  // the menu still do) and the context percent at the fourth (fix 222).
+  // buttons give, in the order of M9 fix 208: the two splits and the chat
+  // button at the third level (a narrow pane is not one to split or flip,
+  // and the chords and the menu still do; M9 fix 724) and the context percent at the fourth (fix 222).
   // Then the line itself, in the order of M9 fix 237: the state word at
   // the fifth (the row and the shade face still say it, and the mark's
   // colour and motion carry it here), the name at the sixth with the
@@ -402,6 +403,12 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
               onDoubleClick={startRename}
             >
               {session?.name ?? sessionId}
+            </span>
+          )}
+          {/* The chat face is in progress (M9 fix 737); it gives at the third squeeze level with the splits. */}
+          {face === 'chat' && (
+            <span className="pane-preview" title={PREVIEW_TITLE}>
+              {PREVIEW_WORD}
             </span>
           )}
           {/* A plain shell shows no state (hasState); an unknown session says so. The mark before the name is the one motion (M46). */}
@@ -755,7 +762,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
   };
   return (
     <span className="pane-title-actions" onMouseDown={(ev) => ev.preventDefault()}>
-      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with hide and close at the seventh level; the chord stays. */}
+      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with the splits at the third level (M9 fix 724); the chord stays. */}
       {face !== undefined && session !== undefined && (
         <button
           className="pane-face-toggle"

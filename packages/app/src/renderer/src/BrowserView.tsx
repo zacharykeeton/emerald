@@ -17,9 +17,12 @@ interface Props {
 
 const BAD_ADDRESS = 'Only http and https pages open here; type an address such as google.com or localhost:3000, or words to search';
 // Design Mode's hint bar: the page's keys, and while a comment box in the
-// tray holds the keyboard, where they go instead (M9 fix 695).
+// tray holds the keyboard, where they go instead (M9 fix 695). A 337 px pane
+// leaves the text about 182 px beside Notes and Cancel (fix 730), so the tray
+// hint is short and its full sentence is the span's title.
 const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
-const TRAY_HINT = 'Typing a note; click the page to pick again, or C and S there';
+const TRAY_HINT = 'Note · Esc back to the page';
+const TRAY_TITLE = 'Typing a note. Click the page to pick again, or press C or S there; Esc or Ctrl+Enter hands the keys back to the page, and Ctrl+Shift+D ends the mode';
 
 // The browser pane's body (M9 fix 659): a toolbar over a <webview>. The
 // address bar takes an http or https URL, a host or host:port, or words
@@ -264,7 +267,9 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
       </div>
       {designOn && (
         <div className="design-hint" role="status">
-          <span className="design-hint-text">{trayOpen && trayFocus ? TRAY_HINT : PAGE_HINT}</span>
+          <span className="design-hint-text" title={trayOpen && trayFocus ? TRAY_TITLE : PAGE_HINT}>
+            {trayOpen && trayFocus ? TRAY_HINT : PAGE_HINT}
+          </span>
           {notesButton}
           <button className="files-button design-cancel" onClick={() => setDesignPane(null)}>
             Cancel
@@ -288,6 +293,9 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
             }}
           >
             <div className="design-tray-notes">
+              {notes.length === 0 && (
+                <div className="design-tray-empty muted">{designOn ? 'Click an element on the page to add a note' : 'Turn Design Mode on and click an element on the page to add a note'}</div>
+              )}
               {notes.map((note, i) => (
                 <div className="design-note" key={note.id} data-note-id={note.id}>
                   <div className="design-note-title" title={note.pick.selector}>
@@ -317,16 +325,18 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
                 </div>
               ))}
             </div>
-            <button
-              className="files-button design-send"
-              // With no Claude session in the tab the button copies the notes
-              // instead, sendDesign's fallback, and the notes stay (M9 fix 697).
-              disabled={notes.length === 0}
-              title={target === null ? 'No Claude session in this tab; copies the notes' : `Send to ${targetName}`}
-              onClick={sendNotes}
-            >
-              {`${target === null ? 'Copy' : 'Send'} ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`}
-            </button>
+            {notes.length > 0 && (
+              <button
+                className="files-button design-send"
+                // With no Claude session in the tab the button copies the notes
+                // instead, sendDesign's fallback, and the notes stay (M9 fix 697).
+                // With no notes it is not drawn (fix 730).
+                title={target === null ? 'No Claude session in this tab; copies the notes' : `Send to ${targetName}`}
+                onClick={sendNotes}
+              >
+                {`${target === null ? 'Copy' : 'Send'} ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`}
+              </button>
+            )}
           </aside>
         )}
       </div>

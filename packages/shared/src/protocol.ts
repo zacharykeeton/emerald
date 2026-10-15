@@ -93,6 +93,12 @@ export const PROTOCOL_VERSION = 1;
 //  64: M9 fix 703, sessions.load on the sessions topic, one push per load tick with each sampled session's newest sample and names, to app windows at level 64; an older window gets session.changed per session as before, a CLI none
 export const DAEMON_FEATURE_LEVEL = 64;
 
+// What the emerald mod (M9 fix 725, packages/cli/mod) sends as
+// X-Emerald-Hook in place of a hook file's path, so the sink knows its
+// posts from the hook file's copies; register.js carries the same literal
+// and the CLI's mod test holds the two together.
+export const MOD_HOOK_NAME = 'emerald-mod';
+
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
 export interface Requests {

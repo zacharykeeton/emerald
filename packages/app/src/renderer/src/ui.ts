@@ -24,7 +24,8 @@ import type { SidebarFilter } from './sidebar-filter-model.ts';
 import { isShowOffscreen } from './show-model.ts';
 import type { ShowOffscreen } from './show-model.ts';
 import { WHATS_NEW_SEEN_KEY, shouldOpenWhatsNew, whatsNewStamp } from './whats-new-model.ts';
-import { parseChatPanes, serializeChatPanes } from './chat-model.ts';
+import { parseChatModes, parseChatPanes, serializeChatPanes } from './chat-model.ts';
+import type { ChatMode } from './chat-model.ts';
 
 // Renderer-only state that the daemon has no business knowing: which pane has
 // the session picker or the new-session dialog open, and how the sidebar is
@@ -183,6 +184,9 @@ export interface UiState {
   // another session is on the terminal at once. Kept in localStorage as
   // the shade is; pruned as panes close.
   chatPanes: ReadonlyMap<string, string>;
+  // What each chat pane's timeline shows (M9 fix 714), absent for
+  // Normal; kept with the face in the same key and dropped with it.
+  chatModes: ReadonlyMap<string, ChatMode>;
   // Minutes a pane's session sits idle, done or exited with no key into
   // the pane before the shade comes down by itself (M63); 0 for never,
   // the default. Kept in localStorage.
@@ -215,6 +219,8 @@ export const RAIL_TABS: readonly RailTab[] = ['files', 'timeline', 'history'];
 export interface NewSessionPreset {
   folder: string;
   split: boolean;
+  // Set by the empty pane's More... alone (M9 fix 723): the dialog's Start then opens a Claude session on the face the `opens on` pair picks, read at the click.
+  opensOn?: true;
 }
 
 export interface CloseAsk {
@@ -344,6 +350,7 @@ let state: UiState = {
   shadedPanes: loadIds(SHADED_KEY),
   autoShaded: new Set(),
   chatPanes: loadChatPanes(),
+  chatModes: loadChatModes(),
   shadeAfter: loadShadeAfter(),
   copyOnSelect: loadCopyOnSelect(),
   splitKind: loadSplitKind(),
@@ -675,7 +682,20 @@ export function setChatFace(paneId: string, sessionId: string, chat: boolean): v
   const chatPanes = new Map(state.chatPanes);
   if (chat) chatPanes.set(paneId, sessionId);
   else chatPanes.delete(paneId);
-  setState({ ...state, chatPanes });
+  // A face turned on opens on Normal, and leaving it leaves the mode.
+  const chatModes = new Map(state.chatModes);
+  chatModes.delete(paneId);
+  setState({ ...state, chatPanes, chatModes });
+  saveChatPanes();
+}
+
+// M9 fix 714: a chat pane's view mode, kept as long as its face is.
+export function setChatMode(paneId: string, mode: ChatMode): void {
+  if (!state.chatPanes.has(paneId) || (state.chatModes.get(paneId) ?? 'normal') === mode) return;
+  const chatModes = new Map(state.chatModes);
+  if (mode === 'normal') chatModes.delete(paneId);
+  else chatModes.set(paneId, mode);
+  setState({ ...state, chatModes });
   saveChatPanes();
 }
 
@@ -683,7 +703,8 @@ export function setChatFace(paneId: string, sessionId: string, chat: boolean): v
 export function pruneChatPanes(livePaneIds: ReadonlySet<string>): void {
   if ([...state.chatPanes.keys()].every((id) => livePaneIds.has(id))) return;
   const chatPanes = new Map([...state.chatPanes].filter(([id]) => livePaneIds.has(id)));
-  setState({ ...state, chatPanes });
+  const chatModes = new Map([...state.chatModes].filter(([id]) => livePaneIds.has(id)));
+  setState({ ...state, chatPanes, chatModes });
   saveChatPanes();
 }
 
@@ -695,9 +716,17 @@ function loadChatPanes(): Map<string, string> {
   }
 }
 
+function loadChatModes(): Map<string, ChatMode> {
+  try {
+    return parseChatModes(localStorage.getItem(CHAT_KEY));
+  } catch {
+    return new Map();
+  }
+}
+
 function saveChatPanes(): void {
   try {
-    localStorage.setItem(CHAT_KEY, serializeChatPanes(state.chatPanes));
+    localStorage.setItem(CHAT_KEY, serializeChatPanes(state.chatPanes, state.chatModes));
   } catch {
     // The faces just will not survive the restart.
   }

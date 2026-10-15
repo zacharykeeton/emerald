@@ -27,6 +27,9 @@ import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './
 import { PipeClient } from './pipe-client.ts';
 import { listSchemes, windowsTerminalSettingsFiles } from './schemes.ts';
 import { HistoryWatcher, readAgentsRunning, readTranscriptCost, readTurns, readUsage, repoRoot, scanHistory } from './history.ts';
+import { claudeHome } from './claude-home.ts';
+import { readSkills } from './skills.ts';
+import { savePastedPng } from './paste-file.ts';
 import { startLoopDelayLog } from './loop-delay.ts';
 import { rotateLogAtStart } from './log-rotate.ts';
 import { setGitRunnerLog } from './git-runner.ts';
@@ -505,10 +508,15 @@ ipcMain.handle('emerald:pick-folder', async (_event, defaultPath: string | null)
 // EMERALD_PICK_FILE is a harness flag, as EMERALD_WHATS_NEW is: a verify
 // script cannot drive a native dialog, so under it the answer is that
 // path and no dialog is shown.
-ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null) => {
+// `images` (M9 fix 721, the chat box's attach) offers image files alone.
+ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null, images?: boolean) => {
   const picked = process.env['EMERALD_PICK_FILE'];
   if (picked !== undefined && picked !== '') return picked;
-  const opts = { properties: ['openFile' as const], ...(defaultPath !== null ? { defaultPath } : {}) };
+  const opts = {
+    properties: ['openFile' as const],
+    ...(defaultPath !== null ? { defaultPath } : {}),
+    ...(images === true ? { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] } : {}),
+  };
   const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
@@ -662,6 +670,9 @@ ipcMain.handle('emerald:history-cost', (_event, file: string) => readTranscriptC
 ipcMain.handle('emerald:history-agents', (_event, conversation: string) => readAgentsRunning(conversation, log));
 ipcMain.handle('emerald:history-project', (_event, dir: string) => repoRoot(dir));
 ipcMain.handle('emerald:history-watch', (_event, on: boolean) => historyWatcher.set(on));
+// The chat box's `/` menu (M9 fix 719): the skills Claude Code would
+// take in the session's folder, read off disk.
+ipcMain.handle('emerald:skills-list', (_event, folder: string | null) => readSkills(claudeHome(), folder));
 
 // The clipboard for Ctrl+V in a pane (M9 fix 92), Electron 44's async
 // clipboard. Text wins; an image is reported only when there is no text,
@@ -678,7 +689,9 @@ ipcMain.handle('emerald:history-watch', (_event, on: boolean) => historyWatcher.
 // ran it and broke the step's own typing after it. The scripts that test
 // copy and paste write and read through this same bridge, so they read
 // what they wrote.
-const heldClipboard: { text: string; image: boolean } | null = process.env['EMERALD_HOME'] === undefined ? null : { text: '', image: false };
+// The held clipboard keeps an image's bytes too (M9 fix 721), so the chat
+// box's paste under a harness reads the image the script wrote.
+const heldClipboard: { text: string; image: boolean; png: Buffer | null } | null = process.env['EMERALD_HOME'] === undefined ? null : { text: '', image: false, png: null };
 ipcMain.handle('emerald:clipboard-read', async () => {
   if (heldClipboard !== null) return heldClipboard.text !== '' ? { text: heldClipboard.text, image: false } : { text: null, image: heldClipboard.image };
   const text = await clipboard.readText();
@@ -691,6 +704,7 @@ function writeClipboardText(text: string): void {
   if (heldClipboard !== null) {
     heldClipboard.text = text;
     heldClipboard.image = false;
+    heldClipboard.png = null;
     return;
   }
   clipboard.writeText(text);
@@ -699,12 +713,34 @@ async function writeClipboardPng(png: Buffer): Promise<void> {
   if (heldClipboard !== null) {
     heldClipboard.text = '';
     heldClipboard.image = true;
+    heldClipboard.png = png;
     return;
   }
   await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
 }
 ipcMain.handle('emerald:clipboard-write', (_event, text: string) => writeClipboardText(text));
 ipcMain.handle('emerald:clipboard-write-image', (_event, dataUrl: string) => writeClipboardPng(nativeImage.createFromDataURL(dataUrl).toPNG()));
+// The chat box's image paste (M9 fix 721): the clipboard's PNG (the held
+// one under a private home) as a thumbnail, and as a file Claude Code is
+// handed by its path; with the key route asked for and the real clipboard
+// in play the path is null and the renderer sends the key instead, so
+// Claude Code reads the clipboard itself.
+ipcMain.handle('emerald:clipboard-image', async (_event, keyRoute: boolean) => {
+  let png: Buffer | null = null;
+  if (heldClipboard !== null) png = heldClipboard.png;
+  else {
+    for (const item of await clipboard.read()) {
+      if (!item.types.includes('image/png')) continue;
+      const blob = (await item.getType('image/png')) as Blob;
+      png = Buffer.from(await blob.arrayBuffer());
+      break;
+    }
+  }
+  if (png === null || png.length === 0) return null;
+  const thumb = nativeImage.createFromBuffer(png).resize({ height: 48 }).toDataURL();
+  if (keyRoute && heldClipboard === null) return { thumb, path: null };
+  return { thumb, path: savePastedPng(path.join(os.tmpdir(), 'emerald-paste'), png, Date.now()) };
+});
 
 const RENDERER_LOG_LINES_PER_SECOND = 5;
 

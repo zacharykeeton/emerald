@@ -144,6 +144,7 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
   const designOn = page !== null && designPaneId === paneId;
   const designTargetId = designOn && layout !== null ? designTargetOf(paneId) : null;
   const designTargetName = designTargetId === null ? null : (sessions.get(designTargetId)?.name ?? designTargetId);
+  const designChip = designTargetName === null ? 'Design Mode, no Claude session here' : `Design Mode → ${designTargetName}`;
   // The menu's items (M9 fix 202) are pane-menu-model's list, shared with
   // the action palette through the registry; this maps each to its
   // handler here.
@@ -243,7 +244,11 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
             <span className="pane-name" title={page.url === '' ? 'An empty browser pane' : page.url}>
               {pageTitle !== '' ? pageTitle : page.url !== '' ? new URL(page.url).host : 'Browser'}
             </span>
-            {designOn && <span className="design-target">{designTargetName === null ? 'Design Mode, no Claude session here' : `Design Mode → ${designTargetName}`}</span>}
+            {designOn && (
+              <span className="design-target" title={designChip}>
+                {designChip}
+              </span>
+            )}
             <span className="pane-cwd">{page.url}</span>
             {page.profile !== undefined && (
               <span className="browser-profile" title="Its own cookies and storage, apart from the other browser panes">

@@ -93,14 +93,18 @@ function stopDaemonHard() {
 }
 
 function hookEvents(sessionId) {
+  return hookLines(sessionId).map((e) => `${e.event}:${e.outcome}`);
+}
+
+// The lines whole, for the mod's mark (M9 fix 726).
+function hookLines(sessionId) {
   try {
     return fs
       .readFileSync(path.join(home, 'logs', 'hooks.jsonl'), 'utf8')
       .split('\n')
       .filter(Boolean)
       .map((l) => JSON.parse(l))
-      .filter((e) => e.sessionId === sessionId)
-      .map((e) => `${e.event}:${e.outcome}`);
+      .filter((e) => e.sessionId === sessionId);
   } catch {
     return [];
   }
@@ -183,6 +187,8 @@ try {
   const secondEvents = hookEvents(second.id);
   expect(firstEvents[0] === 'SessionStart:applied', `first hook events: ${firstEvents.join(' ')}`);
   expect(secondEvents.includes('SessionStart:applied') && secondEvents.includes('Stop:applied'), `second hook events: ${secondEvents.join(' ')}`);
+  // M9 fix 726: the -p session loads --plugin-dir fresh.
+  expect(hookLines(second.id).some((e) => e.event === 'Stop' && e.mod === true), "the -p session's Stop came from the mod");
 
   // M9 fix 233: a Claude emerald did not start. This checkout's hook
   // wrapper is rendered for this Node, as an install does; a settings
@@ -223,6 +229,7 @@ try {
   // set, and the sink folds the second; on a box without them the unit
   // test is the proof and this reads one post per event either way.
   expect(new Set(unhostedLines.map((e) => e.event)).size === unhostedLines.length, `each of the plain Claude's events landed once (M9 fix 260): ${unhostedLines.map((e) => e.event).join(' ')}`);
+  expect(unhostedLines.every((e) => e.mod !== true), 'the unhosted Claude posted through its hook file alone');
   j = emeraldJson('activity', '--json');
   const row233 = j.json?.sessions.find((x) => x.sessionId === conv233);
   expect(row233 !== undefined && row233.outside === true && row233.name === null && row233.spans.length >= 1 && typeof row233.cwd === 'string' && row233.cwd.toLowerCase() === repoRoot.toLowerCase(), `emmer activity lists the plain Claude as an outside track in this folder (${JSON.stringify(row233 && { outside: row233.outside, name: row233.name, spans: row233.spans.length, cwd: row233.cwd })})`);

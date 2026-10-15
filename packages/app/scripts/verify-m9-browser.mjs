@@ -417,16 +417,6 @@ try {
   // process hears the page's keys first and hands the app's to the
   // window; a plain key stays the page's, and Ctrl+R reloads the page,
   // never the window.
-  // A key as the keyboard sends it on Windows, a rawKeyDown: a CDP
-  // `keyDown` with no text (cdp.mjs's key) reaches the page's listeners
-  // but never the guest's before-input-event, where only its keyUp
-  // arrives (measured at the fix), so it would read as a page the app
-  // ignores.
-  const guestKey = async (key, code, keyCode, modifiers = 0) => {
-    const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
-    await guest.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
-    await guest.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-  };
   const movedAddress = `.pane[data-pane-id="moved-669"] .browser-address`;
   const paneCount = () => s.evalJs(`document.querySelectorAll('.pane').length`);
   const pageCentre = async () => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(pageIn('moved-669') + ' .browser-page')}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -437,7 +427,7 @@ try {
   await s.click(at.x, at.y);
   await s.waitFor(`!!document.querySelector('.pane.focused[data-view="browser"]')`, 'a click into the page focuses its pane', 3000);
   const keysBefore = await guest.evalJs('window.__keys');
-  await guestKey('E', 'KeyE', 69, CTRL | SHIFT);
+  await guest.guestKey('E', 'KeyE', 69, CTRL | SHIFT);
   await s.waitFor(`document.querySelectorAll('.pane').length === 3`, 'Ctrl+Shift+E pressed in the page splits its pane', 5000);
   expect((await guest.evalJs('window.__keys')) === keysBefore, `the page did not hear Ctrl+Shift+E (${keysBefore} then ${await guest.evalJs('window.__keys')})`);
   // The split moved the focus to the new pane, as a split from the
@@ -452,23 +442,23 @@ try {
     });
   };
   await clickPage();
-  await guestKey('a', 'KeyA', 65);
+  await guest.guestKey('a', 'KeyA', 65);
   expect((await guest.evalJs('window.__keys')) === keysBefore + 1, `a plain key still reaches the page (${await guest.evalJs('window.__keys')})`);
   expect((await paneCount()) === 3, 'still three panes after a plain key');
   // The prefix then z zooms the page's own pane (w would hide it, the
   // focused pane now); the same again unzooms it.
-  await guestKey('b', 'KeyB', 66, CTRL);
-  await guestKey('z', 'KeyZ', 90);
+  await guest.guestKey('b', 'KeyB', 66, CTRL);
+  await guest.guestKey('z', 'KeyZ', 90);
   await s.waitFor(`[...document.querySelectorAll('.splitview')].some((v) => v.dataset.zoomedPane === 'moved-669')`, 'the prefix and z pressed in the page zoom its pane', 5000);
   await clickPage();
-  await guestKey('b', 'KeyB', 66, CTRL);
-  await guestKey('z', 'KeyZ', 90);
+  await guest.guestKey('b', 'KeyB', 66, CTRL);
+  await guest.guestKey('z', 'KeyZ', 90);
   await s.waitFor(`![...document.querySelectorAll('.splitview')].some((v) => v.dataset.zoomedPane !== undefined)`, 'the prefix and z again unzoom it', 5000);
   expect((await guest.evalJs('window.__keys')) === keysBefore + 1, `the page did not hear the prefix or the z (${await guest.evalJs('window.__keys')})`);
   await clickPage();
   await s.evalJs(`window.__appMark = 670`);
   const loadsBefore = hits('/').length;
-  await guestKey('r', 'KeyR', 82, CTRL);
+  await guest.guestKey('r', 'KeyR', 82, CTRL);
   until = Date.now() + 5000;
   while (hits('/').length === loadsBefore && Date.now() < until) await sleep(100);
   expect(hits('/').length === loadsBefore + 1, `Ctrl+R pressed in the page reloads it (${loadsBefore} then ${hits('/').length})`);

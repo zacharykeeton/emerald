@@ -698,3 +698,25 @@ test('an install over a dead status line of ours keeps the previous one an earli
   assert.deepEqual(read(previous), { statusLine: { type: 'command', command: 'mine' } });
   assert.equal(hooksStatus(opts).statusLine, true);
 });
+
+test("uninstall takes out emerald's dead entries and a dead status line of ours, and leaves anyone else's (M9 fix 733)", () => {
+  const { opts, settingsPath, dir } = setup(null);
+  installHooks(opts);
+  const fwd = dir.split(path.sep).join('/');
+  const oldHook = hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-hook.cmd'));
+  const stranger = `"${fwd}/Some Tool/hook.cmd" --flag`;
+  const s = read(settingsPath);
+  const hooks = hooksOf(s);
+  hooks['Stop']!.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+  hooks['SessionStart']!.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+  hooks['Stop']!.push({ hooks: [{ type: 'command', command: stranger, timeout: 5 }] });
+  s['statusLine'] = { type: 'command', command: hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-statusline.cmd')) };
+  fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+
+  const { removed } = uninstallHooks(opts);
+  assert.equal(removed.length, 3, 'the two hooks and the status line of the old home');
+  const text = fs.readFileSync(settingsPath, 'utf8');
+  assert.ok(!text.includes('old-home'), 'no command of the old home is left');
+  assert.ok(text.includes('Some Tool/hook.cmd'), "the stranger's dead entry stays");
+  assert.equal(read(settingsPath)['statusLine'], undefined, 'the previous status line the first install kept was none');
+});

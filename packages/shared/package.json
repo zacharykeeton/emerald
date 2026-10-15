@@ -1,6 +1,6 @@
 {
   "name": "@emerald/shared",
-  "version": "0.1.688",
+  "version": "0.1.713",
   "private": true,
   "description": "Protocol, session, layout types and limits shared by the emmer daemon, app and CLI",
   "license": "MIT",

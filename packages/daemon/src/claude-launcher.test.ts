@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeLauncher, SHIM_NOTE } from './launchers/claude.ts';
+import { ClaudeLauncher, SHIM_NOTE, resolveClaudeModDir } from './launchers/claude.ts';
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-501-')));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -97,4 +97,23 @@ test("a claude.exe under the home's .local\\bin wins over the shim", () => {
   fs.writeFileSync(path.join(home, '.local', 'bin', 'claude.exe'), '');
   const cmd = launcher([dir], home).command(['a']);
   assert.deepEqual(cmd, { file: path.join(home, '.local', 'bin', 'claude.exe'), args: ['a'] });
+});
+
+test('with the mod, --plugin-dir comes before the session arguments on the native and the resolved shim paths (M9 fix 725)', () => {
+  const home = folder();
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.local', 'bin', 'claude.exe'), '');
+  const native = new ClaudeLauncher({ env: { PATH: '' }, home, modDir: 'C:\\m' }).command(['--resume', 'x']);
+  assert.deepEqual(native.args, ['--plugin-dir', 'C:\\m', '--resume', 'x']);
+  const dir = shimFolder({ script: true, node: true });
+  const shim = new ClaudeLauncher({ env: { PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' }, home: emptyHome, modDir: 'C:\\m' }).command(['--resume', 'x']);
+  assert.deepEqual(shim.args, [path.join(dir, SCRIPT_REL), '--plugin-dir', 'C:\\m', '--resume', 'x']);
+});
+
+test("resolveClaudeModDir answers off under EMERALD_CLAUDE_MOD=0 and the repo's cli/mod otherwise (M9 fix 725)", () => {
+  assert.deepEqual(resolveClaudeModDir({ EMERALD_CLAUDE_MOD: '0' }), { dir: null, line: 'claude mod: off (EMERALD_CLAUDE_MOD=0)' });
+  const on = resolveClaudeModDir({});
+  const repoMod = path.resolve(import.meta.dirname, '..', '..', 'cli', 'mod');
+  assert.equal(on.dir, repoMod);
+  assert.equal(on.line, `claude mod: ${repoMod}`);
 });

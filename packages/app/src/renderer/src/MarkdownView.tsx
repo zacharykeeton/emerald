@@ -5,7 +5,7 @@ import type { MouseEvent } from 'react';
 import { parentPath } from './files-model.ts';
 import { defaultFolds, foldSections } from './markdown-fold-model.ts';
 import type { FoldSection } from './markdown-fold-model.ts';
-import { imageSrc } from './markdown-url.ts';
+import { installImageSrc } from './markdown-url.ts';
 import { installMermaidFence } from './markdown-mermaid.ts';
 import type { MermaidSide, MermaidTheme } from './markdown-mermaid.ts';
 import { drawMermaid, showSide } from './mermaid-draw.ts';
@@ -26,6 +26,7 @@ import { drawMermaid, showSide } from './mermaid-draw.ts';
 // kept per box beside the folds.
 const md = new MarkdownIt({ html: false, linkify: true });
 installMermaidFence(md);
+installImageSrc(md);
 
 interface ViewState {
   scrollTop: number;
@@ -203,14 +204,3 @@ function wrapSections(tokens: Token[], sections: FoldSection[], folded: Set<stri
 
 md.renderer.rules['fold_open'] = (tokens, idx, _options, _env, self) => `<section${self.renderAttrs(tokens[idx]!)}>\n`;
 md.renderer.rules['fold_close'] = () => '</section>\n';
-
-// The image rule with the src resolved: markdown-it's own rule does the
-// rest (alt text, title), so only the attribute is changed before it runs.
-const renderImage = md.renderer.rules['image'];
-md.renderer.rules['image'] = (tokens, idx, options, env, self) => {
-  const token = tokens[idx]!;
-  const src = token.attrGet('src');
-  const folder = (env as { folder?: string }).folder;
-  if (typeof src === 'string') token.attrSet('src', imageSrc(folder, src));
-  return renderImage !== undefined ? renderImage(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
-};

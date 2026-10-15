@@ -2377,3 +2377,24 @@ test('one load tick emits one load event and no changed (M9 fix 703)', () => {
     manager.close();
   }
 });
+
+test('a SessionStart under another conversation is told in the log once per new id, with the bound one (M9 fix 734)', async () => {
+  const log = recordingLogger();
+  const manager = new SessionManager(log, { staleCheckIntervalMs: 0 });
+  try {
+    const here = fs.realpathSync.native(tempDir());
+    const s = manager.spawn({ kind: 'shell', cwd: here, cols: 120, rows: 30 });
+    const hook = (event: string, id: string) => manager.applyHook(s.id, { hook_event_name: event, session_id: id, cwd: here }, Date.now());
+    hook('SessionStart', 'conv-1');
+    hook('SessionStart', 'nested-1');
+    hook('SessionStart', 'nested-1');
+    hook('Stop', 'nested-1');
+    hook('SessionStart', 'nested-2');
+    const told = log.lines.filter((l) => l.startsWith('info hook SessionStart under another conversation ignored'));
+    assert.equal(told.length, 2, log.lines.join(' | '));
+    assert.equal(manager.get(s.id).info.claudeSessionId, 'conv-1');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});

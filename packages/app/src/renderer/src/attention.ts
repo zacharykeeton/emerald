@@ -4,6 +4,7 @@ import { ackIfDone, showSessionAuto, shownTab } from './actions.ts';
 import { answeringSession, attentionState, chiming, isRecentInput } from './attention-model.ts';
 import { chime, syncRepeat } from './attention-sound.ts';
 import { isLookFirstKey } from './keys.ts';
+import { isPulse } from './pulse-sync-model.ts';
 import { getState, subscribe } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { acknowledgeAttention, getUiState, hushAttention, observeAttention, setChimeMode, subscribeUi } from './ui.ts';
@@ -177,8 +178,8 @@ export function installAttention(): () => void {
   const unsubGuest = window.emerald.keys.onGuestInput(() => noteGuestInput());
   window.addEventListener('mousedown', onInput, { capture: true });
   window.addEventListener('keydown', onInput, { capture: true });
-  const pulses = new MutationObserver(syncPulses);
-  pulses.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-attention', 'data-working', 'data-tone'] });
+  const pulses = new MutationObserver(queueSync);
+  pulses.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-attention', 'data-working', 'data-tone'] });
   document.addEventListener('animationstart', onPulseStart, { capture: true });
   return () => {
     pulses.disconnect();
@@ -206,9 +207,11 @@ export function installAttention(): () => void {
 // or two working sessions would step out of phase with each other, as
 // does a needs-input mark, whose breathing outlives the pulse a click
 // ends, and a shell's blinking caret; the roster's units sit under the
-// rows and titles, so a whole team steps as one. Runs on each change of those
-// attributes; the elements are few and an animation already at zero is
-// left alone.
+// rows and titles, so a whole team steps as one. Since fix 729 the pass
+// runs on a pulse's animationstart and on a change of those attributes,
+// no longer on every insert into the page, and it is one walk over the
+// document's animations in place of a subtree read under every pulsing
+// element; an animation already at zero is left alone.
 //
 // M9 fix 268: a pulse can also restart with no such mutation, when its
 // element comes back from display: none (a split half hidden by the
@@ -221,7 +224,12 @@ export function installAttention(): () => void {
 // one that starts a pulse runs the sync in a microtask, so a burst of
 // starts in one frame costs one pass.
 function onPulseStart(ev: AnimationEvent): void {
-  if (isOneOff(ev.animationName)) return;
+  if (!isPulse(ev.animationName)) return;
+  queueSync();
+}
+let syncQueued = false;
+
+function queueSync(): void {
   if (syncQueued) return;
   syncQueued = true;
   queueMicrotask(() => {
@@ -229,37 +237,18 @@ function onPulseStart(ev: AnimationEvent): void {
     syncPulses();
   });
 }
-let syncQueued = false;
 
-// The animations under a pulsing element that are not pulses: the flash
-// when focus lands (M9 fix 63), the row's stalled flash (fix 232), the
-// commit graph's fresh node, and the odometer roll of a figure (fix
-// 235; the waiting figure sits inside the pulsing row and pane since fix
-// 267), each of which runs once from when it started and would be over
-// before it was seen on time zero.
-function isOneOff(name: string): boolean {
-  return name === 'focus-flash' || name === 'stalled-flash' || name === 'commits-fresh' || name.startsWith('figure-');
-}
-
+// The pass syncs the sheet's pulses by name (pulse-sync-model.ts) and
+// leaves every other animation on its own clock: the sheet's one-shots
+// (the focus flash, the row's stalled flash, the graph's fresh node, a
+// figure's roll, each over before it was seen on time zero), its two
+// endless non-pulses, and Monaco's and xterm's own, which the whole
+// document reaches. document.getAnimations() includes the pseudo-elements
+// (the pane's ::before ring and wash, the row's ::after band).
 function syncPulses(): void {
-  const pulsing = document.querySelectorAll(
-    '[data-attention], [data-working], .session-mark[data-tone="needs-input"], .shell-mark[data-running], .sidebar-row-marker[data-tone="needs-input"], .pane:has(> .pane-title[data-attention])',
-  );
-  for (const el of pulsing) {
-    // The pane's ring and wash run on its ::before (M9 fix 19, moved
-    // off ::after by fix 535) and the band on a host's ::after, which
-    // only a subtree read reaches, as do the mark's frames and the marker's dot
-    // under a working row (M40).
-    for (const animation of el.getAnimations({ subtree: true })) {
-      // A transition is not a pulse: put on time zero it would end at
-      // once (the M41 meter's bars slid on one; nothing under these
-      // selectors does today, and the guard is cheap).
-      if (animation instanceof CSSTransition) continue;
-      // A one-off (the focus flash, a figure's roll) is not a pulse
-      // either: on time zero it would be over before it was seen.
-      if (animation instanceof CSSAnimation && isOneOff(animation.animationName)) continue;
-      if (animation.startTime !== 0) animation.startTime = 0;
-    }
+  for (const animation of document.getAnimations()) {
+    if (!(animation instanceof CSSAnimation) || !isPulse(animation.animationName)) continue;
+    if (animation.startTime !== 0) animation.startTime = 0;
   }
 }
 

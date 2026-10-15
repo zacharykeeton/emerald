@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findOnPath } from './find-on-path.ts';
 import type { LaunchCommand, SessionLauncher } from './types.ts';
 
@@ -20,15 +21,20 @@ const NPM_SHIM = /"%(?:dp0%|~dp0)\\([^"\r\n]+)"\s+%\*/g;
 export interface ClaudeLauncherOptions {
   env?: NodeJS.ProcessEnv;
   home?: string;
+  // The emerald mod's folder (M9 fix 725), loaded with --plugin-dir ahead
+  // of the session's own arguments; null launches without it.
+  modDir?: string | null;
 }
 
 export class ClaudeLauncher implements SessionLauncher {
   private readonly env: NodeJS.ProcessEnv;
   private readonly home: string;
+  readonly modDir: string | null;
 
   constructor(opts: ClaudeLauncherOptions = {}) {
     this.env = opts.env ?? process.env;
     this.home = opts.home ?? os.homedir();
+    this.modDir = opts.modDir ?? null;
   }
 
   command(extraArgs: string[]): LaunchCommand {
@@ -36,12 +42,15 @@ export class ClaudeLauncher implements SessionLauncher {
     if (file === null) {
       throw new Error('claude.exe not found in ~/.local/bin or on PATH');
     }
+    // Only the command line carries the flag; the record's own args (what
+    // session.list and emmer resume show) stay the user's.
+    const args = this.modDir === null ? [...extraArgs] : ['--plugin-dir', this.modDir, ...extraArgs];
     if (file.toLowerCase().endsWith('.cmd')) {
       const resolved = resolveNpmShim(file, this.env);
-      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...extraArgs] };
-      return { file, args: [...extraArgs], note: SHIM_NOTE };
+      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args] };
+      return { file, args, note: SHIM_NOTE };
     }
-    return { file, args: [...extraArgs] };
+    return { file, args };
   }
 
   private resolveClaude(): string | null {
@@ -50,6 +59,18 @@ export class ClaudeLauncher implements SessionLauncher {
     if (isFile(local)) return local;
     return findOnPath('claude.exe', this.env) ?? findOnPath('claude', this.env);
   }
+}
+
+// Where the emerald mod is (M9 fix 725): packages/cli/mod from the
+// daemon's dist or src launchers folder, and the staged cli/mod from the
+// staged daemon's, since stage.mjs keeps daemon and cli side by side.
+// EMERALD_CLAUDE_MOD=0 turns it off; a folder without its module is
+// launched without, with the reason in the line the daemon logs.
+export function resolveClaudeModDir(env: NodeJS.ProcessEnv): { dir: string | null; line: string } {
+  const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'cli', 'mod');
+  if (env['EMERALD_CLAUDE_MOD'] === '0') return { dir: null, line: 'claude mod: off (EMERALD_CLAUDE_MOD=0)' };
+  if (!isFile(path.join(dir, 'hooks', 'register.js'))) return { dir: null, line: `claude mod: missing at ${dir}` };
+  return { dir, line: `claude mod: ${dir}` };
 }
 
 function resolveNpmShim(shim: string, env: NodeJS.ProcessEnv): { node: string; script: string } | null {

@@ -12,6 +12,8 @@ import { feedHostSettings, startFeedHost } from './feed-host.ts';
 import type { FeedHost } from './feed-host.ts';
 import { hideConsoleListAgent } from './hidden-console-agent.ts';
 import { HookSink } from './hook-sink.ts';
+import { guardSelfKill } from './kill-guard.ts';
+import { resolveClaudeModDir } from './launchers/claude.ts';
 import { createFileLogger, rotateLogAtStart } from './log.ts';
 import type { Logger } from './log.ts';
 import { startLoopDelayLog } from './loop-delay.ts';
@@ -51,6 +53,10 @@ async function main(): Promise<void> {
   const logPath = path.join(logsDir(), 'emmerd.log');
   const log = createFileLogger(logPath, process.stderr.isTTY === true);
   startLog = log;
+  // Before the pipe and so before any pty (M9 fix 732): node-pty's console
+  // list can name 0 or the daemon, and `process.kill(0)` on Windows ends
+  // the process with no line.
+  guardSelfKill(process, log);
   // Registered first (M9 fix 453, M75's J8 (a)): a throw between the
   // stores and the pipe is logged too. The shutdown is kept once there is
   // something to shut down.
@@ -116,7 +122,7 @@ async function main(): Promise<void> {
       activity.recordHook(sessionId, payload, at, result, isUnhosted);
       return result;
     },
-    { eventLogPath: hookLogPath, log },
+    { eventLogPath: hookLogPath, log, expectsMod: (id) => manager?.launchedWithMod(id) ?? false },
   );
   // The live rotation (M9 fix 429): the load rotates only at the start,
   // so an hourly stat keeps a daemon left up for weeks under the same
@@ -157,8 +163,13 @@ async function main(): Promise<void> {
   // Found once (M9 fix 624): the hello reports them for the daemon's life.
   const shells = findShells();
   log.info('shells found', { shells: shells.map((o) => o.id) });
+  // The emerald mod (M9 fix 725), read once: EMERALD_CLAUDE_MOD=0 takes a
+  // daemon restart, like every other knob here.
+  const claudeMod = resolveClaudeModDir(process.env);
+  log.info(claudeMod.line);
   manager = new SessionManager(log, {
     hook: { port: hooks.port, token: hooks.token },
+    claudeModDir: claudeMod.dir,
     shells,
     bashrcPath: bashrcPath(),
     store: new SessionStore(sessionsPath(), log),

@@ -142,17 +142,8 @@ try {
     await guestMouse('mousePressed', p);
     await guestMouse('mouseReleased', p);
   };
-  // A key while the page has the keyboard. A CDP keyDown on the guest's
-  // own target reaches the page but never the guest's before-input-event,
-  // where the grab's keys are caught (read on the base commit at fix
-  // 674); a rawKeyDown and keyUp sent to the window with the webview
-  // focused go through it, as a person's key does.
-  const guestKey = async (key, code, keyCode, modifiers = 0) => {
-    await s.evalJs(`document.querySelector(${q(webview)}).focus()`);
-    const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
-    await s.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
-    await s.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-  };
+  // The page takes the keyboard before each key; cdp.mjs's guestKey (fix 731) says why the key goes as a rawKeyDown.
+  const focusPage = () => s.evalJs(`document.querySelector(${q(webview)}).focus()`);
   await s.waitFor(`document.querySelector(${q(inPane('.pane-name'))})?.textContent === 'Emerald design fixture'`, 'the title row names the page');
   const stubName = await s.evalJs(`document.querySelector(${q(`[data-pane-id=${JSON.stringify(stubPane.id)}] .pane-name`)})?.textContent ?? ''`);
 
@@ -163,10 +154,17 @@ try {
   expect((await text(inPane('.design-hint .design-hint-text'))) === 'Hover and press C to copy, S for screenshot, or click to select', `the hint (${await text(inPane('.design-hint .design-hint-text'))})`);
   expect((await text(inPane('.design-cancel'))) === 'Cancel', 'the hint bar has Cancel');
   expect((await text(inPane('.design-target'))) === `Design Mode → ${stubName}`, `the title names the stub (${await text(inPane('.design-target'))}, the stub ${stubName})`);
+  expect((await s.evalJs(`document.querySelector(${q(inPane('.design-target'))}).title`)) === `Design Mode → ${stubName}`, 'the chip carries its words as a title');
+  // Fix 730: the chip gives with an ellipsis before the title's buttons do,
+  // so the close button stays inside the pane.
+  const inside = await s.evalJs(`(() => { const p = document.querySelector(${q(browserPane)}).getBoundingClientRect(); const c = document.querySelector(${q(inPane('.pane-close'))}).getBoundingClientRect(); return { pane: p.right, close: c.right }; })()`);
+  expect(inside.close <= inside.pane + 0.5, `the title's close button inside the pane with the mode on (${JSON.stringify(inside)})`);
+  const chipSize = await s.evalJs(`(() => { const e = document.querySelector(${q(inPane('.design-target'))}); return { width: e.offsetWidth, text: e.scrollWidth }; })()`);
+  console.log(`[730] the chip is ${chipSize.width} px wide, its text ${chipSize.text}`);
   let until = Date.now() + 5000;
   while (!(await hostIn()) && Date.now() < until) await sleep(100);
   expect(await hostIn(), 'the picker is in the page');
-  step('(a) the Design Mode button turns the mode on, with the hint bar, Cancel and the stub named in the title');
+  step('(a) the Design Mode button turns the mode on, with the hint bar, Cancel and the stub named in the title, the chip ellipsed with the close button in the pane');
 
   // (b) The hover: the outline on the button and the pill's words, read
   // through a DOM walk that pierces the closed shadow root.
@@ -191,11 +189,11 @@ try {
   step('(b) the hover outlines #cta within a pixel and the pill names it');
 
   // (c) S then C.
-  await guestKey('s', 'KeyS', 83);
+  await focusPage(); await s.guestKey('s','KeyS', 83);
   await s.waitFor(`document.querySelector('.corner-note')?.textContent === "Copied the element's screenshot"`, 'the screenshot note');
   let clip = await s.evalJs(`window.emerald.clipboard.read()`);
   expect(clip.text === null && clip.image === true, `the clipboard holds an image (${JSON.stringify(clip)})`);
-  await guestKey('c', 'KeyC', 67);
+  await focusPage(); await s.guestKey('c','KeyC', 67);
   await s.waitFor(`document.querySelector('.corner-note')?.textContent === 'Copied the element as markdown'`, 'the markdown note');
   clip = await s.evalJs(`window.emerald.clipboard.read()`);
   expect(typeof clip.text === 'string' && clip.text.startsWith('## Design Feedback: /') && clip.text.includes('Selector: `#cta`'), `the clipboard holds the block (${JSON.stringify(clip.text?.slice(0, 120))})`);
@@ -233,7 +231,7 @@ try {
   await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'true'`, 'Ctrl+Shift+D turns the mode on');
   until = Date.now() + 5000;
   while (!(await hostIn()) && Date.now() < until) await sleep(100);
-  await guestKey('Escape', 'Escape', 27);
+  await focusPage(); await s.guestKey('Escape','Escape', 27);
   await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'false' && !document.querySelector(${q(inPane('.design-hint'))})`, 'Escape ends the mode');
   expect(!(await hostIn()), 'the picker left the page after Escape');
   await click(inPane('.browser-design'));
@@ -246,7 +244,7 @@ try {
   step('(e) Ctrl+Shift+D on the window turns the mode on and Escape off; the button and Cancel do the same');
 
   // (f) The chord from the page, through the guest's key forwarding.
-  await guestKey('D', 'KeyD', 68, CTRL | SHIFT);
+  await focusPage(); await s.guestKey('D','KeyD', 68, CTRL | SHIFT);
   await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'true'`, 'Ctrl+Shift+D from the page turns the mode on');
   await click(inPane('.design-cancel'));
   await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'false'`, 'Cancel ends it');
@@ -279,18 +277,22 @@ try {
   // its new width went to the page under the picker on one run in three
   // (fix 675's send-back), so the picks wait for the page's new size. A
   // tray docked under the page (fix 698, a pane under 600 px) changes the
-  // height instead: tallBefore was read before the mode, so the drop
-  // counts the hint bar (about 25 px) as well as the tray, and 100 px is
-  // met only once the tray has landed.
+  // height instead: tallBefore is read as the mode ends before it, and
+  // the hint bar (about 27 px) may or may not have left yet, so the drop is
+  // 47 to 76 px. Since fix 730 the empty tray is its 46 px floor and
+  // border, so 40 is met only once the tray has landed (the hint bar alone
+  // is about 27).
   until = Date.now() + 5000;
   if (paneWide < 600) {
-    while ((await ev('innerHeight')) > tallBefore - 100 && Date.now() < until) await sleep(100);
+    while ((await ev('innerHeight')) > tallBefore - 40 && Date.now() < until) await sleep(100);
     console.log(`[698] with the tray open: innerWidth ${await ev('innerWidth')}, innerHeight ${tallBefore} then ${await ev('innerHeight')}, frame ${await frameWide()} px`);
-    expect((await ev('innerHeight')) <= tallBefore - 100, `the page shortens over the docked tray (${tallBefore} then ${await ev('innerHeight')})`);
+    expect((await ev('innerHeight')) <= tallBefore - 40, `the page shortens over the docked tray (${tallBefore} then ${await ev('innerHeight')})`);
     expect(Math.abs((await ev('innerWidth')) - wideBefore) <= 4, `the page keeps its width over the docked tray (${wideBefore} then ${await ev('innerWidth')})`);
     const tray = await boxOf('.design-tray');
     const body = await boxOf('.browser-body');
     expect(tray.top >= body.bottom - 1, `the tray is under the page (tray top ${tray.top}, page bottom ${body.bottom})`);
+    expect(tray.bottom - tray.top <= 60, `the empty docked tray takes its own height (${tray.bottom - tray.top} px)`);
+    expect(!(await s.evalJs(`!!document.querySelector(${q(inPane('.design-send'))})`)) && (await text(inPane('.design-tray-empty'))) === 'Click an element on the page to add a note', 'the empty tray shows the line and no button');
     step(`(g0) the tray docks under the page in a ${paneWide} px pane, the page keeping its width`);
   } else {
     while ((await ev('innerWidth')) > wideBefore - 200 && Date.now() < until) await sleep(100);
@@ -320,10 +322,11 @@ try {
   // on the webview stands in for a click into the page (a real click there
   // would answer the grab with a pick).
   const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
-  const TRAY_HINT = 'Typing a note; click the page to pick again, or C and S there';
+  const TRAY_HINT = 'Note · Esc back to the page';
   const hint = () => text(inPane('.design-hint .design-hint-text'));
   const activeLabel = () => s.evalJs(`document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName ?? null`);
   expect((await activeLabel()) === 'Comment on note 1' && (await hint()) === TRAY_HINT, `the tray's hint while note 1's box is focused (${await activeLabel()}: ${await hint()})`);
+  expect((await s.evalJs(`(() => { const t = document.querySelector(${q(inPane('.design-hint .design-hint-text'))}); return t.scrollWidth <= t.clientWidth && t.title.endsWith('Ctrl+Shift+D ends the mode'); })()`)) === true, 'the tray hint fits the narrow pane whole and its title names Ctrl+Shift+D');
   await s.evalJs(`document.querySelector(${q(webview)}).focus()`);
   await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'the page focused');
   await s.waitFor(`document.querySelector(${q(inPane('.design-hint .design-hint-text'))})?.textContent === ${q(PAGE_HINT)}`, 'the page hint again once the page has the keys');
@@ -343,7 +346,17 @@ try {
   step('(g1) the hint names the comment box while it holds the keys, and Escape or Ctrl+Enter there hands them back to the page');
   expect((await text(inPane('.design-notes'))) === 'Notes (2)', `Notes (2) (${await text(inPane('.design-notes'))})`);
   expect((await text(inPane('.design-send'))) === 'Send 2 notes', `Send 2 notes (${await text(inPane('.design-send'))})`);
+  const look = await s.evalJs(`(() => { const b = getComputedStyle(document.querySelector(${q(inPane('.design-send'))})); return { color: b.color, fg: getComputedStyle(document.getElementById('root')).color, border: b.borderTopWidth + ' ' + b.borderTopStyle, opacity: b.opacity }; })()`);
+  expect(look.color === look.fg && look.border === '1px solid' && look.opacity === '1', `the button is drawn as one (${JSON.stringify(look)})`);
+  const sendHeight = await s.evalJs(`document.querySelector(${q(inPane('.design-send'))}).getBoundingClientRect().height`);
+  console.log(`[730] .design-send is ${sendHeight} px tall`);
   await addPick('cta', null, 3);
+  if (paneWide < 600) {
+    const trayTall = (await boxOf('.design-tray')).bottom - (await boxOf('.design-tray')).top;
+    const mainTall = (await boxOf('.browser-main')).bottom - (await boxOf('.browser-main')).top;
+    console.log(`[730] three notes: tray ${trayTall} px of ${mainTall}`);
+    expect(trayTall <= mainTall * 0.4 + 1, `the docked tray stays within 40 percent (${trayTall} of ${mainTall})`);
+  }
   await click(inPane('[aria-label="Delete note 3"]'));
   await s.waitFor(`document.querySelectorAll(${q(inPane('.design-note'))}).length === 2`, 'the third note deleted');
   const before = stubText().length;
@@ -355,10 +368,10 @@ try {
   expect(second.endsWith('\x1b[201~'), `the tray's block ends with the end marker (${JSON.stringify(second.slice(-30))})`);
   await s.waitFor(`document.querySelectorAll(${q(inPane('.design-note'))}).length === 0`, 'the sent notes leave the tray');
   expect((await text(inPane('.design-notes'))) === 'Notes (0)', `Notes (0) (${await text(inPane('.design-notes'))})`);
-  expect((await s.evalJs(`document.querySelector(${q(inPane('.design-send'))}).disabled`)) === true, 'Send disabled with no notes');
+  expect(!(await s.evalJs(`!!document.querySelector(${q(inPane('.design-send'))})`)) && (await text(inPane('.design-tray-empty'))) === 'Click an element on the page to add a note', 'no button and the empty line once the notes are sent');
   expect((await noteCount()) === 0, 'no note left');
   await click(inPane('.design-cancel'));
-  step('(g) the tray gathers two picks with a comment each and sends them as one numbered block');
+  step("(g) the tray gathers two picks with a comment each and sends them as one numbered block; the empty tray's line, the hint whole in a narrow pane, the button drawn");
 
   // (h) With no Claude session in the tab the tray's button copies (fix
   // 697). The stub's pane leaves the tab by layout.set; its session lives

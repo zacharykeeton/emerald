@@ -1,6 +1,6 @@
 {
   "name": "@emerald/daemon",
-  "version": "0.1.688",
+  "version": "0.1.713",
   "private": true,
   "description": "emmerd: owns PTYs, scrollback, sessions and layout; serves clients over a named pipe",
   "license": "MIT",

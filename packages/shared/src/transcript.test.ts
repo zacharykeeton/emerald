@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, editCounts, movesHead, parseSteps, parseTurns, resultText, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, editCounts, effortOf, movesHead, parseSteps, parseTurns, resultText, usageFold, usageList, usageOf, usageState } from './transcript.ts';
 import type { Step, StepTurn } from './transcript.ts';
 
 const line = (o: unknown): string => JSON.stringify(o);
@@ -149,8 +149,35 @@ test('parseSteps: an image result carries its media type and size', () => {
     result('i1', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }], '2026-10-15T14:10:02.000Z', { toolUseResult: { type: 'image', file: { type: 'image/png', originalSize: 86016, dimensions: {} } } }),
   ].join('\n');
   const step = toolOf(parseSteps(text)[0]!, 0);
-  assert.deepEqual(step.result?.image, { mediaType: 'image/png', bytes: 86016 });
+  assert.deepEqual(step.result?.image, { mediaType: 'image/png', bytes: 86016, data: 'AAAA' });
   assert.equal(resultText(step), '84 KB');
+});
+
+test('parseSteps: a pasted image rides on its prompt', () => {
+  const text = [
+    user([{ type: 'text', text: '[Image #1] look at this' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BBBB' } }], '2026-10-15T14:10:00.000Z', { promptId: 'p1', imagePasteIds: [1] }),
+    turnLine([{ type: 'text', text: 'Seen.' }], '2026-10-15T14:10:01.000Z'),
+  ].join('\n');
+  const turns = parseSteps(text);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '[Image #1] look at this');
+  assert.deepEqual(turns[0]!.images, [{ mediaType: 'image/png', data: 'BBBB' }]);
+});
+
+test("parseSteps: a slash command's images ride on its meta line", () => {
+  const img = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } });
+  const lines = (ids: boolean) => [
+    user('<command-message>backlog</command-message>\n<command-name>/backlog</command-name>\n<command-args>[Image #1] file it [Image #2]</command-args>', '2026-10-15T14:10:00.000Z', ids ? { promptId: 'p2', uuid: 'u2' } : { uuid: 'u2' }),
+    user([img('CCCC'), img('DDDD'), { type: 'text', text: 'Base directory for this skill: x' }], '2026-10-15T14:10:00.000Z', ids ? { isMeta: true, promptId: 'p2' } : { isMeta: true, parentUuid: 'u2' }),
+    user([img('EEEE')], '2026-10-15T14:10:01.000Z', { isMeta: true, promptId: 'p9' }),
+    turnLine([{ type: 'text', text: 'Filed.' }], '2026-10-15T14:10:02.000Z'),
+  ].join('\n');
+  for (const ids of [true, false]) {
+    const turns = parseSteps(lines(ids));
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]!.prompt, '/backlog [Image #1] file it [Image #2]');
+    assert.deepEqual(turns[0]!.images.map((i) => i.data), ['CCCC', 'DDDD'], `ids ${ids}`);
+  }
 });
 
 test('parseSteps: a tool with no result yet is pending, and an edit\'s counts come from its strings', () => {
@@ -189,6 +216,18 @@ test('parseSteps: side-chain lines, a result for an unknown id, a broken line an
 test("parseSteps: the prompts are parseTurns' prompts", () => {
   const text = tabsFixture();
   assert.deepEqual(parseSteps(text).map((t) => [t.prompt, t.at, t.endAt]), parseTurns(text).map((t) => [t.prompt, t.at, t.endAt]));
+});
+
+// M9 fix 713: the model chip's effort, off the last main-chain assistant line.
+test('effortOf: the last assistant line decides, side chains and broken lines skipped', () => {
+  const user = line({ type: 'user', message: { role: 'user', content: 'go' } });
+  const a = (effort?: string, extra: Record<string, unknown> = {}) => assistant([{ type: 'text', text: 'ok' }], effort === undefined ? extra : { effort, ...extra });
+  assert.equal(effortOf([user, a('low'), a('high'), user].join('\n')), 'high');
+  assert.equal(effortOf([a('low'), a()].join('\n')), null, 'the last line has none');
+  assert.equal(effortOf([a('medium'), a('low', { isSidechain: true })].join('\n')), 'medium');
+  assert.equal(effortOf([a('high'), '{"type":"assistant","effort":"lo'].join('\n')), 'high');
+  assert.equal(effortOf([user, ''].join('\n')), null);
+  assert.equal(effortOf(''), null);
 });
 
 test('movesHead names the git commands that can move HEAD and nothing else', () => {

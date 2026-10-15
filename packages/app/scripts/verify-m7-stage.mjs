@@ -117,6 +117,18 @@ async function main() {
   const orphans = stagedModules.filter(({ pkg, f }) => !fs.existsSync(path.join(packagesDir, pkg, 'src', f.replace(/\.js$/, '.ts')))).map(({ pkg, f }) => `${pkg}/${f}`);
   expect(orphans.length === 0, `every staged daemon and shared module has its source (${stagedModules.length} modules, ${orphans.join(', ') || 'no orphans'})`);
 
+  // M9 fix 726: the emerald mod rides along beside the CLI, its test left
+  // out, and Claude Code accepts it as staged.
+  const stagedMod = path.join(stageCopy, 'cli', 'mod');
+  const modFiles = ['.claude-plugin/plugin.json', 'hooks/hooks.json', 'hooks/register.js'];
+  expect(modFiles.every((f) => fs.existsSync(path.join(stagedMod, f))) && !fs.existsSync(path.join(stagedMod, 'hooks', 'register.test.tsx')), 'the emerald mod is staged under cli/mod, its test left out');
+  if (spawnSync('claude --version', { shell: true, windowsHide: true, timeout: 60_000 }).status !== 0) {
+    log("claude is not on PATH; the staged mod's validate was not run");
+  } else {
+    const v = spawnSync(`claude plugin validate --strict "${stagedMod}"`, { shell: true, windowsHide: true, timeout: 60_000, encoding: 'utf8' });
+    expect(v.status === 0, `the staged mod validates under claude plugin validate --strict${v.status === 0 ? '' : ` (${v.stdout}${v.stderr})`}`);
+  }
+
   let r = emerald('--version');
   expect(r.code === 0 && /^\d+\.\d+\.\d+$/.test(r.out.trim()), `emmer --version prints a version through the shim (${r.out.trim()})`);
 
@@ -124,6 +136,10 @@ async function main() {
   expect(r.code === 0 && /^started emmerd/.test(r.out), `daemon start through the shim: ${r.out.trim()}`);
   const info = readDaemonInfo();
   expect(info !== null && info.pipe === env.EMERALD_PIPE, 'daemon.json in the private home names the private pipe');
+  // Both sides through realpath, since os.tmpdir() may be a short 8.3 path.
+  const modLine = /claude mod: (.+?)\s*$/m.exec(fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8'))?.[1] ?? '';
+  const realOrNone = (p) => (fs.existsSync(p) ? fs.realpathSync.native(p).toLowerCase() : `(no such folder: ${p})`);
+  expect(modLine !== '' && realOrNone(modLine) === realOrNone(path.join(stageCopy, 'cli', 'mod')), `the staged daemon resolves the staged mod (claude mod: ${modLine})`);
 
   const cmdline = powershell(`(Get-CimInstance Win32_Process -Filter "ProcessId = ${info.pid}").CommandLine`);
   expect(cmdline.toLowerCase().includes(path.join(stageCopy, 'daemon', 'dist', 'main.js').toLowerCase()), `daemon runs the staged main.js (${cmdline})`);

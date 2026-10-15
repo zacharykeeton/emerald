@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileUrl, imageSrc } from './markdown-url.ts';
+import MarkdownIt from 'markdown-it';
+import { fileUrl, imageSrc, installImageSrc } from './markdown-url.ts';
 
 const folder = 'C:\\docs\\notes';
 
@@ -28,4 +29,10 @@ test('http, https and data sources are left alone', () => {
 test('a relative src with no folder is left as written', () => {
   assert.equal(imageSrc(undefined, 'images/a.png'), 'images/a.png');
   assert.equal(imageSrc(undefined, '//evil.example/a.png'), '');
+});
+
+test('installImageSrc resolves a relative image against the env folder (M9 fix 716)', () => {
+  const md = new MarkdownIt();
+  installImageSrc(md);
+  assert.ok(md.render('![x](a.png)', { folder: 'C:\\docs' }).includes('src="file:///C:/docs/a.png"'));
 });

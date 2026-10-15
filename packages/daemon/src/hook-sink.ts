@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { MOD_HOOK_NAME } from '@emerald/shared';
 import type { HookOutcome, HookPayload, SessionState } from '@emerald/shared';
 import { rotateHookLog, trimGenerations } from './activity.ts';
 import type { Logger } from './log.ts';
@@ -151,6 +152,10 @@ function trimValue(value: unknown, state: { cut: boolean }): unknown {
 const DUPLICATE_WINDOW_MS = 1000;
 const DUPLICATE_RING = 8;
 
+// The sessions the mod has posted for, and those already warned of a mod
+// that posted nothing (M9 fix 725); insertion-ordered, the oldest dropped.
+const MOD_SEEN_CAP = 512;
+
 // The Test events the sink remembers for hooks.test (M9 fix 606): a handful
 // for a minute, since the asker reads its answer within seconds of the post.
 const TEST_RING = 8;
@@ -179,6 +184,10 @@ export interface HookSinkOptions {
   // Whether the line keeps the whole payload (M9 fix 377); the default
   // reads EMERALD_HOOKS_FULL, and the written line is trimmed otherwise.
   fullPayloads?: boolean;
+  // Whether a session's Claude was launched with the emerald mod (M9 fix
+  // 725), so a Stop that came from the hook file alone says the mod did
+  // not load; the default expects it nowhere.
+  expectsMod?: (sessionId: string) => boolean;
 }
 
 export class HookSink {
@@ -192,6 +201,9 @@ export class HookSink {
   private readonly recent: Array<{ key: string; at: number; hook: string }> = [];
   private readonly tests: Array<{ id: string; at: number }> = [];
   private readonly fullPayloads: boolean;
+  private expectsMod: (sessionId: string) => boolean = () => false;
+  private readonly modSeen = new Set<string>();
+  private readonly modWarned = new Set<string>();
   // The lines that arrive while a rotation has the file closed, written
   // in order to the fresh stream once it is open; null when no swap runs.
   private held: string[] | null = null;
@@ -232,6 +244,7 @@ export class HookSink {
       port = await bind(server, 0);
     }
     sink = new HookSink(server, port, token, events, opts.eventLogPath, opts.log, opts.fullPayloads ?? process.env['EMERALD_HOOKS_FULL'] === '1');
+    if (opts.expectsMod) sink.expectsMod = opts.expectsMod;
     return sink;
   }
 
@@ -405,16 +418,17 @@ export class HookSink {
       const at = Date.now();
       // The hook is released here. Whatever happens next is our problem, not Claude's.
       res.writeHead(204).end();
-      if (this.isDuplicate(sessionId, body, at, hook)) {
-        this.log.info(`hook duplicate ${(payload as HookPayload).hook_event_name ?? '?'} ${sessionId}`, { hook });
+      if (hook === MOD_HOOK_NAME) remember(this.modSeen, sessionId);
+      if (this.isDuplicate(sessionId, overLimit ? body : canonicalJson(payload), at, hook)) {
+        this.log.info(`hook duplicate ${(payload as HookPayload).hook_event_name ?? '?'} ${sessionId}`, { hook, at });
         return;
       }
-      setImmediate(() => this.accept(sessionId, payload as HookPayload, at, unhosted, handler));
+      setImmediate(() => this.accept(sessionId, payload as HookPayload, at, unhosted, handler, hook));
     });
     req.on('error', (err) => this.log.warn('hook request error', err));
   }
 
-  private accept(sessionId: string, payload: HookPayload, at: number, unhosted: boolean, handler: HookHandler): void {
+  private accept(sessionId: string, payload: HookPayload, at: number, unhosted: boolean, handler: HookHandler, hook: string): void {
     let result: HookResult | { outcome: 'handler-error' };
     try {
       result = handler(sessionId, payload, at, unhosted);
@@ -427,12 +441,26 @@ export class HookSink {
     }
     // from and to come before the payload so a line is readable by eye
     // up to the point where the payload starts.
-    const line = { at, sessionId, event: payload.hook_event_name ?? null, ...(unhosted ? { unhosted: true } : {}), ...result, payload: this.fullPayloads ? payload : trimPayload(payload) };
+    const line = { at, sessionId, event: payload.hook_event_name ?? null, ...(unhosted ? { unhosted: true } : {}), ...(hook === MOD_HOOK_NAME ? { mod: true } : {}), ...result, payload: this.fullPayloads ? payload : trimPayload(payload) };
     this.write(JSON.stringify(line) + '\n');
+    if (!unhosted && payload.hook_event_name === 'Stop' && hook !== MOD_HOOK_NAME) this.warnIfModSilent(sessionId, hook);
+  }
+
+  // Said once per session (M9 fix 725): by a Stop, SessionStart and
+  // UserPromptSubmit have come, so a session launched with the mod whose
+  // posts all came from the hook file has a mod that did not load.
+  private warnIfModSilent(sessionId: string, hook: string): void {
+    if (this.modSeen.has(sessionId) || this.modWarned.has(sessionId)) return;
+    if (!this.expectsMod(sessionId)) return;
+    this.log.warn(`the emerald mod posted nothing for ${sessionId}: every hook came from the hook file`, { hook });
+    remember(this.modWarned, sessionId);
   }
 
   // Whether another hook file posted this very body for the same session
   // within the window; the body is hashed so the ring holds no payloads.
+  // The body is the payload's canonical form when it parsed whole (M9 fix
+  // 725: the mod's JSON.stringify and Claude's stdin text are never the
+  // same bytes for one event) and the raw head past the limit.
   // A hit is not re-stamped, so a third copy inside the window of the
   // first is dropped too.
   private isDuplicate(sessionId: string, body: string, at: number, hook: string): boolean {
@@ -450,6 +478,24 @@ export class HookSink {
     const b = Buffer.from(this.token, 'utf8');
     return a.length === b.length && timingSafeEqual(a, b);
   }
+}
+
+// The payload as one text whatever its keys' order (M9 fix 725): every
+// object's keys sorted, at every depth. The fold keys on it, so the mod's
+// copy and the hook file's copy of one event match.
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return '{' + Object.keys(obj).sort().map((k) => JSON.stringify(k) + ':' + canonicalJson(obj[k])).join(',') + '}';
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function remember(set: Set<string>, id: string): void {
+  set.delete(id);
+  set.add(id);
+  if (set.size > MOD_SEEN_CAP) set.delete(set.values().next().value as string);
 }
 
 // One append stream keeps lines in arrival order; separate appendFile

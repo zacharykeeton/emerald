@@ -184,6 +184,9 @@ async function main() {
   expect(fs.existsSync(path.join(unpacked, 'resources', 'daemon', 'dist', 'main.js')), 'resources/daemon/dist/main.js shipped');
   expect(fs.existsSync(path.join(unpacked, 'resources', 'node_modules', 'node-pty', 'prebuilds', 'win32-arm64', 'conpty.node')), 'resources/node_modules/node-pty prebuild shipped');
   expect(fs.existsSync(path.join(unpacked, 'resources', 'cli', 'hooks', 'claude-hook.cmd')), 'resources/cli/hooks/claude-hook.cmd shipped');
+  // M9 fix 726: the mod, its dot-folder manifest included, which a builder
+  // filter that skips dot-files would drop.
+  expect(fs.existsSync(path.join(unpacked, 'resources', 'cli', 'mod', 'hooks', 'register.js')) && fs.existsSync(path.join(unpacked, 'resources', 'cli', 'mod', '.claude-plugin', 'plugin.json')), 'resources/cli/mod/hooks/register.js shipped, and its .claude-plugin/plugin.json');
   expect(fs.existsSync(path.join(unpacked, 'resources', 'app.asar')), 'app.asar present');
   expect(fs.existsSync(path.join(unpacked, 'resources', 'WHATS-NEW.md')), 'resources/WHATS-NEW.md shipped (M9 fix 227)');
   const icon = readIco(fs.readFileSync(path.join(unpacked, 'resources', 'icon.ico')));

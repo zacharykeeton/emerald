@@ -55,3 +55,20 @@ test('a session on two tabs takes the first tab in order when neither is on show
   assert.deepEqual(shownSessions(layout, false).get('a'), { place: 'elsewhere', tab: 'Panes' });
   assert.deepEqual(shownSessions(layout, true).get('a'), { place: 'focused' });
 });
+
+test('M9 fix 728: under a zoom the panes it hides read covered, behind the Focus', () => {
+  const zoomed = shownSessions(twoTabs(), true, 'n3');
+  assert.deepEqual(zoomed.get('a'), { place: 'focused' });
+  assert.deepEqual(zoomed.get('b'), { place: 'covered' });
+  assert.deepEqual(zoomed.get('c'), { place: 'elsewhere', tab: 'Panes 2' });
+  assert.equal(shownWords(zoomed.get('b'), false), 'behind the Focus');
+  assert.equal(shownData(zoomed.get('b'), false), 'covered');
+  // A file tab in front ignores the zoom.
+  assert.deepEqual(shownSessions(twoTabs(), false, 'n3').get('b'), { place: 'elsewhere', tab: 'Panes' });
+  // A zoom id that is not on the current tab is ignored.
+  assert.deepEqual(shownSessions(twoTabs(), true, 'n5').get('b'), { place: 'shown' });
+  // A session the zoomed pane shows too stays focused.
+  let layout = twoTabs();
+  layout = replaceTab(layout, setPaneSession(currentTab(layout), 'n1', 'a'));
+  assert.deepEqual(shownSessions(layout, true, 'n3').get('a'), { place: 'focused' });
+});

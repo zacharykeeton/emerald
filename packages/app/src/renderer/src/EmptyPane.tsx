@@ -56,7 +56,7 @@ export const PLACEHOLDER_NONE = 'Type > for actions';
 // same component as an overlay, list first, with no tiles and no folders.
 export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false }: Props) {
   const { sessions, layout, daemon } = useStore('sessions', 'layout', 'daemon');
-  const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder } = useUi();
+  const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId } = useUi();
   const skin = useSkin();
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -178,8 +178,9 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   const rows = rankSessions(ordered, query);
   const now = Date.now();
   // The palette is only ever seen with the panes on show, so the rows
-  // read the layout tab as shown (M9 fix 269).
-  const shown = shownSessions(layout, true);
+  // read the layout tab as shown (M9 fix 269), and a pane the zoom hides
+  // reads behind the Focus (fix 728).
+  const shown = shownSessions(layout, true, zoomedPaneId);
   // The action mode (M9 fix 202): every key binding by its label, then
   // this pane's menu items no key reaches, the pane group only when the
   // pane has a session or a view (an empty pane's menu is the keys').
@@ -494,11 +495,11 @@ Double-click to start here`}
               Another folder…
             </button>
             {kind === 'claude' && !browserPick && (
-              <button className="empty-more" onClick={() => openNewSession(paneId, { folder: selected?.folder ?? '', split: false })}>
+              <button className="empty-more" onClick={() => openNewSession(paneId, { folder: selected?.folder ?? '', split: false, opensOn: true })}>
                 More…
               </button>
             )}
-            {/* The face the Claude session opens on (M9 fix 689), remembered at the click; More…'s dialog starts on the terminal. */}
+            {/* The face the Claude session opens on (M9 fix 689), remembered at the click; More…'s dialog follows it too (M9 fix 723). */}
             {kind === 'claude' && !browserPick && (
               <span className="empty-opens" role="group" aria-label="The view the session opens on">
                 <span className="muted">opens on</span>

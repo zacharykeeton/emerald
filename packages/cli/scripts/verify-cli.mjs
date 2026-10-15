@@ -45,7 +45,7 @@ const BLOCKS = [
   { name: 'fix-320', fixes: ['fix-320'], needs: ['fix-240'] },
   { name: 'fix-379', fixes: ['fix-379', 'fix-403'], needs: [] },
   { name: 'fix-402', fixes: ['fix-402'], needs: [] },
-  { name: 'fix-710', fixes: ['fix-710'], needs: [] },
+  { name: 'fix-710', fixes: ['fix-710', 'fix-733'], needs: [] },
 ];
 const { block, blocksRun } = blockRunner(BLOCKS);
 
@@ -363,7 +363,7 @@ try {
   j = emeraldJson('hooks', 'install', '--settings', settings, '--json');
   expect(j.code === 0 && j.json?.skill === skillFile && fs.readFileSync(skillFile, 'utf8') === r.out, 'hooks install writes the skill beside the settings file, as printed');
   j = emeraldJson('hooks', 'status', '--settings', settings, '--json');
-  expect(j.code === 0 && j.json?.skill === true && j.json.complete === true, 'hooks status --json: skill true, complete');
+  expect(j.code === 0 && j.json?.skill === true && j.json.complete === true && j.json.modPresent === true, 'hooks status --json: skill true, complete, the mod shipped');
   // M9 fix 606: one Test event through the installed hook reaches the
   // daemon this script started, read off the pipe's hooks.test.
   j = emeraldJson('hooks', 'status', '--settings', settings, '--test', '--json');
@@ -1214,6 +1214,20 @@ try {
     r = emerald('hooks', 'uninstall', '--settings', deadSettings);
     expect(r.code === 0, `hooks uninstall tidies the fix 710 settings (${r.code})`);
     log("M9 fix 710: hooks status names entries pointing at missing files, install takes out emerald's and names anyone else's");
+    // Uninstall takes out emerald's dead entries too (M9 fix 733): the old
+    // home's two seeded again over a fresh install, the stranger's still there.
+    r = emerald('hooks', 'install', '--settings', deadSettings);
+    expect(r.code === 0, `hooks install again on the fix 710 settings (${r.code})`);
+    const reseeded = JSON.parse(fs.readFileSync(deadSettings, 'utf8'));
+    reseeded.hooks.Stop.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+    reseeded.hooks.SessionStart.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+    fs.writeFileSync(deadSettings, JSON.stringify(reseeded, null, 2));
+    r = emerald('hooks', 'uninstall', '--settings', deadSettings);
+    expect(
+      r.code === 0 && /^removed: 2 entries that pointed at missing files$/m.test(r.out) && !fs.readFileSync(deadSettings, 'utf8').includes('old-home') && fs.readFileSync(deadSettings, 'utf8').includes('old-tool'),
+      `hooks uninstall takes out emerald's dead entries and leaves the stranger's (${r.code}: ${JSON.stringify(r.out)})`,
+    );
+    log("M9 fix 733: hooks uninstall takes out emerald's dead entries too and leaves anyone else's");
   });
 
   log(blocksRun());

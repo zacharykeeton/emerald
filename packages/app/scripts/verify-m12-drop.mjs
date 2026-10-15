@@ -89,6 +89,61 @@ try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
   await clickNewShell(s, os.homedir());
   await s.waitFor(`document.querySelectorAll('.term-host').length === 1`, 'a shell in the first pane');
+  // M9 fix 727: the usage record, switched on through the speaker's right-click
+  // menu (fix 700's way) and read from the size it had at on(). off() puts the
+  // window's switch back; actions(name) polls up to 3 s for the lines since
+  // on() whose ev is action and whose name matches, and returns what it has.
+  const usage727 = (() => {
+    const file = path.join(process.env['EMERALD_HOME'], 'logs', 'usage.jsonl');
+    let offset = 0;
+    const size = () => {
+      try {
+        return fs.statSync(file).size;
+      } catch {
+        return 0;
+      }
+    };
+    const pick = async (label) => {
+      const c = await s.evalJs(`(() => { const r = document.querySelector('.attention-sound').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      await s.rightClick(c.x, c.y);
+      await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
+      await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+      await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+    };
+    const read = (name) => {
+      let text = '';
+      try {
+        text = fs.readFileSync(file).subarray(offset).toString('utf8');
+      } catch {
+        // Not written yet.
+      }
+      return text
+        .split('\n')
+        .filter((l) => l !== '')
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.ev === 'action' && l.name === name);
+    };
+    return {
+      async on() {
+        await s.waitFor(`!!document.querySelector('.attention-sound')`, 'the speaker button for the usage switch', 5000);
+        await pick('Usage record: off');
+        await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
+        offset = size();
+      },
+      async off() {
+        await pick('Usage record: on');
+        await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage !== 'on'`, 'the usage switch off', 5000);
+      },
+      // Polls until `want` lines arrive (or 3 s), then waits a beat so a
+      // stray extra line would show in the count.
+      async actions(name, want = 1) {
+        let got = read(name);
+        for (const end = Date.now() + 3000; got.length < want && Date.now() < end; await sleep(100)) got = read(name);
+        await sleep(300);
+        return read(name);
+      },
+    };
+  })();
   let layout = await getLayout(s);
   const first = layout.focusedPaneId;
   expect((await setDropFile(s, seed)) === seed, 'the preload answers the folder path for the File that will be dropped');
@@ -157,6 +212,7 @@ try {
   await hover(s, m);
   expect((await zoneOn(s, newPane)) === 'file', 'and over the middle');
   await s.screenshot('m12-drop-file-preview.png');
+  await usage727.on();
   await drag(s, 'drop', m);
   await sleep(800);
   expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'the preview is cleared');
@@ -170,6 +226,9 @@ try {
   );
   const typed = Buffer.from((await zreq(s, 'session.read', { sessionId: dropped.id })).data, 'base64').toString('utf8');
   expect(!typed.slice(typed.indexOf(quoted) + quoted.length).includes('\n'), 'no Enter after the path');
+  const dropPath727 = await usage727.actions('drop-path');
+  expect(dropPath727.length === 1 && dropPath727[0].from === 'click', `the drop on a shell pane is recorded once as drop-path from a click, got ${JSON.stringify(dropPath727)}`);
+  await usage727.off();
   step('a file over a shell pane lights the whole pane, and the drop types its quoted path with no Enter');
 
   // A file over an empty pane (Ctrl+Shift+E splits the focused pane with
@@ -456,6 +515,7 @@ try {
   }
   const litOutside = () => s.evalJs(`[...document.querySelectorAll('[data-drop-target]')].map((e) => e.className.split(' ')[0])`);
   const fileTabs = () => s.evalJs(`[...document.querySelectorAll('.tab-file')].map((t) => ({ path: t.dataset.path ?? t.title ?? null, preview: t.dataset.preview !== undefined, active: t.dataset.active !== undefined }))`);
+  await usage727.on();
   for (const sel of ['.tab-strip', '.files-rail']) {
     const spot = await centerOf(s, sel);
     await hover(s, spot);
@@ -466,6 +526,9 @@ try {
     expect(JSON.stringify(await litOutside()) === '[]' && !(await dragOn(s)), `${sel} is unlit and the drag over after the drop`);
     const opened = await fileTabs();
     expect(opened.length === 1 && !opened[0].preview && opened[0].active, `one pinned active file tab, got ${JSON.stringify(opened)}`);
+    const want727 = sel === '.tab-strip' ? 1 : 2;
+    const tabDrops727 = (await usage727.actions('drop-file-tab', want727)).filter((l) => l.from === 'click');
+    expect(tabDrops727.length === want727, `${want727} drop-file-tab from a click after the ${sel} drop, got ${tabDrops727.length}`);
     expect(await s.evalJs(`document.querySelector('.tab-file .tab-name')?.textContent === ${JSON.stringify(path.basename(seedFile))}`), 'the tab is named for the file');
     await s.key('w', 'KeyW', 87, CTRL);
     await s.waitFor(`document.querySelectorAll('.tab-file').length === 0`, `Ctrl+W closed the tab after the ${sel} drop`);
@@ -502,6 +565,9 @@ try {
   await drag(s, 'drop', stripSpot);
   await sleep(800);
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === 0 && (await sessionCount(s)) === before + 1, 'a folder dropped on the strip opens no tab and starts no session');
+  const tabDrops727 = (await usage727.actions('drop-file-tab', 3)).filter((l) => l.from === 'click');
+  expect(tabDrops727.length === 3, `three drop-file-tab in all (strip, rail, the untyped file), the folder added none, got ${tabDrops727.length}`);
+  await usage727.off();
   step('fix 341: a file dropped on the tab strip or the files rail opens as a pinned tab, lit on the way in; a folder there lights it too but opens nothing');
 
   step('PASS');

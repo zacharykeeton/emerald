@@ -205,11 +205,15 @@ export function installHooks(opts: HooksInstallOptions): { changed: boolean; rem
   return { changed, removed };
 }
 
-export function uninstallHooks(opts: HooksInstallOptions): { changed: boolean } {
+export function uninstallHooks(opts: HooksInstallOptions): { changed: boolean; removed: DeadEntry[] } {
   const before = readSettings(opts.settingsPath);
-  const settings = stripEntries(before, (e) => isOurs(e, opts.scriptDest));
+  // Our dead entries from an old home go too, as install takes them (M9
+  // fix 733), so removing Emerald leaves none of its own behind; anyone
+  // else's stay.
+  const removed = deadEntries(before, opts).filter((d) => d.ours);
+  const settings = stripEntries(before, (e) => isOurs(e, opts.scriptDest) || isDeadOurs(e));
   const sl = statusLinePaths(opts);
-  if (isOurStatusLine(settings['statusLine'], sl.cmdDest)) {
+  if (isOurStatusLine(settings['statusLine'], sl.cmdDest) || isDeadOurs(settings['statusLine'])) {
     const previous = readPreviousStatusLine(sl.previous);
     if (previous === null) delete settings['statusLine'];
     else settings['statusLine'] = previous;
@@ -231,7 +235,7 @@ export function uninstallHooks(opts: HooksInstallOptions): { changed: boolean } 
   } catch {
     // Not empty, or already gone.
   }
-  return { changed };
+  return { changed, removed };
 }
 
 // The shipped skill text, for `emmer skill`: what an install writes, so a

@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
+import { processIdentity } from '@emerald/shared/process-identity';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm16-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m16';
@@ -46,12 +47,23 @@ git('add', '.');
 git('commit', '-q', '-m', 'seed');
 
 let app = null;
+// The first daemon as daemon.json names it, pid and start time (M9 fix
+// 735): it is killed by pid at the restart step and again by the watchdog
+// and the finally, long after, when Windows may have given the number to
+// another process, so every kill asks first whether it is still the same.
 let firstDaemon = null;
+const readDaemon = () => {
+  const { pid, startedAt } = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+  return { pid, startedAt };
+};
+const killFirstDaemon = () => {
+  if (firstDaemon !== null && processIdentity(firstDaemon.pid, firstDaemon.startedAt) === 'same') spawn('taskkill', ['/pid', String(firstDaemon.pid), '/f'], { stdio: 'ignore' });
+};
 setTimeout(() => {
   console.error('[verify] WATCHDOG: run exceeded 180 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
-  if (firstDaemon !== null) spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killFirstDaemon();
   setTimeout(() => process.exit(3), 500);
 }, 180000);
 
@@ -97,9 +109,9 @@ try {
   const [p1, p2] = leaves(layout).map((p) => p.id);
   const claude = leaves(layout)[0].sessionId;
   const plain = leaves(layout)[1].sessionId;
-  firstDaemon = daemonPid();
+  firstDaemon = readDaemon();
   expect((await rowContext(s, claude)) === null && (await paneContext(s, p1)) === null, 'nothing shown before any status line');
-  step(`two shells, daemon pid ${firstDaemon}; no model or context shown yet`);
+  step(`two shells, daemon pid ${firstDaemon.pid}; no model or context shown yet`);
 
   // Read per post: the daemon is restarted below and the new one has a
   // hook port and token of its own.
@@ -245,12 +257,30 @@ try {
   step('a status line does not count as a hook event for staleness');
 
   // The daemon dies; the app starts another, which lists the session as
-  // exited with the last model and percent from sessions.json.
-  spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  // exited with the last model and percent from sessions.json. The file is
+  // written through fix 459's coalesce (Limits.saveCoalesceMs), and a /f
+  // kill is TerminateProcess and flushes nothing, so the kill waits until
+  // the file holds the 61 (M9 fix 735); a miss past eight windows is the
+  // daemon never writing it, a finding rather than a flake.
+  let lastSeen = null;
+  const saved = () => {
+    try {
+      const entry = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'sessions.json'), 'utf8')).sessions.find((x) => x.id === claude);
+      lastSeen = entry === undefined ? null : { model: entry.model, contextPercent: entry.contextPercent };
+      return entry?.model === 'Opus' && entry?.contextPercent === 61;
+    } catch {
+      return false; // mid-rename
+    }
+  };
+  const savedBy = Date.now() + 2000;
+  while (!saved() && Date.now() < savedBy) await sleep(50);
+  expect(saved(), `sessions.json holds Opus at 61 before the kill (last read: ${JSON.stringify(lastSeen)})`);
+  expect(processIdentity(firstDaemon.pid, firstDaemon.startedAt) === 'same', `the first daemon is still pid ${firstDaemon.pid} before its kill`);
+  killFirstDaemon();
   await s.waitFor(`!!document.querySelector('.banner')`, 'disconnected');
   await s.waitFor(`!document.querySelector('.banner')`, 'reconnected after the daemon autostart', 20000);
   const secondDaemon = daemonPid();
-  expect(secondDaemon !== firstDaemon, `a new daemon, pid ${firstDaemon} to ${secondDaemon}`);
+  expect(secondDaemon !== firstDaemon.pid, `a new daemon, pid ${firstDaemon.pid} to ${secondDaemon}`);
   await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(claude)}]')?.dataset.state === 'exited'`, 'the session is listed as exited');
   await waitRowContext(s, claude, 'Opus · 61%', 'the row still says what it ran');
   expect((await paneContext(s, p1)) === 'Opus · 61%', 'and so does the title');
@@ -341,15 +371,15 @@ try {
   const narrowTitle = await titleProbe();
   // Seven buttons since M9 fix 689 (the face button first on a Claude
   // pane; six since M9 fix 181), giving in M9 fix 208's order: the two
-  // splits at the third squeeze level, then (M9 fix 237) the face, hide
-  // and close at the seventh, after the state word and the name; the
+  // splits and the face button at the third squeeze level (M9 fix 724),
+  // then (M9 fix 237) hide and close at the seventh, after the state word and the name; the
   // zoom and the shade never. Whatever level 330px lands on, the buttons shown are
   // that level's and every one ends inside the box.
   const buttonsProbe = () =>
     s.evalJs(
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const pct = t.querySelector('.pane-context-percent'); const ctx = t.querySelector('.pane-context'); const percent = pct === null ? null : (() => { const pr = pct.getBoundingClientRect(); const cr = ctx.getBoundingClientRect(); return { shown: getComputedStyle(pct).display !== 'none' && pr.width > 0, whole: pr.left >= cr.left - 0.5 && pr.right <= cr.right + 0.5 && pct.scrollWidth <= pct.clientWidth + 1, text: pct.textContent }; })(); return { level: Number(t.dataset.squeeze ?? 0), box: Math.round(box.width), percent, buttons: [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const r = b.getBoundingClientRect(); return { cls: b.className, shown: getComputedStyle(b).display !== 'none', right: Math.round(r.right - box.left) }; }) }; })()`,
     );
-  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 3 && c.startsWith('pane-split')) && !(level >= 7 && (c === 'pane-face-toggle' || c === 'pane-hide' || c === 'pane-close')));
+  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 3 && (c.startsWith('pane-split') || c === 'pane-face-toggle')) && !(level >= 7 && (c === 'pane-hide' || c === 'pane-close')));
   const buttonsAt = (read, where) => {
     const shown = read.buttons.filter((b) => b.shown).map((b) => b.cls.split(' ')[0]);
     expect(read.buttons.length === 7 && JSON.stringify(shown) === JSON.stringify(expectedShown(read.level)), `fix 208: the buttons shown ${where} are level ${read.level}'s, got ${JSON.stringify(read.buttons)}`);
@@ -584,7 +614,7 @@ try {
   s.close();
   killTree(s.child);
   stopDaemon();
-  if (firstDaemon !== null) spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killFirstDaemon();
   // A shell not yet gone may still hold the folder; one left under
   // emerald-verify is harmless.
   setTimeout(() => {

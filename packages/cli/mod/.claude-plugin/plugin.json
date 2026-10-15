@@ -1,0 +1,1 @@
+{ "name": "emerald", "version": "0.1.0", "description": "Posts Claude Code's hook events to the Emerald daemon from inside the session.", "author": { "name": "Zachary Keeton" } }

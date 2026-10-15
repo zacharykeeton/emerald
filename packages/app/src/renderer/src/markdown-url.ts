@@ -13,10 +13,27 @@
 // rather than staying as written, since the page is itself loaded from
 // file: and would resolve the scheme-relative form to the same UNC path;
 // an empty src fetches nothing and the alt text shows.
+import type { MarkdownIt } from 'markdown-it';
+
 export function imageSrc(folder: string | undefined, src: string): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return src;
   if (folder === undefined) return /^[/\\]{2}/.test(src) ? '' : src;
   return fileUrl(folder, src);
+}
+
+// The image rule with the src resolved against the env's folder:
+// markdown-it's own rule does the rest (alt text, title), so only the
+// attribute is changed before it runs. Shared by the Markdown tab and the
+// chat view's replies (M9 fix 716).
+export function installImageSrc(md: MarkdownIt): void {
+  const renderImage = md.renderer.rules['image'];
+  md.renderer.rules['image'] = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]!;
+    const src = token.attrGet('src');
+    const folder = (env as { folder?: string }).folder;
+    if (typeof src === 'string') token.attrSet('src', imageSrc(folder, src));
+    return renderImage !== undefined ? renderImage(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
+  };
 }
 
 // C:\docs + images/a.png gives file:///C:/docs/images/a.png; the URL

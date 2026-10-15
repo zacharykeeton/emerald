@@ -71,6 +71,9 @@ interface Props {
   // a press on it is left to its own handler, which toggles the menu, so
   // a second click closes it rather than closing and reopening it.
   anchor?: HTMLElement | null;
+  // Opens upward with its bottom at y (M9 fix 714, the chat view's view
+  // chip under the box), rather than with its top there.
+  above?: boolean;
 }
 
 // A plain DOM context menu rather than Electron's native one: it needs no
@@ -83,7 +86,7 @@ interface Props {
 // the files rail after it in the DOM painted over a menu opened near it,
 // whatever the menu's z-index. From the body it floats over everything
 // in the page below the dialogs.
-export function Menu({ x, y, items, onClose, className, data, anchor }: Props) {
+export function Menu({ x, y, items, onClose, className, data, anchor, above }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
   // The open submenu (M9 fix 624): its row's label and element. Its list
@@ -112,9 +115,9 @@ export function Menu({ x, y, items, onClose, className, data, anchor }: Props) {
     const r = el.getBoundingClientRect();
     setPos({
       left: Math.max(0, Math.min(x, window.innerWidth - r.width - 4)),
-      top: Math.max(0, Math.min(y, window.innerHeight - r.height - 4)),
+      top: above === true ? Math.max(0, y - r.height) : Math.max(0, Math.min(y, window.innerHeight - r.height - 4)),
     });
-  }, [x, y]);
+  }, [x, y, above]);
 
   // The listeners are registered once for the life of the menu and read
   // onClose through a ref. Callers pass a fresh closure every render, and

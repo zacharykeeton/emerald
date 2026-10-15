@@ -160,6 +160,14 @@ try {
   await waitTitle(s, p2.id, 'idle', 'ack -> idle', 5000);
   let names = eventsFor(claudeId).map((e) => e.event);
   expect(names.includes('UserPromptSubmit') && names.includes('Stop'), 'UserPromptSubmit and Stop logged');
+  // M9 fix 726: Emerald's own Claude loads the mod, whose post of each
+  // event comes first; the hook file's copies are folded, so each of the
+  // three is one line, marked mod.
+  {
+    const three = eventsFor(claudeId).filter((e) => ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(e.event));
+    const once = ['SessionStart', 'UserPromptSubmit', 'Stop'].every((n) => three.filter((e) => e.event === n).length === 1);
+    expect(once && three.every((e) => e.mod === true), `turn 1's SessionStart, UserPromptSubmit and Stop came from the mod, once each, the hook file's copies folded (${three.map((e) => `${e.event}${e.mod ? ':mod' : ''}`).join(', ')})`);
+  }
   step(`ack on focus: idle. hooks.jsonl so far: ${names.join(', ')}`);
 
   // M9 fix 469: push the current file past the threshold with two padding

@@ -83,6 +83,13 @@ try {
   const stopDeadline = Date.now() + 90000;
   while (Date.now() < stopDeadline && !eventsFor(claudeId).some((e) => e.event === 'Stop')) await sleep(200);
   expect(eventsFor(claudeId).some((e) => e.event === 'Stop'), 'Stop logged');
+  // M9 fix 726: the hosted Claude loads the mod; each of the three is one
+  // line, from the mod, the hook file's copies folded.
+  {
+    const three = eventsFor(claudeId).filter((e) => ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(e.event));
+    const once = ['SessionStart', 'UserPromptSubmit', 'Stop'].every((n) => three.filter((e) => e.event === n).length === 1);
+    expect(once && three.every((e) => e.mod === true), `SessionStart, UserPromptSubmit and Stop from the mod, once each (${three.map((e) => `${e.event}${e.mod ? ':mod' : ''}`).join(', ')})`);
+  }
   await waitTitle(s, pane.id, 'idle', 'done acked in the focused pane', 5000);
   await sleep(500);
   await typeLine(s, '/exit');
@@ -146,6 +153,8 @@ try {
   const stopsBefore = eventsFor(shellId).filter((e) => e.event === 'Stop').length;
   while (Date.now() < stopDeadline2 && eventsFor(shellId).filter((e) => e.event === 'Stop').length === stopsBefore) await sleep(200);
   expect(eventsFor(shellId).filter((e) => e.event === 'Stop').length > stopsBefore, 'Stop logged for the hosted conversation');
+  // M9 fix 726: a hand-typed claude has no --plugin-dir.
+  expect(eventsFor(shellId).filter((e) => e.event === 'Stop').every((e) => e.mod !== true), 'a claude typed into a shell pane posts through the hook file alone, and its row moves as today');
   await sleep(500);
   await typeLine(s, '/exit');
   // Claude leaves: the shell is a shell again, unbound, still in the

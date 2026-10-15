@@ -5,7 +5,7 @@ import { roomBesideFocused } from './actions.ts';
 import { splitArgs } from './new-session-model.ts';
 import { loadRecent, rememberFolderUsed } from './recent-folders.ts';
 import { editTab, useStore } from './store.ts';
-import { closeNewSession, useUi } from './ui.ts';
+import { closeNewSession, loadClaudeOpensOn, setChatFace, useUi } from './ui.ts';
 import type { NewSessionPreset } from './ui.ts';
 
 // Modal for starting a session with choices: folder, Claude or shell, extra
@@ -80,13 +80,16 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
     setBusy(true);
     setError(null);
     const extra = kind === 'claude' ? [...splitArgs(args), ...(firstPrompt.trim() === '' ? [] : [firstPrompt.trim()])] : [];
+    // From the empty pane's More... the face follows the `opens on` pick (M9 fix 723), read now.
+    const chat = kind === 'claude' && preset?.opensOn === true && loadClaudeOpensOn() === 'chat';
     // The pane resizes the PTY as soon as the terminal mounts, so any sane
     // starting size will do.
     window.emerald
       .request('session.spawn', { kind, cwd: folder, cols: 120, rows: 30, ...(extra.length > 0 ? { args: extra } : {}) })
       .then(async ({ session }) => {
         const target = preset?.split === true ? await roomBesideFocused() : paneId;
-        return editTab((t) => setPaneSession(t, target, session.id), target);
+        await editTab((t) => setPaneSession(t, target, session.id), target);
+        if (chat) setChatFace(target, session.id, true);
       })
       .then(() => {
         rememberFolderUsed(folder);

@@ -106,6 +106,8 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'open-view-beside', label: 'Open a view beside', group: 'clicks' },
   { name: 'drop-folder', label: 'Drop a folder on a pane', group: 'clicks' },
   { name: 'drop-file', label: 'Drop a file on a pane', group: 'clicks' },
+  { name: 'drop-file-tab', label: 'Drop a file on the tab strip or the Files rail', group: 'clicks' },
+  { name: 'drop-path', label: "Drop a file on a session's pane", group: 'clicks' },
   { name: 'rename-session', label: 'Rename a session', group: 'clicks' },
   { name: 'set-colour', label: "Set a session's colour", group: 'clicks' },
   { name: 'set-scheme', label: "Set a session's colour scheme", group: 'clicks' },

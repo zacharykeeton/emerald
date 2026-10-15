@@ -112,6 +112,7 @@ const api: EmeraldApi = {
     read: () => ipcRenderer.invoke('emerald:clipboard-read'),
     write: (text) => ipcRenderer.invoke('emerald:clipboard-write', text),
     writeImage: (dataUrl) => ipcRenderer.invoke('emerald:clipboard-write-image', dataUrl),
+    image: (keyRoute) => ipcRenderer.invoke('emerald:clipboard-image', keyRoute),
   },
   // Design Mode (M9 fix 674): main checks the pane's guest is this
   // window's webview before it runs the picker in it.
@@ -135,7 +136,8 @@ const api: EmeraldApi = {
   setSkin: (skin) => ipcRenderer.send('emerald:skin-set', skin),
   mainSkin: () => ipcRenderer.sendSync('emerald:skin-get'),
   pickFolder: (defaultPath) => ipcRenderer.invoke('emerald:pick-folder', defaultPath),
-  pickFile: (defaultPath) => ipcRenderer.invoke('emerald:pick-file', defaultPath),
+  pickFile: (defaultPath, images) => ipcRenderer.invoke('emerald:pick-file', defaultPath, images),
+  skills: (folder) => ipcRenderer.invoke('emerald:skills-list', folder),
   hooksStatus: () => ipcRenderer.invoke('emerald:hooks-status'),
   hooksInstall: () => ipcRenderer.invoke('emerald:hooks-install'),
   hooksTest: () => ipcRenderer.invoke('emerald:hooks-test'),

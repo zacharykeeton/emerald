@@ -2,6 +2,38 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 713 to 737, 2026-10-15
+
+Twenty-five fixes, led by the Chat face's second story, which is the thing to look at first: a footer that reads like Claude Code's own, a Normal view that folds each turn's tool calls, replies as Markdown with live paths, thumbnails for images, `/` and `@` menus in the box, and images pasted, attached or dropped into the prompt. The chat view is still a preview: its pane title carries a `Preview` chip, and the terminal face has everything. Still to come are the view fed by the mod, an image paste going in by Claude Code's own key, and a tail read for very long transcripts. Beside it, Emerald's own Claude sessions now post their hooks through an emerald mod, Design Mode reads whole in a narrow pane, and a pane close can no longer take the daemon down. The daemon stays at level 64, so no daemon restart is asked.
+
+### Highlights
+
+**Chat opens on Normal.** Each turn's tool calls fold into one row, `3 steps · Agent, Read, Edit +6 −2 ›`, and a click unfolds it. The view chip under the box, or Ctrl+O while the view has the keyboard, cycles Normal, Thinking (the thinking shown above the folded row) and Verbose (every step), and each pane keeps its own.
+
+**The footer.** Under the box sit the permission mode as Claude Code names it (a click sends Shift+Tab), the model with its effort (a click types `/model`), the agents out and back (a click opens the roster card) and the session's lines added and removed (a click opens Review changes), with a paperclip at the left.
+
+**Replies you can use.** Claude's replies are rendered Markdown: lists, bold, code, fenced blocks and tables. A link opens in the browser, and a file named in a reply, in a tool row or on an edit card is a link that opens it in a tab; a right-click gives the Files rail's menu and `Mention in the message`, which puts `@<path>` at the box's caret. An edit's permission card shows the hunk with its line numbers and `Open as a diff`.
+
+**Images.** An image a tool read, and the images pasted into a prompt, show as thumbnails that open full size; Escape closes them. In the box, Ctrl+V or Paste with an image on the clipboard, the paperclip, or a drop of an image file puts it into Claude's prompt as `[Image #N]`, with a chip above the text until Send.
+
+**`/` and `@`.** A `/` typed first lists the commands the box can send, your skills and the folder's, and the commands whose menus only the terminal draws; typing filters, Enter sends, Tab completes. An `@` lists the session folder's files and folders as you type a path; Tab or Enter adds it.
+
+### Details
+
+**Chat, smaller things.** The live line's glyph wears the skin's colour, and the wait overlay sits at the timeline's top right. The first turn now shows in a folder Claude Code has never used. More… on the empty pane honours the `opens on` pick, so a chat session can start with arguments and a first prompt. The chat button gives at the squeeze's third level with the splits, so the state word holds in a narrow title.
+
+**The emerald mod.** Emerald's own Claude sessions load a small Claude Code plugin that posts every hook event from inside Claude, with no `cmd.exe` or `curl.exe` started per event. The hook file stays installed as the fallback, and the daemon folds the second copy of each event. `emmer hooks status` says whether the mod is shipped.
+
+**Hooks.** `emmer hooks uninstall` takes out emerald's dead entries too, so removing Emerald leaves none of its own behind; another tool's stay.
+
+**Design Mode in a narrow pane.** The title's chip takes an ellipsis before the buttons give, the tray's hint is shorter with the full sentence on hover, an empty tray says `Click an element on the page to add a note`, and the docked tray takes its own height up to 40 percent.
+
+**The sidebar.** Under a zoom, a row whose pane the zoom hides reads `behind the Focus`, its name dimmed.
+
+**The usage record.** A file dropped on the tab strip or the Files rail is recorded as `drop-file-tab`, and one dropped on a session's pane as `drop-path`.
+
+**Smaller things.** A pane close can no longer take the daemon down: it refuses a kill of its own process. `emmerd.log` says when a SessionStart under another conversation is ignored, naming both conversations. The pulses keep in step with less work, synced only when a pulse starts or changes. An open folder that is not there yet, or was deleted, is tried again every 2 s and listed once it appears.
+
 ## Fixes 688 to 712, 2026-10-15
 
 Twenty-five fixes, led by the Chat face of a Claude pane, which is the thing to look at first: the session drawn from its transcript as prompts, steps and replies, with a box to type into and the terminal one click away. Beside it, a question in the pane you are answering no longer chimes at you, a pane hidden by Focus pulses its tab, the empty pane gets a close button and a double-click to start, Design Mode's tray docks under a narrow page, dead hook entries are named and fixed, and the Emerald mark now rests on the filled gem `◆`. The daemon goes to level 64, since it now sends one load push a tick in place of a record per session, so the update restarts it as usual.

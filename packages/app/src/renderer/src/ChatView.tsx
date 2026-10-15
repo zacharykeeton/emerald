@@ -1,20 +1,34 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { formatDuration, parseSteps, resultText } from '@emerald/shared';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { contextWords, describeState, effortOf, formatDuration, parseSteps, resultText, teamCounts } from '@emerald/shared';
 import type { SessionInfo, Step, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendPrompt, typeInto } from './actions.ts';
-import { ASK_REFRESH_MS, CHAT_REREAD_MS, FALLBACK_ON_GROWTH, askHeading, hintText, opensMenu, spinnerOf } from './chat-model.ts';
+import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, SCREEN_READ_MS, agentChipText, askHeading, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modeOf, modelChipText, nextChatMode, opensMenu, pastedPath, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, timelineItems } from './chat-model.ts';
+import type { ChatMode, FoldItem, SlashRow } from './chat-model.ts';
+import { MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
+import { isPasteKey } from './keys-model.ts';
+import type { MentionRow } from './ChatMenus.tsx';
+import type { SkillEntry } from '../../preload/api.ts';
 import { parentPath } from './files-model.ts';
+import { ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
+import { pendingEdit } from './chat-hunk.ts';
+import type { PendingEdit } from './chat-hunk.ts';
+import { resolveIn } from './chat-paths.ts';
+import { Menu } from './Menu.tsx';
+import type { MenuHeading, MenuItem } from './Menu.tsx';
+import { PopoverAnchor } from './Popover.tsx';
+import { RosterCard } from './roster.tsx';
 import { answerOptions, promptExcerpt } from './screen-prompt-model.ts';
 import { SessionMark } from './session-mark.tsx';
-import { acknowledgeAttention, setChatFace } from './ui.ts';
+import { acknowledgeAttention, openReviewTab, setChatFace, setChatMode, useUi } from './ui.ts';
 
 // M9 fix 689: a Claude session's chat face, the conversation drawn from
 // its transcript over the same session, with a box that types into it.
 // It sits inside the pane's .term-wrap after the terminal, which stays
 // mounted under it (hidden, never refit), so the shade, the wait overlay
 // and the exited notice still draw over this face as they do over the
-// terminal. Story 1 draws every step (Verbose); the view modes, the
-// footer's chips and the menus are story 2's.
+// terminal. Story 1 draws every step (Verbose). Since fix 713 the footer
+// under the box carries story 2's chips: the permission mode, the model
+// with its effort, the agents out and returned, and the lines changed.
 
 type Read = { text: string } | { error: string } | null;
 
@@ -23,6 +37,8 @@ const BOX_MAX_LINES = 8;
 const BOX_LINE_PX = 18;
 // The scroll sticks to the end while the person is within this of it.
 const STICK_PX = 24;
+// The view menu's words beside each mode (M9 fix 714).
+const VIEW_HINTS: Readonly<Record<ChatMode, string>> = { normal: 'steps folded', thinking: 'and the thinking', verbose: 'every step' };
 
 const timeOf = (at: number | null): string | null => (at === null ? null : new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
 
@@ -48,8 +64,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
         .then((r) => {
           if (!live) return;
           if ('text' in r) setRead({ text: r.text });
-          else if ('error' in r) setRead({ error: r.error });
-          else setRead({ error: 'Not a text file' });
+          else if ('error' in r) {
+            if (r.error.startsWith('Too large')) setRead({ error: r.error });
+            // M9 fix 722: any other error (the transcript not written yet, a
+            // read caught mid-write) keeps what is drawn; the next change push
+            // reads again, and a folder's first watch sends one
+            // (folder-watchers.ts).
+          } else setRead({ error: 'Not a text file' });
         })
         .catch((err: unknown) => console.warn('[emerald] chat read failed', err));
     };
@@ -74,33 +95,48 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const turns = useMemo(() => parseSteps(text), [text]);
   const tooLarge = read !== null && 'error' in read && read.error.startsWith('Too large') ? read.error : null;
 
-  // The live line's word and count, off the spinner row, read once a
-  // second while the session works (claim 8 of chat-claims-688.md).
+  const effort = useMemo(() => effortOf(text), [text]);
+  const diff = useMemo(() => sessionDiff(turns), [turns]);
+
+  // M9 fix 713: one read of the session's screen a second while the view
+  // shows, whatever the state, feeding the live line's word and count
+  // (claim 8 of chat-claims-688.md), the mode chip and the ask card. A
+  // shade covers the face, so the read waits for the lift and goes at
+  // once then; it goes at once too when an ask comes up, and the card
+  // takes no read sent before that moment, so it never builds from the
+  // screen before the dialog.
   const working = session.state === 'working';
-  const [spinner, setSpinner] = useState<{ word: string; down: string | null } | null>(null);
+  const asking = session.state === 'needs-input';
+  const [screen, setScreen] = useState<(Screen & { sentAt: number }) | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const askFrom = useRef(0);
+  const wasAsking = useRef(false);
+  if (asking && !wasAsking.current) askFrom.current = Date.now();
+  wasAsking.current = asking;
+  useEffect(() => setScreen(null), [session.id]);
   useEffect(() => {
-    if (!working) {
-      setSpinner(null);
-      return;
-    }
+    if (shaded) return;
     let live = true;
     const tick = () => {
-      setNow(Date.now());
+      const sentAt = Date.now();
+      setNow(sentAt);
       window.emerald
         .request('pty.screen', { sessionId: session.id })
         .then((res) => {
-          if (live) setSpinner(spinnerOf(res.rows));
+          if (live) setScreen({ rows: res.rows, cursor: res.cursor, sentAt });
         })
-        .catch(() => {});
+        .catch((err: unknown) => console.warn('[emerald] screen read failed', err));
     };
     tick();
-    const timer = setInterval(tick, 1000);
+    const timer = setInterval(tick, SCREEN_READ_MS);
     return () => {
       live = false;
       clearInterval(timer);
     };
-  }, [working, session.id]);
+  }, [session.id, shaded, asking]);
+  const spinner = working && screen !== null ? spinnerOf(screen.rows) : null;
+  const mode = screen === null ? null : modeOf(screen.rows);
+  const askScreen = screen !== null && screen.sentAt >= askFrom.current ? screen : null;
 
   // The scroll sticks to the end unless the person has scrolled up, read
   // against the height the last layout left, with no scroll event.
@@ -119,7 +155,6 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const boxRef = useRef<HTMLTextAreaElement>(null);
   // M9 fix 690: while the session asks, the card at the end of the
   // timeline takes the keys and the box is disabled under it.
-  const asking = session.state === 'needs-input';
   const askRef = useRef<HTMLDivElement>(null);
   // The box takes the keyboard while the pane is focused and unshaded:
   // on mount (the face flipping to chat), on the pane taking focus and
@@ -148,10 +183,137 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     el.style.height = `${Math.min(el.scrollHeight, BOX_MAX_LINES * BOX_LINE_PX + 14)}px`;
   }, [box]);
 
-  const send = () => {
-    const prompt = box;
-    if (prompt.trim() === '' || asking) return;
+  // M9 fix 719: the `/` menu, while the whole box is a `/` and no space.
+  // Escape closes it at the text it was dismissed at, and it shows again
+  // once the text changes. The skills are asked for each time it opens
+  // from closed; the built-ins and the terminal's rows show at once.
+  const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
+  const [skills, setSkills] = useState<SkillEntry[] | null>(null);
+  const [slashActive, setSlashActive] = useState(0);
+  const query = slashQuery(box);
+  const slashWanted = query !== null && box !== slashDismissed && !asking;
+  useEffect(() => {
+    if (box !== slashDismissed) setSlashDismissed(null);
+  }, [box, slashDismissed]);
+  useEffect(() => {
+    if (!slashWanted) {
+      setSkills(null);
+      return;
+    }
+    let live = true;
+    window.emerald
+      .skills(session.cwd)
+      .then((list) => {
+        if (live) setSkills(list);
+      })
+      .catch((err: unknown) => console.warn('[emerald] skills read failed', err));
+    return () => {
+      live = false;
+    };
+  }, [slashWanted, session.cwd]);
+  const slashFiltered = useMemo(() => (query === null ? [] : filterSlash(slashRows(skills ?? []), query)), [query, skills]);
+  const slashShown = slashWanted && slashFiltered.length > 0;
+  useEffect(() => setSlashActive(0), [query]);
+  const slashPick = slashFiltered[Math.min(slashActive, slashFiltered.length - 1)];
+
+  // M9 fix 720: the `@` menu, on the token before the caret, listing the
+  // one folder of the session's the typed path names (the files rail's
+  // own listing), each folder read once while the menu is open. Escape
+  // closes it at the text and caret it was dismissed at.
+  const [caret, setCaret] = useState(0);
+  const pendingCaret = useRef<number | null>(null);
+  const [mentionDismissed, setMentionDismissed] = useState<string | null>(null);
+  const [mentionActive, setMentionActive] = useState(0);
+  const listings = useRef(new Map<string, MentionRow[]>());
+  const [listed, setListed] = useState(0);
+  const mention = slashWanted ? null : mentionQuery(box, caret);
+  const mentionKey = `${caret}:${box}`;
+  const mentionWanted = mention !== null && !asking && mentionKey !== mentionDismissed;
+  useEffect(() => {
+    if (mentionKey !== mentionDismissed) setMentionDismissed(null);
+  }, [mentionKey, mentionDismissed]);
+  const mentionDir = mention?.dir ?? null;
+  useEffect(() => {
+    if (!mentionWanted || mentionDir === null) {
+      if (!mentionWanted) listings.current.clear();
+      return;
+    }
+    if (listings.current.has(mentionDir)) return;
+    let live = true;
+    const folder = mentionDir === '' ? session.cwd : `${session.cwd.replace(/[\\/]+$/, '')}\\${mentionDir.replace(/\//g, '\\').replace(/\\+$/, '')}`;
+    window.emerald.files
+      .list(folder)
+      .then((r) => {
+        if (!live) return;
+        listings.current.set(mentionDir, 'error' in r ? [] : r.entries);
+        setListed((n) => n + 1);
+      })
+      .catch(() => {
+        if (!live) return;
+        listings.current.set(mentionDir, []);
+        setListed((n) => n + 1);
+      });
+    return () => {
+      live = false;
+    };
+  }, [mentionWanted, mentionDir, session.cwd]);
+  const mentionRows = useMemo(() => (mention === null ? [] : filterMention(listings.current.get(mention.dir) ?? [], mention.needle)), [mention?.dir, mention?.needle, listed]);
+  const mentionShown = mentionWanted && mentionRows.length > 0;
+  useEffect(() => setMentionActive(0), [mention?.dir, mention?.needle]);
+  const mentionPick = mentionRows[Math.min(mentionActive, mentionRows.length - 1)];
+  // The box's text with `insert` in place of from..to, the caret after it.
+  const replaceInBox = (from: number, to: number, insert: string) => {
+    const el = boxRef.current;
+    const text = el === null ? box : el.value;
+    setBox(text.slice(0, from) + insert + text.slice(to));
+    pendingCaret.current = from + insert.length;
+  };
+  // A file goes in finished, with a space; a folder goes in as `@dir/`,
+  // so the menu lists it next, unless its path has a space, which
+  // Claude Code's quoted form closes, so it goes in finished too.
+  const pickMention = (row: MentionRow) => {
+    if (mention === null) return;
+    const rel = `${mention.dir}${row.name}`;
+    if (row.kind === 'file') replaceInBox(mention.start, caret, `${mentionText(rel)} `);
+    else if (rel.includes(' ')) replaceInBox(mention.start, caret, `${mentionText(`${rel}/`)} `);
+    else replaceInBox(mention.start, caret, `@${rel}/`);
+    boxRef.current?.focus();
+  };
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    const at = pendingCaret.current;
+    if (el === null || at === null) return;
+    pendingCaret.current = null;
+    el.setSelectionRange(at, at);
+    setCaret(at);
+  }, [box]);
+  // `Mention in the message` from a path's menu in the timeline (the
+  // reply branch's A10) arrives as this event; the view whose pane it
+  // names puts the path at the caret, the selection replaced.
+  const cwdRef = useRef(session.cwd);
+  cwdRef.current = session.cwd;
+  const askingRef = useRef(asking);
+  askingRef.current = asking;
+  useEffect(() => {
+    const onMention = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ paneId?: unknown; path?: unknown }>).detail;
+      if (detail?.paneId !== paneId || typeof detail.path !== 'string') return;
+      const el = boxRef.current;
+      if (el === null) return;
+      replaceInBox(el.selectionStart, el.selectionEnd, `${mentionText(relativeMention(cwdRef.current, detail.path))} `);
+      if (!askingRef.current) el.focus();
+    };
+    window.addEventListener('emerald:chat-mention', onMention);
+    return () => window.removeEventListener('emerald:chat-mention', onMention);
+  }, [paneId, session.cwd]);
+
+  // The words go after the images already in Claude Code's prompt, so a
+  // send with only chips is a send too.
+  const send = (text = box) => {
+    const prompt = text;
+    if ((prompt.trim() === '' && chipsRef.current.length === 0) || asking) return;
     setBox('');
+    setChips([]);
     const menu = opensMenu(prompt);
     void sendPrompt(session.id, prompt).then((outcome) => {
       if (outcome.kind === 'refused') setRefusal(outcome.reason);
@@ -159,6 +321,128 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     });
   };
   const stop = () => typeInto(session.id, '\x1b');
+  // M9 fix 713: the model chip types /model as the box would send it, so
+  // the fallback bar shows as for a typed one.
+  const sendModel = () => {
+    void sendPrompt(session.id, '/model').then((outcome) => {
+      if (outcome.kind === 'refused') setRefusal(outcome.reason);
+      else setFallback({ length: textRef.current.length });
+    });
+  };
+  const modelText = modelChipText(contextWords(session), effort);
+  const counts = teamCounts(session);
+  const agentsText = agentChipText(counts);
+  const rosterId = `chat-roster:${session.id}`;
+  // A press on a chip leaves the keyboard where it was (the box), so a
+  // chip is a click and never a stop on the way to typing.
+  const keepKeys = (ev: React.MouseEvent) => ev.preventDefault();
+
+  // M9 fix 714: what the timeline shows, kept per pane with the face; a
+  // turn's fold opened by a click stays open until the mode changes.
+  const { chatModes } = useUi();
+  const view = chatModes.get(paneId) ?? 'normal';
+  const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(() => new Set());
+  useEffect(() => setUnfolded(new Set()), [view]);
+  const toggleFold = (i: number) =>
+    setUnfolded((open) => {
+      const next = new Set(open);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  const viewChipRef = useRef<HTMLButtonElement>(null);
+  const [viewMenu, setViewMenu] = useState<{ x: number; y: number } | null>(null);
+  const openViewMenu = () => {
+    const el = viewChipRef.current;
+    if (el === null) return;
+    const r = el.getBoundingClientRect();
+    setViewMenu((open) => (open === null ? { x: r.left, y: r.top } : null));
+  };
+  const viewItems: Array<MenuItem | MenuHeading> = [
+    { heading: 'What the timeline shows' },
+    ...CHAT_MODES.map((m) => ({
+      label: CHAT_MODE_WORDS[m],
+      hint: VIEW_HINTS[m],
+      checked: m === view,
+      onClick: () => {
+        setChatMode(paneId, m);
+        setViewMenu(null);
+      },
+    })),
+    { heading: 'Ctrl+O cycles them' },
+  ];
+
+  // M9 fix 721: an image goes into Claude Code's own prompt as a pasted
+  // path (pastedPath: the probe found a typed path stays text and a
+  // bracketed paste of it becomes `[Image #N]`), and a chip over the box
+  // shows it, labelled with the number the prompt row gains. The probe
+  // found neither Ctrl+L nor Escape clears the marker, so a chip has no ×
+  // and the chips go on Send; Escape and Stop leave them alone.
+  const [chips, setChips] = useState<{ id: number; thumb: string; n: number | null }[]>([]);
+  const chipsRef = useRef(chips);
+  chipsRef.current = chips;
+  const nextChip = useRef(0);
+  const sessionIdRef = useRef(session.id);
+  sessionIdRef.current = session.id;
+  const addChip = (thumb: string) => {
+    nextChip.current += 1;
+    const id = nextChip.current;
+    setChips((c) => [...c, { id, thumb, n: null }]);
+    const until = Date.now() + 3000;
+    const look = () => {
+      window.emerald
+        .request('pty.screen', { sessionId: sessionIdRef.current })
+        .then((res) => {
+          const held = new Set(chipsRef.current.map((c) => c.n));
+          const fresh = imageMarkers(res.rows).filter((n) => !held.has(n));
+          if (fresh.length > 0) setChips((c) => c.map((x) => (x.id === id ? { ...x, n: Math.max(...fresh) } : x)));
+          else if (Date.now() < until) setTimeout(look, 250);
+        })
+        .catch(() => {});
+    };
+    setTimeout(look, 250);
+  };
+  // A file into the prompt: the path pasted, then its chip.
+  const attachPath = (p: string, thumb: string) => {
+    typeInto(session.id, pastedPath(p));
+    addChip(thumb);
+  };
+  const attachClipboard = async () => {
+    const r = await window.emerald.clipboard.image(IMAGE_PASTE_KEY !== null);
+    if (r === null) return;
+    if (r.path === null) {
+      if (IMAGE_PASTE_KEY !== null) typeInto(session.id, IMAGE_PASTE_KEY);
+      addChip(r.thumb);
+    } else attachPath(r.path, r.thumb);
+  };
+  // The box never reads the clipboard itself, so under a harness it reads
+  // the window's held one and never the person's: text goes in at the
+  // caret, an image with no text goes into the prompt.
+  const paste = async () => {
+    const c = await window.emerald.clipboard.read();
+    if (c.text !== null) {
+      const el = boxRef.current;
+      if (el !== null) replaceInBox(el.selectionStart, el.selectionEnd, c.text);
+    } else if (c.image) await attachClipboard();
+  };
+  const attach = async () => {
+    const p = await window.emerald.pickFile(session.cwd, true);
+    if (p !== null) attachPath(p, fileHref(p));
+  };
+  // The box's own right-click menu: Cut, Copy and Paste.
+  const [boxMenu, setBoxMenu] = useState<{ x: number; y: number } | null>(null);
+  const selection = () => {
+    const el = boxRef.current;
+    return el === null ? '' : el.value.slice(el.selectionStart, el.selectionEnd);
+  };
+
+  // A row picked: sent at once (a terminal row shows the fallback bar as
+  // typing it does), or put in the box with a space for its arguments.
+  const pickSlash = (row: SlashRow, how: 'send' | 'complete') => {
+    if (how === 'send') send(row.name);
+    else setBox(`${row.name} `);
+    boxRef.current?.focus();
+  };
 
   const last = turns.length === 0 ? null : turns[turns.length - 1]!;
   const hint = refusal ?? hintText(session.state);
@@ -168,9 +452,17 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       data-session-id={session.id}
       // Escape anywhere in the view (the box included) goes to the
       // session, stopping a turn or leaving a menu, and closes the
-      // fallback bar; the ask card handles its own.
+      // fallback bar; the ask card handles its own. Ctrl+O cycles the
+      // view mode (fix 714); it never reaches the pty, whose TUI takes
+      // Ctrl+O for its own transcript.
       onKeyDown={(ev) => {
-        if (ev.key !== 'Escape' || ev.defaultPrevented) return;
+        if (ev.defaultPrevented) return;
+        if (ev.code === 'KeyO' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+          ev.preventDefault();
+          setChatMode(paneId, nextChatMode(view));
+          return;
+        }
+        if (ev.key !== 'Escape') return;
         ev.preventDefault();
         setFallback(null);
         stop();
@@ -187,13 +479,14 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             </div>
           )}
           {turns.map((turn, i) => (
-            <ChatTurn key={i} turn={turn} />
+            <ChatTurn key={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} />
           ))}
-          {asking && <AskCard session={session} rootRef={askRef} />}
+          {asking && <AskCard session={session} screen={askScreen} rootRef={askRef} paneId={paneId} edit={pendingEdit(turns)} />}
           {working && (
             <div className="chat-live">
               <span className="chat-live-mark">
-                <SessionMark kind="claude" working size="unit" />
+                {/* M9 fix 715: the state's tone, so the glyph wears the title row's colour in either skin. */}
+                <SessionMark kind="claude" tone={describeState(session).tone} working size="unit" />
               </span>
               {spinner !== null && <span className="chat-live-word">{spinner.word}</span>}
               <span className="chat-live-time">
@@ -221,6 +514,16 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               </button>
             </div>
           )}
+          {chips.length > 0 && (
+            <div className="chat-image-chips">
+              {chips.map((c) => (
+                <span key={c.id} className="chat-image-chip">
+                  <img className="chat-image-chip-thumb" src={c.thumb} alt="" />
+                  <span className="chat-image-chip-label">{c.n === null ? 'Image' : `Image #${c.n}`}</span>
+                </span>
+              ))}
+            </div>
+          )}
           <textarea
             ref={boxRef}
             className="chat-box"
@@ -230,26 +533,175 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             placeholder={asking ? 'Answer the ask above, or press Esc to cancel' : `Message ${session.name} · / for commands · @ for a file`}
             onChange={(ev) => {
               setBox(ev.target.value);
+              setCaret(ev.target.selectionStart);
               setRefusal(null);
             }}
+            onSelect={(ev) => setCaret(ev.currentTarget.selectionStart)}
+            onPaste={(ev) => {
+              ev.preventDefault();
+              void paste();
+            }}
+            onContextMenu={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              setBoxMenu({ x: ev.clientX, y: ev.clientY });
+            }}
+            // An image file dropped on the box is pasted as the attach
+            // button's is; explorer-drop.ts leaves a prevented drop alone,
+            // where it would type the path as text. Anything else is the
+            // window's drop as before.
+            onDrop={(ev) => {
+              const file = ev.dataTransfer.files[0];
+              if (file === undefined || asking) return;
+              const p = window.emerald.files.pathFor(file);
+              if (p === '' || !isImageName(p)) return;
+              ev.preventDefault();
+              attachPath(p, fileHref(p));
+            }}
+            onBlur={() => {
+              if (slashShown) setSlashDismissed(box);
+              if (mentionShown) setMentionDismissed(mentionKey);
+            }}
             onKeyDown={(ev) => {
+              // Ctrl+V (a dictation tool's code-less one too) and Alt+V,
+              // Claude Code's own image key on Windows, paste through
+              // main (M9 fix 721).
+              if (isPasteKey(ev) || (ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey && ev.code === 'KeyV')) {
+                ev.preventDefault();
+                void paste();
+                return;
+              }
+              // While a menu shows, the arrows, Enter, Tab and Escape are
+              // its (M9 fixes 719 and 720); Escape prevented here never
+              // reaches the session through the view's handler.
+              const menu = slashShown && slashPick !== undefined
+                ? { n: slashFiltered.length, move: setSlashActive, enter: () => pickSlash(slashPick, 'send'), tab: () => pickSlash(slashPick, 'complete'), close: () => setSlashDismissed(box) }
+                : mentionShown && mentionPick !== undefined
+                  ? { n: mentionRows.length, move: setMentionActive, enter: () => pickMention(mentionPick), tab: () => pickMention(mentionPick), close: () => setMentionDismissed(mentionKey) }
+                  : null;
+              if (menu !== null && !ev.nativeEvent.isComposing && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+                const { n } = menu;
+                if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                  ev.preventDefault();
+                  menu.move((a) => (Math.min(a, n - 1) + (ev.key === 'ArrowDown' ? 1 : n - 1)) % n);
+                  return;
+                }
+                if ((ev.key === 'Enter' || ev.key === 'Tab') && !ev.shiftKey) {
+                  ev.preventDefault();
+                  if (ev.key === 'Enter') menu.enter();
+                  else menu.tab();
+                  return;
+                }
+                if (ev.key === 'Escape') {
+                  ev.preventDefault();
+                  menu.close();
+                  return;
+                }
+              }
               // Enter is the box's and Escape the view's (above); every
-              // other key passes, so the window's chords still work from
-              // in here.
+              // other key passes, so the window's chords (Ctrl+O among
+              // them) still work from in here.
               if (ev.key === 'Enter' && !ev.shiftKey && !ev.nativeEvent.isComposing) {
                 ev.preventDefault();
                 send();
               }
             }}
           />
+          {slashShown && <SlashMenu box={boxRef.current} rows={slashFiltered} active={Math.min(slashActive, slashFiltered.length - 1)} onPick={(row) => pickSlash(row, 'send')} onClose={() => setSlashDismissed(box)} />}
+          {mentionShown && mention !== null && <MentionMenu box={boxRef.current} dir={mention.dir} rows={mentionRows} active={Math.min(mentionActive, mentionRows.length - 1)} onPick={pickMention} onClose={() => setMentionDismissed(mentionKey)} />}
+          {boxMenu !== null && (
+            <Menu
+              x={boxMenu.x}
+              y={boxMenu.y}
+              className="chat-box-menu"
+              onClose={() => setBoxMenu(null)}
+              items={[
+                {
+                  label: 'Cut',
+                  hint: 'Ctrl+X',
+                  disabled: selection() === '',
+                  onClick: () => {
+                    setBoxMenu(null);
+                    const el = boxRef.current;
+                    if (el === null) return;
+                    void window.emerald.clipboard.write(selection());
+                    replaceInBox(el.selectionStart, el.selectionEnd, '');
+                  },
+                },
+                {
+                  label: 'Copy',
+                  hint: 'Ctrl+C',
+                  disabled: selection() === '',
+                  onClick: () => {
+                    setBoxMenu(null);
+                    void window.emerald.clipboard.write(selection());
+                  },
+                },
+                {
+                  label: 'Paste',
+                  hint: 'Ctrl+V',
+                  onClick: () => {
+                    setBoxMenu(null);
+                    void paste();
+                  },
+                },
+              ]}
+            />
+          )}
           <div className="chat-foot">
+            <button type="button" className="chat-attach" title="Attach an image" aria-label="Attach an image" disabled={asking} onClick={() => void attach()}>
+              <PaperclipIcon />
+            </button>
+            {mode !== null && (
+              <button type="button" className="chat-chip" data-chip="mode" onMouseDown={keepKeys} title="Sends Shift+Tab to the session, which cycles the mode" onClick={() => typeInto(session.id, '\x1b[Z')}>
+                <span className="chat-chip-word">{mode}</span>
+                <span className="chat-chip-caret" aria-hidden="true">
+                  ⌄
+                </span>
+              </button>
+            )}
+            {modelText !== null && (
+              <button type="button" className="chat-chip" data-chip="model" onMouseDown={keepKeys} title="Types /model; the terminal shows the picker" onClick={sendModel}>
+                <span className="chat-chip-word">{modelText}</span>
+                <span className="chat-chip-caret" aria-hidden="true">
+                  ⌄
+                </span>
+              </button>
+            )}
+            <button ref={viewChipRef} type="button" className="chat-chip" data-chip="view" data-open={viewMenu !== null || undefined} onMouseDown={keepKeys} title="What the timeline shows (Ctrl+O)" onClick={openViewMenu}>
+              <span className="chat-chip-word">{CHAT_MODE_WORDS[view]}</span>
+              <span className="chat-chip-caret" aria-hidden="true">
+                ⌄
+              </span>
+            </button>
+            {viewMenu !== null && (
+              <Menu x={viewMenu.x} y={viewMenu.y} above items={viewItems} onClose={() => setViewMenu(null)} className="chat-view-menu" data={{ menu: 'chat-view' }} anchor={viewChipRef.current} />
+            )}
+            {agentsText !== null && (
+              <PopoverAnchor
+                id={rosterId}
+                className="chat-chip chat-chip-plain"
+                data={{ 'data-chip': 'agents' }}
+                card={(props) => <RosterCard counts={counts} members={session.team} anchorId={rosterId} {...props} />}
+              >
+                <span className="chat-chip-dot" data-state={counts.out > 0 ? 'out' : 'returned'} />
+                <span className="chat-chip-word">{agentsText}</span>
+              </PopoverAnchor>
+            )}
+            {(diff.added > 0 || diff.removed > 0) && (
+              <button type="button" className="chat-chip chat-chip-plain" data-chip="diff" title="Review changes" onClick={() => openReviewTab(session.id)}>
+                <span className="chat-chip-word">
+                  <span className="chat-added">+{diff.added}</span> <span className="chat-removed">{'−'}{diff.removed}</span>
+                </span>
+              </button>
+            )}
             <span className="chat-hint">{hint}</span>
             {working && (
               <button type="button" className="secondary chat-stop" title="Sends Escape to the session" onClick={stop}>
                 Stop
               </button>
             )}
-            <button type="button" className="chat-send" disabled={box.trim() === '' || asking} onClick={send}>
+            <button type="button" className="chat-send" disabled={(box.trim() === '' && chips.length === 0) || asking} onClick={() => send()}>
               Send ⏎
             </button>
           </div>
@@ -264,31 +716,18 @@ interface Screen {
   cursor: { x: number; y: number };
 }
 
-// M9 fix 690: the ask as a card on the rail, read off the screen once a
-// second as the sidebar's card is (AnswerPopover.tsx, which stays its
-// own; both build on screen-prompt-model.ts). The digits press the
-// option of that key, Escape cancels, and a question gets a box.
-function AskCard({ session, rootRef }: { session: SessionInfo; rootRef: React.RefObject<HTMLDivElement | null> }) {
-  const [screen, setScreen] = useState<Screen | null>(null);
+// M9 fix 690: the ask as a card on the rail, read off the screen as the
+// sidebar's card is (AnswerPopover.tsx, which stays its own; both build
+// on screen-prompt-model.ts). The digits press the option of that key,
+// Escape cancels, and a question gets a box. Since fix 713 the screen is
+// the view's one read, null until a read sent after the ask came up.
+function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionInfo; screen: Screen | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null }) {
+  // M9 fix 717: a permission for the Edit the transcript wrote last is the
+  // edit card, its file a path link like any other.
+  const links = usePathLinks(paneId);
+  const editCard = edit !== null && session.needsInputReason === 'permission' ? edit : null;
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    let live = true;
-    const read = () => {
-      window.emerald
-        .request('pty.screen', { sessionId: session.id })
-        .then((res) => {
-          if (live) setScreen({ rows: res.rows, cursor: res.cursor });
-        })
-        .catch((err: unknown) => console.warn('[emerald] screen read failed', err));
-    };
-    read();
-    const timer = setInterval(read, ASK_REFRESH_MS);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [session.id]);
   const excerpt = screen === null ? [] : promptExcerpt(screen.rows, screen.cursor);
   const options = screen === null ? [] : answerOptions(screen.rows);
   // Not before the first read, or the box would take the keyboard and go
@@ -326,11 +765,17 @@ function AskCard({ session, rootRef }: { session: SessionInfo; rootRef: React.Re
       }}
     >
       <span className="chat-dot" data-tone="blocked" />
-      <div className="chat-ask">
-        <div className="chat-ask-heading">{askHeading(session.needsInputReason)}</div>
-        <pre className="chat-ask-screen" data-rows={excerpt.length}>
-          {screen === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
-        </pre>
+      <div className="chat-ask" {...links.handlers}>
+        {editCard !== null ? (
+          <EditCardHead session={session} edit={editCard} />
+        ) : (
+          <>
+            <div className="chat-ask-heading">{askHeading(session.needsInputReason)}</div>
+            <pre className="chat-ask-screen" data-rows={excerpt.length}>
+              {screen === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
+            </pre>
+          </>
+        )}
         <div className="chat-ask-options">
           {options.map((o) => (
             <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} title={`Sends ${o.key} to the session`} onClick={() => send(o.key)}>
@@ -364,32 +809,70 @@ function AskCard({ session, rootRef }: { session: SessionInfo; rootRef: React.Re
             }}
           />
         )}
+        {links.menu}
       </div>
     </div>
   );
 }
 
-function ChatTurn({ turn }: { turn: StepTurn }) {
+function ChatTurn({ turn, paneId, session, mode, open, onToggle }: { turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void }) {
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
+  const links = usePathLinks(paneId);
   return (
-    <div className="chat-turn">
+    <div className="chat-turn" {...links.handlers}>
       <div className="chat-prompt-row">
-        <div className="chat-prompt">{turn.prompt}</div>
+        <div className="chat-prompt">
+          {turn.prompt}
+          <PromptImages images={turn.images} />
+        </div>
         {(when !== null || length !== null) && <span className="chat-prompt-time">{[when, length].filter((x) => x !== null).join(' · ')}</span>}
       </div>
       {turn.steps.length > 0 && (
         <div className="chat-rail">
-          {turn.steps.map((step, i) => (
-            <ChatStep key={i} step={step} />
-          ))}
+          {/* An image result's thumbnail follows its tool row, and in a
+              folded mode the closed fold's images item (M9 fix 717). */}
+          {timelineItems(turn.steps, mode, open).map((item, i) =>
+            item.kind === 'fold' ? (
+              <ChatFold key={i} fold={item} onToggle={onToggle} />
+            ) : item.kind === 'images' ? (
+              <Fragment key={i}>
+                {item.steps.map((step, j) => (
+                  <ChatThumbRow key={j} step={step} />
+                ))}
+              </Fragment>
+            ) : (
+              <Fragment key={i}>
+                <ChatStep step={item.step} paneId={paneId} session={session} />
+                <ChatThumbRow step={item.step} />
+              </Fragment>
+            ),
+          )}
         </div>
       )}
+      {links.menu}
     </div>
   );
 }
 
-function ChatStep({ step }: { step: Step }) {
+// M9 fix 714: a turn's tool calls folded into one row; a click opens it.
+function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) {
+  return (
+    <button type="button" className="chat-step chat-fold" data-kind="fold" data-open={fold.open || undefined} onClick={onToggle}>
+      <span className="chat-dot" data-tone="done" />
+      <span className="chat-fold-text">{foldText(fold)}</span>
+      {fold.added + fold.removed > 0 && (
+        <>
+          {' '}
+          <span className="chat-added">+{fold.added}</span> <span className="chat-removed">{'−'}{fold.removed}</span>
+        </>
+      )}{' '}
+      <span className="chat-fold-caret">{fold.open ? '⌄' : '›'}</span>
+    </button>
+  );
+}
+
+function ChatStep({ step, paneId, session }: { step: Step; paneId: string; session: SessionInfo }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
@@ -400,12 +883,7 @@ function ChatStep({ step }: { step: Step }) {
     );
   }
   if (step.kind === 'text') {
-    return (
-      <div className="chat-step chat-reply" data-kind="text">
-        {/* The tick is the cell's ::before, so the reply's text is the element's text alone. */}
-        <span className="chat-tick-cell" aria-hidden="true" />{step.text}
-      </div>
-    );
+    return <ChatReply step={step} paneId={paneId} session={session} />;
   }
   if (step.kind === 'note') {
     return (
@@ -418,11 +896,15 @@ function ChatStep({ step }: { step: Step }) {
   const tone = step.result === null ? 'pending' : step.result.error ? 'error' : 'done';
   const result = resultText(step);
   const counts = /^\+(\d+) −(\d+)$/.exec(result);
+  // M9 fix 717: a file the call names is a path link, in the folder or
+  // not, there or not; a pattern or a command stays plain.
+  const named = typeof step.input['file_path'] === 'string' ? step.input['file_path'] : typeof step.input['notebook_path'] === 'string' ? step.input['notebook_path'] : null;
+  const linked = named === null ? null : resolveIn(session.cwd, named);
   return (
     <div className="chat-step" data-kind="tool" data-tool={step.name}>
       <span className="chat-dot" data-tone={tone} />
       <span className="chat-tool-name">{step.name}</span>
-      <span className="chat-tool-arg" title={step.arg}>
+      <span className={linked === null ? 'chat-tool-arg' : 'chat-tool-arg chat-path'} data-path={linked ?? undefined} title={step.arg}>
         {step.arg}
       </span>
       <span className="chat-tool-result">

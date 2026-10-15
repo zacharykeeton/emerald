@@ -4,6 +4,7 @@ import { dropFileOn, dropFolderOn, openFileFromOutside, typeInto } from './actio
 import { fileViewSupported } from './daemon-model.ts';
 import { zoneAt } from './drop-zone-model.ts';
 import { getState } from './store.ts';
+import { recordUse } from './use-record.ts';
 import { beginSessionDrag, endSessionDrag, getUiState, setSessionDragFile, setSessionDropTarget } from './ui.ts';
 import type { DropTarget } from './ui.ts';
 
@@ -149,6 +150,13 @@ function onLeave(e: DragEvent): void {
 
 function onDrop(e: DragEvent): void {
   if (!hasFiles(e)) return;
+  // The chat box took an image itself (M9 fix 721): it pastes the path,
+  // which Claude Code turns into an image, where typing it here stays
+  // text.
+  if (e.defaultPrevented) {
+    end();
+    return;
+  }
   e.preventDefault();
   const target = getUiState().sessionDrag?.target ?? targetAt(e.clientX, e.clientY);
   const over = outsideAt(e.clientX, e.clientY);
@@ -170,6 +178,7 @@ async function dropOutside(file: File): Promise<void> {
   if (path === '') return;
   const stat = await window.emerald.files.stat(path);
   if ('error' in stat || stat.kind === 'dir') return;
+  recordUse('drop-file-tab');
   await openFileFromOutside(path);
 }
 
@@ -191,6 +200,7 @@ async function dropFile(file: File, target: DropTarget): Promise<void> {
     if (fileViewSupported(getState().daemon)) await dropFileOn(path, target.paneId, target.zone);
     return;
   }
+  recordUse('drop-path');
   typeInto(sessionId, path.includes(' ') ? `"${path}"` : path);
 }
 

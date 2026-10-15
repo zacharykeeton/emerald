@@ -1384,9 +1384,16 @@ try {
   await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === 'needs-input'`, 'fix 702: the tab on show pulses for the hidden pane', 5000);
   const zoomedRead = { animation: await tabAnimation(firstTabId), tone: await tabTone(firstTabId), zoomed: await s.evalJs(zoomedOn(p1)), pane2: await paneShown(p2) };
   expect(zoomedRead.animation === 'attention-pulse' && zoomedRead.tone === 'needs-input' && zoomedRead.zoomed && !zoomedRead.pane2, `fix 702: the tab pulses in the attention tone while the zoom hides pane 2, got ${JSON.stringify(zoomedRead)}`);
+  // M9 fix 728: the zoom hides the target's pane, so its row says so.
+  const rowPlace728 = () =>
+    s.evalJs(`(() => { const r = document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(target)}]'); return { shown: r?.dataset.shown ?? null, place: r?.dataset.place ?? null, word: r?.querySelector('.sidebar-row-shown')?.textContent ?? null }; })()`);
+  const covered728 = await rowPlace728();
+  expect(covered728.shown === null && covered728.place === 'covered' && covered728.word === 'behind the Focus', `fix 728: the target's row reads behind the Focus while the zoom hides its pane, got ${JSON.stringify(covered728)}`);
   const firstTabCentre = await centerOf(s, firstTabSel);
   await s.click(firstTabCentre.x, firstTabCentre.y);
   await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: a click on the pulsing tab undid the zoom', 3000);
+  const uncovered728 = await rowPlace728();
+  expect(uncovered728.shown === 'shown' && uncovered728.place === 'shown' && uncovered728.word === 'on screen', `fix 728: with the zoom undone the target's row reads on screen, got ${JSON.stringify(uncovered728)}`);
   await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === undefined`, 'fix 702: the tab stops once pane 2 is on screen', 3000);
   const unzoomedRead = { focused: await s.evalJs(focusedPaneIs(p1)), pane1: await paneShown(p1), pane2: await paneShown(p2), row: await rowAttention(), title: await titleAttention(), hushed: await rowHushed() };
   expect(
@@ -1398,6 +1405,8 @@ try {
   await s.waitFor(zoomedOn(p2), 'fix 702: pane 2 zoomed', 3000);
   await s.waitFor(focusedPaneIs(p2), 'fix 702: pane 2 focused by its zoom');
   await sleep(300);
+  const focused728 = await rowPlace728();
+  expect(focused728.shown === 'focused' && focused728.place === 'focused' && focused728.word === 'focused', `fix 728: zoomed on its own pane the target's row reads focused, got ${JSON.stringify(focused728)}`);
   expect((await tabAttention(firstTabId)) === null && (await rowAttention()) === 'needs-input', `fix 702: zoomed on the wanting pane the tab does not pulse, got ${JSON.stringify({ tab: await tabAttention(firstTabId), row: await rowAttention() })}`);
   await s.click(firstTabCentre.x, firstTabCentre.y);
   await sleep(300);
@@ -1406,7 +1415,7 @@ try {
   await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: unzoomed', 3000);
   await ackSix();
   await waitClear('fix 702: acked, nothing pulsing');
-  step('M9 fix 702: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show; a click on the tab undid the zoom with the focus kept on pane 1 and pane 2\'s ring still pulsing; zoomed on pane 2 itself, the tab did not pulse and a click left the zoom');
+  step('M9 fix 702 and 728: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show and the target\'s row read behind the Focus while hidden; a click on the tab undid the zoom with the focus kept on pane 1 and pane 2\'s ring still pulsing; zoomed on pane 2 itself, the tab did not pulse and a click left the zoom');
 
   step('PASS');
 } catch (err) {

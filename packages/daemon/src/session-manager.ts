@@ -101,6 +101,10 @@ export interface SessionManagerOptions {
   // Where hooks should report. Absent means sessions are spawned hook-less,
   // which the hook script treats as "do nothing".
   hook?: { port: number; token: string };
+  // The emerald mod's folder (M9 fix 725), put on a Claude's command line
+  // with --plugin-dir; absent or null launches without it, as every test
+  // that builds a manager does.
+  claudeModDir?: string | null;
   staleAfterMs?: number;
   // How often the stale timer looks; 0 disables it (tests call checkStale).
   staleCheckIntervalMs?: number;
@@ -173,6 +177,9 @@ const REMOTE_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'Stop']);
 // a removed session's lane while its commits are in the shown log, and
 // a day covers a sitting's worth of log at the panel's 200 entries.
 const RESERVE_COLOR_MS = 24 * 60 * 60 * 1000;
+// How many conversation ids the foreign SessionStart line remembers having
+// told (M9 fix 734): a long-lived daemon meets a nested `claude -p` per run.
+const FOREIGN_STARTS_TOLD_CAP = 256;
 
 // Registry of live sessions. Emits 'changed' (SessionInfo) whenever a session's
 // public info changes, 'exit' (SessionInfo) when its PTY exits and 'removed'
@@ -185,6 +192,9 @@ export class SessionManager extends EventEmitter {
   // timeline and the Commits tab still know them: never listed by
   // default, never resumed, tailed or stale-checked, saved with the rest.
   private readonly removed = new Map<string, SessionInfo>();
+  // The conversation ids whose ignored SessionStart has had its line in
+  // emmerd.log (M9 fix 734), oldest first.
+  private readonly foreignStartsTold = new Set<string>();
   private readonly launchers: Record<SessionKind, SessionLauncher>;
   private readonly bashrcPath: string;
   private readonly log: Logger;
@@ -207,7 +217,7 @@ export class SessionManager extends EventEmitter {
     this.opts = opts;
     this.shells = opts.shells ?? findShells();
     this.bashrcPath = opts.bashrcPath ?? path.join(os.tmpdir(), `emerald-bashrc-${process.pid}-${randomUUID().slice(0, 8)}`, 'emerald.bashrc');
-    this.launchers = { claude: new ClaudeLauncher(), shell: new ShellLauncher({ bashrcPath: this.bashrcPath }) };
+    this.launchers = { claude: new ClaudeLauncher({ modDir: opts.claudeModDir ?? null }), shell: new ShellLauncher({ bashrcPath: this.bashrcPath }) };
     this.staleAfterMs = opts.staleAfterMs ?? Limits.staleAfterMs;
     this.shellDoneAfterMs = opts.shellDoneAfterMs ?? Limits.shellDoneAfterMs;
     const interval = opts.staleCheckIntervalMs ?? 30_000;
@@ -618,6 +628,15 @@ export class SessionManager extends EventEmitter {
     this.apply(rec, { type: 'ack', at: Date.now() });
   }
 
+  // Whether this session's Claude was started with the emerald mod (M9
+  // fix 725), so the sink can say once when the mod posted nothing. A
+  // shell pane's hand-typed claude posts under the shell's id with no mod
+  // and is not one.
+  launchedWithMod(sessionId: string): boolean {
+    const launcher = this.launchers.claude;
+    return launcher instanceof ClaudeLauncher && launcher.modDir !== null && this.sessions.get(sessionId)?.info.kind === 'claude';
+  }
+
   // Entry point for the hook sink. Returns why an event was or was not used,
   // and the state change it made when it made one, so the sink can record
   // both next to the payload in hooks.jsonl.
@@ -640,6 +659,13 @@ export class SessionManager extends EventEmitter {
       this.recordAgentCommand(rec, payload, at);
     } else if (outcome !== 'applied') {
       this.log.info('hook not applied', { id: sessionId, outcome, event: payload.hook_event_name, claudeSessionId: payload.session_id });
+      // Say why once per new conversation, with the one it lost to (M9 fix
+      // 734): the line above names neither the bound id nor the likely cause.
+      if (outcome === 'ignored-foreign' && payload.hook_event_name === 'SessionStart' && typeof payload.session_id === 'string' && !this.foreignStartsTold.has(payload.session_id)) {
+        if (this.foreignStartsTold.size >= FOREIGN_STARTS_TOLD_CAP) this.foreignStartsTold.delete(this.foreignStartsTold.values().next().value as string);
+        this.foreignStartsTold.add(payload.session_id);
+        this.log.info('hook SessionStart under another conversation ignored: a nested claude, or a new conversation with no SessionEnd before it; emmer explain shows its hooks', { sessionId, bound: rec.info.claudeSessionId, new: payload.session_id });
+      }
     }
     const before = rec.info.state;
     const groupBefore = rec.info.groupCwd;

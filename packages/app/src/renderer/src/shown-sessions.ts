@@ -14,13 +14,19 @@ import { useStore } from './store.ts';
 // with a file, commits or What's New tab in front no pane is visible, so
 // every session on the current tab reads elsewhere with that tab's name
 // too, and focused is never said of a pane nobody can see.
-export type ShownPlace = 'focused' | 'shown' | 'elsewhere';
-export type Shown = { place: 'focused' | 'shown' } | { place: 'elsewhere'; tab: string };
+//
+// Under the Focus zoom (M9 fix 728) the other panes of the current tab are
+// in the layout but hidden, so their sessions read covered, behind the
+// Focus. The zoom always sits on the focused pane of the current tab, so
+// a zoom id that is not a pane of that tab is ignored.
+export type ShownPlace = 'focused' | 'shown' | 'covered' | 'elsewhere';
+export type Shown = { place: 'focused' | 'shown' | 'covered' } | { place: 'elsewhere'; tab: string };
 
 const FOCUSED: Shown = { place: 'focused' };
 const SHOWN: Shown = { place: 'shown' };
+const COVERED: Shown = { place: 'covered' };
 
-export function shownSessions(layout: Layout | null, panesShown: boolean): ReadonlyMap<string, Shown> {
+export function shownSessions(layout: Layout | null, panesShown: boolean, zoomedPaneId: string | null = null): ReadonlyMap<string, Shown> {
   const out = new Map<string, Shown>();
   if (layout === null) return out;
   const tab = currentTab(layout);
@@ -31,9 +37,12 @@ export function shownSessions(layout: Layout | null, panesShown: boolean): Reado
     }
   }
   if (!panesShown) return out;
+  const zoomed = zoomedPaneId === null ? null : findPane(tab, zoomedPaneId);
   for (const pane of listPanes(tab)) {
-    if (pane.sessionId !== null) out.set(pane.sessionId, SHOWN);
+    if (pane.sessionId !== null && zoomed !== null && pane.id !== zoomed.id) out.set(pane.sessionId, COVERED);
+    else if (pane.sessionId !== null) out.set(pane.sessionId, SHOWN);
   }
+  if (zoomed?.sessionId != null) out.set(zoomed.sessionId, SHOWN);
   const focused = findPane(tab, tab.focusedPaneId);
   if (focused?.sessionId != null) out.set(focused.sessionId, FOCUSED);
   return out;
@@ -47,6 +56,7 @@ export function shownWords(where: Shown | undefined, exited: boolean): string | 
   if (where === undefined) return 'on no pane';
   if (where.place === 'focused') return 'focused';
   if (where.place === 'elsewhere') return `on ${where.tab}`;
+  if (where.place === 'covered') return 'behind the Focus';
   return 'on screen';
 }
 

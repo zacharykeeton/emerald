@@ -452,7 +452,21 @@ export async function connect(wsUrl) {
     await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   };
-  const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+  // A key into a browser pane's page as main hears it (M9 fix 731): a
+  // rawKeyDown and a keyUp, as the keyboard sends them on Windows. A CDP
+  // keyDown with no text (key, above) reaches the page's own listeners but
+  // never the guest's before-input-event in main, where only its keyUp
+  // arrives, so a main-process key rule reads as working or broken for the
+  // wrong reason (measured at fixes 670 and 674). Sent on a guest's own
+  // session or on the window's, the key lands in the window's focused widget,
+  // a harness shell included, so the caller puts the focus on the webview
+  // first and waits for the window's document.activeElement to be the WEBVIEW.
+  const guestKey = async (key, code, keyCode, modifiers = 0) => {
+    const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  };
+  const mouse =(type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
   // No mouseMoved first: in this Electron build a synthetic move takes five
   // seconds to be acknowledged, while press and release land in milliseconds.
   const click = async (x, y) => {
@@ -475,7 +489,7 @@ export async function connect(wsUrl) {
     throw err;
   }
   for (const line of boxLines(reducedMotion, fontSmoothingOn())) console.log(line);
-  return { send, on, evalJs, waitFor, screenshot, type, key, mouse, click, rightClick, pastRecentInput, close, consoleLog };
+  return { send, on, evalJs, waitFor, screenshot, type, key, guestKey, mouse, click, rightClick, pastRecentInput, close, consoleLog };
 }
 
 // CDP modifier bits.

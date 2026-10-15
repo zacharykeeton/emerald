@@ -6,7 +6,7 @@ import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { HookPayload, SessionInfo } from '@emerald/shared';
-import { HookSink, readHeadFields, trimPayload, type HookHandler } from './hook-sink.ts';
+import { HookSink, canonicalJson, readHeadFields, trimPayload, type HookHandler } from './hook-sink.ts';
 import { silentLogger } from './log.ts';
 import { SessionManager } from './session-manager.ts';
 
@@ -278,6 +278,54 @@ test('two events of one kind with different payloads at once both pass (M9 fix 2
   await post({ hook_event_name: 'Stop', session_id: 'dup-3' }, { ...HOOK_B, 'X-Emerald-Session': 'other' });
   await settle();
   assert.equal(calls.length - before, 4);
+});
+
+test("the mod's post and the hook file's copy of one Stop, keys in another order, reach the handler once and the line says mod (M9 fix 725)", async () => {
+  const before = calls.length;
+  await post({ hook_event_name: 'Stop', session_id: 'mod-1', stop_hook_active: false }, { 'X-Emerald-Hook': 'emerald-mod' });
+  await post('{ "stop_hook_active": false,  "session_id": "mod-1", "hook_event_name": "Stop" }\r\n', HOOK_A);
+  await settle();
+  assert.equal(calls.length - before, 1, 'the hook file copy is folded');
+  const lines = logLines().filter((l) => (l['payload'] as { session_id?: string }).session_id === 'mod-1');
+  assert.equal(lines.length, 1, 'one line in hooks.jsonl');
+  assert.equal(lines[0]!['mod'], true);
+});
+
+test('canonicalJson sorts keys at every depth and keeps arrays in order (M9 fix 725)', () => {
+  assert.equal(canonicalJson({ b: 1, a: { d: [2, { y: 1, x: 0 }], c: null } }), '{"a":{"c":null,"d":[2,{"x":0,"y":1}]},"b":1}');
+});
+
+test('a session launched with the mod whose Stops all came from the hook file is warned of once (M9 fix 725)', async () => {
+  const warned: string[] = [];
+  // The test's handler knows one session, so the unknown-session warns are left out.
+  const log = { info() {}, warn(msg: string) { if (msg.startsWith('the emerald mod')) warned.push(msg); }, error() {} };
+  const dir = mkTemp('emerald-hooks-mod-');
+  const send = (s: HookSink, session: string, hook: string, body: object) =>
+    fetch(`http://127.0.0.1:${s.port}/hook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': TOKEN, 'X-Emerald-Session': session, 'X-Emerald-Hook': hook },
+      body: JSON.stringify(body),
+    });
+  const a = await HookSink.listen(handler, { preferredPort: 0, token: TOKEN, eventLogPath: path.join(dir, 'a.jsonl'), log, expectsMod: () => true });
+  try {
+    await send(a, 'mod-2', HOOK_A['X-Emerald-Hook'], { hook_event_name: 'Stop', n: 1 });
+    await sleep(1100);
+    await send(a, 'mod-2', HOOK_A['X-Emerald-Hook'], { hook_event_name: 'Stop', n: 2 });
+    await send(a, 'mod-3', 'emerald-mod', { hook_event_name: 'UserPromptSubmit' });
+    await send(a, 'mod-3', HOOK_A['X-Emerald-Hook'], { hook_event_name: 'Stop' });
+    await settle();
+  } finally {
+    await a.close();
+  }
+  assert.deepEqual(warned, ['the emerald mod posted nothing for mod-2: every hook came from the hook file']);
+  const b = await HookSink.listen(handler, { preferredPort: 0, token: TOKEN, eventLogPath: path.join(dir, 'b.jsonl'), log, expectsMod: () => false });
+  try {
+    await send(b, 'mod-4', HOOK_A['X-Emerald-Hook'], { hook_event_name: 'Stop' });
+    await settle();
+  } finally {
+    await b.close();
+  }
+  assert.equal(warned.length, 1, 'a session not launched with the mod is never warned of');
 });
 
 test('the preferred port is used when free and an ephemeral one otherwise', async () => {
