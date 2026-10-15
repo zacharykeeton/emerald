@@ -32,21 +32,49 @@ function mtimeOf(file: string): number | null {
   }
 }
 
-// The record's lines in the window, oldest first, and whether any
-// generation exists at all.
-function readUseRecord(home: string, from: number, now: number): { any: boolean; lines: UseLine[] } {
+// A generation last written before the window is read for the switch
+// lines and the first timestamp only (M9 fix 699), by these two patterns
+// over the keys in the order main writes them.
+const FIRST_AT = /^\{"at":(\d+)/;
+const SWITCH_AT = /^\{"at":(\d+),"ev":"switch","on":(true|false)\}$/;
+
+interface RecordRead {
+  any: boolean;
+  lines: UseLine[];
+  switches: Array<{ at: number; on: boolean }>;
+  firstAt: number | null;
+}
+
+// The record's lines in the window, oldest first, whether any generation
+// exists at all, and (M9 fix 699) every switch line up to `now` in any
+// generation with the earliest line of all, for the spans.
+function readUseRecord(home: string, from: number, now: number): RecordRead {
   const file = path.join(home, 'logs', 'usage.jsonl');
   let any = false;
   const lines: UseLine[] = [];
+  const switches: Array<{ at: number; on: boolean }> = [];
+  let firstAt: number | null = null;
+  const seeFirst = (at: number) => {
+    if (firstAt === null || at < firstAt) firstAt = at;
+  };
   for (const gen of generationPaths(file)) {
     const mtime = mtimeOf(gen);
     if (mtime === null) continue;
     any = true;
-    if (mtime < from) continue;
     let text: string;
     try {
       text = fs.readFileSync(gen, 'utf8');
     } catch {
+      continue;
+    }
+    if (mtime < from) {
+      for (const raw of text.split('\n')) {
+        const f = FIRST_AT.exec(raw);
+        if (f === null) continue;
+        seeFirst(Number(f[1]));
+        const sw = SWITCH_AT.exec(raw);
+        if (sw !== null && Number(sw[1]) <= now) switches.push({ at: Number(sw[1]), on: sw[2] === 'true' });
+      }
       continue;
     }
     for (const raw of text.split('\n')) {
@@ -58,13 +86,61 @@ function readUseRecord(home: string, from: number, now: number): { any: boolean;
         continue;
       }
       const at = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['at'] : undefined;
-      if (typeof at !== 'number' || at < from || at > now) continue;
+      if (typeof at !== 'number') continue;
       const line = useLineOf(parsed);
-      if (line !== null) lines.push({ ...line, at });
+      if (line === null) continue;
+      seeFirst(at);
+      if (line.ev === 'switch' && at <= now) switches.push({ at, on: line.on });
+      if (at >= from && at <= now) lines.push({ ...line, at });
     }
   }
   lines.sort((a, b) => a.at - b.at);
-  return { any, lines };
+  switches.sort((a, b) => a.at - b.at);
+  return { any, lines, switches, firstAt };
+}
+
+// The stretches of the window the record was on (M9 fix 699). The state at
+// `from` is the last switch line before it; with none the record counts as
+// on from the first line it holds (a record from before the switch wrote
+// its own line). Each switch line in the window then opens or closes a
+// span, and an open one ends at `now`. No lines at all is no spans.
+export function recordSpans(
+  switches: ReadonlyArray<{ at: number; on: boolean }>,
+  firstAt: number | null,
+  from: number,
+  now: number,
+): Array<{ start: number; end: number }> {
+  if (firstAt === null && switches.length === 0) return [];
+  const spans: Array<{ start: number; end: number }> = [];
+  const before = switches.filter((w) => w.at < from);
+  let openAt: number | null;
+  if (before.length > 0) openAt = before[before.length - 1]!.on ? from : null;
+  else openAt = firstAt === null ? null : Math.max(from, firstAt);
+  for (const w of switches) {
+    if (w.at < from) continue;
+    if (w.on && openAt === null) openAt = w.at;
+    else if (!w.on && openAt !== null) {
+      spans.push({ start: openAt, end: w.at });
+      openAt = null;
+    }
+  }
+  if (openAt !== null) spans.push({ start: openAt, end: now });
+  return spans.filter((sp) => sp.end > sp.start);
+}
+
+// How many local days from `from` to `now`'s day any span touches.
+export function daysOn(spans: ReadonlyArray<{ start: number; end: number }>, from: number, now: number): number {
+  let n = 0;
+  const d = new Date(from);
+  while (d.getTime() <= now) {
+    const dayStart = d.getTime();
+    const next = new Date(d);
+    next.setDate(next.getDate() + 1);
+    const dayEnd = next.getTime();
+    if (spans.some((sp) => sp.start < dayEnd && sp.end >= dayStart)) n++;
+    d.setTime(dayEnd);
+  }
+  return n;
 }
 
 function cell(text: string): string {
@@ -225,6 +301,10 @@ function rendererSection(home: string, from: number, now: number): string[] {
       }
       const lm = /^(error|warning) (.*)$/.exec(rest);
       if (lm === null) continue;
+      // Electron's line at a browser pane's close, written as an error
+      // before renderer-log.ts made it a note (M9 fix 694), so a window
+      // spanning the update reads clean.
+      if (/^\[lib\] Uncaught Error: Invalid guestInstanceId: \d+ \(node:electron\/js2c\/isolated_bundle:\d+\)$/.test(lm[2]!)) continue;
       const level = lm[1]!;
       if (level === 'error') errors++;
       else warnings++;
@@ -340,12 +420,20 @@ export async function buildUsageReport(home: string, now: number, days: number):
   const from = windowStart(now, days);
   const record = readUseRecord(home, from, now);
   const out = [`# Emerald usage, the last ${days} days (${dayKey(from)} to ${dayKey(now)})`, ''];
-  const empty = record.lines.length === 0;
+  const empty = record.lines.every((l) => l.ev === 'switch');
+  // M9 fix 699: when the record was on, so Never used reads as a statement about those days only.
+  const spans = record.any ? recordSpans(record.switches, record.firstAt, from, now) : [];
+  const daysWithRecord = daysOn(spans, from, now);
+  if (record.any && spans.length > 0) {
+    out.push(`The record was on from ${dayKey(spans[0]!.start)} (${daysWithRecord} of the ${days} days).`, '');
+  } else if (record.any) {
+    out.push('The record was off for the whole window.', '');
+  }
   out.push('## Actions by count', '');
   out.push(...(record.any ? actionsSection(record.lines) : [NOTHING_RECORDED]), '');
   out.push('## Views by time open', '');
   out.push(...(empty ? ['Nothing recorded in the window.'] : viewsSection(record.lines)), '');
-  out.push('## Never used', '');
+  out.push(spans.length > 0 && daysWithRecord < days ? '## Never used while the record was on' : '## Never used', '');
   out.push(...(empty ? ['Nothing recorded in the window.'] : neverUsedSection(record.lines)), '');
   out.push('## Friction', '');
   out.push(...(empty ? ['Nothing recorded in the window.'] : frictionSection(record.lines)), '');

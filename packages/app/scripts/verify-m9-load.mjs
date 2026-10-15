@@ -109,6 +109,15 @@ try {
   // records the mark at every change of the count, so the reads at one
   // and two samples are not missed between polls. Every session gets
   // its list now, since a rewrite of the stub starts every list over.
+  // Fix 703: a counter of the pushes from here on, fix 664's shape; it
+  // stays installed and nothing after check 1's own read looks at it. A
+  // record push counts as a load tick's when the ring and the names are
+  // all it moved against the record before it (seeded from a list): the
+  // shells are still settling here, and each sends its title as a record
+  // carrying the ring whole, which is not a load tick.
+  await s.evalJs(
+    `(async () => { const c = { load: [], changed: [], other: 0, prev: {}, start: Date.now() }; window.__load703 = c; window.emerald.on((m) => { if (m.type === 'sessions.load') c.load.push(m.samples.map((x) => x.sessionId)); else if (m.type === 'session.changed') { const prev = c.prev[m.session.id]; c.prev[m.session.id] = m.session; if (prev === undefined) return; const moved = Object.keys({ ...prev, ...m.session }).filter((k) => JSON.stringify(prev[k]) !== JSON.stringify(m.session[k])); if (moved.length > 0 && moved.every((k) => k === 'load' || k === 'loadNames')) c.changed.push([m.session.name, m.session.state]); else c.other += 1; } }); const { sessions } = await window.emerald.request('session.list', {}); for (const x of sessions) if (c.prev[x.id] === undefined) c.prev[x.id] = x; return true; })()`,
+  );
   writeStub({
     s1: [{ cpu: 6, rss: 120 }, { cpu: 30, rss: 130 }, { cpu: 12, rss: 125 }],
     s2: [{ cpu: 10, rss: 200 }, { cpu: 35, rss: 210 }, { cpu: 20, rss: 205 }],
@@ -128,6 +137,17 @@ try {
   }
   await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(ids.s1))} + ' .sidebar-row-load-figure')?.textContent === '12%'`, 'the figure reads the latest sample');
   step('check 1: the dash and no figure at zero, one and two samples, a line and the figure at three');
+
+  // Fix 703: the three ticks came as one sessions.load each, naming all
+  // six sampled sessions, and no record push moved the ring alone (today
+  // six a tick, eighteen in all). A record that moved anything else (a
+  // title, a state) is counted apart and allowed.
+  const counted = await s.evalJs(`JSON.stringify({ load: window.__load703.load, changed: window.__load703.changed, other: window.__load703.other })`).then((j) => JSON.parse(j));
+  const sixIds = ['s1', 's2', 's3', 's4', 's5', 'quiet'].map((n) => ids[n]).sort().join(',');
+  const firstThree = counted.load.slice(0, 3).map((list) => [...new Set(list)].sort().join(','));
+  expect(counted.load.length >= 3 && firstThree.every((l) => l === sixIds), `at least three sessions.load pushes, each of the first three naming the six sessions (${counted.load.length} pushes: ${JSON.stringify(counted.load.slice(0, 3).map((l) => l.length))})`);
+  expect(counted.changed.length === 0, `no session.changed that moved only the ring (${counted.changed.length}: ${JSON.stringify(counted.changed)}; ${counted.other} other record pushes)`);
+  step(`fix 703: one sessions.load push a tick naming the six sampled sessions, and no session.changed carrying a sample (${counted.other} record pushes for other fields)`);
 
   // Check 2: the mark on a working row, none on the idle one, whose
   // height has not moved though it has samples of its own.

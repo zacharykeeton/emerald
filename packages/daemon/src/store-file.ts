@@ -47,6 +47,26 @@ export function writeFileAtomic(file: string, text: string, log: Logger): void {
   }
 }
 
+// Reads a store's file as text, trying again on a Windows share refusal the
+// way the rename does (M9 fix 708): a scanner holding the file without
+// sharing read lets go within a few tens of milliseconds, and a refused read
+// otherwise reads as an empty list. Any other error, and the last refusal,
+// is thrown.
+export function readFileRetried(file: string, log: Logger): string {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const text = fs.readFileSync(file, 'utf8');
+      if (attempt > 1) log.warn(`read of ${path.basename(file)} landed on try ${attempt}`);
+      return text;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (!RETRIED_CODES.has(code) || attempt >= RENAME_TRIES) throw err;
+      if (attempt === 1) log.warn(`read of ${path.basename(file)} refused (${code}), trying again`);
+      sleepSync(RENAME_WAIT_MS);
+    }
+  }
+}
+
 // Moves a file the store could not read out of the way before the store
 // answers empty, so its next save does not overwrite what may still be
 // recovered by hand. The new name carries the time, colons replaced since

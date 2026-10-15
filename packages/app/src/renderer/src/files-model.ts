@@ -70,6 +70,22 @@ export function filePaneFolders(layout: Layout): string[] {
   return [...new Set(allPanes(layout).flatMap((p) => (p.view?.kind === 'file' ? [parentPath(p.view.path)] : [])))];
 }
 
+// The transcript folders of the panes on the chat face (M9 fix 689), so
+// the chat view hears its transcript grow; deduplicated, in pane order.
+// A pane whose stored session is not the one it shows is on the
+// terminal and watches nothing.
+export function chatPaneFolders(layout: Layout, chatPanes: ReadonlyMap<string, string>, sessions: ReadonlyMap<string, Pick<SessionInfo, 'transcriptPath'>>): string[] {
+  return [
+    ...new Set(
+      allPanes(layout).flatMap((p) => {
+        if (p.sessionId === null || chatPanes.get(p.id) !== p.sessionId) return [];
+        const path = sessions.get(p.sessionId)?.transcriptPath ?? null;
+        return path === null ? [] : [parentPath(path)];
+      }),
+    ),
+  ];
+}
+
 // The path under root as the shell would type it, or the whole path when
 // it is not under root.
 export function relativePath(root: string, p: string): string {
@@ -349,6 +365,13 @@ export function touchedUnder(index: TouchedIndex, dir: string): TouchedBy[] {
 // Reveal in Files (M9 fix 652): how long the rail waits for its root and
 // the listings of the file's folders before it says it cannot show it.
 export const REVEAL_IN_FILES_MS = 3000;
+
+// Whether the relist of a reveal (M9 fix 707) has landed: every folder whose
+// relist answered holds a listing other than the one it held when the relist
+// started. Whoever applied the newer one counts, the relist or a watch push.
+export function relistLanded(listings: ReadonlyMap<string, FileListing>, before: ReadonlyMap<string, FileListing | undefined>, landed: readonly string[]): boolean {
+  return landed.every((d) => listings.get(d) !== before.get(d));
+}
 
 // The parts of a path under root, or null when it is not under root (or
 // is root itself). Compared through relativePath's rule, so the case and

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_STATES, RECENT_INPUT_MS, acknowledge, attentionState, canMarkUnread, chiming, emptyAttention, hushAll, isAttentionSound, isRecentInput, markUnread, nextSound, observe, setHushed, waitOverlay, waitingOrder } from './attention-model.ts';
+import { ATTENTION_STATES, RECENT_INPUT_MS, acknowledge, answeringSession, attentionState, canMarkUnread, chiming, emptyAttention, hushAll, isAttentionSound, isRecentInput, markUnread, nextSound, observe, setHushed, waitOverlay, waitingOrder } from './attention-model.ts';
 import type { AttentionModel } from './attention-model.ts';
 import type { SessionState } from '@emerald/shared';
 
@@ -230,4 +230,40 @@ test('M9 fix 247: the overlay words a question and a finished reply with the age
   assert.equal(waitOverlay('errored', since, since + 5_000), null, 'errored has its age on the row');
   assert.equal(waitOverlay('working', since, since + 5_000), null);
   assert.equal(waitOverlay(undefined, since, since + 5_000), null, 'no pulse, no overlay');
+});
+
+// M9 fix 701: a question into the pane the person is typing in is settled
+// as it arrives, with no chime, flash, toast or pulse.
+test('an arrival on the session being answered is settled, not arrived and not wanting', () => {
+  let { model } = observe(emptyAttention(), at({ a: 'working', b: 'working' }));
+  const first = observe(model, at({ a: 'needs-input', b: 'done' }), 'a');
+  assert.deepEqual(first.settled, ['a']);
+  assert.deepEqual(first.arrived, ['b']);
+  assert.deepEqual(ids(first.model), ['b']);
+  assert.equal(first.model.hushed.has('b'), false, 'the other arrival chimes as ever');
+  // A session already wanting for done that asks a question while answered
+  // leaves the set and its hush with it.
+  model = hushAll(first.model);
+  assert.equal(model.hushed.has('b'), true);
+  const second = observe(model, at({ a: 'needs-input', b: 'needs-input' }), 'b');
+  assert.deepEqual(second.settled, ['b']);
+  assert.deepEqual(second.arrived, []);
+  assert.deepEqual(ids(second.model), []);
+  assert.equal(second.model.hushed.size, 0);
+  // Answering a session whose state did not change settles nothing.
+  const third = observe(second.model, at({ a: 'needs-input', b: 'needs-input' }), 'a');
+  assert.deepEqual(third.settled, []);
+  assert.equal(third.model, second.model);
+});
+
+test('answeringSession names the focused pane session within the ten seconds of a press in that pane', () => {
+  const now = 1_000_000;
+  const focused = { paneId: 'p1', sessionId: 's1' };
+  assert.equal(answeringSession(focused, { paneId: 'p1', at: now - 9_000 }, now), 's1');
+  assert.equal(answeringSession(focused, { paneId: 'p1', at: now - RECENT_INPUT_MS }, now), 's1', 'the edge is inclusive');
+  assert.equal(answeringSession(focused, { paneId: 'p1', at: now - RECENT_INPUT_MS - 1 }, now), null);
+  assert.equal(answeringSession(focused, { paneId: 'p2', at: now - 1_000 }, now), null, 'a press into another pane does not count');
+  assert.equal(answeringSession({ paneId: 'p1', sessionId: null }, { paneId: 'p1', at: now - 1_000 }, now), null, 'an empty pane names nothing');
+  assert.equal(answeringSession(null, { paneId: 'p1', at: now - 1_000 }, now), null);
+  assert.equal(answeringSession(focused, null, now), null);
 });

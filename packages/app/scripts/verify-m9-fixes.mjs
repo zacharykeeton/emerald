@@ -70,8 +70,8 @@ const BLOCKS = [
   { name: 'm43', fixes: ['m43', 'fix-88', 'm73', 'fix-91', 'fix-578', 'fix-95'], needs: [] },
   { name: 'fix-93', fixes: ['fix-93', 'fix-143', 'fix-146', 'fix-154', 'fix-221', 'fix-155', 'fix-153', 'fix-156'], needs: [] },
   { name: 'fix-204', fixes: ['fix-204', 'fix-355', 'fix-356'], needs: [] },
-  { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575'], needs: [] },
-  { name: 'fix-676', fixes: ['fix-676', 'fix-677'], needs: [] },
+  { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575', 'fix-705'], needs: [] },
+  { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -1577,8 +1577,11 @@ try {
     // stand at 0 and the total at 1, and at the first width that folds the
     // badge reads whole, which is what the fold is for (narrower still the
     // badge clips as fix 56's order has it, after the total).
+    // The walk starts at 640px since M9 fix 689: the face button of a
+    // Claude pane takes about 23px of the title, and the units stood
+    // whole from 600px before it.
     const titleReadings = [];
-    for (let target = 600; target >= 300; target -= 20) {
+    for (let target = 640; target >= 300; target -= 20) {
       await paneTo(target);
       titleReadings.push(await titleRead());
     }
@@ -2639,10 +2642,10 @@ try {
     await s.waitFor(`(document.querySelector(${JSON.stringify(emptySel)})?.getBoundingClientRect().width ?? 999) < 175`, 'the empty pane at about 160px');
     await sleep(300);
     const narrowEmpty = await s.evalJs(
-      `(() => { const e = document.querySelector(${JSON.stringify(emptySel)}); const r = e.getBoundingClientRect(); const rows = [...e.querySelectorAll('.session-row')].map((x) => x.getBoundingClientRect().right); return { width: r.width, right: r.right, scrollWidth: e.scrollWidth, clientWidth: e.clientWidth, rows }; })()`,
+      `(() => { const e = document.querySelector(${JSON.stringify(emptySel)}); const r = e.getBoundingClientRect(); const rows = [...e.querySelectorAll('.session-row')].map((x) => x.getBoundingClientRect().right); return { width: r.width, right: r.right, scrollWidth: e.scrollWidth, clientWidth: e.clientWidth, bodySW: e.querySelector('.empty-body').scrollWidth, bodyCW: e.querySelector('.empty-body').clientWidth, rows }; })()`,
     );
     expect(narrowEmpty.rows.length >= 2, `the empty pane lists the live sessions, got ${JSON.stringify(narrowEmpty)}`);
-    expect(narrowEmpty.scrollWidth === narrowEmpty.clientWidth, `no sideways overflow in a ${Math.round(narrowEmpty.width)}px empty pane, got ${JSON.stringify(narrowEmpty)}`);
+    expect(narrowEmpty.scrollWidth === narrowEmpty.clientWidth && narrowEmpty.bodySW === narrowEmpty.bodyCW, `no sideways overflow in a ${Math.round(narrowEmpty.width)}px empty pane, got ${JSON.stringify(narrowEmpty)}`);
     expect(narrowEmpty.rows.every((x) => x <= narrowEmpty.right + 0.5), `every row ends inside the pane, got ${JSON.stringify(narrowEmpty)}`);
     await s.screenshot('m9-fix37-narrow-empty.png');
     step(`M9 fix 37: a ${Math.round(narrowEmpty.width)}px empty pane lists its sessions with no sideways scroll`);
@@ -3391,7 +3394,10 @@ try {
     fs.mkdirSync(pickedDir, { recursive: true });
     fs.mkdirSync(rowsDir, { recursive: true });
     const sel547 = (id) => `[data-pane-id=${JSON.stringify(id)}]`;
-    const sameFolder = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase().replace(/[\\/]+$/, '') === b.toLowerCase().replace(/[\\/]+$/, '');
+    // Both sides through the disk's own spelling: os.tmpdir() is the 8.3
+    // form on this box and spawnCwd is the long one since M9 fix 711.
+    const realOf = (p) => { try { return fs.realpathSync.native(p); } catch { return p; } };
+    const sameFolder = (a, b) => typeof a === 'string' && typeof b === 'string' && realOf(a).toLowerCase().replace(/[\\/]+$/, '') === realOf(b).toLowerCase().replace(/[\\/]+$/, '');
     const rowsOf = (id) =>
       s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sel547(id) + ' .empty-folder')})].map((r) => ({ folder: r.dataset.folder, note: r.querySelector('.empty-folder-note')?.textContent ?? null, selected: r.dataset.selected === 'true' }))`);
     const focusBox = (id) => s.evalJs(`document.querySelector(${JSON.stringify(sel547(id) + ' .palette-input')}).focus()`);
@@ -3562,7 +3568,7 @@ try {
     return {
       width: Math.round(pane.getBoundingClientRect().width),
       rows: [...pane.querySelectorAll('.session-row')].map((r) => { const kind = r.children[1]; const folder = r.lastElementChild; const st = r.querySelector('.pane-state'); return { name: r.querySelector('.pane-name').textContent, kind: kind.textContent, kindSW: kind.scrollWidth, kindCW: kind.clientWidth, folderSW: folder.scrollWidth, folderCW: folder.clientWidth, rowSW: r.scrollWidth, rowCW: r.clientWidth, state: st === null ? null : getComputedStyle(st).display }; }),
-      sideways: ep.scrollWidth !== ep.clientWidth,
+      sideways: ep.scrollWidth !== ep.clientWidth || [...pane.querySelectorAll('.empty-body')].some((b) => b.scrollWidth !== b.clientWidth),
       overlap,
       names: [...pane.querySelectorAll('.empty-kind-name')].map((n) => n.textContent),
       start: pane.querySelector('.empty-start').innerText,
@@ -3626,6 +3632,54 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     const count10b = await sessionCount();
     expect(count10b === count10 + 1, `the triple click started one session, got ${count10b - count10}`);
     step('M9 fix 575: a double-click on a folder row starts the selected kind in that folder at once, a third click starts nothing more, and the row says so in its title');
+
+    // M9 fix 705: the same double-click on the Shell tile starts a shell in
+    // the picked row's folder, in row 1 with none picked.
+    const tripleOnShellTile = async (paneId) => {
+      // The panes are small by now: scroll the tile into view and read where it sits.
+      await s.evalJs(`document.querySelector(${JSON.stringify(sel547(paneId) + ' .empty-kind[data-kind="shell"]')}).scrollIntoView({ block: 'center' })`);
+      await sleep(200);
+      const c = await centerOf(s, sel547(paneId) + ' .empty-kind[data-kind="shell"]');
+      for (const n of [1, 2, 3]) {
+        await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: n });
+        await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: n });
+      }
+    };
+    // The earlier splits left panes a few pixels wide, so each read starts
+    // from one empty pane and splits it once.
+    const splitFromOne = async () => {
+      const tree = await getLayout(s);
+      const first = leaves(tree)[0].id;
+      await zreq(s, 'layout.set', { layout: { ...tree, focusedPaneId: first, root: { kind: 'pane', id: first, sessionId: null, view: null } } });
+      await waitLeaves(1, 'one empty pane for the fix 705 read');
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(sel547(first) + ' .empty-folder')})`, 'the one pane offers its rows');
+      return splitByChord();
+    };
+    const e6 = await splitFromOne();
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(sel547(e6) + ' .empty-folder')}).length >= 2`, 'the next empty pane offers at least two rows');
+    await s.evalJs(`document.querySelectorAll(${JSON.stringify(sel547(e6) + ' .empty-folder')})[1].click()`);
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(sel547(e6) + ' .empty-folder')})[1]?.getAttribute('data-selected') === 'true'`, 'row 2 is selected');
+    const rows11 = await rowsOf(e6);
+    const name11 = await s.evalJs(`document.querySelectorAll(${JSON.stringify(sel547(e6) + ' .empty-folder')})[1].querySelector('.empty-folder-name').textContent`);
+    const tileTitle11 = await s.evalJs(`document.querySelector(${JSON.stringify(sel547(e6) + ' .empty-kind[data-kind="shell"]')}).title`);
+    expect(tileTitle11 === `Double-click to start in ${name11}`, `the Shell tile's title names row 2, got ${JSON.stringify(tileTitle11)}`);
+    const count11 = await sessionCount();
+    await tripleOnShellTile(e6);
+    const e6Session = await waitPaneSession(e6, 'a shell from a double-click on the Shell tile');
+    expect(e6Session?.kind === 'shell' && sameFolder(e6Session.spawnCwd, rows11[1].folder), `a shell in row 2's folder, got ${JSON.stringify(e6Session && { kind: e6Session.kind, spawnCwd: e6Session.spawnCwd })}`);
+    await sleep(600);
+    const count11b = await sessionCount();
+    expect(count11b === count11 + 1, `the triple click on the tile started one session, got ${count11b - count11}`);
+    const e7 = await splitFromOne();
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(sel547(e7) + ' .empty-folder')}).length >= 1`, 'the last empty pane offers a row');
+    const rows12 = await rowsOf(e7);
+    const count12 = await sessionCount();
+    await tripleOnShellTile(e7);
+    const e7Session = await waitPaneSession(e7, 'a shell from a double-click with no row picked');
+    expect(e7Session?.kind === 'shell' && sameFolder(e7Session.spawnCwd, rows12[0].folder), `a shell in row 1's folder, got ${JSON.stringify(e7Session && { kind: e7Session.kind, spawnCwd: e7Session.spawnCwd })}`);
+    await sleep(600);
+    expect((await sessionCount()) === count12 + 1, 'the triple click with no row picked started one session');
+    step('M9 fix 705: a double-click on the Shell tile starts a shell in the picked row\'s folder, in row 1 with none picked, a third click starts nothing more, and the tile\'s title says where');
     // The block removes every session it started, so a block after it
     // starts from the rows it found; the panes it split stay as it left
     // them (a later block that reads panes sets its own layout).
@@ -3659,7 +3713,7 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
         return 0;
       }
     };
-    const offset = sizeOf();
+    let offset = sizeOf();
     const usageSwitch = () => s.evalJs(`document.querySelector('.attention-sound')?.dataset.usage ?? null`);
     const pickAttention = async (label) => {
       const c = await centerOf(s, '.attention-sound');
@@ -3687,6 +3741,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off on a rerun');
     }
     expect((await usageSwitch()) === 'off', 'the usage record starts off');
+    // A rerun's turn-off above wrote a switch line (M9 fix 699); read past it.
+    offset = sizeOf();
     await splitByChord676();
     await sleep(500);
     expect(sizeOf() === offset, `with the switch off a split writes nothing (${sizeOf()} bytes against ${offset})`);
@@ -3714,22 +3770,26 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
         .map((l) => JSON.parse(l));
     };
     let got = readLines();
-    for (const end = Date.now() + 3000; got.length < 4 && Date.now() < end; await sleep(100)) got = readLines();
-    const pick = (l) => ({ ev: l.ev, ...(l.name === undefined ? {} : { name: l.name }), ...(l.from === undefined ? {} : { from: l.from }), ...(l.ev === 'action' ? {} : { view: l.view }) });
+    for (const end = Date.now() + 3000; got.length < 5 && Date.now() < end; await sleep(100)) got = readLines();
+    const pick = (l) => ({ ev: l.ev, ...(l.name === undefined ? {} : { name: l.name }), ...(l.from === undefined ? {} : { from: l.from }), ...(l.on === undefined ? {} : { on: l.on }), ...(l.ev === 'view-open' || l.ev === 'view-close' ? { view: l.view } : {}) });
     const want = [
+      { ev: 'switch', on: true },
       { ev: 'action', name: 'split-vertical', from: 'key' },
       { ev: 'action', name: 'cheat-sheet', from: 'menu' },
       { ev: 'view-open', view: 'cheat-sheet' },
       { ev: 'view-close', view: 'cheat-sheet' },
     ];
-    expect(got.length === 4 && JSON.stringify(got.map(pick)) === JSON.stringify(want), `the record holds the split, the menu pick and the sheet's open and close, got ${JSON.stringify(got)}`);
-    expect(Number.isInteger(got[3]?.ms), `the close carries its ms, got ${JSON.stringify(got[3])}`);
-    const allowed = new Set(['at', 'ev', 'name', 'from', 'view', 'ms']);
+    expect(got.length === 5 && JSON.stringify(got.map(pick)) === JSON.stringify(want), `the record holds the switch on, the split, the menu pick and the sheet's open and close, got ${JSON.stringify(got)}`);
+    expect(Number.isInteger(got[4]?.ms), `the close carries its ms, got ${JSON.stringify(got[4])}`);
+    const allowed = new Set(['at', 'ev', 'name', 'from', 'view', 'ms', 'on']);
     expect(got.every((l) => Object.keys(l).every((k) => allowed.has(k))), `every line carries only the known fields, got ${JSON.stringify(got)}`);
     await pickAttention('Usage record: on');
     await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off again');
+    got = readLines();
+    for (const end = Date.now() + 3000; got.length < 6 && Date.now() < end; await sleep(100)) got = readLines();
+    expect(got.length === 6 && JSON.stringify(pick(got[5])) === JSON.stringify({ ev: 'switch', on: false }), `the switch off writes its own line last, got ${JSON.stringify(got.slice(5))}`);
     expect(ownMtime() === ownBefore, `the person's own usage.jsonl is untouched (${ownBefore} then ${ownMtime()})`);
-    step('M9 fix 676: the usage record writes nothing while off, then the split, the menu pick and the cheat sheet open and close to the private home, and the switch is left off');
+    step('M9 fix 676 and 699: the usage record writes nothing while off, then the switch on, the split, the menu pick, the cheat sheet open and close and the switch off to the private home, and the switch is left off');
   });
   step(blocksRun());
   step('PASS');

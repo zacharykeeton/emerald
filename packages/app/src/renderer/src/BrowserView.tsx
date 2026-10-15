@@ -16,6 +16,10 @@ interface Props {
 }
 
 const BAD_ADDRESS = 'Only http and https pages open here; type an address such as google.com or localhost:3000, or words to search';
+// Design Mode's hint bar: the page's keys, and while a comment box in the
+// tray holds the keyboard, where they go instead (M9 fix 695).
+const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
+const TRAY_HINT = 'Typing a note; click the page to pick again, or C and S there';
 
 // The browser pane's body (M9 fix 659): a toolbar over a <webview>. The
 // address bar takes an http or https URL, a host or host:port, or words
@@ -37,6 +41,8 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
   // Whether the person is typing in the address bar, so a navigation
   // does not overwrite what they are part way through.
   const editingRef = useRef(false);
+  // Whether the press in the bar brought it the focus (M9 fix 691).
+  const clickFocusRef = useRef(false);
   // Whether the box has the focus (M9 fix 667): it shows the address
   // whole then and without its scheme otherwise, the record and `address`
   // staying whole either way.
@@ -82,6 +88,8 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
   const trayOpen = designTrayPaneId === paneId;
   const [grab, setGrab] = useState(0);
   const [focusNote, setFocusNote] = useState<string | null>(null);
+  // Whether the focus is inside the tray, which turns the hint to the tray's.
+  const [trayFocus, setTrayFocus] = useState(false);
   useEffect(() => {
     if (!designOn || !pageOn) return;
     const page = ready();
@@ -91,12 +99,10 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
     }
     let live = true;
     if (grab === 0) page.focus();
-    // Main finds the guest by the pane, as emmer browser's driver
-    // registered it on did-attach. A page whose attach came before that
-    // listener was wired is never registered, and the grab was refused at
-    // once on about one run in two (fix 675's send-back). Telling main
-    // again here costs nothing: a registration it already holds returns
-    // early, and the send reaches main before the start's invoke.
+    // Main finds the guest by the pane, registered at did-attach and at
+    // each dom-ready (M9 fix 693). Telling main again here is a cheap
+    // second word: a registration it already holds returns early, and the
+    // send reaches main before the start's invoke.
     try {
       window.emerald.browser.guest(paneId, page.getWebContentsId());
     } catch {
@@ -197,6 +203,19 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
             setAddress(ev.target.value);
           }}
           onFocus={() => setFocused(true)}
+          onMouseDown={(ev) => {
+            clickFocusRef.current = document.activeElement !== ev.currentTarget;
+          }}
+          onMouseUp={(ev) => {
+            // A click that brings the focus selects the whole address too (M9 fix 691): the press places the caret after the focus's select(), so the release selects again. A second click into a focused bar places the caret, and a drag that made its own selection is left alone.
+            if (!clickFocusRef.current) return;
+            clickFocusRef.current = false;
+            const el = ev.currentTarget;
+            if (el.selectionStart === el.selectionEnd) {
+              ev.preventDefault();
+              el.select();
+            }
+          }}
           onBlur={() => {
             editingRef.current = false;
             setFocused(false);
@@ -245,7 +264,7 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
       </div>
       {designOn && (
         <div className="design-hint" role="status">
-          <span className="design-hint-text">Hover and press C to copy, S for screenshot, or click to select</span>
+          <span className="design-hint-text">{trayOpen && trayFocus ? TRAY_HINT : PAGE_HINT}</span>
           {notesButton}
           <button className="files-button design-cancel" onClick={() => setDesignPane(null)}>
             Cancel
@@ -258,7 +277,16 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
           {!pageOn && <div className="browser-empty muted">Type an address such as google.com or localhost:3000, or words to search</div>}
         </div>
         {trayOpen && (
-          <aside className="design-tray" aria-label="Design notes">
+          <aside
+            className="design-tray"
+            aria-label="Design notes"
+            // React's focus events bubble, so a focus anywhere inside counts,
+            // and a move between two boxes in the tray does not flicker.
+            onFocus={() => setTrayFocus(true)}
+            onBlur={(ev) => {
+              if (!ev.currentTarget.contains(ev.relatedTarget as Node | null)) setTrayFocus(false);
+            }}
+          >
             <div className="design-tray-notes">
               {notes.map((note, i) => (
                 <div className="design-note" key={note.id} data-note-id={note.id}>
@@ -271,6 +299,17 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
                     value={note.comment}
                     autoFocus={note.id === focusNote}
                     onChange={(ev) => setDesignNotes(paneId, (n) => editNote(n, note.id, ev.target.value))}
+                    // The grab's keys are heard only in the page (main's
+                    // before-input-event on the guest), so the box hands the
+                    // keyboard back rather than acting on them itself; the
+                    // mode, the grab and the comment stay as they are.
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Escape' || (ev.key === 'Enter' && ev.ctrlKey)) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        ready()?.focus();
+                      }
+                    }}
                   />
                   <button className="files-button design-delete" aria-label={`Delete note ${i + 1}`} onClick={() => setDesignNotes(paneId, (n) => deleteNote(n, note.id))}>
                     Delete
@@ -280,11 +319,13 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
             </div>
             <button
               className="files-button design-send"
-              disabled={notes.length === 0 || target === null}
-              title={target === null ? 'No Claude session to send to in this tab' : `Send to ${targetName}`}
+              // With no Claude session in the tab the button copies the notes
+              // instead, sendDesign's fallback, and the notes stay (M9 fix 697).
+              disabled={notes.length === 0}
+              title={target === null ? 'No Claude session in this tab; copies the notes' : `Send to ${targetName}`}
               onClick={sendNotes}
             >
-              {notes.length === 1 ? 'Send 1 note' : `Send ${notes.length} notes`}
+              {`${target === null ? 'Copy' : 'Send'} ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}`}
             </button>
           </aside>
         )}

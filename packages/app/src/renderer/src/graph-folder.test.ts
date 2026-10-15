@@ -32,6 +32,6 @@ test('a git init in the folder shows the live cwd once the branch reads', () => 
   assert.equal(graphFolder(aSession({ spawnCwd: 'C:\\code\\zorca', cwd: 'C:\\x', groupCwd: 'C:\\x', branch: 'main' }), 'C:\\code\\zorca'), 'C:\\x');
 });
 
-test('an 8.3 spelling of the spawn folder reads as away, the pinned limit', () => {
+test('an 8.3 spelling reads as away as a pure function; the daemon stores the real spelling since fix 711', () => {
   assert.equal(graphFolder(aSession({ spawnCwd: 'C:\\Users\\RUNNER~1\\x', cwd: 'C:\\Users\\runneradmin\\x', groupCwd: 'C:\\Users\\runneradmin\\x', branch: null }), 'C:\\r'), 'C:\\r');
 });

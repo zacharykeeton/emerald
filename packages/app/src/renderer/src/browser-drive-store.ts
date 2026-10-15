@@ -41,8 +41,10 @@ export function driveMark(state: BrowserDriveState): { text: string; title: stri
   return { text: `${state.by} is driving`, title: `${state.by} is driving this page with emmer browser; a click or a key in the page pauses it` };
 }
 
-// The page element of a browser pane, wired for the driver. On each
-// attach the guest is registered for the pane in the main process. A key
+// The page element of a browser pane, wired for the driver. On its attach
+// and on each dom-ready the guest is registered for the pane in the main
+// process; a registration main already holds returns early, and dom-ready
+// covers an attach whose id was not readable yet (M9 fix 693). A key
 // or a fill reaches a guest only while its page holds the window's
 // keyboard (a CDP key on a guest goes to the window's focused widget), so
 // before one main asks this page to take the focus, and the element that
@@ -51,13 +53,15 @@ export function driveMark(state: BrowserDriveState): { text: string; title: stri
 // a snapshot leaves the focus alone, and a person's own click into the
 // page between commands keeps it there.
 export function wireDrivenPage(page: HTMLElement & { getWebContentsId(): number }, paneId: () => string): () => void {
-  const onAttach = () => {
+  const tell = (from: 'attach' | 'dom-ready') => {
     try {
       window.emerald.browser.guest(paneId(), page.getWebContentsId());
     } catch {
-      // Not attached after all; the next did-attach registers it.
+      console.warn(`[emerald] browser guest not registered at ${from}`);
     }
   };
+  const onAttach = () => tell('attach');
+  const onDomReady = () => tell('dom-ready');
   let held: Element | null = null;
   let running = false;
   const onState = () => {
@@ -81,9 +85,11 @@ export function wireDrivenPage(page: HTMLElement & { getWebContentsId(): number 
   wire();
   listeners.add(onState);
   page.addEventListener('did-attach', onAttach);
+  page.addEventListener('dom-ready', onDomReady);
   return () => {
     offTake();
     listeners.delete(onState);
     page.removeEventListener('did-attach', onAttach);
+    page.removeEventListener('dom-ready', onDomReady);
   };
 }

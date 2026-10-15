@@ -49,6 +49,7 @@ try {
   // (M9 fix 103): nothing to close.
   expect((await s.evalJs(`document.querySelector('.empty-split-right')?.textContent`)) === 'Split right', 'empty pane offers Split right');
   expect((await s.evalJs(`document.querySelector('.empty-close')`)) === null, 'the only pane shows no Close pane button');
+  expect((await s.evalJs(`document.querySelector('.empty-x')`)) === null, 'the only pane shows no corner ×');
   await s.evalJs(`document.querySelector('.empty-split-right').click()`);
   await s.waitFor(`document.querySelectorAll('.pane').length === 2`, 'two panes after the Split right button');
   layout = await getLayout(s);
@@ -121,6 +122,51 @@ try {
   await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'one pane after the Close pane button');
   expect((await s.evalJs(`document.querySelector('.empty-close')`)) === null, 'the pane left alone shows no Close pane button');
   step('Close pane button on a split pane that is empty');
+
+  // M9 fix 704: the corner × on a split pane stays put while the body scrolls.
+  await s.evalJs(`document.querySelector('.empty-split-right').click()`);
+  await s.waitFor(`document.querySelectorAll('.pane').length === 2`, 'two panes for the corner ×');
+  const p704 = leaves(await getLayout(s))[1].id;
+  const sel704 = `[data-pane-id=${JSON.stringify(p704)}]`;
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(sel704 + ' .empty-x')})?.textContent`)) === '×', 'the split pane shows the corner ×');
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(sel704 + ' .empty-x')})?.title`)) === 'Close pane (Ctrl+Shift+W)', 'the corner × is titled with its key');
+  const width704 = await s.evalJs(`window.innerWidth`);
+  const read704 = () =>
+    s.evalJs(`(() => {
+      const pane = document.querySelector(${JSON.stringify(sel704)});
+      const x = pane.querySelector('.empty-x').getBoundingClientRect();
+      const p = pane.getBoundingClientRect();
+      const body = pane.querySelector('.empty-body');
+      const foot = pane.querySelector('.empty-foot').getBoundingClientRect();
+      const close = pane.querySelector('.empty-close').getBoundingClientRect();
+      const cx = x.left + x.width / 2;
+      const cy = x.top + x.height / 2;
+      return { px: p.left, py: p.top, pr: p.right, pb: p.bottom, xl: x.left, xt: x.top, xr: x.right, xb: x.bottom, cx, cy, footBottom: foot.bottom, closeBottom: close.bottom, sh: body.scrollHeight, ch: body.clientHeight, hit: document.elementFromPoint(cx, cy)?.className ?? null };
+    })()`);
+  let height704 = 400;
+  let r704;
+  for (;;) {
+    await s.send('Emulation.setDeviceMetricsOverride', { width: width704, height: height704, deviceScaleFactor: 0, mobile: false });
+    await sleep(400);
+    r704 = await read704();
+    if ((r704.footBottom > r704.pb && r704.sh > r704.ch) || height704 <= 250) break;
+    height704 -= 50;
+  }
+  console.log(`[704] window height ${height704}`);
+  expect(r704.footBottom > r704.pb && r704.sh > r704.ch, `the foot is out of view at ${height704}px, got ${JSON.stringify(r704)}`);
+  expect(r704.xl >= r704.px && r704.xr <= r704.pr && r704.xt >= r704.py && r704.xb <= r704.pb, `the × is inside the pane, got ${JSON.stringify(r704)}`);
+  expect(r704.hit === 'empty-x', `the × is what sits at its own centre, got ${JSON.stringify(r704)}`);
+  await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(sel704 + ' .empty-body')}); b.scrollTop = b.scrollHeight; })()`);
+  await sleep(200);
+  const after704 = await read704();
+  expect(Math.abs(after704.xt - r704.xt) <= 1, `the × stays put through a scroll, got ${r704.xt} then ${after704.xt}`);
+  expect(after704.closeBottom <= after704.pb + 0.5, `the foot's Close pane is in view after the scroll, got ${JSON.stringify(after704)}`);
+  await s.click(after704.cx, after704.cy);
+  await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'one pane after the corner ×');
+  expect((await s.evalJs(`document.querySelector('.empty-x')`)) === null, 'the pane left alone shows no corner ×');
+  await s.send('Emulation.clearDeviceMetricsOverride', {});
+  await sleep(300);
+  step('M9 fix 704: a split pane shows the corner ×, titled with its key; at 400 px of window the foot is out of view while the × stays put through a scroll, and a click on it closes the pane');
 
   // Split again for the menu steps below.
   await s.evalJs(`document.querySelector('.empty-split-right').click()`);
@@ -773,10 +819,29 @@ try {
   await s.waitFor(`!document.querySelector('.shell-menu')`, 'the shell menu closed on the default');
   const cleared = await tileRead(secondEmpty);
   expect(cleared.stored === null && cleared.start.startsWith('Start shell in') && cleared.sub === 'your default shell, nothing else asked', `the default clears the pick, got ${JSON.stringify(cleared)}`);
+  // M9 fix 705: a double-click on the caret opens and closes the menu and starts nothing.
+  const count705 = (await zreq(s, 'session.list', {})).sessions.length;
+  let caret705 = null;
+  for (let i = 0; i < 50; i++) {
+    caret705 = await centerOf(s, `[data-pane-id=${JSON.stringify(secondEmpty)}] .empty-kind-caret`);
+    if (await s.evalJs(`document.elementFromPoint(${caret705.x}, ${caret705.y})?.classList.contains('empty-kind-caret') === true`)) break;
+    await sleep(100);
+  }
+  for (const n of [1, 2]) {
+    await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: caret705.x, y: caret705.y, button: 'left', clickCount: n });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: caret705.x, y: caret705.y, button: 'left', clickCount: n });
+  }
+  await sleep(600);
+  expect((await zreq(s, 'session.list', {})).sessions.length === count705, 'a double-click on the caret started no session');
+  expect(await s.evalJs(`!!document.querySelector('[data-pane-id=${JSON.stringify(secondEmpty)}] .empty-pane[data-mode="empty"]')`), 'the pane is still empty after the caret double-click');
+  if (await s.evalJs(`!!document.querySelector('.shell-menu')`)) {
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.shell-menu')`, 'the shell menu closed on Escape');
+  }
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(secondEmpty)}] .empty-close').click()`);
   await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(secondEmpty)}]')`, 'the secondEmpty empty pane closed');
   await s.send('Emulation.clearDeviceMetricsOverride', {});
-  step("M9 fix 647: the Shell tile's caret picks Command Prompt, Start starts it, the next empty pane remembers it, and the default clears the pick");
+  step("M9 fix 647: the Shell tile's caret picks Command Prompt, Start starts it, the next empty pane remembers it, and the default clears the pick, and a double-click on its caret starts nothing (fix 705)");
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

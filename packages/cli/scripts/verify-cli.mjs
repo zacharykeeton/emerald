@@ -45,6 +45,7 @@ const BLOCKS = [
   { name: 'fix-320', fixes: ['fix-320'], needs: ['fix-240'] },
   { name: 'fix-379', fixes: ['fix-379', 'fix-403'], needs: [] },
   { name: 'fix-402', fixes: ['fix-402'], needs: [] },
+  { name: 'fix-710', fixes: ['fix-710'], needs: [] },
 ];
 const { block, blocksRun } = blockRunner(BLOCKS);
 
@@ -284,6 +285,7 @@ try {
   r = emerald('usage', 'report');
   expect(r.code === 0 && /^# Emerald usage, the last 30 days \(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\)$/m.test(r.out), `usage report: exit 0 and the heading (${r.code}: ${JSON.stringify(r.out.slice(0, 200))})`);
   expect(r.out.includes("Nothing recorded yet: the usage record is off until it is turned on from the speaker button's right-click menu (Usage record)."), 'usage report says nothing is recorded yet');
+  expect(!r.out.includes('The record was') && r.out.includes('## Never used\n'), 'usage report with no record: no span line and the plain Never used heading');
   expect(r.out.includes(`| ${awayKey} | 1 | 1 | 4 |`), `usage report counts the night's day: one session, one project, four lines (${JSON.stringify(r.out)})`);
   r = emerald('help');
   expect(/^  usage +a markdown digest of how emerald is used, from the usage record and the hook log$/m.test(r.out), 'help lists usage with its summary');
@@ -1166,6 +1168,52 @@ try {
       await new Promise((resolve) => silentServer.close(resolve));
     }
     log('M9 fix 402: a command on a pipe whose server accepts and never answers the hello gives up at the deadline with one line, exit 1');
+  });
+
+  await block('fix-710', async () => {
+    // M9 fix 710: entries pointing at files no longer there. Ours by shape
+    // (an old home's claude-hook.cmd) counts against complete and the
+    // install takes it out; a stranger's is named and left. A private
+    // settings file under the script's home, never the user's.
+    const deadSettings = path.join(home, 'claude-710', 'settings.json');
+    const fwdHome = home.split(path.sep).join('/');
+    j = emeraldJson('hooks', 'install', '--settings', deadSettings, '--json');
+    expect(j.code === 0, `hooks install on the fix 710 settings: exit 0 (${j.code})`);
+    const seeded = JSON.parse(fs.readFileSync(deadSettings, 'utf8'));
+    const oldHook = `"${fwdHome}/old-home/hooks/claude-hook.cmd"`;
+    const oldTool = `${fwdHome}/old-tool/hook.cmd --flag`;
+    seeded.hooks.Stop.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+    seeded.hooks.SessionStart.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+    seeded.hooks.Stop.push({ hooks: [{ type: 'command', command: oldTool, timeout: 5 }] });
+    fs.writeFileSync(deadSettings, JSON.stringify(seeded, null, 2));
+    j = emeraldJson('hooks', 'status', '--settings', deadSettings, '--json');
+    const dead = Array.isArray(j.json?.dead) ? j.json.dead : [];
+    const oursDead = dead.filter((d) => d.ours).map((d) => d.event).sort();
+    const theirsDead = dead.filter((d) => !d.ours);
+    expect(
+      j.code === 1 && j.json?.complete === false && dead.length === 3 && JSON.stringify(oursDead) === JSON.stringify(['SessionStart', 'Stop']) && theirsDead.length === 1 && theirsDead[0].path.endsWith('/old-tool/hook.cmd'),
+      `hooks status --json names two dead entries of ours and a stranger's, complete false, exit 1 (${j.code}: ${JSON.stringify(dead)})`,
+    );
+    r = emerald('hooks', 'status', '--settings', deadSettings);
+    expect(
+      r.code === 1 &&
+        /^missing file: Stop runs .*\/old-home\/hooks\/claude-hook\.cmd \(an old emerald entry; emmer hooks install takes it out\)$/m.test(r.out) &&
+        /^missing file: Stop runs .*\/old-tool\/hook\.cmd \(not emerald's; left as it is\)$/m.test(r.out),
+      `hooks status names each dead entry in a line, exit 1 (${r.code}: ${JSON.stringify(r.out)})`,
+    );
+    r = emerald('hooks', 'install', '--settings', deadSettings);
+    expect(
+      r.code === 0 && /^removed: 2 entries that pointed at missing files$/m.test(r.out) && /^missing file: Stop runs .*\/old-tool\/hook\.cmd \(not emerald's; left as it is\)$/m.test(r.out),
+      `hooks install takes out ours and names the stranger's (${r.code}: ${JSON.stringify(r.out)})`,
+    );
+    j = emeraldJson('hooks', 'status', '--settings', deadSettings, '--json');
+    const deadAfter = Array.isArray(j.json?.dead) ? j.json.dead : [];
+    expect(j.code === 0 && j.json?.complete === true && deadAfter.length === 1 && deadAfter[0].ours === false, `after the install the status is complete with the stranger's entry alone (${j.code}: ${JSON.stringify(deadAfter)})`);
+    const deadText = fs.readFileSync(deadSettings, 'utf8');
+    expect(!deadText.includes('old-home') && deadText.includes('old-tool'), 'the file holds no old-home entry and still holds the old-tool one');
+    r = emerald('hooks', 'uninstall', '--settings', deadSettings);
+    expect(r.code === 0, `hooks uninstall tidies the fix 710 settings (${r.code})`);
+    log("M9 fix 710: hooks status names entries pointing at missing files, install takes out emerald's and names anyone else's");
   });
 
   log(blocksRun());

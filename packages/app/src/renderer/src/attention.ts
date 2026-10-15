@@ -1,10 +1,11 @@
 import { describeState, findPane } from '@emerald/shared';
 import type { SessionInfo } from '@emerald/shared';
 import { ackIfDone, showSessionAuto, shownTab } from './actions.ts';
-import { attentionState, chiming, isRecentInput } from './attention-model.ts';
+import { answeringSession, attentionState, chiming, isRecentInput } from './attention-model.ts';
 import { chime, syncRepeat } from './attention-sound.ts';
 import { isLookFirstKey } from './keys.ts';
 import { getState, subscribe } from './store.ts';
+import { PANES } from './tabs-model.ts';
 import { acknowledgeAttention, getUiState, hushAttention, observeAttention, setChimeMode, subscribeUi } from './ui.ts';
 
 // Wires the attention model to the world: every sessions push from the
@@ -42,8 +43,19 @@ import { acknowledgeAttention, getUiState, hushAttention, observeAttention, setC
 // the moment it landed, so a reply nobody was there for never pulsed;
 // now the pane asks hadRecentInput first, and a reply into an empty room
 // waits for the gesture above like any other.
+//
+// M9 fix 701: a question that comes into the pane the person is typing in
+// is settled as it arrives, with no chime, taskbar flash, toast or pulse;
+// the badge and the state word still change, since they read the daemon.
+// "Typing in" is per pane: the panes are in front, the shown tab's focused
+// pane holds the session, and the last real press or key that landed in a
+// pane landed in that one within RECENT_INPUT_MS. The record is fed only
+// by the window's own mousedown and keydown, so a scripted click (a shade
+// lifted by .click()) does not count, and window focus is not read.
 
 let lastInputAt: number | null = null;
+// M9 fix 701: the pane the last real press or key landed in, and when.
+let lastPaneInput: { paneId: string; at: number } | null = null;
 
 // What the main process was last told about the attention set (M9 fix
 // 104), so a sessions push that changed nothing sends nothing; an arrival
@@ -90,15 +102,22 @@ export function noteGuestInput(now = Date.now()): void {
 export function installAttention(): () => void {
   const onSessions = () => {
     const sessions = getState().sessions;
-    const arrived = observeAttention(sessions.values());
+    const { arrived, settled } = observeAttention(sessions.values(), answeringNow());
     const ui = getUiState();
     const sounding = arrived.length > 0 && ui.attentionSound !== 'off';
+    const stateOf = (id: string): string => {
+      const s = sessions.get(id);
+      return s === undefined ? 'gone' : attentionState(s);
+    };
     // One line per arrival so a chime that did not come can be traced
     // from the renderer console (M9 fix 41: a plan prompt was missed once
     // and the daemon's log showed the transition, so the miss was here or
     // later).
     for (const id of arrived) {
-      console.log(`[emerald] attention ${id.slice(0, 8)} ${(() => { const s = sessions.get(id); return s === undefined ? 'gone' : attentionState(s); })()}: sound ${ui.attentionSound}, chime ${sounding ? `scheduled (${ui.chimeMode})` : 'no'}`);
+      console.log(`[emerald] attention ${id.slice(0, 8)} ${stateOf(id)}: sound ${ui.attentionSound}, chime ${sounding ? `scheduled (${ui.chimeMode})` : 'no'}`);
+    }
+    for (const id of settled) {
+      console.log(`[emerald] attention ${id.slice(0, 8)} ${stateOf(id)}: answering in the focused pane, no chime, flash or toast`);
     }
     if (sounding) chime(ui.chimeMode);
     // The taskbar follows the chime's own gate, not the notification
@@ -136,6 +155,7 @@ export function installAttention(): () => void {
     // button (fix 190), which is for one chime and must leave the pulse
     // under it and the other chimes alone.
     lastInputAt = Date.now();
+    notePaneInput(ev, lastInputAt);
     if (ev.target instanceof Element && ev.target.closest('.attention-sound, .attention-menu, .sidebar-filters, .context-popover, .roster-popover, .answer-popover, .activity-card, [data-action="hush"]') !== null) return;
     const sessionId = ev instanceof KeyboardEvent ? (isLookFirstKey(ev) ? null : focusedSessionId()) : pressedSessionId(ev);
     if (sessionId === null) {
@@ -256,6 +276,31 @@ function pressedSessionId(ev: Event): string | null {
   }
   const row = ev.target.closest('.sidebar-row[data-session-id]');
   return row instanceof HTMLElement ? (row.dataset['sessionId'] ?? null) : null;
+}
+
+// M9 fix 701: which pane a real press or key landed in. A key that is not
+// look-first lands in the shown tab's focused pane; a press in the pane it
+// is inside. Anything else (a look-first key, a press outside every pane)
+// leaves the record alone.
+function notePaneInput(ev: Event, at: number): void {
+  let paneId: string | null = null;
+  if (ev instanceof KeyboardEvent) {
+    if (!isLookFirstKey(ev)) paneId = shownTab()?.focusedPaneId ?? null;
+  } else if (ev.target instanceof Element) {
+    const pane = ev.target.closest('[data-pane-id]');
+    if (pane instanceof HTMLElement) paneId = pane.dataset['paneId'] ?? null;
+  }
+  if (paneId !== null) lastPaneInput = { paneId, at };
+}
+
+// M9 fix 701: the session the person is answering right now, or null when
+// the panes are not in front.
+function answeringNow(): string | null {
+  if (getUiState().tabs.active !== PANES) return null;
+  const tab = shownTab();
+  if (tab === null) return null;
+  const focused = { paneId: tab.focusedPaneId, sessionId: findPane(tab, tab.focusedPaneId)?.sessionId ?? null };
+  return answeringSession(focused, lastPaneInput, Date.now());
 }
 
 // The session a keydown is for: the focused pane's, if it shows one.

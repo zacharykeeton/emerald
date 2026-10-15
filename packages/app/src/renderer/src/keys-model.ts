@@ -35,7 +35,9 @@ export type Action =
   | 'history-forward'
   | 'whats-new'
   | 'open-file'
-  | 'design-mode';
+  | 'design-mode'
+  // M9 fix 689: a Claude pane's chat view or its terminal.
+  | 'toggle-chat';
 
 // A key with its modifiers. `code` is KeyboardEvent.code so a binding does
 // not depend on Shift changing the key name.
@@ -155,6 +157,10 @@ export const BINDINGS: readonly Binding[] = [
   // M9 fix 674: Design Mode on the browser pane. D was free both plain
   // and after the prefix; Ctrl+Shift+D used to reach a shell as ^D.
   { action: 'design-mode', label: 'Design Mode', plain: cs('KeyD'), prefixed: chord('KeyD') },
+  // M9 fix 689: the focused Claude pane between its chat view and its
+  // terminal. M was free both plain and after the prefix; Ctrl+Shift+I
+  // is a dev build's devtools.
+  { action: 'toggle-chat', label: 'Chat or terminal', plain: cs('KeyM'), prefixed: chord('KeyM') },
 ];
 
 export function chordMatches(c: Chord, ev: KeyLike): boolean {

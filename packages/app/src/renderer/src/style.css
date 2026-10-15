@@ -8985,6 +8985,7 @@ body.dragging-tab .tab {
 .pane-title[data-squeeze="7"] .pane-title-divider,
 .pane-title[data-squeeze="6"] .roster[data-folded],
 .pane-title[data-squeeze="7"] .roster[data-folded],
+.pane-title[data-squeeze="7"] .pane-face-toggle,
 .pane-title[data-squeeze="7"] .pane-hide,
 .pane-title[data-squeeze="7"] .pane-close {
   display: none;
@@ -11109,10 +11110,32 @@ button.files-root {
 .empty-pane[data-mode="empty"] {
   padding: 0;
   gap: 0;
+  /* The body scrolls, not the pane, so the corner × stays put (M9 fix 704). */
+  position: relative;
+  overflow: hidden;
+}
+
+.empty-x {
+  position: absolute;
+  top: 6px;
+  right: 20px;
+  z-index: 1;
+  background: none;
+  color: var(--idle);
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 16px;
+}
+
+.empty-x:hover {
+  background: none;
+  color: var(--fg);
 }
 
 .empty-body {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -11480,7 +11503,7 @@ button.files-root {
 
 @container empty-pane (max-width: 360px) {
   .empty-body {
-    padding: 16px;
+    padding: 28px 16px 16px;
     gap: 16px;
   }
   .empty-kind-sub,
@@ -11495,9 +11518,10 @@ button.files-root {
   }
 }
 
-@container empty-pane (max-width: 320px) {
+@container empty-pane (max-width: 340px) {
   /* The side padding and the glyph's gap give a little more than the
-     board's 10px, so "Claude session" stays whole at 320px. */
+     board's 10px, so "Claude session" stays whole from 340px down (M9 fix
+     706; at 320 when fix 547 wrote it). */
   .empty-kind {
     padding: 10px 8px;
   }
@@ -11507,6 +11531,9 @@ button.files-root {
   .empty-kind-name {
     font-size: 13.5px;
   }
+}
+
+@container empty-pane (max-width: 320px) {
   .empty-folder-note {
     display: none;
   }
@@ -11521,6 +11548,15 @@ button.files-root {
     flex-basis: 100%;
     margin-left: 0;
     text-align: left;
+  }
+}
+
+/* M9 fix 706: under 310px no two tiles fit side by side at any padding, so
+   they stack, one name per row. */
+@container empty-pane (max-width: 310px) {
+  .empty-kinds,
+  .empty-kinds[data-tiles="3"] {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -11913,8 +11949,9 @@ body.dragging-session .browser-frame {
 /* M9 fixes 674 and 675: Design Mode on a browser pane. The toolbar's
    toggle pressed on the accent ground the empty pane's tiles use, the
    hint bar between the toolbar and the page, the target in the title
-   row, and the tray of notes beside the page, which narrows to make room
-   (the layer follows the slot's size). */
+   row, and the tray of notes beside the page, which narrows to make room,
+   or under it in a pane under 600 px (fix 698) (the layer follows the
+   slot's size). */
 .browser-design[aria-pressed="true"],
 .design-notes[aria-pressed="true"] {
   background: var(--focus-header);
@@ -12023,4 +12060,515 @@ body.dragging-session .browser-frame {
   flex: none;
   margin: 6px;
   padding: 4px 8px;
+}
+
+/* M9 fix 698: in a pane under 600 px the tray beside the page left it a
+   strip; below that it docks under the page, which keeps its width, and
+   the slot's ResizeObserver resizes the frame. */
+@container browser-view (width < 600px) {
+  .browser-main {
+    flex-direction: column;
+  }
+
+  .design-tray {
+    flex: 0 0 40%;
+    width: auto;
+    min-height: 0;
+    border-left: none;
+    border-top: 1px solid var(--gutter);
+  }
+}
+
+/* M9 fix 689: a Claude pane's chat face (docs/design/graphical-session.md
+   sections 4 and 5). The terminal under it is hidden, never unmounted or
+   displayed none, so the xterm keeps its size, its buffer and its PTY
+   size; the view lies over it inside .term-wrap, under the shade, the
+   wait overlay and the exited notice. */
+.pane[data-face="chat"] .term-host {
+  visibility: hidden;
+}
+
+.pane-title-actions .pane-face-toggle {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.pane-face-icon {
+  flex: none;
+}
+
+.chat-view {
+  --chat-column: 760px;
+  --chat-dock: 712px;
+  --rail-dot: 7px;
+  --rail-cell: 9px;
+  --rail-inset: 18px;
+  --chip-height: 20px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* The scroller; the column sits at its bottom while it is short. */
+.chat-timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-column {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--chat-column);
+  margin: auto auto 0;
+  padding: 16px 24px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-prompt-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-prompt {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--title-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-prompt-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The steps hang from the bubble on a dotted rail; each marker is
+   centred on it and has the ground behind it, so the rail stops there. */
+.chat-rail {
+  margin-left: 4px;
+  padding-left: var(--rail-inset);
+  border-left: 1px dotted var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-step {
+  position: relative;
+  min-width: 0;
+}
+
+.chat-dot {
+  position: absolute;
+  left: -22px;
+  top: 4.5px;
+  box-sizing: border-box;
+  width: var(--rail-dot);
+  height: var(--rail-dot);
+  border-radius: 50%;
+  background: var(--done);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.chat-dot[data-tone="error"] {
+  background: var(--error);
+}
+
+.chat-dot[data-tone="pending"] {
+  background: var(--idle);
+}
+
+.chat-dot[data-tone="thinking"] {
+  background: var(--bg);
+  border: 1px solid var(--idle);
+}
+
+.chat-dot[data-tone="blocked"] {
+  background: var(--blocked);
+}
+
+.chat-step[data-kind="tool"] {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.chat-tool-name {
+  flex: none;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-tool-arg {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.chat-tool-result {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-added {
+  color: var(--done);
+}
+
+.chat-removed {
+  color: var(--error);
+}
+
+.chat-thinking-head {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-thinking-text {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A newline inside a pre-wrap element renders, so the tick cell and the
+   text sit on one source line in ChatView.tsx. */
+.chat-reply {
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-tick-cell {
+  position: absolute;
+  left: -23px;
+  top: 0;
+  width: var(--rail-cell);
+  height: 1.45em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--done);
+  font-size: 9px;
+}
+
+.chat-tick-cell::before {
+  content: '\2713';
+}
+
+.chat-note {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The live line, on a rail of its own under the last turn. */
+.chat-live {
+  position: relative;
+  margin-left: 4px;
+  padding-left: calc(var(--rail-inset) + 1px);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.chat-live-mark {
+  position: absolute;
+  left: -6px;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.chat-live-word {
+  color: var(--working);
+}
+
+.chat-live-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The dock: the box and its footer under the timeline. */
+.chat-dock {
+  flex: none;
+  padding: 8px 24px;
+  border-top: 1px solid var(--gutter);
+  background: var(--title-bg);
+}
+
+.chat-dock-inner {
+  max-width: var(--chat-dock);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-box {
+  box-sizing: border-box;
+  width: 100%;
+  resize: none;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  outline: none;
+  overflow-y: auto;
+}
+
+.chat-box:focus {
+  border-color: var(--focus);
+}
+
+.chat-box::placeholder {
+  color: var(--placeholder);
+}
+
+.chat-box:disabled {
+  opacity: 0.6;
+}
+
+.chat-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.chat-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--muted);
+}
+
+.chat-stop,
+.chat-send {
+  flex: none;
+  font-size: 12px;
+}
+
+/* The empty pane's `opens on` pair (M9 fix 689), at the start row's end:
+   two joined outline buttons, the picked one lit as a focused header. */
+.empty-opens {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+}
+
+.empty-opens .muted {
+  margin-right: 8px;
+}
+
+.empty-opens button.secondary {
+  font-size: 12px;
+}
+
+.empty-opens button + button {
+  margin-left: -1px;
+}
+
+.empty-opens button[aria-pressed="true"] {
+  position: relative;
+  background: var(--focus-header);
+  border-color: var(--focus);
+}
+
+/* M9 fix 690: the ask as a card on the rail (the handoff's section 6),
+   the options as the sidebar card's buttons at 12px. Its own rail, since
+   it follows the last turn. */
+.chat-ask-step {
+  margin-left: 4px;
+  padding-left: var(--rail-inset);
+  border-left: 1px dotted var(--line-strong);
+  outline: none;
+}
+
+/* Centred on the step's own rail, the 1px border just left of it. */
+.chat-ask-step > .chat-dot {
+  left: -4px;
+  top: 12px;
+}
+
+.chat-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--title-bg);
+  border: 1px solid var(--blocked-line);
+}
+
+.chat-ask-step:focus .chat-ask {
+  border-color: var(--blocked);
+}
+
+.chat-ask-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--blocked);
+}
+
+.chat-ask-screen {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-ask-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 3px 6px;
+  background: none;
+  border: 1px solid var(--line-strong);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-ask-option:hover {
+  border-color: var(--blocked);
+  background: var(--row-hover);
+}
+
+.chat-ask-key {
+  flex: none;
+  min-width: 2.2em;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--muted);
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 10px;
+  text-align: center;
+}
+
+.chat-ask-option:hover .chat-ask-key {
+  color: var(--blocked);
+  border-color: var(--blocked);
+}
+
+.chat-ask-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-ask-esc .chat-ask-label {
+  color: var(--muted);
+}
+
+.chat-ask-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line-strong);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* The fallback bar over the box: a command whose menu only the terminal
+   draws was sent, and the terminal is one click away. */
+.chat-fallback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--blocked-line);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.chat-fallback-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-fallback-show {
+  flex: none;
+  font-size: 12px;
 }

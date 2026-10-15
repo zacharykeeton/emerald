@@ -2,7 +2,7 @@ import type { Layout, SingleTree } from './layout.ts';
 import type { SavedPrompt } from './prompts.ts';
 import type { FolderLabel } from './folders.ts';
 import type { ActivitySession, CappedSpan } from './activity.ts';
-import type { SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
+import type { LoadSample, SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
 import type { UpdateState } from './update.ts';
 import type { ConflictReport } from './conflicts.ts';
 import type { BrowserAnswer, BrowserVerb } from './browser-drive.ts';
@@ -90,7 +90,8 @@ export const PROTOCOL_VERSION = 1;
 //  62: M9 fix 659, the browser view, { kind: 'browser', url } in a layout, and url on file.open and its push, a page opened in a pane from emmer open
 //  63: M9 fix 672, browser.run with its browser.requested push and browser.done, a page in a browser pane driven from emmer browser
 //  63: M9 fix 673, profile on a browser view, and upload, events and resume on browser.run
-export const DAEMON_FEATURE_LEVEL = 63;
+//  64: M9 fix 703, sessions.load on the sessions topic, one push per load tick with each sampled session's newest sample and names, to app windows at level 64; an older window gets session.changed per session as before, a CLI none
+export const DAEMON_FEATURE_LEVEL = 64;
 
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
@@ -297,6 +298,11 @@ export type ServerMessage =
   // oldest first; all zeros once a burst has ended.
   | { type: 'pty.rate';        sessionId: string; samples: number[]; at: number }
   | { type: 'session.changed'; session: SessionInfo }
+  // One load tick's samples (M9 fix 703), on the sessions topic, to app
+  // windows at level 64; each sample is appended to its session's ring and
+  // the names replace loadNames. A window at an older level gets each
+  // sampled session's whole record as session.changed, and a CLI gets none.
+  | { type: 'sessions.load';   at: number; samples: Array<{ sessionId: string; sample: LoadSample; names: string[] }> }
   | { type: 'session.removed'; sessionId: string }
   | { type: 'layout.changed';  layout: Layout }
   // The whole list after a folders.set (M9 fix 194), on the sessions topic.

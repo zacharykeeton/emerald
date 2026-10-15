@@ -86,6 +86,14 @@ export function startLabel(kind: EmptyKind, folder: string, shell: ShellOption |
   return { head: startHead(kind, shell), tail: ` in ${name === '' ? folder : name}` };
 }
 
+// A kind tile's title: what a double-click on it does and where (M9 fix
+// 705), nothing with no folder row to start in.
+export function tileTitle(folder: string | null): string | undefined {
+  if (folder === null) return undefined;
+  const name = folderName(folder);
+  return `Double-click to start in ${name === '' ? folder : name}`;
+}
+
 // The head alone, for the form with no folder (M9 fix 647: a picked shell
 // is named).
 export function startHead(kind: EmptyKind, shell: ShellOption | null): string {

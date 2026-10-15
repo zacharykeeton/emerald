@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
-import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
@@ -79,7 +79,7 @@ function isUnder(root: string, p: string): boolean {
 }
 
 export function FilesRail() {
-  const { filesCollapsed, filesWidth, tabs, railTab, filesChanged, search: searchSettings, revealFile } = useUi();
+  const { filesCollapsed, filesWidth, tabs, railTab, filesChanged, search: searchSettings, revealFile, chatPanes } = useUi();
   const focused = useFocusedSession();
   const focusedView = useFocusedView();
   // A look above the followed folder (M9 fix 332): the header's up button
@@ -202,7 +202,9 @@ export function FilesRail() {
   // 180) never joins tabs.files, so its folder comes from the layout's
   // panes directly, or its notice never showed.
   const paneFolders = layoutForFocus === null ? [] : filePaneFolders(layoutForFocus);
-  const tabFolders = [...new Set([...tabs.files.filter((f) => !isDocument(f)).map(parentPath), ...paneFolders])];
+  // M9 fix 689: a chat view's transcript folder, so the view hears it grow.
+  const chatFolders = layoutForFocus === null ? [] : chatPaneFolders(layoutForFocus, chatPanes, sessions);
+  const tabFolders = [...new Set([...tabs.files.filter((f) => !isDocument(f)).map(parentPath), ...paneFolders, ...chatFolders])];
   const tabKey = tabFolders.join('\n');
   const tabFoldersRef = useRef(tabFolders);
   tabFoldersRef.current = tabFolders;
@@ -307,7 +309,7 @@ export function FilesRail() {
   // root or a listing, and either shows the row (selected, scrolled to,
   // flashed once) or says it cannot. The timer only wakes the read at the
   // deadline, since nothing else may change by then.
-  const revealing = useRef<{ path: string; seq: number; until: number; relist: 'none' | 'pending' | 'done'; fresh: Map<string, FileListing> } | null>(null);
+  const revealing = useRef<{ path: string; seq: number; until: number; relist: 'none' | 'pending' | 'done'; before: Map<string, FileListing | undefined>; landed: string[] } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   // The n alternates the row's data-flash between 'a' and 'b' (M9 fix 684),
   // so a second reveal on a row still flashing restarts the animation: a
@@ -326,7 +328,7 @@ export function FilesRail() {
       liftChain.current = [];
       setLift(null);
     }
-    revealing.current = { path, seq, until: Date.now() + REVEAL_IN_FILES_MS, relist: 'none', fresh: new Map() };
+    revealing.current = { path, seq, until: Date.now() + REVEAL_IN_FILES_MS, relist: 'none', before: new Map(), landed: [] };
     setRevealTick((t) => t + 1);
     const timer = setTimeout(() => setRevealTick((t) => t + 1), REVEAL_IN_FILES_MS + 20);
     return () => clearTimeout(timer);
@@ -357,11 +359,12 @@ export function FilesRail() {
       if (r.relist === 'none') {
         r.relist = 'pending';
         const dirs = [...model.listings.keys()].filter((d) => isUnder(d, r.path));
+        for (const d of dirs) r.before.set(d, model.listings.get(d));
         void Promise.all(dirs.map((d) => list(d))).then((got) => {
           if (revealing.current !== r) return;
           dirs.forEach((d, i) => {
             const l = got[i];
-            if (l !== undefined) r.fresh.set(d, l);
+            if (l !== undefined) r.landed.push(d);
           });
           r.relist = 'done';
           setRevealTick((t) => t + 1);
@@ -373,9 +376,9 @@ export function FilesRail() {
       // the folder was closed said Not in the Files rail), so it says so only
       // once every fresh listing is in the model; their arrival runs this
       // effect again, and the deadline above ends a wait that never ends.
-      for (const [d, l] of r.fresh) {
-        if (model.listings.get(d) !== l) return;
-      }
+      // Any listing newer than the one the relist started from counts, since
+      // a watch push for the same folder can replace the relist's own (M9 fix 707).
+      if (!relistLanded(model.listings, r.before, r.landed)) return;
       revealing.current = null;
       flashCornerNote('Not in the Files rail');
       clearRevealFile(r.seq);

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { Logger } from './log.ts';
-import { setAsideBadFile, sweepStaleTemps, writeFileAtomic } from './store-file.ts';
+import { readFileRetried, setAsideBadFile, sweepStaleTemps, writeFileAtomic } from './store-file.ts';
 
 function tempFile(name: string): string {
   return path.join(mkTemp('emerald-store-file-'), 'nested', name);
@@ -23,11 +23,11 @@ function recordingLogger(): Logger & { lines: string[] } {
 // delete, so a rename over it is refused until the handle closes. Node's
 // own opens share delete on Windows, so it takes another process.
 // Resolves once the handle is open.
-function holdOpen(file: string, ms: number): Promise<ChildProcess> {
+function holdOpen(file: string, ms: number, share: 'Read' | 'None' = 'Read'): Promise<ChildProcess> {
   const script =
-    "$f = [IO.File]::Open($env:HOLD_FILE, 'Open', 'Read', 'Read'); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); [Threading.Thread]::Sleep([int]$env:HOLD_MS); $f.Close()";
+    "$f = [IO.File]::Open($env:HOLD_FILE, 'Open', 'Read', $env:HOLD_SHARE); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); [Threading.Thread]::Sleep([int]$env:HOLD_MS); $f.Close()";
   const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...process.env, HOLD_FILE: file, HOLD_MS: String(ms) },
+    env: { ...process.env, HOLD_FILE: file, HOLD_MS: String(ms), HOLD_SHARE: share },
     stdio: ['ignore', 'pipe', 'inherit'],
     windowsHide: true,
   });
@@ -84,6 +84,27 @@ test('a rename refused past the retries throws with the old file whole, and the 
   await exited(holder);
   writeFileAtomic(file, 'new', log);
   assert.equal(fs.readFileSync(file, 'utf8'), 'new');
+});
+
+test('readFileRetried waits out a reader that shares nothing (M9 fix 708)', { skip: process.platform !== 'win32' }, async () => {
+  const file = tempFile('sessions.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'the list');
+  const holder = await holdOpen(file, 120, 'None');
+  const log = recordingLogger();
+  // A bare read is refused while the handle shares nothing, which is what
+  // made a store's load() answer an empty list.
+  assert.throws(() => fs.readFileSync(file, 'utf8'), (err: NodeJS.ErrnoException) => err.code === 'EBUSY');
+  assert.equal(readFileRetried(file, log), 'the list');
+  assert.ok(log.lines.some((l) => /^warn read of sessions\.json refused \(EBUSY\), trying again$/.test(l)), log.lines.join(' | '));
+  assert.ok(log.lines.some((l) => /^warn read of sessions\.json landed on try \d$/.test(l)), log.lines.join(' | '));
+  await exited(holder);
+});
+
+test('readFileRetried on a missing file throws ENOENT and logs nothing (M9 fix 708)', () => {
+  const log = recordingLogger();
+  assert.throws(() => readFileRetried(tempFile('gone.json'), log), (err: NodeJS.ErrnoException) => err.code === 'ENOENT');
+  assert.deepEqual(log.lines, []);
 });
 
 test('setAsideBadFile moves the file to a stamped name, a second in the same moment to a numbered one, and logs at error', () => {

@@ -1,10 +1,12 @@
 // M9 fix 672: emmer browser's driver. The daemon pushes browser.requested
 // to this main process; the command runs on the pane's guest through its
 // webContents.debugger, attached for that command alone, and the answer
-// goes back as browser.done. Nothing here calls focus() on anything: the
-// input goes to the guest by CDP, and Emulation.setFocusEmulationEnabled
-// makes the page act focused while the window's focus stays on the
-// person's pane. The renderer says which guest belongs to which pane
+// goes back as browser.done. The page takes the window's keyboard for a
+// key or a fill alone (emerald:browser-take-focus, typeInto below), and
+// the renderer hands it back when the command ends; every other verb
+// reaches the guest by CDP, and Emulation.setFocusEmulationEnabled makes
+// the page act focused while the window's focus stays on the person's
+// pane. The renderer says which guest belongs to which pane
 // (emerald:browser-guest), since main never sees the pane tree.
 import fs from 'node:fs';
 import path from 'node:path';

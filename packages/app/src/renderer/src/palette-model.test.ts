@@ -123,8 +123,10 @@ test('>spl lists the two splits with their chords first and the pane group after
   assert.ok(all.every((r) => r.match === null));
   // A pane match: the hits are on the pane row's label and the key rows come first.
   const ren = actionRows('>rena', 'Ctrl+B', pane);
-  assert.deepEqual(ren.map((r) => r.label), ['Rename session']);
-  assert.equal(ren[0]?.kind, 'pane');
+  // M9 fix 689: Chat or terminal has r, e, n, a in order too, a key row.
+  assert.deepEqual(ren.map((r) => r.label), ['Chat or terminal', 'Rename session']);
+  assert.equal(ren[0]?.kind, 'key');
+  assert.equal(ren[1]?.kind, 'pane');
   // No pane: the keys alone.
   assert.ok(actionRows('>', 'Ctrl+B', null).every((r) => r.kind === 'key'));
   // A prefix-only binding shows the prefix chord alone.

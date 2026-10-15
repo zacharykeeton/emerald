@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from 'react';
-import { currentTab, replaceTab, tabHolding } from '@emerald/shared';
+import { currentTab, pushSample, replaceTab, tabHolding } from '@emerald/shared';
 import { EMPTY_CONFLICTS } from '@emerald/shared';
 import type { ConflictReport, Layout, LayoutTab, SessionInfo } from '@emerald/shared';
 import type { DaemonInfo, RendererPush } from '../../preload/api.ts';
@@ -199,6 +199,25 @@ export function onPush(msg: RendererPush): void {
       // it carries is the daemon's word, so the preview goes.
       const preview = state.preview?.held === true && state.preview.sessionId === msg.session.id ? null : state.preview;
       setState({ sessions, preview });
+      return;
+    }
+    case 'sessions.load': {
+      // One load tick (M9 fix 703): each sample appended to its session's
+      // ring in one copy of the map and one notify. A sample the ring
+      // already holds is skipped, since a session.list reply (through
+      // invoke) can overtake a push (through send) carrying the same tick.
+      // A held colour preview stays: only the record push it waits for
+      // drops it.
+      let sessions: Map<string, SessionInfo> | null = null;
+      for (const { sessionId, sample, names } of msg.samples) {
+        const rec = (sessions ?? state.sessions).get(sessionId);
+        if (rec === undefined) continue;
+        const last = rec.load?.at(-1);
+        if (last !== undefined && last.at >= sample.at) continue;
+        sessions ??= new Map(state.sessions);
+        sessions.set(sessionId, { ...rec, load: pushSample(rec.load, sample), loadNames: names });
+      }
+      if (sessions !== null) setState({ sessions });
       return;
     }
     case 'session.removed': {

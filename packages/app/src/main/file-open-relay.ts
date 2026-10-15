@@ -27,6 +27,13 @@ export interface OpenRequest {
   beside?: string;
   // M9 fix 659: path holds a URL for a browser pane.
   url?: boolean;
+  // M9 fix 700: a launch with a file (a double-click in Explorer, or a second launch handing its file over), never set by the daemon's push.
+  launch?: true;
+}
+
+// What rides the open to the renderer beside the path and the pane flag.
+export function openExtraOf(req: OpenRequest): { scheme?: string | null; openId?: number; beside?: string; url?: boolean; launch?: boolean } {
+  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, launch: req.launch };
 }
 
 export interface OpenRelayClient {

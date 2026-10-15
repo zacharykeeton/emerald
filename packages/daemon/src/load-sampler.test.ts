@@ -5,7 +5,7 @@ import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LOAD_RING, LoadSampler, StubReplay, indexSweep, parseStub, parseSweepLine, pushSample, readTree, sweepScript, treePids, treeReading, walkTree } from './load-sampler.ts';
+import { LoadSampler, StubReplay, indexSweep, parseStub, parseSweepLine, readTree, sweepScript, treePids, treeReading, walkTree } from './load-sampler.ts';
 import type { ProcRow, Sweep } from './load-sampler.ts';
 import { removeWithPatience } from '@emerald/shared/test-temp';
 
@@ -81,15 +81,6 @@ test('treeReading keeps a tenth of a percent and caps the names at eight', () =>
   assert.ok(r !== null);
   assert.equal(r.sample.cpu, 0.1);
   assert.equal(r.names.length, 8);
-});
-
-test('pushSample keeps the last LOAD_RING samples, oldest first', () => {
-  let ring = pushSample(null, { at: 0, cpu: 1, rss: 1 });
-  assert.deepEqual(ring, [{ at: 0, cpu: 1, rss: 1 }]);
-  for (let i = 1; i < LOAD_RING + 5; i++) ring = pushSample(ring, { at: i, cpu: i, rss: 1 });
-  assert.equal(ring.length, LOAD_RING);
-  assert.equal(ring[0]!.at, 5);
-  assert.equal(ring.at(-1)!.at, LOAD_RING + 4);
 });
 
 test('a stranger whose parent id names a newer process is not in its tree (M9 fix 514)', () => {

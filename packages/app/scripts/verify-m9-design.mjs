@@ -6,8 +6,14 @@
 // that pastes one markdown block into the stub with its crop on disk and
 // the page seeing no click; the chord from the window and from the page,
 // Escape and Cancel; and the tray, two picks with a comment each sent as
-// one numbered block. Uses a private home and pipe unless the environment
-// names them.
+// one numbered block. Fix 695: the hint names the comment box while it
+// holds the keys, and Escape or Ctrl+Enter there hands them back to the
+// page. Fix 697: with no Claude session in the tab the tray's button
+// copies the notes and keeps them. Fix 698: in a pane under 600 px the
+// tray docks under the page, which keeps its width, and in a wider pane
+// it sits beside the page as before. Fix 696: the launch removes the PNGs older than 14 days from the
+// home's design and screenshots folders. Uses a private home and pipe
+// unless the environment names them.
 // Run: npm run verify:design -w @emerald/app
 import fs from 'node:fs';
 import http from 'node:http';
@@ -16,17 +22,17 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'design-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-design';
-const { CTRL, SHIFT, connect, expect, freshPort, getLayout, killTree, launch, leaves, sleep, startFromEmpty, step, stopDaemon } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, sleep, startFromEmpty, step, stopDaemon } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 120 s');
+  console.error('[verify] WATCHDOG: run exceeded 180 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   server?.close();
   setTimeout(() => process.exit(3), 500);
-}, 120000);
+}, 180000);
 
 // The fixture: one page, a paragraph and a button, and a count of every
 // click the page sees, taken in the capture phase before any handler of
@@ -47,6 +53,19 @@ const stubFile = path.join(home, 'design-stub.cjs');
 const stubOut = path.join(home, 'design-stub-out.bin');
 const fwd = (p) => p.replace(/\\/g, '/');
 const stubText = () => (fs.existsSync(stubOut) ? fs.readFileSync(stubOut, 'latin1') : '');
+
+// Fix 696's seed: a PNG 15 days old in each of design, screenshots and
+// downloads and a new one in design, before the launch prunes. launch's
+// freshState removes only the state files and the profile, so these
+// survive it.
+const seedOld = ['design', 'screenshots', 'downloads'].map((d) => path.join(home, d, 'seed-old.png'));
+const seedNew = path.join(home, 'design', 'seed-new.png');
+const fifteenDaysBack = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+for (const f of [...seedOld, seedNew]) {
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, 'seed');
+}
+for (const f of seedOld) fs.utimesSync(f, fifteenDaysBack, fifteenDaysBack);
 
 const s = await launch(freshPort(), { freshState: true });
 app = s;
@@ -243,16 +262,41 @@ try {
   // (g) The tray: two picks with a comment each, a third deleted, sent as
   // one numbered block.
   const wideBefore = await ev('innerWidth');
+  const tallBefore = await ev('innerHeight');
+  // The page's innerWidth against its frame's width, read before the tray
+  // opens and once it has (a log, not an expect; fix 698's probe).
+  const frameWide = () => s.evalJs(`(() => { const r = document.querySelector('.browser-frame[data-browser-pane="${webPaneId}"]')?.getBoundingClientRect(); return r ? r.width : null; })()`);
+  const paneWideOf = () => s.evalJs(`document.querySelector(${q(inPane('.browser-view'))}).getBoundingClientRect().width`);
+  const boxOf = (sel) => s.evalJs(`(() => { const r = document.querySelector(${q(inPane(sel))}).getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }; })()`);
+  const paneWide = await paneWideOf();
+  console.log(`[698] the browser pane is ${paneWide} px wide`);
+  console.log(`[698] before the tray: innerWidth ${wideBefore}, frame ${await frameWide()} px`);
   await click(inPane('.browser-design'));
   await s.waitFor(`!!document.querySelector(${q(inPane('.design-notes'))})`, 'the Notes button in the hint bar');
   await click(inPane('.design-notes'));
   await s.waitFor(`!!document.querySelector(${q(inPane('.design-tray'))})`, 'the tray open');
   // The tray narrows the page; a click sent before the page has taken
   // its new width went to the page under the picker on one run in three
-  // (fix 675's send-back), so the picks wait for the narrower page.
+  // (fix 675's send-back), so the picks wait for the page's new size. A
+  // tray docked under the page (fix 698, a pane under 600 px) changes the
+  // height instead: tallBefore was read before the mode, so the drop
+  // counts the hint bar (about 25 px) as well as the tray, and 100 px is
+  // met only once the tray has landed.
   until = Date.now() + 5000;
-  while ((await ev('innerWidth')) > wideBefore - 200 && Date.now() < until) await sleep(100);
-  expect((await ev('innerWidth')) <= wideBefore - 200, `the page narrows beside the tray (${wideBefore} then ${await ev('innerWidth')})`);
+  if (paneWide < 600) {
+    while ((await ev('innerHeight')) > tallBefore - 100 && Date.now() < until) await sleep(100);
+    console.log(`[698] with the tray open: innerWidth ${await ev('innerWidth')}, innerHeight ${tallBefore} then ${await ev('innerHeight')}, frame ${await frameWide()} px`);
+    expect((await ev('innerHeight')) <= tallBefore - 100, `the page shortens over the docked tray (${tallBefore} then ${await ev('innerHeight')})`);
+    expect(Math.abs((await ev('innerWidth')) - wideBefore) <= 4, `the page keeps its width over the docked tray (${wideBefore} then ${await ev('innerWidth')})`);
+    const tray = await boxOf('.design-tray');
+    const body = await boxOf('.browser-body');
+    expect(tray.top >= body.bottom - 1, `the tray is under the page (tray top ${tray.top}, page bottom ${body.bottom})`);
+    step(`(g0) the tray docks under the page in a ${paneWide} px pane, the page keeping its width`);
+  } else {
+    while ((await ev('innerWidth')) > wideBefore - 200 && Date.now() < until) await sleep(100);
+    console.log(`[698] with the tray open: innerWidth ${await ev('innerWidth')}, frame ${await frameWide()} px`);
+    expect((await ev('innerWidth')) <= wideBefore - 200, `the page narrows beside the tray (${wideBefore} then ${await ev('innerWidth')})`);
+  }
   until = Date.now() + 5000;
   while (!(await hostIn()) && Date.now() < until) await sleep(100);
   const noteCount = () => s.evalJs(`document.querySelectorAll(${q(inPane('.design-note'))}).length`);
@@ -272,7 +316,31 @@ try {
     while (!(await hostIn()) && Date.now() < until) await sleep(100);
   };
   await addPick('cta', 'make it green', 1);
+  // (g1) The hint names the comment box while it holds the keys; a focus
+  // on the webview stands in for a click into the page (a real click there
+  // would answer the grab with a pick).
+  const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
+  const TRAY_HINT = 'Typing a note; click the page to pick again, or C and S there';
+  const hint = () => text(inPane('.design-hint .design-hint-text'));
+  const activeLabel = () => s.evalJs(`document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName ?? null`);
+  expect((await activeLabel()) === 'Comment on note 1' && (await hint()) === TRAY_HINT, `the tray's hint while note 1's box is focused (${await activeLabel()}: ${await hint()})`);
+  await s.evalJs(`document.querySelector(${q(webview)}).focus()`);
+  await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'the page focused');
+  await s.waitFor(`document.querySelector(${q(inPane('.design-hint .design-hint-text'))})?.textContent === ${q(PAGE_HINT)}`, 'the page hint again once the page has the keys');
   await addPick('intro', 'say what it costs', 2);
+  expect((await hint()) === TRAY_HINT, `the tray's hint while note 2's box is focused (${await hint()})`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'Escape in the box hands the keys to the page');
+  await s.waitFor(`document.querySelector(${q(inPane('.design-hint .design-hint-text'))})?.textContent === ${q(PAGE_HINT)}`, 'the page hint after Escape');
+  expect((await pressed(inPane('.browser-design'))) === 'true', 'Escape in the box leaves the mode on');
+  const note2 = await s.evalJs(`document.querySelector(${q(inPane('textarea[aria-label="Comment on note 2"]'))})?.value ?? null`);
+  expect(note2 === 'say what it costs', `Escape leaves note 2's comment as it was (${JSON.stringify(note2)})`);
+  await s.evalJs(`document.querySelector(${q(inPane('textarea[aria-label="Comment on note 1"]'))}).focus()`);
+  await s.waitFor(`document.querySelector(${q(inPane('.design-hint .design-hint-text'))})?.textContent === ${q(TRAY_HINT)}`, "the tray's hint with note 1's box focused again");
+  await s.key('Enter', 'Enter', 13, CTRL);
+  await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'Ctrl+Enter in the box hands the keys to the page');
+  await s.waitFor(`document.querySelector(${q(inPane('.design-hint .design-hint-text'))})?.textContent === ${q(PAGE_HINT)}`, 'the page hint after Ctrl+Enter');
+  step('(g1) the hint names the comment box while it holds the keys, and Escape or Ctrl+Enter there hands them back to the page');
   expect((await text(inPane('.design-notes'))) === 'Notes (2)', `Notes (2) (${await text(inPane('.design-notes'))})`);
   expect((await text(inPane('.design-send'))) === 'Send 2 notes', `Send 2 notes (${await text(inPane('.design-send'))})`);
   await addPick('cta', null, 3);
@@ -291,6 +359,71 @@ try {
   expect((await noteCount()) === 0, 'no note left');
   await click(inPane('.design-cancel'));
   step('(g) the tray gathers two picks with a comment each and sends them as one numbered block');
+
+  // (h) With no Claude session in the tab the tray's button copies (fix
+  // 697). The stub's pane leaves the tab by layout.set; its session lives
+  // on without a pane, so its output file still records anything pasted.
+  const tabsNow = await getTabs(s);
+  const findLeaf = (node, id) => (node.id === id ? node : node.kind === 'pane' ? null : (findLeaf(node.first, id) ?? findLeaf(node.second, id)));
+  const webTab = tabsNow.tabs.find((t) => findLeaf(t.root, webPaneId) !== null);
+  const webLeaf = findLeaf(webTab.root, webPaneId);
+  await s.evalJs(`window.emerald.request('layout.set', ${JSON.stringify({ layout: { ...tabsNow, tabs: tabsNow.tabs.map((t) => (t === webTab ? { ...t, root: webLeaf, focusedPaneId: webLeaf.id } : t)) } })})`);
+  await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'the browser pane alone in the tab');
+  // Fix 698's wide case: the tray closed from the toolbar (the mode is
+  // off), then opened beside the page in a pane of 600 px or more. The
+  // page takes the pane's width before any read: the frame sits over the
+  // slot inset by the 3 px ring, so its width is the slot's less 6.
+  await click(inPane('.browser-toolbar .design-notes'));
+  await s.waitFor(`!document.querySelector(${q(inPane('.design-tray'))})`, 'the tray closed');
+  const bodyWide = () => s.evalJs(`document.querySelector(${q(inPane('.browser-body'))}).getBoundingClientRect().width`);
+  until = Date.now() + 5000;
+  while (Math.abs((await ev('innerWidth')) - ((await bodyWide()) - 6)) > 3 && Date.now() < until) await sleep(100);
+  expect(Math.abs((await ev('innerWidth')) - ((await bodyWide()) - 6)) <= 3, `the page takes the wider pane (${await ev('innerWidth')} in a ${await bodyWide()} px slot)`);
+  const paneWide2 = await paneWideOf();
+  const wideBefore2 = await ev('innerWidth');
+  console.log(`[698] the browser pane alone is ${paneWide2} px wide`);
+  expect(paneWide2 >= 600, `the browser pane alone is 600 px or wider (${paneWide2})`);
+  await click(inPane('.browser-design'));
+  await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'true'`, 'the mode on with no Claude session in the tab');
+  await s.waitFor(`!!document.querySelector(${q(inPane('.design-hint .design-notes'))})`, 'the Notes button in the hint bar');
+  await click(inPane('.design-hint .design-notes'));
+  await s.waitFor(`!!document.querySelector(${q(inPane('.design-tray'))})`, 'the tray open again');
+  until = Date.now() + 5000;
+  while ((await ev('innerWidth')) > wideBefore2 - 200 && Date.now() < until) await sleep(100);
+  expect((await ev('innerWidth')) <= wideBefore2 - 200, `the page narrows beside the tray in the wide pane (${wideBefore2} then ${await ev('innerWidth')})`);
+  const trayWide = await boxOf('.design-tray');
+  const bodyWideBox = await boxOf('.browser-body');
+  expect(trayWide.left >= bodyWideBox.right - 1 && Math.abs(trayWide.top - bodyWideBox.top) <= 1, `the tray is beside the page (tray ${JSON.stringify(trayWide)}, page ${JSON.stringify(bodyWideBox)})`);
+  until = Date.now() + 5000;
+  while (!(await hostIn()) && Date.now() < until) await sleep(100);
+  await addPick('cta', 'make it green', 1);
+  await addPick('intro', null, 2);
+  const sendButton = () => s.evalJs(`(() => { const b = document.querySelector(${q(inPane('.design-send'))}); return { text: b.textContent, disabled: b.disabled, title: b.title }; })()`);
+  const copyButton = await sendButton();
+  expect(copyButton.text === 'Copy 2 notes' && copyButton.disabled === false && copyButton.title === 'No Claude session in this tab; copies the notes', `the button copies with no session (${JSON.stringify(copyButton)})`);
+  const stubBefore = stubText().length;
+  await click(inPane('.design-send'));
+  await s.waitFor(`document.querySelector('.corner-note')?.textContent === 'No Claude session to send to in this tab; copied the notes instead'`, 'the copied note');
+  clip = await s.evalJs(`window.emerald.clipboard.read()`);
+  for (const want of ['### 1. button #cta', '**Feedback:** make it green', '### 2. p #intro']) expect(typeof clip.text === 'string' && clip.text.includes(want), `the copied block holds ${JSON.stringify(want)} (${JSON.stringify(clip.text?.slice(0, 120))})`);
+  expect(clip.text.startsWith('## Design Feedback: /'), `the copied block starts with the heading (${JSON.stringify(clip.text.slice(0, 40))})`);
+  expect((await noteCount()) === 2 && (await text(inPane('.design-notes'))) === 'Notes (2)', `the notes stay after the copy (${await noteCount()}, ${await text(inPane('.design-notes'))})`);
+  await sleep(300);
+  expect(stubText().length === stubBefore, `nothing reached the stub (${stubBefore} then ${stubText().length})`);
+  await click(inPane('.design-cancel'));
+  step('(h) with no Claude session in the tab the tray copies its notes as one numbered block and keeps them');
+
+  // (i) The launch's prune (fix 696): the PNGs seeded 15 days back are gone
+  // from design and screenshots; the new one, downloads and (d)'s crop stay.
+  until = Date.now() + 5000;
+  while ((fs.existsSync(seedOld[0]) || fs.existsSync(seedOld[1])) && Date.now() < until) await sleep(100);
+  expect(!fs.existsSync(seedOld[0]) && !fs.existsSync(seedOld[1]), `the old PNGs in design and screenshots are gone (${seedOld.slice(0, 2).map((f) => fs.existsSync(f))})`);
+  expect(fs.existsSync(seedNew), 'the new PNG in design stays');
+  expect(fs.existsSync(seedOld[2]), 'the old PNG in downloads stays');
+  expect(fs.existsSync(shot), `(d)'s crop stays (${shot})`);
+  // A read, not an expect: logs/ is not cleared between runs on this home.
+  for (const l of fs.readFileSync(path.join(home, 'logs', 'main.log'), 'utf8').split('\n').filter((x) => x.includes('shots:'))) console.log(`[696] ${l.trim()}`);
+  step('(i) the launch removed the PNGs older than 14 days from design and screenshots and kept the new one and downloads');
 
   step('PASS');
 } catch (err) {

@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HookTestOutcome, HooksStatus } from '../../preload/api.ts';
-import { INSTALL_HINT, OTHER_WRITER, bannerHint, bannerOnStatus, hooksProblem, installLabel, shouldPromptHooks, testText } from './hooks-banner-model.ts';
+import { FIX_HINT, INSTALL_HINT, OTHER_WRITER, bannerHint, bannerOnStatus, hooksProblem, installLabel, isDeadProblem, shouldPromptHooks, testText } from './hooks-banner-model.ts';
 
 const ALL = ['SessionStart', 'SessionEnd', 'Stop', 'Notification'];
 
 function status(over: Partial<HooksStatus>): HooksStatus {
-  return { complete: false, installed: ALL, missing: [], scriptPresent: true, scriptStale: false, statusLine: true, skill: true, settings: 'C:\\u\\.claude\\settings.json', fighting: false, ...over };
+  return { complete: false, installed: ALL, missing: [], scriptPresent: true, scriptStale: false, statusLine: true, skill: true, settings: 'C:\\u\\.claude\\settings.json', fighting: false, deadOurs: 0, ...over };
 }
 
 test('shouldPromptHooks is on unless the config turns it off', () => {
@@ -51,13 +51,14 @@ test('every problem and the hint stay short enough for one line at 1200px (fix 5
     status({ scriptStale: true }),
     status({ statusLine: false }),
     status({ skill: false }),
+    status({ deadOurs: 16 }),
     status({}),
   ];
   // 185 characters is the longest problem plus the hint (180) and a little, a
   // stand-in for the 1024px the measurement gave; a unit test cannot measure a font.
   // M9 fix 606: the other writer's sentence and every Test result take
   // the hint's place, and stay inside the same bound.
-  const tails = [INSTALL_HINT, OTHER_WRITER, ...OUTCOMES.map(testText)];
+  const tails = [INSTALL_HINT, FIX_HINT, OTHER_WRITER, ...OUTCOMES.map(testText)];
   for (const st of statuses) {
     for (const tail of tails) {
       const line = `${hooksProblem(st)} ${tail}`;
@@ -67,6 +68,22 @@ test('every problem and the hint stay short enough for one line at 1200px (fix 5
 });
 
 const OUTCOMES: HookTestOutcome[] = ['passed', 'no-script', 'no-daemon', 'old-daemon', 'not-heard'];
+
+test("emerald's dead entries raise the banner with Fix (M9 fix 710)", () => {
+  assert.equal(hooksProblem(status({ deadOurs: 16 })), "16 hooks in Claude's settings point at missing files.");
+  assert.equal(hooksProblem(status({ deadOurs: 1 })), "1 hook in Claude's settings points at a missing file.");
+  // Not installed, or some missing, still says so: the same Install clears the dead ones too.
+  assert.match(hooksProblem(status({ installed: [], missing: ALL, deadOurs: 3 }))!, /not installed/);
+  assert.equal(isDeadProblem(status({ deadOurs: 16 })), true);
+  assert.equal(isDeadProblem(status({ installed: [], missing: ALL, deadOurs: 3 })), false);
+  assert.equal(isDeadProblem(status({ deadOurs: 0 })), false);
+  assert.equal(isDeadProblem(status({ complete: true, deadOurs: 2 })), false);
+  assert.equal(installLabel('prompt', true), 'Fix');
+  assert.equal(installLabel('failed', true), 'Retry');
+  assert.equal(installLabel('installing', true), 'Installing');
+  assert.equal(bannerHint('prompt', '', true), FIX_HINT);
+  assert.equal(bannerHint('prompt', ''), INSTALL_HINT);
+});
 
 test('the fighting phase offers no install and names the other writer (M9 fix 606)', () => {
   assert.equal(installLabel('fighting'), 'Install hooks');

@@ -4,7 +4,7 @@ import MarkdownIt from 'markdown-it';
 import { MERMAID_CACHE_LIMIT, diagramErrorLine, installMermaidFence, isMermaidInfo, mermaidDocument, mermaidThemeFor, remember } from './markdown-mermaid.ts';
 import type { MermaidSide } from './markdown-mermaid.ts';
 
-function mdWith(): MarkdownIt {
+function mdWith() {
   const md = new MarkdownIt({ html: false });
   installMermaidFence(md);
   return md;

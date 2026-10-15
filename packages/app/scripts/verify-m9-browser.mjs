@@ -132,6 +132,22 @@ try {
   const narrow = await tileRead();
   console.log(`[666] the empty pane is ${narrow.pane} px wide`);
   expect(Math.abs(narrow.pane - 320) <= 4 && JSON.stringify(narrow.names) === NAMES && !narrow.clipped && narrow.tops[2] >= narrow.bottoms[0] - 0.5 && narrow.tops[2] >= narrow.bottoms[1] - 0.5 && narrow.widths[2] >= narrow.box * 0.9, `at 320 px the names are whole and the Browser tile sits under both (${JSON.stringify(narrow)})`);
+  // M9 fix 706: two tiles a row and whole at 340, 328 and 312 px of pane,
+  // one above another at 308 and 278.
+  for (const w of [340, 328, 312]) {
+    await emulate(w + 522);
+    const r = await tileRead();
+    console.log(`[706] the empty pane is ${r.pane} px wide`);
+    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && Math.abs(r.tops[0] - r.tops[1]) <= 1, `at ${w} px the names are whole with two tiles a row (${JSON.stringify(r)})`);
+  }
+  for (const w of [308, 278]) {
+    await emulate(w + 522);
+    const r = await tileRead();
+    console.log(`[706] the empty pane is ${r.pane} px wide`);
+    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && r.tops[1] >= r.bottoms[0] - 0.5 && r.tops[2] >= r.bottoms[1] - 0.5, `at ${w} px the names are whole, one tile above another (${JSON.stringify(r)})`);
+    if (w === 278) await s.screenshot('browser-tiles-278.png');
+  }
+  step('M9 fix 706: the tile names stay whole at 340, 328 and 312 px with two tiles a row, and at 308 and 278 px one above another');
   await s.send('Emulation.clearDeviceMetricsOverride');
   await sleep(300);
   await s.evalJs(`document.querySelector(${JSON.stringify(browserTile)}).click()`);
@@ -153,6 +169,19 @@ try {
   await s.waitFor(`document.querySelector(${JSON.stringify(address)}).value === ${JSON.stringify(home)}`, 'the focused bar shows the address whole');
   const whole = await addressRead();
   expect(whole.start === 0 && whole.end === home.length, `focus selects the whole address (${JSON.stringify(whole)})`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(address)}).blur()`);
+  // M9 fix 691: a click that brings the focus selects the whole address
+  // too, and a second click into the focused bar places the caret.
+  const { x: barX, y: barY } = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(address)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.click(barX, barY);
+  await s.waitFor(`document.querySelector(${JSON.stringify(address)}).value === ${JSON.stringify(home)}`, 'the clicked bar shows the address whole');
+  await sleep(150);
+  const clicked = await addressRead();
+  expect(clicked.focused && clicked.start === 0 && clicked.end === home.length, `a click into the bar selects the whole address (${JSON.stringify(clicked)})`);
+  await s.click(barX, barY);
+  await sleep(150);
+  const second = await addressRead();
+  expect(second.start === second.end, `a second click places the caret (${JSON.stringify(second)})`);
   await s.evalJs(`document.querySelector(${JSON.stringify(address)}).blur()`);
   step('(a) the Browser tile makes a browser pane; javascript:alert(1) is refused and 127.0.0.1:<port> loads, shown without its scheme');
 
@@ -493,6 +522,19 @@ try {
   await s.screenshot('browser-two-panes-narrow.png');
   await s.evalJs(`window.emerald.request('layout.set', ${JSON.stringify({ layout: { ...(await getTabs(s)), tabs: (await getTabs(s)).tabs.map((t, i) => (i === 0 ? { ...t, root: { ...t.root, ratio: wideTabs.tabs[0].root.ratio } } : t)) } })})`);
   step('(l) emmer open 127.0.0.1:<port>/two opens a second browser pane, and --scheme with a URL is refused');
+
+  // (m) M9 fix 694: closing a browser pane writes no renderer: error line
+  // for its guest (Electron's own Invalid guestInstanceId is a note).
+  const twoPane = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(browserPane)})].find((e) => e.dataset.url === ${JSON.stringify(`${origin}/two`)})?.dataset.paneId ?? null`);
+  expect(twoPane !== null, 'the /two pane by its url');
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.pane[data-pane-id="${twoPane}"] .browser-address`)}).focus()`);
+  await s.key('W', 'KeyW', 87, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.browser-frame').length === 1 && document.querySelectorAll(${JSON.stringify(browserPane)}).length === 1`, 'one browser pane and one frame after the close');
+  await sleep(1000);
+  const guestErrors = logText().split(/\r?\n/).filter((l) => /renderer: error .*Invalid guestInstanceId/.test(l));
+  expect(guestErrors.length === 0, `closing a browser pane writes no renderer: error line for its guest (${JSON.stringify(guestErrors)})`);
+  console.log(`[694] note: ${logText().split(/\r?\n/).filter((l) => /renderer: note .*Invalid guestInstanceId/.test(l)).length} renderer: note lines for Invalid guestInstanceId`);
+  step('(m) closing a browser pane writes no renderer: error line for its guest');
 
   // Anything the window's console said about a renderer that failed to
   // start, for the report.

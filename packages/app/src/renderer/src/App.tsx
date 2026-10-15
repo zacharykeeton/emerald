@@ -18,6 +18,7 @@ import { installFocusHistory } from './focus-history.ts';
 import { HooksBanner } from './HooksBanner.tsx';
 import { configurePrefix, installKeybindings } from './keys.ts';
 import { installUseRecord, recordUse } from './use-record.ts';
+import { outsideOpenUse } from './use-record-model.ts';
 import { NewSessionDialog } from './NewSessionDialog.tsx';
 import { UnsavedDialog } from './UnsavedDialog.tsx';
 import { Sidebar } from './Sidebar.tsx';
@@ -26,7 +27,7 @@ import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
 import { PANES, commitsFolder, isDocument, isWhatsNew } from './tabs-model.ts';
 import { start, useStore } from './store.ts';
-import { clearZoom, flashCornerNote, openWhatsNewOnStart, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
+import { clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
 
 export function App() {
@@ -50,9 +51,10 @@ export function App() {
     const uninstallKeys = installKeybindings();
     const uninstallUseRecord = installUseRecord();
     const uninstallDrop = installExplorerDrop();
-    // A file from outside (M9 fix 341): emmer open, or a launch with one.
+    // A file from outside (M9 fix 341): emmer open, or a launch with one, recorded apart (fix 700).
     const uninstallOpen = window.emerald.files.onOpen((path, pane, extra) => {
-      recordUse('cli-open', 'cli');
+      const use = outsideOpenUse(extra);
+      recordUse(use.name, use.from);
       void openFileFromOutside(path, pane, extra).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
     });
     return () => {
@@ -86,6 +88,7 @@ export function App() {
     const live = new Set(allPanes(layout).map((p) => p.id));
     pruneFontSizes(live);
     pruneShaded(live);
+    pruneChatPanes(live);
     pruneSplitFolders(new Set(allPanes(layout).filter((p) => p.sessionId === null && p.view === null).map((p) => p.id)));
   }, [layout]);
 

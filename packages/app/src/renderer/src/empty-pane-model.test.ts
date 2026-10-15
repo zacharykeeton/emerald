@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startLabel } from './empty-pane-model.ts';
+import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
+
+test('tileTitle: the folder by name, the whole folder for a drive root, none with no row (M9 fix 705)', () => {
+  assert.equal(tileTitle('C:\\code\\emerald'), 'Double-click to start in emerald');
+  assert.equal(tileTitle('C:\\'), 'Double-click to start in C:\\');
+  assert.equal(tileTitle(null), undefined);
+});
 
 test('defaultKind: the split default wins, else the stored kind, else a shell (M9 fix 545)', () => {
   assert.equal(defaultKind('shell', 'claude'), 'shell');

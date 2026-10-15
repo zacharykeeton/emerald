@@ -26,9 +26,9 @@ import type { Logger } from './log.ts';
 // the WMI provider host a sweep, 500 ms of wall however it is filtered.
 // The daemon runs `gp` and logs the method at its start;
 // EMERALD_LOAD_SWEEP=cim is for the bench.
+// The ring's cap, LOAD_RING, and pushSample are in @emerald/shared's
+// load-model (M9 fix 703).
 export const LOAD_TICK_MS = 4000;
-// Ten minutes at the tick: the row and the title bar read the last five.
-export const LOAD_RING = 150;
 export const LOAD_NAMES_KEPT = 8;
 // A dead child is started again after this long, once a minute at most.
 const RESTART_MS = 60_000;
@@ -308,13 +308,6 @@ export function readTree(prev: SweepIndex | null, cur: SweepIndex, root: number)
 // readTree on sweeps not yet indexed, for the tests.
 export function treeReading(prev: Sweep | null, cur: Sweep, root: number): TreeReading | null {
   return readTree(prev === null ? null : indexSweep(prev), indexSweep(cur), root);
-}
-
-// The ring, oldest first, capped at LOAD_RING; a plain array, since
-// RingBuffer is bytes.
-export function pushSample(ring: readonly LoadSample[] | null | undefined, sample: LoadSample): LoadSample[] {
-  const next = ring == null ? [sample] : [...ring, sample];
-  return next.length > LOAD_RING ? next.slice(next.length - LOAD_RING) : next;
 }
 
 export interface StubEntry {

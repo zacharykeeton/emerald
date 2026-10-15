@@ -20,7 +20,7 @@ function folder(): string {
 }
 
 function status(over: Partial<HooksStatus>): HooksStatus {
-  return { complete: false, installed: [], missing: [], scriptPresent: true, scriptStale: false, statusLine: true, skill: true, settings: '', fighting: false, ...over };
+  return { complete: false, installed: [], missing: [], scriptPresent: true, scriptStale: false, statusLine: true, skill: true, settings: '', fighting: false, deadOurs: 0, ...over };
 }
 
 const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
@@ -55,6 +55,9 @@ test('parseHooksStatus carries fighting and the record path', () => {
   assert.equal(r.status.fighting, true);
   assert.equal(r.written, 'C:\\h\\settings-written.json');
   assert.equal(parseHooksStatus({}).status.fighting, false);
+  // M9 fix 710: the banner counts emerald's own dead entries alone.
+  assert.equal(parseHooksStatus({ dead: [{ ours: true }, { ours: false }, { ours: true }] }).status.deadOurs, 2);
+  assert.equal(parseHooksStatus({}).status.deadOurs, 0);
 });
 
 test('ownSha256 reads the record by a key of other case, and is null with no record', () => {

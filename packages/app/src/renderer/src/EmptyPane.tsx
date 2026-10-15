@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { hidePaneHere, paneFolder, placeSession, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startHead, startLabel } from './empty-pane-model.ts';
+import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
 import { installedShells } from './daemon-model.ts';
 import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
@@ -21,7 +21,7 @@ import type { Shown } from './shown-sessions.ts';
 import { useSkin } from './skin.ts';
 import { browserViewSupported } from './daemon-model.ts';
 import { editTab, useStore } from './store.ts';
-import { getUiState, loadEmptyPaneKind, loadEmptyPaneShell, openNewSession, rememberEmptyPaneKind, rememberEmptyPaneShell, useUi } from './ui.ts';
+import { getUiState, loadClaudeOpensOn, loadEmptyPaneKind, loadEmptyPaneShell, openNewSession, rememberClaudeOpensOn, rememberEmptyPaneKind, rememberEmptyPaneShell, useUi } from './ui.ts';
 
 interface Props {
   paneId: string;
@@ -206,6 +206,11 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     setSelectedFolder(folder);
     setError(null);
   };
+  const [opensOn, setOpensOn] = useState<'terminal' | 'chat'>(loadClaudeOpensOn);
+  const pickOpensOn = (face: 'terminal' | 'chat') => {
+    setOpensOn(face);
+    rememberClaudeOpensOn(face);
+  };
   const selectKind = (k: EmptyKind) => {
     setKind(k);
     setBrowserPick(false);
@@ -221,7 +226,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     if (starting) return;
     setStarting(true);
     setError(null);
-    const run = k === 'shell' ? startShellIn(paneId, folder, pick?.id) : startClaudeIn(paneId, folder);
+    const run = k === 'shell' ? startShellIn(paneId, folder, pick?.id) : startClaudeIn(paneId, folder, { chat: loadClaudeOpensOn() === 'chat' });
     run
       .then(() => {
         setStarting(false);
@@ -423,9 +428,10 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           </div>
         )}
         {/* What kind: a click on Shell or Claude session selects and never starts; Browser opens the page at once, having no folder to choose. */}
+        {/* The mouse's form of Enter (M9 fix 705): the first click of the pair has pressed the tile, and start's starting guard keeps a triple click to one start. */}
         <div className="empty-kinds" data-tiles={browserTile ? 3 : 2}>
-          <KindTile kind="shell" pressed={!browserPick && kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
-          <KindTile kind="claude" pressed={!browserPick && kind === 'claude'} glyph={skin === 'emerald' ? '✦' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
+          <KindTile kind="shell" pressed={!browserPick && kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('shell', selected.folder); }} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
+          <KindTile kind="claude" pressed={!browserPick && kind === 'claude'} glyph={skin === 'emerald' ? '◆' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('claude', selected.folder); }} onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
           {browserTile && <KindTile kind="browser" pressed={browserPick} glyph="://" name="Browser" hint="" sub="a URL, a host or a search" onPick={openBrowser} onMouseDown={keepFocus} />}
         </div>
         {shellMenu !== null && (
@@ -492,6 +498,30 @@ Double-click to start here`}
                 More…
               </button>
             )}
+            {/* The face the Claude session opens on (M9 fix 689), remembered at the click; More…'s dialog starts on the terminal. */}
+            {kind === 'claude' && !browserPick && (
+              <span className="empty-opens" role="group" aria-label="The view the session opens on">
+                <span className="muted">opens on</span>
+                <button
+                  className="secondary empty-opens-terminal"
+                  aria-pressed={opensOn === 'terminal'}
+                  title="Open the session on its terminal, the Claude Code TUI"
+                  onMouseDown={keepFocus}
+                  onClick={() => pickOpensOn('terminal')}
+                >
+                  Terminal
+                </button>
+                <button
+                  className="secondary empty-opens-chat"
+                  aria-pressed={opensOn === 'chat'}
+                  title="Open the session on the chat view; the terminal stays one click away"
+                  onMouseDown={keepFocus}
+                  onClick={() => pickOpensOn('chat')}
+                >
+                  Chat
+                </button>
+              </span>
+            )}
           </div>
           {error !== null && <div className="empty-error">{error}</div>}
         </div>
@@ -516,8 +546,7 @@ Double-click to start here`}
             </button>
             <span className="muted empty-chord">{plainKeyFor('split-horizontal')}</span>
           </span>
-          {/* An empty pane has no title bar and so no × (M9 fix 103); the
-              close lives here, beside the pane's other actions. */}
+          {/* The foot's word form of the corner × (M9 fixes 103 and 704), beside the pane's other actions; neither is drawn on a tab's only pane, which has nothing to close. */}
           {!onlyPane && (
             <span className="empty-pair">
               <button className="secondary empty-close" onClick={() => hidePaneHere(paneId)}>
@@ -528,15 +557,20 @@ Double-click to start here`}
           )}
         </div>
       </div>
+      {!onlyPane && (
+        <button className="empty-x" title={`Close pane (${plainKeyFor('close-pane')})`} aria-label="Close pane" onMouseDown={keepFocus} onClick={() => hidePaneHere(paneId)}>
+          ×
+        </button>
+      )}
     </div>
   );
 }
 
 // One of the kind tiles: the glyph, the name, the key that picks it
 // and a line on what it starts.
-function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseDown, caret }: { kind: EmptyTile; pressed: boolean; glyph: string; gem?: boolean | undefined; name: string; hint: string; sub: string; onPick: () => void; onMouseDown: (ev: React.MouseEvent) => void; caret?: { ref: React.RefObject<HTMLSpanElement | null>; open: boolean; onOpen: () => void } | undefined }) {
+function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseDown, caret, title, onStart }: { title?: string | undefined; onStart?: (() => void) | undefined; kind: EmptyTile; pressed: boolean; glyph: string; gem?: boolean | undefined; name: string; hint: string; sub: string; onPick: () => void; onMouseDown: (ev: React.MouseEvent) => void; caret?: { ref: React.RefObject<HTMLSpanElement | null>; open: boolean; onOpen: () => void } | undefined }) {
   return (
-    <button className="empty-kind" data-kind={kind} aria-pressed={pressed} onMouseDown={onMouseDown} onClick={onPick}>
+    <button className="empty-kind" data-kind={kind} aria-pressed={pressed} title={title} onMouseDown={onMouseDown} onClick={onPick} onDoubleClick={onStart}>
       <span className="empty-kind-top">
         <span className="empty-kind-glyph" data-glyphs={gem ? 'gem' : undefined}>
           {glyph}
@@ -553,6 +587,7 @@ function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseD
             aria-expanded={caret.open}
             title="Pick the shell this tile starts"
             onMouseDown={(ev) => ev.preventDefault()}
+            onDoubleClick={(ev) => ev.stopPropagation()}
             onClick={(ev) => {
               ev.stopPropagation();
               caret.onOpen();

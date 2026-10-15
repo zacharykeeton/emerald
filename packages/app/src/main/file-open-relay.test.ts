@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
+import { openExtraOf, reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
 import type { OpenRequest } from './file-open-relay.ts';
 
 function setup(windowUp = true) {
@@ -109,6 +109,17 @@ test('reloadHolding with ignoreCache reloads ignoring the cache', () => {
   const calls: string[] = [];
   reloadHolding({ reload: () => calls.push('reload'), reloadIgnoringCache: () => calls.push('reloadIgnoringCache') }, relay, true);
   assert.deepEqual(calls, ['reloadIgnoringCache']);
+});
+
+// M9 fix 700: launch marks a file from a launch; the daemon's push never
+// carries it, even when a message says so.
+test('launch rides openExtraOf for a launch and never for a push (M9 fix 700)', () => {
+  const { client, delivered, relay } = setup();
+  relay.ready();
+  client.emit('message', { type: 'file.open.requested', path: 'C:\\x.md', pane: false, launch: true });
+  assert.equal('launch' in delivered[0]!, false);
+  assert.equal(openExtraOf(delivered[0]!).launch, undefined);
+  assert.equal(openExtraOf({ path: 'C:/x.md', pane: false, launch: true }).launch, true);
 });
 
 // M9 fix 659: url, a page for the browser pane, rides as true alone; a

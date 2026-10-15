@@ -234,6 +234,15 @@ test('status reports installed and missing events and the script state', () => {
   const { opts, settingsPath, scriptDest } = setup(orcaSettings());
   const shipped = statusLineVersion(statusLinePaths(opts).jsSource);
   assert.equal(shipped, 4, 'the shipped status line script declares its version');
+  // Orca's command names an absolute path that is on no box, so each of
+  // its seven events reads as a stranger's dead entry (M9 fix 710); the
+  // status line `something long` is a bare word and is never judged.
+  const orcaDead = ['SessionStart', 'UserPromptSubmit', 'Stop', 'TeammateIdle', 'PreToolUse', 'PostToolUse', 'PermissionRequest'].map((event) => ({
+    event,
+    command: ORCA,
+    path: 'C:/Users/Someone/.orca/agent-hooks/claude-hook.cmd',
+    ours: false,
+  }));
   let status = hooksStatus(opts);
   assert.deepEqual(status, {
     installed: [],
@@ -245,6 +254,7 @@ test('status reports installed and missing events and the script state', () => {
     shippedStatusLineVersion: 4,
     skill: false,
     fighting: false,
+    dead: orcaDead,
   });
   installHooks(opts);
   status = hooksStatus(opts);
@@ -258,6 +268,7 @@ test('status reports installed and missing events and the script state', () => {
     shippedStatusLineVersion: 4,
     skill: true,
     fighting: false,
+    dead: orcaDead,
   });
   // M9 fix 233: the hook wrapper is rendered for the installer's Node like
   // the status line's, and since fix 580 posts with curl and runs no node.
@@ -630,4 +641,60 @@ test('install records what it wrote, and status says fighting past three install
   const count = (read(orcaRecord) as Record<string, { writes: number[] }>)[orcaKey]!.writes.length;
   assert.equal(installHooks(orca.opts).changed, false);
   assert.equal((read(orcaRecord) as Record<string, { writes: number[] }>)[orcaKey]!.writes.length, count, 'an install that changes nothing adds no write');
+});
+
+test('status names dead entries and install takes out ours alone (M9 fix 710)', () => {
+  const { opts, settingsPath, dir } = setup(null);
+  installHooks(opts);
+  const fwd = dir.split(path.sep).join('/');
+  const oldHook = hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-hook.cmd'));
+  const stranger = `"${fwd}/Some Tool/hook.cmd" --flag`;
+  const liveFile = path.join(dir, 'live-tool', 'hook.cmd');
+  fs.mkdirSync(path.dirname(liveFile), { recursive: true });
+  fs.writeFileSync(liveFile, 'exit 0');
+  const live = hookCommand(liveFile);
+  const s = read(settingsPath);
+  const hooks = hooksOf(s);
+  hooks['Stop']!.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+  hooks['SessionStart']!.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+  hooks['Stop']!.push({ hooks: [{ type: 'command', command: stranger, timeout: 5 }] });
+  hooks['Notification']!.push({ hooks: [{ type: 'command', command: 'node -e 1', timeout: 5 }] });
+  hooks['Notification']!.push({ hooks: [{ type: 'command', command: 'hooks/claude-hook.cmd', timeout: 5 }] });
+  hooks['PreCompact']!.push({ hooks: [{ type: 'command', command: live, timeout: 5 }] });
+  s['statusLine'] = { type: 'command', command: hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-statusline.cmd')) };
+  fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+
+  const dead = hooksStatus(opts).dead;
+  assert.equal(dead.length, 4, JSON.stringify(dead));
+  assert.deepEqual(
+    dead.map((d) => `${d.event} ${d.ours}`).sort(),
+    ['SessionStart true', 'Stop false', 'Stop true', 'statusLine true'].sort(),
+  );
+  const theirs = dead.find((d) => !d.ours)!;
+  assert.ok(theirs.path.endsWith('/Some Tool/hook.cmd'), theirs.path);
+  assert.equal(theirs.command, stranger);
+
+  const { removed } = installHooks(opts);
+  assert.equal(removed.length, 3, 'the two hooks and the status line of the old home');
+  assert.ok(!fs.readFileSync(settingsPath, 'utf8').includes('old-home'), 'no command of the old home is left');
+  const after = hooksOf(read(settingsPath));
+  const commands = (event: string) => after[event]!.flatMap((g) => g.hooks).map((h) => h.command);
+  assert.ok(commands('Stop').includes(stranger), "the stranger's dead entry stays");
+  assert.ok(commands('Notification').includes('node -e 1') && commands('Notification').includes('hooks/claude-hook.cmd'), 'bare and relative commands are never judged');
+  assert.ok(commands('PreCompact').includes(live), 'a live absolute command stays');
+  assert.deepEqual(read(statusLinePaths(opts).previous), { statusLine: null }, 'a dead status line of ours is not kept as previous');
+  assert.deepEqual(hooksStatus(opts).dead, [{ event: 'Stop', command: stranger, path: `${fwd}/Some Tool/hook.cmd`, ours: false }]);
+});
+
+test('an install over a dead status line of ours keeps the previous one an earlier install kept (M9 fix 710)', () => {
+  const { opts, settingsPath, dir } = setup(null);
+  installHooks(opts);
+  const previous = statusLinePaths(opts).previous;
+  fs.writeFileSync(previous, JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }));
+  const s = read(settingsPath);
+  s['statusLine'] = { type: 'command', command: hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-statusline.cmd')) };
+  fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+  installHooks(opts);
+  assert.deepEqual(read(previous), { statusLine: { type: 'command', command: 'mine' } });
+  assert.equal(hooksStatus(opts).statusLine, true);
 });

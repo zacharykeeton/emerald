@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { HEAD_TOOLS, Limits, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
-import type { HookPayload, KeptScreen, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
+import { HEAD_TOOLS, Limits, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
+import type { HookPayload, KeptScreen, LoadSample, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
 import type { HookResult } from './hook-sink.ts';
 import { RequestError } from './errors.ts';
 import { findGitDir, onReftableBranch, readBranch, repoKey } from './git-branch.ts';
@@ -26,8 +26,17 @@ import type { Logger } from './log.ts';
 import { toPersisted } from './session-store.ts';
 import { writeFileAtomic } from './store-file.ts';
 import type { PersistedSession, SessionStore } from './session-store.ts';
-import { LoadSampler, pushSample } from './load-sampler.ts';
+import { LoadSampler } from './load-sampler.ts';
 import type { SweepMethod, TreeReading } from './load-sampler.ts';
+
+// One load tick (M9 fix 703), emitted as 'load' once per tick in place of
+// a 'changed' per session: the samples in the sessions.load push's shape,
+// and the updated records in the same order for a window too old for it.
+export interface LoadTick {
+  at: number;
+  samples: Array<{ sessionId: string; sample: LoadSample; names: string[] }>;
+  sessions: SessionInfo[];
+}
 
 export interface SpawnRequest {
   kind: SessionKind;
@@ -230,15 +239,22 @@ export class SessionManager extends EventEmitter {
 
   // One tick's readings onto the records (M9 fix 300): each session that
   // got one has the sample pushed onto its ring and its names replaced,
-  // and is published once, with no store write, since neither field is
-  // persisted.
-  private applyLoad(readings: Map<string, TreeReading>): void {
+  // with no store write, since neither field is persisted. The tick is
+  // published once as 'load' (M9 fix 703), never a 'changed' per session:
+  // fifty records a tick were 400 KB and 443 ms of renderer at fifty
+  // sessions. Public so session-manager.test.ts can drive a tick without
+  // a sampler.
+  applyLoad(readings: Map<string, TreeReading>): void {
+    const samples: LoadTick['samples'] = [];
+    const sessions: SessionInfo[] = [];
     for (const [id, reading] of readings) {
       const rec = this.sessions.get(id);
       if (rec === undefined) continue;
       rec.info = { ...rec.info, load: pushSample(rec.info.load, reading.sample), loadNames: reading.names };
-      this.emit('changed', { ...rec.info });
+      samples.push({ sessionId: id, sample: reading.sample, names: reading.names });
+      sessions.push({ ...rec.info });
     }
+    if (samples.length > 0) this.emit('load', { at: Date.now(), samples, sessions } satisfies LoadTick);
   }
 
   // The shells a kind shell can run on this box (M9 fix 624), the first
@@ -299,8 +315,9 @@ export class SessionManager extends EventEmitter {
     // same folder sat under two headings, since the heading compares
     // the strings. The folder the session is placed in and grouped under
     // goes through realFolder, here, at a resume, at a restore and on
-    // every report; spawnCwd keeps the spelling asked for, since it is
-    // the record of the request.
+    // every report, and so does spawnCwd (M9 fix 711): no reader wants
+    // the request's own spelling, and an 8.3 spawn folder read as away
+    // from home in the rail's graph.
     const cwd = realFolder(req.cwd);
 
     const shell = req.kind === 'shell' ? this.pickShell(req.shell) : null;
@@ -314,7 +331,7 @@ export class SessionManager extends EventEmitter {
       kind: req.kind,
       name: given || folderName(req.cwd) || req.cwd,
       autoName: given === '',
-      spawnCwd: req.cwd,
+      spawnCwd: cwd,
       args: [...(req.args ?? [])],
       shell: shell?.id ?? null,
       cwd,
@@ -1388,7 +1405,7 @@ function restoredInfo(p: PersistedSession, now: number): SessionInfo {
     kind: p.kind,
     name: p.name,
     autoName: p.autoName,
-    spawnCwd: p.spawnCwd,
+    spawnCwd: realFolder(p.spawnCwd),
     args: [...p.args],
     shell: p.shell,
     cwd: realFolder(p.cwd),

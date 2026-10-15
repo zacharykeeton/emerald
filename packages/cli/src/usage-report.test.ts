@@ -142,10 +142,84 @@ test("a day's sessions, projects and hook lines, one project found only through 
   assert.ok(report.includes('Projects by days active: zorca (2), other (1)'));
 });
 
+function homeWith(current: object[], older?: { rows: object[]; ageDays: number }): string {
+  const home = mkTemp('emerald-usage-report-');
+  const logs = path.join(home, 'logs');
+  write(path.join(logs, 'usage.jsonl'), jsonl(current));
+  if (older !== undefined) {
+    const file = path.join(logs, 'usage.1.jsonl');
+    write(file, jsonl(older.rows));
+    const when = new Date(NOW - older.ageDays * DAY);
+    fs.utimesSync(file, when, when);
+  }
+  return home;
+}
+
+test('M9 fix 699: a record switched on nine days ago says so and heads Never used with it', async () => {
+  const home = homeWith([
+    { at: NOW - 9 * DAY, ev: 'switch', on: true },
+    { at: NOW - 9 * DAY + 1000, ev: 'action', name: 'split-vertical', from: 'key' },
+  ]);
+  const report = await buildUsageReport(home, NOW, 30);
+  assert.ok(report.includes('The record was on from 2026-10-05 (10 of the 30 days).'), report);
+  assert.ok(report.includes('## Never used while the record was on'));
+  const never = report.slice(report.indexOf('## Never used'), report.indexOf('## Friction'));
+  assert.ok(never.includes('`jump`') && !never.includes('`split-vertical`'));
+});
+
+test('M9 fix 699: a switch off and on again counts the days of both spans', async () => {
+  const home = homeWith([
+    { at: NOW - 20 * DAY, ev: 'switch', on: true },
+    { at: NOW - 15 * DAY, ev: 'switch', on: false },
+    { at: NOW - 5 * DAY, ev: 'switch', on: true },
+  ]);
+  const report = await buildUsageReport(home, NOW, 30);
+  assert.ok(report.includes('The record was on from 2026-09-24 (12 of the 30 days).'), report);
+});
+
+test('M9 fix 699: an older generation is scanned for the switch that sets the state at the window start', async () => {
+  const on = homeWith([{ at: NOW - 1000, ev: 'action', name: 'split-vertical', from: 'key' }], {
+    rows: [{ at: NOW - 40 * DAY, ev: 'switch', on: true }],
+    ageDays: 40,
+  });
+  const onReport = await buildUsageReport(on, NOW, 30);
+  assert.ok(onReport.includes('The record was on from 2026-09-15 (30 of the 30 days).'), onReport);
+  assert.ok(onReport.includes('## Never used\n'));
+  const off = homeWith([], { rows: [{ at: NOW - 40 * DAY, ev: 'switch', on: false }], ageDays: 40 });
+  const offReport = await buildUsageReport(off, NOW, 30);
+  assert.ok(offReport.includes('The record was off for the whole window.'), offReport);
+});
+
+test('M9 fix 699: a record from before the switch line reads as on for the whole window', async () => {
+  const report = await buildUsageReport(seededHome(), NOW, 30);
+  assert.ok(report.includes('The record was on from 2026-09-15 (30 of the 30 days).'), report);
+  assert.ok(report.includes('## Never used\n'));
+});
+
 test('with no usage file the single "Nothing recorded yet" line', async () => {
   const home = mkTemp('emerald-usage-report-');
   const report = await buildUsageReport(home, NOW, 7);
+  assert.ok(!report.includes('The record was'));
   assert.ok(report.includes(`## Actions by count\n\n${NOTHING_RECORDED}\n`));
   assert.ok(report.includes('No main.log under this home.'));
   assert.ok(report.includes('No hook lines in the window.'));
+});
+
+// M9 fix 694: Electron's line at a browser pane's close is left out,
+// whether written before the update as an error or after it as a note.
+test("the renderer counts leave out Electron's Invalid guestInstanceId, old form and new", async () => {
+  const home = mkTemp('emerald-usage-report-');
+  const t = NOW - 60 * 60 * 1000;
+  write(
+    path.join(home, 'logs', 'main.log'),
+    [
+      `${new Date(t).toISOString()} renderer: error [lib] Uncaught Error: Invalid guestInstanceId: 2 (node:electron/js2c/isolated_bundle:2)`,
+      `${new Date(t + 1).toISOString()} renderer: note [lib] Uncaught Error: Invalid guestInstanceId: 3 (node:electron/js2c/isolated_bundle:2)`,
+      `${new Date(t + 2).toISOString()} renderer: error [emerald] split failed Error: x (index-abc.js:12)`,
+      '',
+    ].join('\n'),
+  );
+  const report = await buildUsageReport(home, NOW, 30);
+  assert.ok(report.includes('1 errors and 0 warnings, 0 lines dropped by the cap.'), report);
+  assert.ok(!report.includes('guestInstanceId'), report);
 });

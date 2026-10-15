@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BannerPhase } from './hooks-banner-model.ts';
-import { TESTING_LABEL, TEST_LABEL, bannerHint, bannerOnStatus, hooksProblem, installLabel, shouldPromptHooks, testFailedText, testText } from './hooks-banner-model.ts';
+import { TESTING_LABEL, TEST_LABEL, bannerHint, bannerOnStatus, hooksProblem, installLabel, isDeadProblem, shouldPromptHooks, testFailedText, testText } from './hooks-banner-model.ts';
 
 interface Shown {
   phase: BannerPhase;
@@ -11,6 +11,8 @@ interface Shown {
   // What the last Test found (M9 fix 606), in place of the hint.
   test: string | null;
   testing: boolean;
+  // The problem is emerald's dead entries, so the button reads Fix (M9 fix 710).
+  fix: boolean;
 }
 
 // Offers to install the Claude Code hooks when `emmer hooks status` says
@@ -37,7 +39,7 @@ export function HooksBanner() {
         const status = await window.emerald.hooksStatus();
         if (cancelled) return;
         const problem = hooksProblem(status);
-        if (problem !== null) setShown({ phase: status.fighting ? 'fighting' : 'prompt', problem, settings: status.settings, error: '', test: null, testing: false });
+        if (problem !== null) setShown({ phase: status.fighting ? 'fighting' : 'prompt', problem, settings: status.settings, error: '', test: null, testing: false, fix: isDeadProblem(status) });
         unsubscribe = window.emerald.onHooksChanged((next) => {
           setShown((current) => {
             // The install's own re-read decides.
@@ -45,7 +47,7 @@ export function HooksBanner() {
             const shape = bannerOnStatus(current, next, dismissed.current);
             if (shape === null) return null;
             const error = shape.phase === 'failed' && current !== null ? current.error : '';
-            return { phase: shape.phase, problem: shape.problem, settings: next.settings, error, test: null, testing: false };
+            return { phase: shape.phase, problem: shape.problem, settings: next.settings, error, test: null, testing: false, fix: isDeadProblem(next) };
           });
         });
       } catch (err) {
@@ -69,7 +71,7 @@ export function HooksBanner() {
       const status = await window.emerald.hooksStatus();
       const problem = hooksProblem(status);
       if (problem === null) setShown(null);
-      else setShown({ phase: 'failed', problem, settings: status.settings, error: 'still incomplete after installing', test: null, testing: false });
+      else setShown({ phase: 'failed', problem, settings: status.settings, error: 'still incomplete after installing', test: null, testing: false, fix: isDeadProblem(status) });
     } catch (err) {
       setShown({ ...shown, phase: 'failed', error: err instanceof Error ? err.message : String(err), test: null, testing: false });
     }
@@ -87,14 +89,14 @@ export function HooksBanner() {
     setShown((s) => (s === null ? s : { ...s, test: text, testing: false }));
   };
 
-  const hint = bannerHint(shown.phase, shown.error);
+  const hint = bannerHint(shown.phase, shown.error, shown.fix);
   return (
     <div className="hooks-banner" data-phase={shown.phase} title={`Settings file: ${shown.settings}`}>
       <span className="hooks-banner-text">
         {shown.problem} {shown.test ?? hint}
       </span>
       <button className="hooks-install" onClick={() => void install()} disabled={shown.phase === 'installing' || shown.phase === 'fighting'}>
-        {installLabel(shown.phase)}
+        {installLabel(shown.phase, shown.fix)}
       </button>
       <button className="secondary hooks-test" onClick={() => void runTest()} disabled={shown.phase === 'installing' || shown.testing}>
         {shown.testing ? TESTING_LABEL : TEST_LABEL}

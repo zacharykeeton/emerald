@@ -250,7 +250,7 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
 
   // A move hands the frame to a new pane id (fix 669's adoptFrames); the
   // driver hears the new id for the same guest. Before the first attach
-  // the id is not there yet, and did-attach registers it then.
+  // the id is not there yet, and did-attach or dom-ready registers it then.
   useEffect(() => {
     const page = pageRef.current;
     if (page === null) return;

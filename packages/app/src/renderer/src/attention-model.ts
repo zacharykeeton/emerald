@@ -51,6 +51,10 @@ export interface Observed {
   model: AttentionModel;
   // Sessions that joined the set in this observe, for the chime.
   arrived: readonly string[];
+  // M9 fix 701: sessions that changed into an attention state while the
+  // person was answering in the pane showing them. They are settled as
+  // they arrive: not wanting, not hushed, no chime, flash, toast or pulse.
+  settled: readonly string[];
 }
 
 export function emptyAttention(): AttentionModel {
@@ -64,12 +68,15 @@ export function chiming(model: AttentionModel): boolean {
 }
 
 // Runs over the current session list. Returns the very same model when
-// nothing changed, so a caller can skip a store update.
-export function observe(model: AttentionModel, sessions: Iterable<{ id: string; state: SessionState; stale?: boolean }>): Observed {
+// nothing changed, so a caller can skip a store update. `answering` is the
+// session the person is typing into (fix 701, answeringSession), whose
+// arrival is settled rather than announced.
+export function observe(model: AttentionModel, sessions: Iterable<{ id: string; state: SessionState; stale?: boolean }>, answering: string | null = null): Observed {
   const seen = new Map<string, AttentionState>();
   const wanting = new Set(model.wanting);
   const hushed = new Set(model.hushed);
   const arrived: string[] = [];
+  const settled: string[] = [];
   for (const session of sessions) {
     const { id } = session;
     const state = attentionState(session);
@@ -79,10 +86,18 @@ export function observe(model: AttentionModel, sessions: Iterable<{ id: string; 
       // A session still pulsing for done that goes to needs-input arrives
       // again: the set already has it, but the chime is for the change.
       if (before !== undefined && before !== state) {
-        wanting.add(id);
-        // A change of state is news, so a hush on the old state is over.
-        hushed.delete(id);
-        arrived.push(id);
+        if (id === answering) {
+          // Someone is typing into this very pane: they see it, so it is
+          // seen, and a pulse it carried from before ends with it.
+          wanting.delete(id);
+          hushed.delete(id);
+          settled.push(id);
+        } else {
+          wanting.add(id);
+          // A change of state is news, so a hush on the old state is over.
+          hushed.delete(id);
+          arrived.push(id);
+        }
       }
     } else if (before !== state) {
       // Only a change out of the three states drops the session, so one
@@ -98,8 +113,8 @@ export function observe(model: AttentionModel, sessions: Iterable<{ id: string; 
       hushed.delete(id);
     }
   }
-  if (arrived.length === 0 && sameSet(wanting, model.wanting) && sameSet(hushed, model.hushed) && sameMap(seen, model.seen)) return { model, arrived };
-  return { model: { wanting, hushed, seen }, arrived };
+  if (arrived.length === 0 && settled.length === 0 && sameSet(wanting, model.wanting) && sameSet(hushed, model.hushed) && sameMap(seen, model.seen)) return { model, arrived, settled };
+  return { model: { wanting, hushed, seen }, arrived, settled };
 }
 
 // Someone clicked or typed on one session (M9 fix 189): its pulse stops,
@@ -183,11 +198,27 @@ export function isAttentionSound(value: unknown): value is AttentionSound {
 // pane used to ack a done session the moment it had focus (M1), so a reply
 // into an empty room never pulsed or chimed, since nothing checked that
 // anyone was typing. Ten seconds after the last key or click is the window
-// in which someone is taken to still be sitting there.
+// in which someone is taken to still be sitting there. M9 fix 701 reads the
+// same window, per pane, for a question that comes into the pane being
+// typed in: it gets no chime, flash, toast or pulse.
 export const RECENT_INPUT_MS = 10_000;
 
 export function isRecentInput(lastInputAt: number | null, now: number): boolean {
   return lastInputAt !== null && now - lastInputAt <= RECENT_INPUT_MS;
+}
+
+// M9 fix 701: the session the person is answering, if any: the focused
+// pane's, when the last real press or key that landed in a pane landed in
+// that one within RECENT_INPUT_MS. A key into another pane does not count
+// for this one, and a focused pane with no session names nothing.
+export function answeringSession(
+  focused: { paneId: string; sessionId: string | null } | null,
+  lastPaneInput: { paneId: string; at: number } | null,
+  now: number,
+): string | null {
+  if (focused === null || focused.sessionId === null || lastPaneInput === null) return null;
+  if (lastPaneInput.paneId !== focused.paneId) return null;
+  return isRecentInput(lastPaneInput.at, now) ? focused.sessionId : null;
 }
 
 // M9 fix 247: the counter laid over a pulsing pane and lit on its row,

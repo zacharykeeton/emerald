@@ -7,5 +7,7 @@
 // runs it under node --test with no electron, the read-cap.ts shape.
 export function rendererLogLine(level: string, message: string, sourceId: string, lineNumber: number): string {
   const body = message.startsWith('[emerald] ') ? message : `[lib] ${message}`;
-  return `renderer: ${level} ${body} (${sourceId}:${lineNumber})`;
+  // Electron's <webview> teardown asks main about a guest it has already let go at each browser pane's close (M9 fix 694); nothing of ours to fix, and an error per closed page was noise in every report.
+  const shown = level === 'error' && /^Uncaught Error: Invalid guestInstanceId: \d+$/.test(message) && sourceId.startsWith('node:electron/js2c/isolated_bundle') ? 'note' : level;
+  return `renderer: ${shown} ${body} (${sourceId}:${lineNumber})`;
 }

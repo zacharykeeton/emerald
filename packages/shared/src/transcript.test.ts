@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, movesHead, parseTurns, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, editCounts, movesHead, parseSteps, parseTurns, resultText, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import type { Step, StepTurn } from './transcript.ts';
 
 const line = (o: unknown): string => JSON.stringify(o);
 const assistant = (content: unknown[], extra: Record<string, unknown> = {}) =>
@@ -34,8 +35,8 @@ const user = (content: unknown, at: string, extra: Record<string, unknown> = {})
 const turnLine = (content: unknown[], at: string, extra: Record<string, unknown> = {}) => line({ type: 'assistant', message: { role: 'assistant', content }, timestamp: at, ...extra });
 const tool = (name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id: 't', name, input });
 
-test('parseTurns: a prompt opens a turn, the last text is its reply, the tools are counted and named', () => {
-  const text = [
+const tabsFixture = (): string =>
+  [
     line({ type: 'ai-title', aiTitle: 'Fix the tabs' }),
     user('the tabs are broken', '2026-09-13T09:12:00.000Z'),
     turnLine([{ type: 'text', text: 'Looking.' }, tool('Read', { file_path: 'C:/repo/src/tabs.ts' })], '2026-09-13T09:12:05.000Z'),
@@ -46,7 +47,9 @@ test('parseTurns: a prompt opens a turn, the last text is its reply, the tools a
     user('<local-command-stdout>done</local-command-stdout>', '2026-09-13T09:20:01.000Z'),
     user('now fix them', '2026-09-13T10:00:00.000Z'),
   ].join('\n');
-  const turns = parseTurns(text);
+
+test('parseTurns: a prompt opens a turn, the last text is its reply, the tools are counted and named', () => {
+  const turns = parseTurns(tabsFixture());
   assert.equal(turns.length, 3);
   const first = turns[0]!;
   assert.equal(first.prompt, 'the tabs are broken');
@@ -75,6 +78,117 @@ test('parseTurns: meta lines, side-chain lines and broken lines are skipped', ()
   assert.equal(turns.length, 1);
   assert.equal(turns[0]!.reply, 'Hi.');
   assert.equal(parseTurns('').length, 0);
+});
+
+// M9 fix 688: the chat view's parse. The lines are written by hand in the
+// shapes Claude Code 2.1.300 writes (thinking text empty with its length
+// beside it, a result's toolUseResult beside the tool_result part).
+const toolUse = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id, name, input });
+const result = (id: string, content: unknown, at: string, extra: Record<string, unknown> = {}, isError = false) =>
+  line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }] }, timestamp: at, ...extra });
+const toolOf = (turn: StepTurn, i: number) => {
+  const s = turn.steps[i]!;
+  assert.equal(s.kind, 'tool');
+  return s as Extract<Step, { kind: 'tool' }>;
+};
+
+test('parseSteps: thinking, an Agent, a Read, an Edit and the reply, in order', () => {
+  const text = [
+    user('find where cdp.mjs sends keyDown', '2026-10-15T14:02:00.000Z'),
+    turnLine([{ type: 'thinking', thinking: '', signature: 's' }], '2026-10-15T14:02:06.000Z', { thinkingDisplay: 'updates', thinkingDurationMs: 6000 }),
+    turnLine([toolUse('a1', 'Agent', { subagent_type: 'Explore', description: 'where the harness sends keys', prompt: 'look' })], '2026-10-15T14:02:07.000Z'),
+    result('a1', [{ type: 'text', text: 'found it' }], '2026-10-15T14:02:48.000Z'),
+    turnLine([toolUse('r1', 'Read', { file_path: 'packages/app/scripts/cdp.mjs' })], '2026-10-15T14:02:50.000Z'),
+    result('r1', 'the file', '2026-10-15T14:02:51.000Z', { toolUseResult: { type: 'text', file: { filePath: 'packages/app/scripts/cdp.mjs', numLines: 912, startLine: 1, totalLines: 912 } } }),
+    turnLine([toolUse('e1', 'Edit', { file_path: 'packages/app/scripts/cdp.mjs', old_string: 'a', new_string: 'b' })], '2026-10-15T14:03:00.000Z'),
+    result('e1', 'ok', '2026-10-15T14:03:01.000Z', { toolUseResult: { filePath: 'packages/app/scripts/cdp.mjs', structuredPatch: [{ lines: [' x', '-a', '+b', '+c', '+d'] }, { lines: ['-e', '+f', '+g', '+h', ' y'] }] } }),
+    turnLine([{ type: 'text', text: 'It sends rawKeyDown now.' }], '2026-10-15T14:05:12.000Z'),
+  ].join('\n');
+  const turns = parseSteps(text);
+  assert.equal(turns.length, 1);
+  const t = turns[0]!;
+  assert.equal(t.prompt, 'find where cdp.mjs sends keyDown');
+  assert.deepEqual(t.steps.map((s) => s.kind), ['thinking', 'tool', 'tool', 'tool', 'text']);
+  const thinking = t.steps[0]!;
+  assert.ok(thinking.kind === 'thinking' && thinking.ms === 6000 && thinking.text === '');
+  const agent = toolOf(t, 1);
+  assert.equal(agent.arg, 'Explore: where the harness sends keys');
+  assert.equal(resultText(agent), 'returned after 41s');
+  const read = toolOf(t, 2);
+  assert.equal(read.arg, 'packages/app/scripts/cdp.mjs');
+  assert.equal(resultText(read), '912 lines');
+  assert.equal(resultText(toolOf(t, 3)), '+6 −2');
+  assert.deepEqual(t.steps[4], { kind: 'text', text: 'It sends rawKeyDown now.', at: Date.parse('2026-10-15T14:05:12.000Z') });
+  assert.equal(t.endAt, Date.parse('2026-10-15T14:05:12.000Z'));
+});
+
+test('parseSteps: a passing Bash is exit 0, a failing one reads its code off the result', () => {
+  const text = [
+    user('run the tests', '2026-10-15T14:09:00.000Z'),
+    turnLine([toolUse('b1', 'Bash', { command: 'npm run verify:browser' })], '2026-10-15T14:09:01.000Z'),
+    result('b1', 'PASS', '2026-10-15T14:09:39.000Z', { toolUseResult: { stdout: 'PASS', stderr: '', interrupted: false } }),
+    turnLine([toolUse('b2', 'Bash', { command: 'false' })], '2026-10-15T14:09:40.000Z'),
+    result('b2', 'Exit code 2\nboom', '2026-10-15T14:09:41.000Z', { toolUseResult: 'Error: Exit code 2\nboom' }, true),
+    turnLine([toolUse('b3', 'PowerShell', { command: 'x' })], '2026-10-15T14:09:42.000Z'),
+    result('b3', [{ type: 'text', text: 'the shell went away' }], '2026-10-15T14:09:43.000Z', {}, true),
+  ].join('\n');
+  const t = parseSteps(text)[0]!;
+  assert.equal(toolOf(t, 0).arg, 'npm run verify:browser');
+  assert.equal(toolOf(t, 0).result?.exitCode, 0);
+  assert.equal(resultText(toolOf(t, 0)), 'exit 0 · 38s');
+  assert.equal(toolOf(t, 1).result?.error, true);
+  assert.equal(resultText(toolOf(t, 1)), 'exit 2 · 1s');
+  assert.equal(toolOf(t, 2).result?.exitCode, null);
+  assert.equal(resultText(toolOf(t, 2)), 'error · 1s');
+});
+
+test('parseSteps: an image result carries its media type and size', () => {
+  const text = [
+    user('show me the page', '2026-10-15T14:10:00.000Z'),
+    turnLine([toolUse('i1', 'Read', { file_path: 'after-key.png' })], '2026-10-15T14:10:01.000Z'),
+    result('i1', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }], '2026-10-15T14:10:02.000Z', { toolUseResult: { type: 'image', file: { type: 'image/png', originalSize: 86016, dimensions: {} } } }),
+  ].join('\n');
+  const step = toolOf(parseSteps(text)[0]!, 0);
+  assert.deepEqual(step.result?.image, { mediaType: 'image/png', bytes: 86016 });
+  assert.equal(resultText(step), '84 KB');
+});
+
+test('parseSteps: a tool with no result yet is pending, and an edit\'s counts come from its strings', () => {
+  const text = [
+    user('edit it', '2026-10-15T14:11:00.000Z'),
+    turnLine([toolUse('e1', 'Edit', { file_path: 'a.ts', old_string: 'a\nb\nc', new_string: 'a\nB\nX\nc' })], '2026-10-15T14:11:01.000Z'),
+  ].join('\n');
+  const pending = toolOf(parseSteps(text)[0]!, 0);
+  assert.equal(pending.result, null);
+  assert.equal(resultText(pending), '');
+  assert.deepEqual(editCounts('a\nb\nc', 'a\nB\nX\nc'), { added: 2, removed: 1 });
+  const done = toolOf(parseSteps(text + '\n' + result('e1', 'ok', '2026-10-15T14:11:02.000Z'))[0]!, 0);
+  assert.equal(resultText(done), '+2 −1', 'no structuredPatch: the counts come off the input');
+});
+
+test('parseSteps: side-chain lines, a result for an unknown id, a broken line and an interrupt', () => {
+  const text = [
+    user('do the thing', '2026-10-15T14:12:00.000Z'),
+    turnLine([toolUse('s1', 'Bash', { command: 'ls' })], '2026-10-15T14:12:01.000Z', { isSidechain: true }),
+    turnLine([toolUse('m1', 'Bash', { command: 'ls' }), toolUse('m1', 'Bash', { command: 'ls' })], '2026-10-15T14:12:02.000Z'),
+    result('zz', 'stray', '2026-10-15T14:12:03.000Z'),
+    '{"type":"assistant","message":{"content":[{"type":"text","te',
+    user([{ type: 'text', text: '[Request interrupted by user for tool use]' }], '2026-10-15T14:12:04.000Z', { interruptedMessageId: 'msg_1' }),
+    user('[Request interrupted by user]', '2026-10-15T14:12:05.000Z'),
+  ].join('\n');
+  const turns = parseSteps(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['tool', 'note', 'note']);
+  assert.equal(toolOf(turns[0]!, 0).result, null, 'the stray result fills nothing');
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-15T14:12:05.000Z'));
+  // The one place the two readings differ: parseTurns takes the
+  // interrupts as prompts.
+  assert.equal(parseTurns(text).length, turns.length + 2);
+});
+
+test("parseSteps: the prompts are parseTurns' prompts", () => {
+  const text = tabsFixture();
+  assert.deepEqual(parseSteps(text).map((t) => [t.prompt, t.at, t.endAt]), parseTurns(text).map((t) => [t.prompt, t.at, t.endAt]));
 });
 
 test('movesHead names the git commands that can move HEAD and nothing else', () => {

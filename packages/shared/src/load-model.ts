@@ -21,6 +21,18 @@ export const LOAD_CEILING_FLOOR = 200;
 // sits just above the baseline instead of on it and a clipped line does
 // not merge with the row above.
 export const LOAD_PAD = 0.5;
+// Ten minutes at the daemon's four second tick: the row and the title bar
+// read the last five. Here rather than in the daemon's sampler (M9 fix
+// 703) since the window's store appends a sessions.load push to the same
+// ring.
+export const LOAD_RING = 150;
+
+// The ring, oldest first, capped at LOAD_RING; a plain array, since
+// RingBuffer is bytes.
+export function pushSample(ring: readonly LoadSample[] | null | undefined, sample: LoadSample): LoadSample[] {
+  const next = ring == null ? [sample] : [...ring, sample];
+  return next.length > LOAD_RING ? next.slice(next.length - LOAD_RING) : next;
+}
 
 export interface SparkBox {
   width: number;

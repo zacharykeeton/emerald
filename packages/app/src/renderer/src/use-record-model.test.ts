@@ -4,7 +4,13 @@ import { USE_FEATURES, USE_NAMES } from '@emerald/shared';
 import type { LayoutTab, LayoutNode } from '@emerald/shared';
 import { BINDINGS } from './keys-model.ts';
 import { PANES, emptyTabs } from './tabs-model.ts';
-import { PANE_USE, createTurnGate, frontView, openViews, paneKind, tabKind, viewDiff } from './use-record-model.ts';
+import { PANE_USE, createTurnGate, frontView, openViews, outsideOpenUse, paneKind, tabKind, viewDiff } from './use-record-model.ts';
+
+test('M9 fix 700: a file from a launch records file-launch, any other open cli-open', () => {
+  assert.deepEqual(outsideOpenUse({}), { name: 'cli-open', from: 'cli' });
+  assert.deepEqual(outsideOpenUse({ launch: false }), { name: 'cli-open', from: 'cli' });
+  assert.deepEqual(outsideOpenUse({ launch: true }), { name: 'file-launch', from: 'click' });
+});
 
 const pane = (id: string, sessionId: string | null, view: Extract<LayoutNode, { kind: 'pane' }>['view'] = null) => ({ kind: 'pane' as const, id, sessionId, view });
 

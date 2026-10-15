@@ -300,10 +300,10 @@ try {
 
   // The mark (fix 570): section 11's steps 3, 4 and 5 of the handoff
   // (docs/design/emerald-skin.md). Under Emerald the session mark on a
-  // working row cycles the four frames ◇ ◈ ◆ ✦ and rests at the still ✦;
+  // working row cycles the four frames ◇ ◈ ◆ ✦ and rests at the still ◆;
   // the mark's twins of the Classic mark reads (the cell, the frames, the
   // tone); the three history icons (the rail's Sessions tab, a history
-  // row, a transcript's file tab) draw the still ✦ rather than the star;
+  // row, a transcript's file tab) draw the still ◆ rather than the star;
   // and the two sentences that named the Z say "the gem". The block puts
   // the window on Emerald itself with skinTo(s, 'emerald') at its top and
   // back with skinTo(s, 'classic') at its end, and makes any sessions it
@@ -332,7 +332,7 @@ try {
     const sentence = await s.evalJs(`document.querySelector('.empty-pane').textContent`);
     expect(sentence.includes('Right-click any pane for more, or the gem at the top left.') && !sentence.includes('the Z at the top left'), `the empty pane says the gem, got ${sentence}`);
     const tile = await s.evalJs(`(() => { const g = document.querySelector('.empty-kind[data-kind="claude"] .empty-kind-glyph'); return { text: g.textContent, glyphs: g.dataset.glyphs ?? null, face: getComputedStyle(g).fontFamily }; })()`);
-    expect(tile.text === '✦' && tile.glyphs === 'gem' && tile.face.includes('Segoe UI Symbol'), `the Claude tile draws the gem still, got ${JSON.stringify(tile)}`);
+    expect(tile.text === '◆' && tile.glyphs === 'gem' && tile.face.includes('Segoe UI Symbol'), `the Claude tile draws the gem still, got ${JSON.stringify(tile)}`);
     await s.evalJs(`document.querySelector('.title-bar-mark').click()`);
     await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu');
     await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Key cheat sheet').click()`);
@@ -341,7 +341,7 @@ try {
     expect(ways.includes('on the gem at the top left.') && !ways.includes('the Z at the top left'), `the cheat sheet says the gem, got ${ways}`);
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!document.querySelector('.cheat-sheet')`, 'Escape closed the sheet');
-    step('M9 fix 570: the empty pane, the cheat sheet and the Claude tile say the gem and draw the ✦ under Emerald');
+    step('M9 fix 570: the empty pane, the cheat sheet and the Claude tile say the gem and draw the ◆ under Emerald');
 
     // Step 2: three Claude rows from posted hooks.
     await startSession(s, { kind: 'shell', cwd: home });
@@ -416,7 +416,7 @@ try {
     for (const [where, sel, mustWork, want] of marks) {
       const m = await readMark(sel);
       expect(m !== null, `the ${where}'s mark exists`);
-      const shape = m.glyphs === 'gem' && m.frameData === '◇◈◆✦' && m.frameSvgs === 4 && m.still === '✦' && m.stillSvg && m.cell === 16;
+      const shape = m.glyphs === 'gem' && m.frameData === '◇◈◆✦' && m.frameSvgs === 4 && m.still === '◆' && m.stillSvg && m.cell === 16;
       expect(shape, `the ${where}'s mark is the gem in a 16px cell, got ${JSON.stringify(m)}`);
       sitsAt(where, m, want);
       if (mustWork || m.working === 'true') expect(m.animation === 'session-mark-frame' && m.shown === 1, `the ${where}'s working mark shows one frame on the keyframe, got ${JSON.stringify(m)}`);
@@ -435,7 +435,7 @@ try {
       m.className = 'session-mark';
       m.dataset.size = 'unit';
       m.dataset.glyphs = 'gem';
-      m.innerHTML = '<span class="session-mark-still">✦</span><span class="session-mark-frames"><span>◇</span><span>◈</span><span>◆</span><span>✦</span></span>';
+      m.innerHTML = '<span class="session-mark-still">◆</span><span class="session-mark-frames"><span>◇</span><span>◈</span><span>◆</span><span>✦</span></span>';
       u.append(m);
       document.querySelector('.sidebar').append(u);
     })()`);
@@ -457,12 +457,12 @@ try {
     const r2 = await stepRead();
     expect(r1.keyedCount === 1 && r1.keyed === r1.shown && r2.keyedCount === 1 && r2.keyed === r2.shown && r2.time - r1.time >= 250, `the keyframe's frame is the one shown, and the clock runs, got ${JSON.stringify([r1, r2])}`);
     const restMark = await readMark(`${row(C)} .session-mark`);
-    expect(restMark.working === null && restMark.still === '✦' && restMark.stillVisibility === 'visible', `a resting mark shows the still ✦, got ${JSON.stringify(restMark)}`);
+    expect(restMark.working === null && restMark.still === '◆' && restMark.stillVisibility === 'visible', `a resting mark shows the still ◆, got ${JSON.stringify(restMark)}`);
     await post(C, 'c', { hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
     await s.waitFor(`!!document.querySelector(${q(row(C) + ' .session-mark[data-tone="needs-input"]')})`, 'row c needs input');
     const needs = await readMark(`${row(C)} .session-mark`);
-    expect(needs.own === 'needs-pulse' && needs.still === '✦', `a needs-input mark breathes with its still ✦, got ${JSON.stringify(needs)}`);
-    step('M9 fix 570: the Emerald mark: ◇ ◈ ◆ ✦ in Segoe UI Symbol on the row, the title and the tab, one shown and stepping with the clock, ✦ at rest and breathing on needs-input');
+    expect(needs.own === 'needs-pulse' && needs.still === '◆', `a needs-input mark breathes with its still ◆, got ${JSON.stringify(needs)}`);
+    step('M9 fix 570: the Emerald mark: ◇ ◈ ◆ ✦ in Segoe UI Symbol on the row, the title and the tab, one shown and stepping with the clock, ◆ at rest and breathing on needs-input');
 
     // Step 3: every cell size, the glyph at 90 percent of it, the ink centres.
     const cellRead = (sel) =>
@@ -485,7 +485,7 @@ try {
         m.dataset.size = 'unit';
         m.dataset.glyphs = 'gem';
         ${family === null ? '' : `m.dataset.family = ${q(family)};`}
-        m.innerHTML = '<span class="session-mark-still">✦</span><span class="session-mark-frames"><span>◇</span><span>◈</span><span>◆</span><span>✦</span></span>';
+        m.innerHTML = '<span class="session-mark-still">◆</span><span class="session-mark-frames"><span>◇</span><span>◈</span><span>◆</span><span>✦</span></span>';
         document.querySelector('.sidebar').append(m);
         const st = m.querySelector('.session-mark-still');
         const r = { h: m.getBoundingClientRect().height, v: parseFloat(getComputedStyle(m).getPropertyValue('--mark-cell')), f: parseFloat(getComputedStyle(st).fontSize) };
@@ -543,12 +543,12 @@ try {
       );
       for (const who of [A, B]) {
         const m = await readMark(`${row(who)} .session-mark`);
-        expect(m.stillVisibility === 'visible' && m.still === '✦', `under reduced motion the mark shows its still ✦, got ${JSON.stringify(m)}`);
+        expect(m.stillVisibility === 'visible' && m.still === '◆', `under reduced motion the mark shows its still ◆, got ${JSON.stringify(m)}`);
       }
     } finally {
       await s.send('Emulation.setEmulatedMedia', { features: [] });
     }
-    step('M9 fix 570: under prefers-reduced-motion every Emerald mark shows its still ✦');
+    step('M9 fix 570: under prefers-reduced-motion every Emerald mark shows its still ◆');
 
     // Step 6: the three history icons.
     const HID = 'a5a5a5a5-0000-4000-8000-000000000570';
@@ -564,7 +564,7 @@ try {
     );
     try {
       const tab = await s.evalJs(`(() => { const t = document.querySelector('.rail-tab[data-tab="history"]'); const i = t.querySelector('.files-icon'); const r = i.getBoundingClientRect(); return { svg: !!t.querySelector('svg.files-icon'), tag: i.tagName, gem: i.classList.contains('gem-still'), glyphs: i.dataset.glyphs ?? null, text: i.textContent, face: getComputedStyle(i).fontFamily, w: r.width, h: r.height, color: getComputedStyle(i).color, tabColor: getComputedStyle(t).color }; })()`);
-      expect(!tab.svg && tab.tag === 'SPAN' && tab.gem && tab.glyphs === 'gem' && tab.text === '✦' && tab.face.includes('Segoe UI Symbol') && tab.w === 14 && tab.h === 14 && tab.color === tab.tabColor, `the Sessions tab draws the gem still, got ${JSON.stringify(tab)}`);
+      expect(!tab.svg && tab.tag === 'SPAN' && tab.gem && tab.glyphs === 'gem' && tab.text === '◆' && tab.face.includes('Segoe UI Symbol') && tab.w === 14 && tab.h === 14 && tab.color === tab.tabColor, `the Sessions tab draws the gem still, got ${JSON.stringify(tab)}`);
       const rowSel = `.history-row[data-id="${HID}"]`;
       await s.evalJs(`document.querySelector('.rail-tab[data-tab="history"]').click()`);
       try {
@@ -578,21 +578,21 @@ try {
       const glyphRead = (sel) =>
         s.evalJs(`(() => { const g = document.querySelector(${q(sel)}); const r = g.getBoundingClientRect(); return { tag: g.tagName, gem: g.classList.contains('gem-still'), glyphs: g.dataset.glyphs ?? null, text: g.textContent, face: getComputedStyle(g).fontFamily, color: getComputedStyle(g).color, w: r.width, h: r.height }; })()`);
       const hg = await glyphRead(`${rowSel} .history-glyph`);
-      expect(hg.tag === 'SPAN' && hg.gem && hg.glyphs === 'gem' && hg.text === '✦' && hg.face.includes('Segoe UI Symbol') && hg.w === 12 && hg.h === 12, `the history row draws the gem still, got ${JSON.stringify(hg)}`);
+      expect(hg.tag === 'SPAN' && hg.gem && hg.glyphs === 'gem' && hg.text === '◆' && hg.face.includes('Segoe UI Symbol') && hg.w === 12 && hg.h === 12, `the history row draws the gem still, got ${JSON.stringify(hg)}`);
       const facts = await s.evalJs(`getComputedStyle(document.querySelector(${q(rowSel + ' .history-row-facts')})).color`);
-      expect(hg.color === facts && facts === 'rgb(138, 138, 138)', `the history row's ✦ is the muted grey of its facts line under Emerald (M9 fix 595), got ${hg.color} and ${facts}`);
-      step("M9 fix 595: under Emerald the history row's ✦ is the muted grey of its facts line, not Claude's orange");
+      expect(hg.color === facts && facts === 'rgb(138, 138, 138)', `the history row's ◆ is the muted grey of its facts line under Emerald (M9 fix 595), got ${hg.color} and ${facts}`);
+      step("M9 fix 595: under Emerald the history row's ◆ is the muted grey of its facts line, not Claude's orange");
       await s.evalJs(`document.querySelector(${q(rowSel + ' .history-row-fold')}).click()`);
       await s.waitFor(`!!document.querySelector(${q(rowSel + ' .history-row-open')})`, 'the unfolded row offers Open');
       await s.evalJs(`document.querySelector(${q(rowSel + ' .history-row-open')}).click()`);
       await s.waitFor(`(document.querySelector('.tab-file[data-active]')?.dataset.tab ?? '').endsWith(${q(HID + '.jsonl')})`, 'the transcript tab is active');
       const tg = await glyphRead('.tab-file[data-active] .tab-icon');
-      expect(tg.tag === 'SPAN' && tg.gem && tg.glyphs === 'gem' && tg.text === '✦' && tg.face.includes('Segoe UI Symbol') && tg.w === 14 && tg.h === 14, `the transcript's tab draws the gem still, got ${JSON.stringify(tg)}`);
+      expect(tg.tag === 'SPAN' && tg.gem && tg.glyphs === 'gem' && tg.text === '◆' && tg.face.includes('Segoe UI Symbol') && tg.w === 14 && tg.h === 14, `the transcript's tab draws the gem still, got ${JSON.stringify(tg)}`);
       await s.evalJs(`document.querySelector('.tab-file[data-active] .tab-close').click()`);
     } finally {
       fs.rmSync(transcript, { force: true });
     }
-    step("M9 fix 570: under Emerald the history row, the Sessions tab and a transcript's tab draw the still ✦ in the gem face, no star");
+    step("M9 fix 570: under Emerald the history row, the Sessions tab and a transcript's tab draw the still ◆ in the gem face, no star");
 
     for (const who of [A, B, C]) await zreq(s, 'session.kill', { sessionId: who.id }).catch(() => {});
     await skinTo(s, 'classic');

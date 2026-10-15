@@ -202,7 +202,7 @@ export function ReviewTab({ path }: { path: string }) {
           <span className="review-note" data-enabled={gate.enabled || undefined}>
             {gate.enabled ? '↳' : skin === 'emerald' ? (
               <span className="review-note-glyph" data-glyphs="gem">
-                ✦
+                ◆
               </span>
             ) : (
               '✳'

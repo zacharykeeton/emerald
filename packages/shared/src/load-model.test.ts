@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOAD_PAD, LOAD_SPAN_MS, hasLoad, loadCeiling, loadFigure, loadInk, loadPeak, loadWindow, memText, next100, sparkPath } from './load-model.ts';
+import { LOAD_PAD, LOAD_RING, LOAD_SPAN_MS, hasLoad, loadCeiling, loadFigure, loadInk, loadPeak, loadWindow, memText, next100, pushSample, sparkPath } from './load-model.ts';
 import type { LoadSample } from './session.ts';
 
 const NOW = 1_000_000_000;
@@ -97,4 +97,13 @@ test('loadFigure and memText', () => {
   assert.equal(memText(999.6), '1000 MB');
   assert.equal(memText(1229), '1.2 GB');
   assert.equal(memText(4096), '4.0 GB');
+});
+
+test('pushSample keeps the last LOAD_RING samples, oldest first', () => {
+  let ring = pushSample(null, { at: 0, cpu: 1, rss: 1 });
+  assert.deepEqual(ring, [{ at: 0, cpu: 1, rss: 1 }]);
+  for (let i = 1; i < LOAD_RING + 5; i++) ring = pushSample(ring, { at: i, cpu: i, rss: 1 });
+  assert.equal(ring.length, LOAD_RING);
+  assert.equal(ring[0]!.at, 5);
+  assert.equal(ring.at(-1)!.at, LOAD_RING + 4);
 });

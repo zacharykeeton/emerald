@@ -1284,6 +1284,27 @@ try {
   // port, and the file is the last argument, as Explorer's open passes
   // it. A launch that took ten seconds or more would be one that opened
   // a window of its own.
+  // M9 fix 700: the usage record on for this step, to read what the launch
+  // is recorded as; the window's own switch, left off again after.
+  const usageFile700 = path.join(process.env['EMERALD_HOME'], 'logs', 'usage.jsonl');
+  const usageSize700 = () => {
+    try {
+      return fs.statSync(usageFile700).size;
+    } catch {
+      return 0;
+    }
+  };
+  const pickAttention700 = async (label) => {
+    const c = await s.evalJs(`(() => { const r = document.querySelector('.attention-sound').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.rightClick(c.x, c.y);
+    await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
+    await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+    await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+  };
+  await s.waitFor(`!!document.querySelector('.attention-sound')`, 'the speaker button for the usage switch', 5000);
+  await pickAttention700('Usage record: off');
+  await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
+  const usageOffset700 = usageSize700();
   const secondEnv = { ...process.env, EMERALD_WINDOW: 'background', EMERALD_WHATS_NEW: 'off', EMERALD_CLAUDE_HOME: process.env.EMERALD_CLAUDE_HOME ?? '' };
   const second = spawn(path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe'), [`--user-data-dir=${profileOf(emeraldHome)}`, path.join(repoRoot, 'packages', 'app', 'out', 'main', 'index.js'), hello], { stdio: ['ignore', 'pipe', 'pipe'], env: secondEnv });
   const secondLogs = [];
@@ -1301,9 +1322,27 @@ try {
   expect(secondExit === 0, `the second launch exited 0 within ten seconds, got ${secondExit} (${secondTail()})`);
   expect(secondLogs.join('').includes('handed to the running window; quitting'), `the second launch said it handed the file over (${secondTail()})`);
   await s.waitFor(activePinned(hello), 'the file from the second launch is a pinned, active tab here', 5000);
+  const actions700 = () => {
+    let text = '';
+    try {
+      text = fs.readFileSync(usageFile700).subarray(usageOffset700).toString('utf8');
+    } catch {
+      // Not written yet.
+    }
+    return text
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.ev === 'action');
+  };
+  let launched700 = actions700();
+  for (const end = Date.now() + 3000; launched700.length < 1 && Date.now() < end; await sleep(100)) launched700 = actions700();
+  expect(launched700.length === 1 && launched700[0].name === 'file-launch' && launched700[0].from === 'click', `the launch with a file is recorded as file-launch from a click, not cli-open, got ${JSON.stringify(launched700)}`);
   await s.key('w', 'KeyW', 87, CTRL);
   await s.waitFor(`document.querySelectorAll('.tab-file').length === ${tabsBefore341.length}`, 'closed');
-  step('fix 342: a second launch with a file exits 0 and the file opens as a pinned tab in the running window');
+  await pickAttention700('Usage record: on');
+  await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the usage switch off again', 5000);
+  step('fix 342 and 700: a second launch with a file exits 0, the file opens as a pinned tab in the running window, and the record names it file-launch');
 
   // M9 fix 627: a layout tab's mark says what it holds and whether any of
   // it is active. Four new tabs with a session each, made after every

@@ -339,19 +339,20 @@ try {
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left - box.left), right: Math.round(b.right - box.left), width: Math.round(b.width) }; }; const name = t.querySelector('.pane-name'); const nameFloor = parseFloat(getComputedStyle(name).minWidth); const text = t.querySelector('.pane-context-model'); const state = t.querySelector('.pane-state'); const stateShown = getComputedStyle(state).display !== 'none'; const cwd = t.querySelector('.pane-cwd'); return { box: Math.round(box.width), name: { ...r(name), scroll: name.scrollWidth, client: name.clientWidth }, nameFloor, state: { ...r(state), scroll: state.scrollWidth, client: state.clientWidth, shown: stateShown }, cwd: cwd === null ? { width: 0, absent: true } : r(cwd), context: r(t.querySelector('.pane-context')), dial: r(t.querySelector('.context-dial')), text: { ...r(text), scroll: text.scrollWidth, client: text.clientWidth }, resume: r(t.querySelector('.pane-resume')), buttons: [...t.querySelectorAll('.pane-title-actions button')].map(r) }; })()`,
     );
   const narrowTitle = await titleProbe();
-  // Six buttons since M9 fix 181, giving in M9 fix 208's order: the two
-  // splits at the third squeeze level, then (M9 fix 237) hide and close
-  // at the seventh, after the state word and the name; the zoom and the
-  // shade never. Whatever level 330px lands on, the buttons shown are
+  // Seven buttons since M9 fix 689 (the face button first on a Claude
+  // pane; six since M9 fix 181), giving in M9 fix 208's order: the two
+  // splits at the third squeeze level, then (M9 fix 237) the face, hide
+  // and close at the seventh, after the state word and the name; the
+  // zoom and the shade never. Whatever level 330px lands on, the buttons shown are
   // that level's and every one ends inside the box.
   const buttonsProbe = () =>
     s.evalJs(
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const pct = t.querySelector('.pane-context-percent'); const ctx = t.querySelector('.pane-context'); const percent = pct === null ? null : (() => { const pr = pct.getBoundingClientRect(); const cr = ctx.getBoundingClientRect(); return { shown: getComputedStyle(pct).display !== 'none' && pr.width > 0, whole: pr.left >= cr.left - 0.5 && pr.right <= cr.right + 0.5 && pct.scrollWidth <= pct.clientWidth + 1, text: pct.textContent }; })(); return { level: Number(t.dataset.squeeze ?? 0), box: Math.round(box.width), percent, buttons: [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const r = b.getBoundingClientRect(); return { cls: b.className, shown: getComputedStyle(b).display !== 'none', right: Math.round(r.right - box.left) }; }) }; })()`,
     );
-  const expectedShown = (level) => ['pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 3 && c.startsWith('pane-split')) && !(level >= 7 && (c === 'pane-hide' || c === 'pane-close')));
+  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 3 && c.startsWith('pane-split')) && !(level >= 7 && (c === 'pane-face-toggle' || c === 'pane-hide' || c === 'pane-close')));
   const buttonsAt = (read, where) => {
     const shown = read.buttons.filter((b) => b.shown).map((b) => b.cls.split(' ')[0]);
-    expect(read.buttons.length === 6 && JSON.stringify(shown) === JSON.stringify(expectedShown(read.level)), `fix 208: the buttons shown ${where} are level ${read.level}'s, got ${JSON.stringify(read.buttons)}`);
+    expect(read.buttons.length === 7 && JSON.stringify(shown) === JSON.stringify(expectedShown(read.level)), `fix 208: the buttons shown ${where} are level ${read.level}'s, got ${JSON.stringify(read.buttons)}`);
     expect(shown.includes('pane-zoom') && shown.includes('pane-shade-toggle'), `fix 237: the zoom and the shade never give (level ${read.level} ${where}), got ${JSON.stringify(shown)}`);
     expect(read.buttons.filter((b) => b.shown).every((b) => b.right <= read.box), `the shown buttons end inside the ${read.box}px title ${where}, got ${JSON.stringify(read.buttons)}`);
     // M9 fix 222: the percent is whole inside the reading's box or absent, never sliced mid-glyph; from level 3 it is gone and the dial stands alone.
@@ -370,7 +371,7 @@ try {
   expect(!stateGave || narrowTitle.cwd.width === 0, `fix 56: the state gives only once the cwd is gone, got ${JSON.stringify({ state: narrowTitle.state, cwd: narrowTitle.cwd })}`);
   expect(narrowTitle.name.scroll <= narrowTitle.name.client + 1 || stateGave, `fix 56: the name is cut only after the state has given, got ${JSON.stringify({ name: narrowTitle.name, floor: narrowTitle.nameFloor, state: narrowTitle.state })}`);
   await s.screenshot('m16-context-narrowTitle-title.png');
-  step(`fix 50: at ${Math.round(await paneWidth())}px the exited title keeps Resume and its buttons in the box (${JSON.stringify({ name: narrowTitle.name.width, state: narrowTitle.state.width, cwd: narrowTitle.cwd.width, context: narrowTitle.context.width })}); fix 208: level ${narrowButtons.level} shows ${shownAt330.length} of six`);
+  step(`fix 50: at ${Math.round(await paneWidth())}px the exited title keeps Resume and its buttons in the box (${JSON.stringify({ name: narrowTitle.name.width, state: narrowTitle.state.width, cwd: narrowTitle.cwd.width, context: narrowTitle.context.width })}); fix 208: level ${narrowButtons.level} shows ${shownAt330.length} of seven`);
 
   // M9 fix 208: narrower still, until the fourth level (330px is often
   // enough, since an exited title with Resume has little room), the
@@ -397,14 +398,14 @@ try {
   await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the zoom button zoomed pane 1 from the narrowest title');
   await sleep(300);
   const zoomedButtons = await buttonsProbe();
-  expect(zoomedButtons.level === 0 && zoomedButtons.buttons.every((b) => b.shown), `fix 208: the zoomed pane's title has its six buttons back, got level ${zoomedButtons.level} ${JSON.stringify(zoomedButtons.buttons)}`);
+  expect(zoomedButtons.level === 0 && zoomedButtons.buttons.every((b) => b.shown), `fix 208: the zoomed pane's title has its seven buttons back, got level ${zoomedButtons.level} ${JSON.stringify(zoomedButtons.buttons)}`);
   expect((await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-zoom').hasAttribute('data-active')`)) === true, 'the zoom button is lit while zoomed');
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-zoom').click()`);
   await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'the zoom button unzoomed');
   await sleep(300);
   const unzoomedButtons = await buttonsProbe();
   expect(unzoomedButtons.level === narrowest.level && unzoomedButtons.box === narrowest.box, `fix 208: unzoomed, the title is back at its level and width, got level ${unzoomedButtons.level} at ${unzoomedButtons.box}px`);
-  step(`fix 208: at ${narrowest.box}px (level ${narrowest.level}) the splits have given and the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its six buttons, and back`);
+  step(`fix 208: at ${narrowest.box}px (level ${narrowest.level}) the splits have given and the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its seven buttons, and back`);
 
   // A wider pane (the default split is the 330px case itself, since the
   // sidebar and the rail leave the two panes about that) gives the words

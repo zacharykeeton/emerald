@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LayoutNode, LayoutTab, SessionInfo, SessionState, TeamMember } from '@emerald/shared';
-import { pageTarget, stripCut, tabMark, wheelStep } from './tab-strip-model.ts';
+import { pageTarget, stripCut, tabMark, tabWanting, wheelStep } from './tab-strip-model.ts';
 import { aSession } from './test-support.ts';
 
 function session(id: string, state: SessionState, stale = false, team: TeamMember[] = []): SessionInfo {
@@ -128,4 +128,21 @@ test('wheelStep: vertical, Shift with deltaX inside and outside the scroller, no
   assert.equal(wheelStep(60, 0, true, false), 60);
   assert.equal(wheelStep(60, 0, true, true), 0);
   assert.equal(wheelStep(0, 0, false, false), 0);
+});
+
+// M9 fix 702: on the tab on show, a zoom hides every pane but one, and a
+// wanting session in a hidden pane pulses the tab.
+test('tabWanting: a hidden tab reads every pane, the tab on show only what its zoom hides', () => {
+  const asking = new Map<string, SessionInfo>([
+    ['a', session('a', 'needs-input')],
+    ['b', session('b', 'needs-input')],
+  ]);
+  const wanting = new Set(['a', 'b']);
+  assert.equal(tabWanting(tab('a', 'idle'), false, null, asking, wanting), 'needs-input', 'not on show, p0 wanting');
+  assert.equal(tabWanting(tab('idle', 'b'), false, 'p0', asking, wanting), 'needs-input', 'not on show, the zoom is ignored');
+  assert.equal(tabWanting(tab('a', 'b'), true, null, asking, wanting), undefined, 'on show with no zoom never pulses (fix 69)');
+  assert.equal(tabWanting(tab('idle', 'b'), true, 'p0', asking, wanting), 'needs-input', 'zoomed on p0, p1 wanting and hidden');
+  assert.equal(tabWanting(tab('idle', 'b'), true, 'p1', asking, wanting), undefined, 'zoomed on the wanting pane itself');
+  assert.equal(tabWanting(tab('b', 'b'), true, 'p0', asking, wanting), undefined, 'the zoomed pane shows the same session');
+  assert.equal(tabWanting(tab('idle', 'b'), true, 'elsewhere', asking, wanting), undefined, 'a zoom naming no pane of the tab hides nothing');
 });

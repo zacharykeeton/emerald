@@ -37,6 +37,7 @@ export function parseHooksStatus(json: unknown): HooksReply {
       skill: s['skill'] === true,
       settings: String(s['settings'] ?? ''),
       fighting: s['fighting'] === true,
+      deadOurs: Array.isArray(s['dead']) ? (s['dead'] as unknown[]).filter((d) => (d as { ours?: unknown } | null)?.ours === true).length : 0,
     },
     written: String(s['written'] ?? ''),
   };

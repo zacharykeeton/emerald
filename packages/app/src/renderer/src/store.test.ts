@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { getState, onPush, pickHeld, subscribe } from './store.ts';
+import { endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe } from './store.ts';
 import { aSession } from './test-support.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
@@ -88,4 +88,38 @@ test('the running shells Set holds while its members are the same', () => {
   const two = runningShellsHeld(running, both, sessions);
   assert.notEqual(two, running);
   assert.deepEqual([...two].sort(), ['a', 'b']);
+});
+
+test('a sessions.load push appends to the rings in one notify (M9 fix 703)', () => {
+  push({ type: 'session.changed', session: { ...session('l1'), load: [{ at: 1, cpu: 1, rss: 1 }], loadNames: ['old'] } });
+  push({ type: 'session.changed', session: session('l2') });
+  let main = 0;
+  const off = subscribe(() => (main += 1));
+  const tick = {
+    type: 'sessions.load',
+    at: 9,
+    samples: [
+      { sessionId: 'l1', sample: { at: 2, cpu: 5, rss: 50 }, names: ['node', 'git'] },
+      { sessionId: 'l2', sample: { at: 2, cpu: 6, rss: 60 }, names: [] },
+      { sessionId: 'nobody', sample: { at: 2, cpu: 7, rss: 70 }, names: [] },
+    ],
+  };
+  push(tick);
+  assert.equal(main, 1, 'one notify for the tick');
+  const l1 = getState().sessions.get('l1')!;
+  assert.equal(l1.load!.length, 2);
+  assert.deepEqual(l1.loadNames, ['node', 'git']);
+  assert.equal(getState().sessions.get('l2')!.load!.length, 1);
+  assert.equal(getState().sessions.has('nobody'), false);
+  // The same tick again (a list reply overtook the push): nothing lands.
+  push(tick);
+  assert.equal(main, 1, 'no notify for a tick the rings hold');
+  assert.equal(getState().sessions.get('l1')!.load!.length, 2);
+  assert.equal(getState().sessions.get('l2')!.load!.length, 1);
+  // A held colour preview waits for its record push, not a load tick.
+  holdSessionColorPreview('l1', '#333333');
+  push({ type: 'sessions.load', at: 10, samples: [{ sessionId: 'l1', sample: { at: 3, cpu: 1, rss: 1 }, names: [] }] });
+  assert.notEqual(getState().preview, null);
+  endSessionColorPreview('l1', true);
+  off();
 });

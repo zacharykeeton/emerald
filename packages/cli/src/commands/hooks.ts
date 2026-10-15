@@ -8,7 +8,7 @@ import type { Command } from '../command.ts';
 import { runHookTest } from '../hook-test.ts';
 import type { HookTestOutcome } from '../hook-test.ts';
 import { HOOK_EVENTS, hooksStatus, installHooks, skillPaths, statusLinePaths, recentInstalls, uninstallHooks, writtenPath } from '../hooks-install.ts';
-import type { HooksInstallOptions } from '../hooks-install.ts';
+import type { DeadEntry, HooksInstallOptions } from '../hooks-install.ts';
 import { emeraldHome } from '../paths.ts';
 
 const options = {
@@ -43,15 +43,20 @@ const command: Command = {
     if (parsed.values.test && action !== 'status') throw usageError('--test goes with hooks status');
     switch (action) {
       case 'install': {
-        const { changed } = installHooks(opts);
+        const { changed, removed } = installHooks(opts);
         const sl = statusLinePaths(opts);
         const skill = skillPaths(opts).dest;
-        if (json) printJson({ changed, events: HOOK_EVENTS.length, settings: opts.settingsPath, script: opts.scriptDest, statusLine: sl.cmdDest, skill });
+        // What is left dead after the install is anyone else's (M9 fix 710).
+        const left = hooksStatus(opts).dead;
+        if (json) printJson({ changed, events: HOOK_EVENTS.length, settings: opts.settingsPath, script: opts.scriptDest, statusLine: sl.cmdDest, skill, removed, left });
         else {
           println(`${changed ? 'installed' : 'already installed'}: ${HOOK_EVENTS.length} hooks and the status line in ${opts.settingsPath}`);
           println(`script: ${opts.scriptDest}`);
           println(`status line: ${sl.cmdDest} (a status line that was there before still runs after it)`);
           println(`skill: ${skill}`);
+          if (removed.length === 1) println('removed: 1 entry that pointed at a missing file');
+          else if (removed.length > 1) println(`removed: ${removed.length} entries that pointed at missing files`);
+          for (const d of left) println(deadLine(d));
         }
         return EXIT.ok;
       }
@@ -63,7 +68,9 @@ const command: Command = {
       }
       case 'status': {
         const s = hooksStatus(opts);
-        const complete = s.missing.length === 0 && s.scriptPresent && !s.scriptStale && s.statusLine && s.skill;
+        // A dead entry of ours counts against complete; anyone else's is
+        // named and does not, since no install of ours clears it (M9 fix 710).
+        const complete = s.missing.length === 0 && s.scriptPresent && !s.scriptStale && s.statusLine && s.skill && !s.dead.some((d) => d.ours);
         const test = parsed.values.test ? await runHookTest(opts.scriptDest) : null;
         const written = writtenPath(opts);
         if (json) printJson({ ...s, complete, settings: opts.settingsPath, script: opts.scriptDest, written, ...(test !== null ? { test } : {}) });
@@ -74,6 +81,7 @@ const command: Command = {
           const version = s.statusLineVersion === null ? 'no version, from before the bash pass-through' : `version ${s.statusLineVersion}`;
           println(`status line: ${s.statusLine ? 'set to' : 'not set to'} ${statusLinePaths(opts).cmdDest} (${version}, shipped ${s.shippedStatusLineVersion})`);
           println(`skill: ${s.skill ? 'present' : 'missing or differs from the shipped copy'} at ${skillPaths(opts).dest}`);
+          for (const d of s.dead) println(deadLine(d));
           if (s.fighting) println(`another writer: ${recentInstalls(opts)} installs in the last minute, and the file has changed since the last one`);
           if (test !== null) println(testLine(test, opts.scriptDest));
         }
@@ -86,6 +94,12 @@ const command: Command = {
     }
   },
 };
+
+function deadLine(d: DeadEntry): string {
+  return d.ours
+    ? `missing file: ${d.event} runs ${d.path} (an old emerald entry; emmer hooks install takes it out)`
+    : `missing file: ${d.event} runs ${d.path} (not emerald's; left as it is)`;
+}
 
 function testLine(test: HookTestOutcome, script: string): string {
   switch (test) {

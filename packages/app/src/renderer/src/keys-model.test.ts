@@ -54,6 +54,8 @@ test('plain chords: the M2 to M4 bindings still match, plus focus, cycle and the
   assert.equal(matchPlain(key('KeyG', { ctrlKey: true, shiftKey: true })), 'open-file');
   // M9 fix 674: Design Mode.
   assert.equal(matchPlain(key('KeyD', { ctrlKey: true, shiftKey: true })), 'design-mode');
+  // M9 fix 689: a Claude pane's chat view or its terminal.
+  assert.equal(matchPlain(key('KeyM', { ctrlKey: true, shiftKey: true })), 'toggle-chat');
   assert.equal(matchPlain(key('KeyF', { ctrlKey: true })), null, "Ctrl+F is the shell's");
   // Plain letters, Ctrl+letter and the default prefix itself are not chords.
   assert.equal(matchPlain(key('KeyE')), null);
@@ -74,6 +76,7 @@ test('after the prefix the same letters work without modifiers', () => {
   assert.equal(matchPrefixed(key('Slash')), 'find');
   assert.equal(matchPrefixed(key('KeyB')), 'toggle-sidebar');
   assert.equal(matchPrefixed(key('KeyD')), 'design-mode');
+  assert.equal(matchPrefixed(key('KeyM')), 'toggle-chat');
   assert.equal(matchPrefixed(key('KeyE', { ctrlKey: true })), null, 'modifiers after the prefix mean something else');
   assert.equal(matchPrefixed(key('KeyQ')), null);
 });

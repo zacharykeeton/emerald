@@ -87,7 +87,17 @@ export interface HooksStatus {
   // last (M9 fix 606): another program, or a second emerald, keeps
   // taking the hooks out.
   fighting: boolean;
+  // Hook and status line commands in the settings whose file is gone (M9
+  // fix 710), ours by their path's shape or anyone else's.
+  dead: DeadEntry[];
 }
+
+// A command in Claude's settings that points at a file no longer there
+// (M9 fix 710). `event` is the hook event's key, or `statusLine` for that
+// slot; `command` the whole command as written; `path` its first token,
+// quotes removed; `ours` when the path has the shape of an emerald hook or
+// status line wrapper, from an old home or an old install.
+export type DeadEntry = { event: string; command: string; path: string; ours: boolean };
 
 export const SKILL_NAME = 'emmer-cli';
 
@@ -153,9 +163,12 @@ export function hookCommand(scriptPath: string): string {
   return `"${toForwardSlashes(scriptPath)}"`;
 }
 
-export function installHooks(opts: HooksInstallOptions): { changed: boolean } {
+export function installHooks(opts: HooksInstallOptions): { changed: boolean; removed: DeadEntry[] } {
   const before = readSettings(opts.settingsPath);
-  const settings = stripOurs(before, opts.scriptDest);
+  // Our dead entries from an old home go with our current ones (M9 fix
+  // 710); anyone else's dead entries are named by status and left alone.
+  const removed = deadEntries(before, opts).filter((d) => d.ours);
+  const settings = stripEntries(before, (e) => isOurs(e, opts.scriptDest) || isDeadOurs(e));
   const hooks = asObject(settings['hooks']) ?? {};
   const command = hookCommand(opts.scriptDest);
   for (const event of HOOK_EVENTS) {
@@ -169,8 +182,10 @@ export function installHooks(opts: HooksInstallOptions): { changed: boolean } {
   const current = settings['statusLine'];
   // A status line that is not ours is what the wrapper runs after us and
   // what uninstall restores, so it is kept before it is replaced. Ours is
-  // left alone so a second install does not overwrite the kept one.
-  if (!isOurStatusLine(current, sl.cmdDest)) {
+  // left alone so a second install does not overwrite the kept one. A dead
+  // status line of ours from an old home counts as ours (M9 fix 710): kept
+  // as the previous one it would fail on every turn.
+  if (!isOurStatusLine(current, sl.cmdDest) && !isDeadOurs(current)) {
     writeJson(sl.previous, { statusLine: asObject(current) ?? null });
   } else if (!fs.existsSync(sl.previous)) {
     writeJson(sl.previous, { statusLine: null });
@@ -187,12 +202,12 @@ export function installHooks(opts: HooksInstallOptions): { changed: boolean } {
   fs.copyFileSync(skill.source, skill.dest);
   const changed = canonical(settings) !== canonical(before);
   if (changed) recordWrite(opts, writeSettings(opts.settingsPath, settings), true);
-  return { changed };
+  return { changed, removed };
 }
 
 export function uninstallHooks(opts: HooksInstallOptions): { changed: boolean } {
   const before = readSettings(opts.settingsPath);
-  const settings = stripOurs(before, opts.scriptDest);
+  const settings = stripEntries(before, (e) => isOurs(e, opts.scriptDest));
   const sl = statusLinePaths(opts);
   if (isOurStatusLine(settings['statusLine'], sl.cmdDest)) {
     const previous = readPreviousStatusLine(sl.previous);
@@ -368,7 +383,77 @@ export function hooksStatus(opts: HooksInstallOptions): HooksStatus {
     shippedStatusLineVersion: statusLineVersion(sl.jsSource) ?? 0,
     skill,
     fighting: isFighting(opts),
+    dead: deadEntries(settings, opts),
   };
+}
+
+// The file a command runs, when the command names one by an absolute path
+// (M9 fix 710): the text up to the closing quote when it starts with one,
+// else up to the first whitespace. A bare word (`node`), a relative path,
+// `~/...` or a variable resolves on the PATH or in a shell and is never
+// judged, so null.
+export function commandFile(command: string, platform: NodeJS.Platform = process.platform): string | null {
+  const t = command.trim();
+  let token: string;
+  if (t.startsWith('"')) {
+    const end = t.indexOf('"', 1);
+    token = end === -1 ? t.slice(1) : t.slice(1, end);
+  } else {
+    token = t.split(/\s/, 1)[0] ?? '';
+  }
+  if (/^[A-Za-z]:[\\/]/.test(token) || /^[\\/]{2}[^\\/]/.test(token)) return token;
+  if (platform !== 'win32' && token.startsWith('/')) return token;
+  return null;
+}
+
+// An emerald hook or status line wrapper by its path's shape, whatever
+// home it was installed under. The slash before `hooks` keeps Orca's
+// `.../agent-hooks/claude-hook.cmd` out.
+function isOursByShape(file: string): boolean {
+  const p = toForwardSlashes(file).toLowerCase();
+  return p.endsWith('/hooks/claude-hook.cmd') || p.endsWith('/hooks/claude-statusline.cmd');
+}
+
+function deadFile(entry: unknown): string | null {
+  const e = asObject(entry);
+  if (e === null || typeof e['command'] !== 'string') return null;
+  const file = commandFile(e['command']);
+  return file !== null && !fs.existsSync(file) ? file : null;
+}
+
+// A hook entry or status line of ours by shape whose file is gone.
+function isDeadOurs(entry: unknown): boolean {
+  const file = deadFile(entry);
+  return file !== null && isOursByShape(file);
+}
+
+// Every hook event in the settings (not only HOOK_EVENTS), every group and
+// entry, then the status line, in the file's own order. An entry that is
+// ours against the current script, and our current status line, are never
+// listed: a missing script there is scriptPresent or scriptStale already.
+export function deadEntries(settings: Settings, opts: HooksInstallOptions): DeadEntry[] {
+  const out: DeadEntry[] = [];
+  const hooks = asObject(settings['hooks']) ?? {};
+  for (const event of Object.keys(hooks)) {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      const entries = asObject(group)?.['hooks'];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (isOurs(entry, opts.scriptDest)) continue;
+        const file = deadFile(entry);
+        if (file === null) continue;
+        out.push({ event, command: (entry as HookEntry).command as string, path: file, ours: isOursByShape(file) });
+      }
+    }
+  }
+  const sl = settings['statusLine'];
+  if (!isOurStatusLine(sl, statusLinePaths(opts).cmdDest)) {
+    const file = deadFile(sl);
+    if (file !== null) out.push({ event: 'statusLine', command: asObject(sl)!['command'] as string, path: file, ours: isOursByShape(file) });
+  }
+  return out;
 }
 
 // The version a status line script declares in its `STATUS_LINE_VERSION`
@@ -382,10 +467,11 @@ export function statusLineVersion(file: string): number | null {
   }
 }
 
-// Returns a deep copy of the settings with every hook entry pointing at our
-// script removed, and any group, event array or hooks object left empty by
-// that removal dropped, so uninstall leaves no trace.
-function stripOurs(settings: Settings, scriptPath: string): Settings {
+// Returns a deep copy of the settings with every hook entry `drop` picks
+// removed (ours, and for an install our dead ones too), and any group,
+// event array or hooks object left empty by that removal dropped, so
+// uninstall leaves no trace.
+function stripEntries(settings: Settings, drop: (entry: unknown) => boolean): Settings {
   const out = structuredClone(settings);
   const hooks = asObject(out['hooks']);
   if (hooks === null) return out;
@@ -399,7 +485,7 @@ function stripOurs(settings: Settings, scriptPath: string): Settings {
         kept.push(group);
         continue;
       }
-      const remaining = g.hooks.filter((e) => !isOurs(e, scriptPath));
+      const remaining = g.hooks.filter((e) => !drop(e));
       if (remaining.length === g.hooks.length) {
         kept.push(group);
       } else if (remaining.length > 0) {

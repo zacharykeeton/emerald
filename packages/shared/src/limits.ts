@@ -13,7 +13,7 @@ export const Limits = {
   backpressureHighWaterBytes: 4 * 1024 * 1024,
   // A client with this much unread in its pipe write buffer is dropped (M9
   // fix 497): the pty pause above covers a session's output alone, and
-  // every other push (session.changed on every load tick, pty.rate, the
+  // every other push (sessions.load on every load tick, pty.rate, the
   // replies) went on growing the daemon's heap for as long as a client
   // that had stopped reading stayed connected. Eight times the pause mark,
   // so a renderer that is merely slow is paused long before it is dropped.

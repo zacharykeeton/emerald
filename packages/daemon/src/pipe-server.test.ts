@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
 import { PROTOCOL_VERSION } from '@emerald/shared';
-import type { Layout, ServerMessage } from '@emerald/shared';
+import type { Layout, ServerMessage, SessionInfo } from '@emerald/shared';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,8 +12,9 @@ import { currentTab, replaceTab, splitPane } from '@emerald/shared';
 import { PipeClient } from '@emerald/shared/pipe-client';
 import { LayoutStore } from './layout-store.ts';
 import { silentLogger } from './log.ts';
-import { FILE_OPEN_ANSWER_LEVEL, PipeServer, claimPipe } from './pipe-server.ts';
+import { FILE_OPEN_ANSWER_LEVEL, LOAD_PUSH_LEVEL, PipeServer, claimPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
+import type { LoadTick } from './session-manager.ts';
 
 // A private pipe name so the test never collides with a running emmerd.
 const PIPE = `\\\\.\\pipe\\emmerd-test-${process.pid}`;
@@ -743,6 +744,49 @@ test('a server with a token refuses a hello without it and anything before it (M
     assert.equal(good.closed, false);
     assert.deepEqual(warned, ['hello refused: no token', 'hello refused: wrong token', 'dropping client: session.list before hello', 'dropping client: pty.input before hello']);
   } finally {
+    await own.close();
+  }
+});
+
+test('a load tick goes to a level 64 window as one sessions.load, to an older window as records, and to a CLI not at all (M9 fix 703)', async () => {
+  const pipe = `${PIPE}-load`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  const clients: PipeClient[] = [];
+  try {
+    const join = async (hello: Record<string, unknown>) => {
+      const c = await PipeClient.connect(pipe);
+      clients.push(c);
+      await c.request('hello', { protocolVersion: PROTOCOL_VERSION, ...hello } as never);
+      await c.request('subscribe', { topics: ['sessions'] });
+      const heard: ServerMessage[] = [];
+      c.on('message', (m: ServerMessage) => heard.push(m));
+      return { c, heard };
+    };
+    const fresh = await join({ client: 'app', featureLevel: LOAD_PUSH_LEVEL });
+    const older = await join({ client: 'app', featureLevel: 63 });
+    const cli = await join({ client: 'cli' });
+    const samples = [
+      { sessionId: 'load-a', sample: { at: 5000, cpu: 3, rss: 30 }, names: ['node'] },
+      { sessionId: 'load-b', sample: { at: 5000, cpu: 4, rss: 40 }, names: [] },
+    ];
+    const sessions = [{ id: 'load-a', name: 'a' }, { id: 'load-b', name: 'b' }] as unknown as SessionInfo[];
+    const tick: LoadTick = { at: 5001, samples, sessions };
+    const freshHeard = waitFor(fresh.c, (m) => m.type === 'sessions.load');
+    const olderHeard = waitFor(older.c, (m) => m.type === 'session.changed' && m.session.id === 'load-b');
+    manager.emit('load', tick);
+    await Promise.all([freshHeard, olderHeard]);
+    // A moment for anything else in flight to land before the counts.
+    await new Promise((r) => setTimeout(r, 200));
+    const ours = (heard: ServerMessage[]) => heard.filter((m) => m.type === 'sessions.load' || (m.type === 'session.changed' && m.session.id.startsWith('load-')));
+    assert.deepEqual(ours(fresh.heard), [{ type: 'sessions.load', at: 5001, samples }]);
+    assert.deepEqual(
+      ours(older.heard).map((m) => (m.type === 'session.changed' ? m.session.id : m.type)),
+      ['load-a', 'load-b'],
+    );
+    assert.deepEqual(ours(cli.heard), []);
+  } finally {
+    for (const c of clients) c.close();
     await own.close();
   }
 });

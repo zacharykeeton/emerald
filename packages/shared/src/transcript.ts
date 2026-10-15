@@ -1,5 +1,6 @@
 import { summarize } from './state-machine.ts';
 import { HEAD_TOOLS } from './command-dir.ts';
+import { formatDuration } from './session-order.ts';
 
 // One line of a Claude Code transcript (the JSONL at transcript_path) read
 // for what the sidebar's agent line wants (M47): the text Claude wrote in
@@ -136,6 +137,230 @@ export function parseTurns(text: string): Turn[] {
     }
   }
   return turns;
+}
+
+// A turn as the chat view draws it (M9 fix 688): the prompt, then every
+// step in the order the transcript wrote it, each tool call carrying its
+// result once the result line has landed. parseTurns stays the Sessions
+// rail's and the Turns tab's reading; this one keeps what they fold away.
+export interface StepTurn {
+  prompt: string;
+  at: number | null;
+  endAt: number | null;
+  steps: Step[];
+}
+
+export type Step =
+  | { kind: 'thinking'; text: string; ms: number | null; at: number | null }
+  | { kind: 'tool'; id: string; name: string; arg: string; input: Record<string, unknown>; at: number | null; result: StepResult | null }
+  | { kind: 'text'; text: string; at: number | null }
+  | { kind: 'note'; text: 'Interrupted'; at: number | null };
+
+export interface StepResult {
+  error: boolean;
+  exitCode: number | null;
+  endAt: number | null;
+  // A text Read's line count.
+  lines: number | null;
+  // An edit's lines added and removed.
+  added: number | null;
+  removed: number | null;
+  image: { mediaType: string; bytes: number } | null;
+}
+
+type ToolStep = Extract<Step, { kind: 'tool' }>;
+
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+const AGENT_TOOLS = new Set(['Agent', 'Task']);
+
+// The argument a tool row shows: the file it touches, the command it
+// runs, the pattern it searches for and where, or what a subagent was
+// sent to do.
+function stepArg(name: string, input: Record<string, unknown>): string {
+  if (typeof input['file_path'] === 'string') return input['file_path'];
+  if (typeof input['notebook_path'] === 'string') return input['notebook_path'];
+  if (typeof input['command'] === 'string') return input['command'];
+  if (typeof input['pattern'] === 'string') return typeof input['path'] === 'string' ? `${input['pattern']} in ${input['path']}` : input['pattern'];
+  if (AGENT_TOOLS.has(name)) {
+    const kind = typeof input['subagent_type'] === 'string' ? input['subagent_type'] : '';
+    const what = typeof input['description'] === 'string' ? input['description'] : '';
+    return kind !== '' && what !== '' ? `${kind}: ${what}` : kind + what;
+  }
+  return '';
+}
+
+// A user line Claude Code writes when the person stops a turn: a note in
+// the turn, never a prompt of its own.
+function isInterrupt(o: Record<string, unknown>): boolean {
+  if (o['type'] !== 'user') return false;
+  if (o['interruptedMessageId'] !== undefined) return true;
+  const message = o['message'];
+  if (!isObject(message)) return false;
+  const content = message['content'];
+  const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map((p) => (isObject(p) && typeof p['text'] === 'string' ? p['text'] : '')).join('') : '';
+  return text.trim().startsWith('[Request interrupted by user');
+}
+
+function resultContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((p) => (isObject(p) && p['type'] === 'text' && typeof p['text'] === 'string' ? p['text'] : '')).join('\n');
+}
+
+// Lines added and removed between two texts: the lines common to both
+// ends are dropped and what is left on each side counted. Not a diff, but
+// an edit's old and new strings are a hunk already.
+export function editCounts(oldText: string, newText: string): { added: number; removed: number } {
+  const a = oldText === '' ? [] : oldText.split('\n');
+  const b = newText === '' ? [] : newText.split('\n');
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
+  return { added: b.length - head - tail, removed: a.length - head - tail };
+}
+
+function inputCounts(name: string, input: Record<string, unknown>): { added: number; removed: number } | null {
+  const str = (k: string, o: Record<string, unknown> = input): string => (typeof o[k] === 'string' ? (o[k] as string) : '');
+  if (name === 'Write') return editCounts('', str('content'));
+  if (name === 'MultiEdit' && Array.isArray(input['edits'])) {
+    let added = 0;
+    let removed = 0;
+    for (const e of input['edits']) {
+      if (!isObject(e)) continue;
+      const c = editCounts(str('old_string', e), str('new_string', e));
+      added += c.added;
+      removed += c.removed;
+    }
+    return { added, removed };
+  }
+  if (name === 'NotebookEdit') return editCounts('', str('new_source'));
+  if (name === 'Edit') return editCounts(str('old_string'), str('new_string'));
+  return null;
+}
+
+function patchCounts(patch: unknown): { added: number; removed: number } | null {
+  if (!Array.isArray(patch)) return null;
+  let added = 0;
+  let removed = 0;
+  for (const hunk of patch) {
+    if (!isObject(hunk) || !Array.isArray(hunk['lines'])) continue;
+    for (const l of hunk['lines']) {
+      if (typeof l !== 'string') continue;
+      if (l.startsWith('+')) added += 1;
+      else if (l.startsWith('-')) removed += 1;
+    }
+  }
+  return { added, removed };
+}
+
+function stepResult(tool: ToolStep, part: Record<string, unknown>, extra: unknown, at: number | null): StepResult {
+  const error = part['is_error'] === true;
+  const text = resultContentText(part['content']);
+  let exitCode: number | null = null;
+  if (SHELL_TOOLS.has(tool.name)) {
+    if (!error) exitCode = 0;
+    else {
+      const m = /^Exit code (\d+)/.exec(text.trim());
+      exitCode = m === null ? null : Number(m[1]);
+    }
+  }
+  const file = isObject(extra) && isObject(extra['file']) ? extra['file'] : null;
+  const lines = tool.name === 'Read' && file !== null && typeof file['numLines'] === 'number' ? file['numLines'] : null;
+  let image: StepResult['image'] = null;
+  if (Array.isArray(part['content'])) {
+    const img = part['content'].find((p) => isObject(p) && p['type'] === 'image');
+    if (isObject(img)) {
+      const source = isObject(img['source']) ? img['source'] : {};
+      const mediaType = typeof source['media_type'] === 'string' ? source['media_type'] : '';
+      const data = typeof source['data'] === 'string' ? source['data'] : '';
+      const bytes = file !== null && typeof file['originalSize'] === 'number' ? file['originalSize'] : Math.floor((data.length * 3) / 4);
+      image = { mediaType, bytes };
+    }
+  }
+  let counts: { added: number; removed: number } | null = null;
+  if (EDIT_TOOLS.has(tool.name)) counts = (isObject(extra) ? patchCounts(extra['structuredPatch']) : null) ?? inputCounts(tool.name, tool.input);
+  return { error, exitCode, endAt: at, lines, added: counts?.added ?? null, removed: counts?.removed ?? null, image };
+}
+
+// Every turn of a transcript with its steps (M9 fix 688). A turn opens on
+// the lines parseTurns opens one on, except an interrupt, which is a note
+// in the open turn. Claude Code writes one line per content block as a
+// reply streams, so a tool_use id seen twice is kept once; a tool_result
+// fills the result of the call with its id in the same turn and is
+// dropped when none matches. Side-chain and broken lines are skipped.
+export function parseSteps(text: string): StepTurn[] {
+  const turns: StepTurn[] = [];
+  let turn: StepTurn | null = null;
+  let tools = new Map<string, ToolStep>();
+  for (const raw of text.split('\n')) {
+    const o = parseObject(raw);
+    if (o === null || o['isSidechain'] === true) continue;
+    const at = lineTime(o);
+    if (isInterrupt(o)) {
+      if (turn === null) continue;
+      if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+      turn.steps.push({ kind: 'note', text: 'Interrupted', at });
+      continue;
+    }
+    const prompt = promptOf(o);
+    if (prompt !== null) {
+      turn = { prompt, at, endAt: null, steps: [] };
+      tools = new Map();
+      turns.push(turn);
+      continue;
+    }
+    if (turn === null) continue;
+    if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+    const message = o['message'];
+    if (!isObject(message) || !Array.isArray(message['content'])) continue;
+    if (o['type'] === 'assistant') {
+      for (const part of message['content']) {
+        if (!isObject(part)) continue;
+        if (part['type'] === 'thinking') {
+          const ms = typeof o['thinkingDurationMs'] === 'number' ? o['thinkingDurationMs'] : null;
+          turn.steps.push({ kind: 'thinking', text: typeof part['thinking'] === 'string' ? part['thinking'] : '', ms, at });
+        } else if (part['type'] === 'text') {
+          if (typeof part['text'] === 'string' && part['text'].trim() !== '') turn.steps.push({ kind: 'text', text: part['text'], at });
+        } else if (part['type'] === 'tool_use') {
+          const id = typeof part['id'] === 'string' ? part['id'] : '';
+          const name = typeof part['name'] === 'string' ? part['name'] : '';
+          if (id !== '' && tools.has(id)) continue;
+          const input = isObject(part['input']) ? part['input'] : {};
+          const step: ToolStep = { kind: 'tool', id, name, arg: stepArg(name, input), input, at, result: null };
+          if (id !== '') tools.set(id, step);
+          turn.steps.push(step);
+        }
+      }
+    } else if (o['type'] === 'user') {
+      for (const part of message['content']) {
+        if (!isObject(part) || part['type'] !== 'tool_result') continue;
+        const tool = typeof part['tool_use_id'] === 'string' ? tools.get(part['tool_use_id']) : undefined;
+        if (tool === undefined) continue;
+        tool.result = stepResult(tool, part, o['toolUseResult'], at);
+      }
+    }
+  }
+  return turns;
+}
+
+// The right-hand text of a tool row: what the call came to, then how
+// long it took, in the Turns view's units.
+export function resultText(step: Extract<Step, { kind: 'tool' }>): string {
+  const r = step.result;
+  if (r === null) return '';
+  const length = step.at !== null && r.endAt !== null ? formatDuration(step.at, r.endAt) : null;
+  const withLength = (head: string): string => (length === null ? head : `${head} · ${length}`);
+  if (SHELL_TOOLS.has(step.name)) {
+    if (r.exitCode !== null) return withLength(`exit ${r.exitCode}`);
+    if (r.error) return withLength('error');
+  }
+  if (r.error) return 'error';
+  if (step.name === 'Read' && r.image !== null) return `${Math.round(r.image.bytes / 1024)} KB`;
+  if (step.name === 'Read' && r.lines !== null) return `${r.lines} lines`;
+  if (EDIT_TOOLS.has(step.name) && r.added !== null && r.removed !== null) return `+${r.added} −${r.removed}`;
+  if (AGENT_TOOLS.has(step.name)) return length === null ? 'returned' : `returned after ${length}`;
+  return length ?? '';
 }
 
 // One API request of a conversation as its transcript records it (M9 fix

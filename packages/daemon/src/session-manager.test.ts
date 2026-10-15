@@ -11,8 +11,10 @@ import { PipeClient } from '@emerald/shared/pipe-client';
 import { readBranch } from './git-branch.ts';
 import { LayoutStore } from './layout-store.ts';
 import { silentLogger } from './log.ts';
+import type { Logger } from './log.ts';
 import { PipeServer } from './pipe-server.ts';
 import { SessionManager, resumePlan } from './session-manager.ts';
+import type { LoadTick } from './session-manager.ts';
 import { SessionStore } from './session-store.ts';
 import { findShells } from './shells.ts';
 
@@ -21,6 +23,21 @@ function tempDir(): string {
 }
 
 test.after(removeTemps);
+
+// A logger that keeps what the store says, error included, for the restart
+// tests whose restored list once came back empty with the reason swallowed
+// by the silent logger (M9 fix 708).
+function recordingLogger(): Logger & { lines: string[] } {
+  const lines: string[] = [];
+  const keep = (level: string) => (msg: string, err?: unknown) => {
+    lines.push(`${level} ${msg}${err === undefined ? '' : ` ${(err as NodeJS.ErrnoException).code ?? String(err)}`}`);
+  };
+  return { lines, info: keep('info'), warn: keep('warn'), error: keep('error') };
+}
+
+// The message of a restart test's assert on the restored list.
+const restoredMessage = (log: { lines: string[] }, restarted: SessionManager): string =>
+  `restored with the session; store log: ${log.lines.join(' | ') || 'empty'}; restored ${restarted.list().length}`;
 
 // A shell that exits on its own with a known code, so the test does not
 // have to kill anything or wait on a prompt.
@@ -171,7 +188,8 @@ test('set writes the checkpoint one field at a time, persists it, and a resume k
 
 test('the commit a session started on is read in its start folder at spawn, persisted, restored and kept through a resume (M9 fix 117)', async () => {
   const dir = tempDir();
-  const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);
+  const log = recordingLogger();
+  const store = new SessionStore(path.join(dir, 'sessions.json'), log);
   const reads: string[] = [];
   let head: string | null = 'a'.repeat(40);
   const readHead = async (cwd: string) => {
@@ -210,7 +228,7 @@ test('the commit a session started on is read in its start folder at spawn, pers
   try {
     restarted.restore();
     const kept = restarted.list().find((s) => s.startHead !== null);
-    assert.ok(kept !== undefined && kept.startHead === 'a'.repeat(40), 'restored with the session');
+    assert.ok(kept !== undefined && kept.startHead === 'a'.repeat(40), restoredMessage(log, restarted));
   } finally {
     restarted.close();
   }
@@ -497,7 +515,8 @@ test('a /clear opens a conversation span with its own start commit, and the span
     reads.push(cwd);
     return heads.get(cwd) ?? null;
   };
-  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
+  const log = recordingLogger();
+  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), log);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, readHead });
   const settle = () => new Promise((r) => setTimeout(r, 20));
   try {
@@ -540,7 +559,7 @@ test('a /clear opens a conversation span with its own start commit, and the span
   try {
     restarted.restore();
     const kept = restarted.list()[0];
-    assert.deepEqual(kept?.spans?.map((x) => [x.conversation, x.startHead]), [['conv-1', 'b'.repeat(40)], ['conv-2', 'c'.repeat(40)]], 'restored with the session');
+    assert.deepEqual(kept?.spans?.map((x) => [x.conversation, x.startHead]), [['conv-1', 'b'.repeat(40)], ['conv-2', 'c'.repeat(40)]], restoredMessage(log, restarted));
   } finally {
     restarted.close();
   }
@@ -823,7 +842,7 @@ test('a session carries the branch of its folder, re-read at turn boundaries and
   const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
     restarted.restore();
-    const restored = restarted.list().find((x) => x.spawnCwd === dir)!;
+    const restored = restarted.list().find((x) => x.spawnCwd === fs.realpathSync.native(dir))!;
     assert.equal(restored.branch, 'third');
     assert.equal(restored.lastReply, 'Done.', 'the last turn survived the restart');
   } finally {
@@ -854,7 +873,7 @@ test('a shell reports its folder through its prompt: cd moves the session, its n
     const after = manager.get(s.id).info;
     assert.equal(after.name, folderName(repo), 'named after the new folder');
     assert.equal(after.branch, 'reported', 'the branch followed');
-    assert.equal(after.spawnCwd, os.tmpdir(), 'spawnCwd is untouched');
+    assert.equal(after.spawnCwd, fs.realpathSync.native(os.tmpdir()), 'spawnCwd is untouched by a cd, in the real spelling of the request');
   } finally {
     manager.killAll();
     manager.close();
@@ -1208,7 +1227,8 @@ test('over the pipe: remove empties the panes first, then pushes session.removed
 });
 
 test('a git-writing Bash call with no read before it records HEAD on the session, once per hash, capped, and it survives a restart (M49)', async () => {
-  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
+  const log = recordingLogger();
+  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), log);
   let head = 'a'.repeat(40);
   const reads: string[] = [];
   const readHead = async (cwd: string) => {
@@ -1263,7 +1283,7 @@ test('a git-writing Bash call with no read before it records HEAD on the session
   const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
     restarted.restore();
-    assert.equal(restarted.list()[0]!.commits.length, 200, 'restored with the session');
+    assert.equal(restarted.list()[0]!.commits.length, 200, restoredMessage(log, restarted));
   } finally {
     restarted.close();
   }
@@ -1878,7 +1898,7 @@ test('two spellings of one folder group as one: the spawn folder, a hook cwd and
     const a = manager.spawn({ kind: 'shell', cwd: other, args: exitArgs(0), cols: 80, rows: 24 });
     assert.equal(a.cwd, real);
     assert.equal(a.groupCwd, real);
-    assert.equal(a.spawnCwd, other, 'the request is recorded as asked');
+    assert.equal(a.spawnCwd, real, 'the request is recorded in the real spelling (M9 fix 711)');
     const b = manager.spawn({ kind: 'shell', cwd: real, args: exitArgs(0), cols: 80, rows: 24 });
     assert.equal(b.groupCwd, a.groupCwd, 'one heading for the two');
     manager.applyHook(b.id, { hook_event_name: 'SessionStart', session_id: 'c-108', cwd: other, source: 'startup' }, Date.now());
@@ -1886,6 +1906,27 @@ test('two spellings of one folder group as one: the spawn folder, a hook cwd and
     assert.equal(manager.get(b.id).info.cwd, real);
     // The shells have to be gone before the folder can go.
     await exits;
+
+    // A record saved before fix 711 holds the asked spelling, and one
+    // saved before M9 has no autoName; the restore makes spawnCwd real,
+    // while the store's name guess, which runs at load, still reads the
+    // stored spelling.
+    const file = path.join(tempDir(), 'sessions.json');
+    const store = new SessionStore(file, silentLogger);
+    store.save([{ ...manager.get(a.id).info, spawnCwd: other, cwd: other, groupCwd: other, name: folderName(other) }]);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { sessions: Record<string, unknown>[] };
+    for (const s of saved.sessions) delete s['autoName'];
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
+    try {
+      restarted.restore();
+      const restored = restarted.get(a.id).info;
+      assert.equal(restored.spawnCwd, real, 'a restored record takes the real spelling');
+      assert.equal(restored.autoName, true, 'the old-record name guess read the stored spelling');
+    } finally {
+      restarted.killAll();
+      restarted.close();
+    }
   } finally {
     manager.killAll();
     manager.close();
@@ -2060,7 +2101,8 @@ test("a shell's prompt marks put its last command on the record: running at Ente
 });
 
 test("the files a session writes are kept on the record, one entry per path, a member's with its id, persisted and kept across a restart (M9 fix 198)", async () => {
-  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
+  const log = recordingLogger();
+  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), log);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
     const s = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 3'], cols: 80, rows: 24 });
@@ -2108,7 +2150,7 @@ test("the files a session writes are kept on the record, one entry per path, a m
   const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
     restarted.restore();
-    assert.equal(restarted.list()[0]!.touched!.length, 200, 'restored with the session');
+    assert.equal(restarted.list()[0]!.touched!.length, 200, restoredMessage(log, restarted));
     assert.equal(restarted.list()[0]!.touched!.at(-1)!.path, 'C:/code/emerald/many/249.ts');
   } finally {
     restarted.close();
@@ -2283,5 +2325,55 @@ test('a cmd shell resumes as cmd, and a record whose shell has gone resumes in t
     manager.close();
     restarted?.killAll();
     restarted?.close();
+  }
+});
+
+test('one load tick emits one load event and no changed (M9 fix 703)', () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
+  try {
+    const a = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: exitArgs(0), cols: 80, rows: 24 }).id;
+    const b = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: exitArgs(0), cols: 80, rows: 24 }).id;
+    const changed: unknown[] = [];
+    const loads: LoadTick[] = [];
+    const onChanged = (info: unknown) => changed.push(info);
+    const onLoad = (tick: LoadTick) => loads.push(tick);
+    manager.on('changed', onChanged);
+    manager.on('load', onLoad);
+    manager.applyLoad(
+      new Map([
+        [a, { sample: { at: 1000, cpu: 5, rss: 10 }, names: ['pwsh'] }],
+        [b, { sample: { at: 1000, cpu: 7, rss: 20 }, names: [] }],
+        ['nobody', { sample: { at: 1000, cpu: 1, rss: 1 }, names: [] }],
+      ]),
+    );
+    manager.off('changed', onChanged);
+    manager.off('load', onLoad);
+    assert.equal(changed.length, 0, 'no record per session');
+    assert.equal(loads.length, 1, 'one load event a tick');
+    assert.deepEqual(loads[0]!.samples, [
+      { sessionId: a, sample: { at: 1000, cpu: 5, rss: 10 }, names: ['pwsh'] },
+      { sessionId: b, sample: { at: 1000, cpu: 7, rss: 20 }, names: [] },
+    ]);
+    assert.deepEqual(
+      loads[0]!.sessions.map((s) => s.id),
+      [a, b],
+      'the records in the same order, for an older window',
+    );
+    const byId = new Map(manager.list().map((s) => [s.id, s]));
+    assert.deepEqual(byId.get(a)!.load, [{ at: 1000, cpu: 5, rss: 10 }]);
+    assert.deepEqual(byId.get(a)!.loadNames, ['pwsh']);
+    assert.equal(byId.get(b)!.load!.length, 1);
+    assert.deepEqual(byId.get(b)!.loadNames, []);
+
+    manager.on('load', onLoad);
+    manager.on('changed', onChanged);
+    manager.applyLoad(new Map([['nobody', { sample: { at: 2000, cpu: 1, rss: 1 }, names: [] }]]));
+    manager.off('changed', onChanged);
+    manager.off('load', onLoad);
+    assert.equal(loads.length, 1, 'a tick with no session of ours emits nothing');
+    assert.equal(changed.length, 0);
+  } finally {
+    manager.killAll();
+    manager.close();
   }
 });

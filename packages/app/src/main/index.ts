@@ -37,10 +37,11 @@ import { createUpdater, updateFeedSpec } from './updater.ts';
 import { postGapPoster, postInstallPoster } from './install-poster.ts';
 import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
 import { wireUpdateRelay } from './update-relay.ts';
-import { reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
+import { openExtraOf, reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
 import { wireBrowserDriver } from './browser-driver.ts';
 import { wireDesignMode } from './design-wire.ts';
 import { sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
+import { pruneShots } from './shot-prune.ts';
 import { inspectPort } from './inspect.ts';
 import { pipePathOf, emeraldHomeOf } from '@emerald/shared/pipe-name';
 import type { UpdateState } from '../renderer/src/update-model.ts';
@@ -235,7 +236,7 @@ ipcMain.handle('emerald:update-state', () => updater.state());
 const openRelay = wireFileOpenRelay(client, {
   deliver: (req) => {
     if (win === null || win.isDestroyed()) return false;
-    win.webContents.send('emerald:open-file', req.path, req.pane, { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url });
+    win.webContents.send('emerald:open-file', req.path, req.pane, openExtraOf(req));
     return true;
   },
   lift: () => {
@@ -378,6 +379,20 @@ function sweepPendingAfterConnect(): void {
   timer.unref();
 }
 client.on('connected', sweepPendingAfterConnect);
+
+// M9 fix 696: Design Mode's crops and emmer browser's screenshots older
+// than 14 days go, once a launch. Unlike the updater sweep this runs in
+// every build: the folders are the home's own and a harness's home is
+// private, so the dev build prunes only what it wrote, and verify:design
+// reads it. No timer and no retry; a file a failure left is the next
+// launch's.
+let shotsPruned = false;
+function pruneShotsOnce(): void {
+  if (shotsPruned) return;
+  shotsPruned = true;
+  void pruneShots(path.resolve(emeraldHomeOf(process.env)), Date.now(), log).catch((err: unknown) => log(`shots: prune failed: ${err instanceof Error ? err.message : String(err)}`));
+}
+client.on('connected', pruneShotsOnce);
 
 // The release notes (M9 fix 227), read on every call so a dev build
 // shows an edit on the next open. A missing file is empty text, not a
@@ -867,12 +882,12 @@ if (handedOver) {
   log(`${launchFile} handed to the running window; quitting`);
   app.quit();
 } else {
-  if (launchFile !== null) openRelay.open({ path: launchFile, pane: false });
+  if (launchFile !== null) openRelay.open({ path: launchFile, pane: false, launch: true });
   app.on('second-instance', (_event, _argv, _cwd, additionalData) => {
     const p = (additionalData as { path?: unknown } | undefined)?.path;
     if (typeof p !== 'string') return;
     log(`${p} from a second launch`);
-    openRelay.open({ path: p, pane: false });
+    openRelay.open({ path: p, pane: false, launch: true });
   });
   // A window that went on without the lock (another window holds it, or
   // a killed one's singleton had not gone yet) asks again for a while,

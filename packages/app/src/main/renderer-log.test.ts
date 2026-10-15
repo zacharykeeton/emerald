@@ -15,3 +15,19 @@ test('a line with no emerald prefix is marked [lib], the source and line kept th
     'renderer: error [lib] Cannot destructure property x (file:///app/vendor.js:4)',
   );
 });
+
+// M9 fix 694: Electron's own line at each browser pane's close is a note.
+test("Electron's Invalid guestInstanceId at a webview's teardown is a note; the same words elsewhere stay an error", () => {
+  assert.equal(
+    rendererLogLine('error', 'Uncaught Error: Invalid guestInstanceId: 2', 'node:electron/js2c/isolated_bundle', 2),
+    'renderer: note [lib] Uncaught Error: Invalid guestInstanceId: 2 (node:electron/js2c/isolated_bundle:2)',
+  );
+  assert.equal(
+    rendererLogLine('error', 'Uncaught Error: Invalid guestInstanceId: 2', 'file:///app/index.js', 2),
+    'renderer: error [lib] Uncaught Error: Invalid guestInstanceId: 2 (file:///app/index.js:2)',
+  );
+  assert.equal(
+    rendererLogLine('error', 'Uncaught Error: something else', 'node:electron/js2c/isolated_bundle', 2),
+    'renderer: error [lib] Uncaught Error: something else (node:electron/js2c/isolated_bundle:2)',
+  );
+});

@@ -43,7 +43,7 @@ import { CLAUDE_ENTER_DELAY_MS, STALL_MS, isBusy, promptRefusal } from './prompt
 import { editLayout, editTab, getState, subscribe } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
-import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
 import { normalizePath } from './files-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
@@ -659,11 +659,13 @@ export async function startShellIn(paneId: string, folder: string, shell?: Shell
 // Starts a Claude session in the folder and shows it in the pane, the
 // Claude twin of startShellIn: the split's Claude arm (M9 fix 343) and the
 // empty pane's Start (M9 fix 545). No dialog and no args, the shape
-// NewSessionDialog.tsx's Start button uses.
-export async function startClaudeIn(paneId: string, folder: string): Promise<void> {
+// NewSessionDialog.tsx's Start button uses. opts.chat opens the pane on
+// the chat face (M9 fix 689), the empty pane's `opens on` pick.
+export async function startClaudeIn(paneId: string, folder: string, opts: { chat?: boolean } = {}): Promise<void> {
   const { session } = await window.emerald.request('session.spawn', { kind: 'claude', cwd: folder, cols: 120, rows: 30 });
   rememberFolderUsed(folder);
   await editTab((t) => setPaneSession(t, paneId, session.id), paneId);
+  if (opts.chat === true) setChatFace(paneId, session.id, true);
 }
 
 // Resume from the History panel: a Claude session started in the

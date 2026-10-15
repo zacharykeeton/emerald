@@ -38,6 +38,13 @@
 // round at the end, acknowledging none of them; the picker opens on the
 // waiting sessions in that order with the wait after the state word; and
 // with nothing waiting the corner says so for a moment.
+// M9 fix 701: a question into the focused pane a key after the last one
+// comes with no chime, flash, toast or pulse, the badge still saying
+// needs input; the same question after ten quiet seconds chimes, flashes,
+// posts and pulses.
+// M9 fix 702: zoomed on pane 1, a question in hidden pane 2 pulses the tab
+// on show, and a click on the tab undoes the zoom with the focus kept;
+// zoomed on pane 2 itself, the tab does not pulse and a click leaves it.
 // Uses a private home and pipe unless the environment already names them,
 // so it can run beside a live emerald. Starts from an empty layout.
 // Run: npm run verify:attention -w @emerald/app
@@ -234,6 +241,10 @@ try {
     expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name} on the front session`);
   };
   await postFrontEarly({ hook_event_name: 'SessionStart', source: 'startup' });
+  // M9 fix 701: the front session is pane 1's, the focused pane, so a
+  // question within ten seconds of the last press into pane 1 would be
+  // settled with no chime; this one is meant to arrive.
+  await s.pastRecentInput();
   await postFrontEarly({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
   await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(front)}]')?.dataset.attention === 'needs-input'`, 'the front row pulses', 5000);
   expect((await chimes()) === hushChimes + 1, `the second session chimes on arrival, got ${(await chimes()) - hushChimes}`);
@@ -711,7 +722,9 @@ try {
   // M9 fix 69: one pulse per place. The front session goes needs-input
   // with its pane on the tab on show: the pane title pulses and the tab
   // does not (its mark keeps the idle tone); switch away and the tab
-  // pulses for it; switch back and it stops.
+  // pulses for it; switch back and it stops. Past the ten seconds of the
+  // click on pane 1 first, or fix 701 settles the question as answered.
+  await s.pastRecentInput();
   await postFront({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
   await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === 'needs-input'`, 'the front row pulses', 5000);
   await s.waitFor(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title')?.dataset.attention === 'needs-input'`, 'the pane title on show pulses', 5000);
@@ -1301,6 +1314,99 @@ try {
   const acked = await overlayProbe();
   expect(acked.overlay === null && acked.rowWait === null && acked.age.color === mutedColor && acked.age.size === '13px' && acked.age.visibility === 'visible', `fix 247: no counter and no row figure after the ack and the row's age back to muted at 13px, got ${JSON.stringify(acked)}`);
   step(`M9 fixes 247 and 267: the counter read ${firstWait.overlay.text} then ${laterWait.overlay.text} at 48px in the teal over pane 2 on no ground with its hush beside it, the row's figure at 36px in step with its age hidden, the overlay's hush toggled the session's hush both ways, ${doneOverlay.overlay.text} in green at the reply, and all gone at the ack; frame m9-fix267-waiting.png`);
+
+  // M9 fix 701: a question into the pane the person is typing in. The
+  // front session is pane 1's, pane 1 focused: a click and a key there,
+  // then a PermissionRequest, which is settled as it arrives (no chime,
+  // no pulse, no flash, no toast, the badge at needs-input all the same);
+  // then the same question after ten quiet seconds, which arrives as ever.
+  const frontTitleAttention = () => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title')?.dataset.attention ?? null`);
+  const newSince = (before, pred) => taskbarLines().slice(before).some(pred);
+  await postFront({ hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.state === 'working'`, 'fix 701: the front session working', 5000);
+  await s.click(c1Now.x, c1Now.y);
+  await s.waitFor(focusedPaneIs(p1), 'fix 701: pane 1 focused');
+  await s.key('a', 'KeyA', 65);
+  const quietChimes = await chimes();
+  const quietTaskbar = taskbarLines().length;
+  const quietNotified = notified().length;
+  const quietConsole = s.consoleLog.length;
+  await postFront({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.state === 'needs-input'`, 'fix 701: the badge says needs input', 5000);
+  await sleep(1000);
+  const settledLine = s.consoleLog.slice(quietConsole).find((l) => l.includes(`attention ${front.slice(0, 8)} needs-input: answering in the focused pane, no chime, flash or toast`));
+  const quietRead = {
+    chimes: (await chimes()) - quietChimes,
+    row: await frontAttention(),
+    title: await frontTitleAttention(),
+    overlay: await s.evalJs(`!!document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .wait-overlay')`),
+    flash: newSince(quietTaskbar, (l) => l.endsWith(', flash')),
+    notified: notified().length - quietNotified,
+    logged: settledLine !== undefined,
+  };
+  expect(
+    quietRead.chimes === 0 && quietRead.row === null && quietRead.title === null && !quietRead.overlay && !quietRead.flash && quietRead.notified === 0 && quietRead.logged,
+    `fix 701: a question into the pane being typed in is settled, got ${JSON.stringify(quietRead)}`,
+  );
+  await s.pastRecentInput();
+  await postFront({ hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.state === 'working'`, 'fix 701: working again', 5000);
+  const loudChimes = await chimes();
+  const loudTaskbar = taskbarLines().length;
+  const loudNotified = notified().length;
+  await postFront({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === 'needs-input'`, 'fix 701: after ten quiet seconds the question pulses', 5000);
+  await waitTaskbar(', flash');
+  await waitNotified(loudNotified + 1, 'fix 701: the question after ten quiet seconds posts');
+  const loudRead = {
+    chimes: (await chimes()) - loudChimes,
+    title: await frontTitleAttention(),
+    flash: newSince(loudTaskbar, (l) => l.endsWith(', flash')),
+    session: notified().at(-1)?.sessionId === front,
+  };
+  expect(loudRead.chimes === 1 && loudRead.title === 'needs-input' && loudRead.flash && loudRead.session, `fix 701: the same question after ten quiet seconds chimes, pulses, flashes and posts, got ${JSON.stringify(loudRead)}`);
+  await s.click(c1Now.x, c1Now.y);
+  await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === undefined`, 'fix 701: a click on pane 1 clears the pulse', 5000);
+  step('M9 fix 701: a question into the focused pane a key after the last one came with no chime, flash, toast or pulse, the badge still saying needs input; the same question after ten quiet seconds chimed, flashed, posted and pulsed');
+
+  // M9 fix 702: zoomed on pane 1, a question in pane 2 (hidden by the
+  // zoom) pulses the tab on show, and a real click on that tab undoes the
+  // zoom with the focus kept on pane 1; zoomed on pane 2 itself, the tab
+  // does not pulse and a click leaves the zoom.
+  const zoomedOn = (paneId) => `document.querySelector('.splitview.zoomed')?.dataset.zoomedPane === ${JSON.stringify(paneId)}`;
+  const paneShown = (paneId) => s.evalJs(`(document.querySelector('[data-pane-id=${JSON.stringify(paneId)}]')?.getClientRects().length ?? 0) > 0`);
+  const firstTabSel = `.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]`;
+  await s.key('Z', 'KeyZ', 90, CTRL | SHIFT);
+  await s.waitFor(zoomedOn(p1), 'fix 702: pane 1 zoomed', 3000);
+  expect((await tabAttention(firstTabId)) === null, 'fix 702: zoomed with nothing wanting, the tab on show does not pulse');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+  await waitAttention('needs-input', 'fix 702: the target in hidden pane 2 asks');
+  await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === 'needs-input'`, 'fix 702: the tab on show pulses for the hidden pane', 5000);
+  const zoomedRead = { animation: await tabAnimation(firstTabId), tone: await tabTone(firstTabId), zoomed: await s.evalJs(zoomedOn(p1)), pane2: await paneShown(p2) };
+  expect(zoomedRead.animation === 'attention-pulse' && zoomedRead.tone === 'needs-input' && zoomedRead.zoomed && !zoomedRead.pane2, `fix 702: the tab pulses in the attention tone while the zoom hides pane 2, got ${JSON.stringify(zoomedRead)}`);
+  const firstTabCentre = await centerOf(s, firstTabSel);
+  await s.click(firstTabCentre.x, firstTabCentre.y);
+  await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: a click on the pulsing tab undid the zoom', 3000);
+  await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === undefined`, 'fix 702: the tab stops once pane 2 is on screen', 3000);
+  const unzoomedRead = { focused: await s.evalJs(focusedPaneIs(p1)), pane1: await paneShown(p1), pane2: await paneShown(p2), row: await rowAttention(), title: await titleAttention(), hushed: await rowHushed() };
+  expect(
+    unzoomedRead.focused && unzoomedRead.pane1 && unzoomedRead.pane2 && unzoomedRead.row === 'needs-input' && unzoomedRead.title === 'needs-input' && unzoomedRead.hushed === 'true',
+    `fix 702: the focus stayed on pane 1 and pane 2's ring still pulses, hushed, got ${JSON.stringify(unzoomedRead)}`,
+  );
+  // The control: zoomed on the wanting pane itself nothing is hidden.
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-zoom').click()`);
+  await s.waitFor(zoomedOn(p2), 'fix 702: pane 2 zoomed', 3000);
+  await s.waitFor(focusedPaneIs(p2), 'fix 702: pane 2 focused by its zoom');
+  await sleep(300);
+  expect((await tabAttention(firstTabId)) === null && (await rowAttention()) === 'needs-input', `fix 702: zoomed on the wanting pane the tab does not pulse, got ${JSON.stringify({ tab: await tabAttention(firstTabId), row: await rowAttention() })}`);
+  await s.click(firstTabCentre.x, firstTabCentre.y);
+  await sleep(300);
+  expect(await s.evalJs(zoomedOn(p2)), 'fix 702: a click on the tab with nothing hidden wanting leaves the zoom');
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-zoom').click()`);
+  await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: unzoomed', 3000);
+  await ackSix();
+  await waitClear('fix 702: acked, nothing pulsing');
+  step('M9 fix 702: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show; a click on the tab undid the zoom with the focus kept on pane 1 and pane 2\'s ring still pulsing; zoomed on pane 2 itself, the tab did not pulse and a click left the zoom');
 
   step('PASS');
 } catch (err) {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import type { Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -102,6 +102,20 @@ test('revealStep: outside, waiting, missing or shown in the listing case (M9 fix
   assert.deepEqual(revealStep(failed, file), { kind: 'missing' });
   assert.deepEqual(revealStep(m, 'D:\\elsewhere\\f.txt'), { kind: 'outside' });
   assert.deepEqual(revealStep(m, 'C:\\repo\\x.txt'), { kind: 'shown', row: 'C:\\repo\\x.txt' });
+});
+
+test('relistLanded: a newer listing counts, whoever applied it (M9 fix 707)', () => {
+  const dir = 'C:\\repo\\a';
+  const other = 'C:\\repo\\b';
+  const L0 = list(['x']);
+  const R = list(['x', 'y']);
+  const W = list(['x', 'y']);
+  const O = list(['z']);
+  const before = new Map([[dir, L0], [other, O]]);
+  assert.equal(relistLanded(new Map([[dir, W], [other, O]]), before, [dir]), true);
+  assert.equal(relistLanded(new Map([[dir, R], [other, O]]), before, [dir]), true);
+  assert.equal(relistLanded(new Map([[dir, L0], [other, O]]), before, [dir]), false);
+  assert.equal(relistLanded(new Map([[dir, L0], [other, O]]), before, []), true);
 });
 
 test('revealStep: a file named in another case than the disk opens the listing-cased folders one by one (M9 fix 685)', () => {
@@ -249,6 +263,45 @@ test('filePaneFolders: the parent of every file view across every tab, deduplica
     ],
   };
   assert.deepEqual(filePaneFolders(layout), ['C:\\repo\\src', 'C:\\other']);
+});
+
+test('chatPaneFolders: the transcript folder of every pane on the chat face, a pane shown another session left out (M9 fix 689)', () => {
+  const layout: Layout = {
+    revision: 1,
+    currentTabId: 't1',
+    tabs: [
+      {
+        id: 't1',
+        name: 't1',
+        focusedPaneId: 'p1',
+        root: {
+          kind: 'split',
+          id: 's1',
+          direction: 'row',
+          ratio: 0.5,
+          first: { kind: 'pane', id: 'p1', sessionId: 'a', view: null },
+          second: { kind: 'pane', id: 'p2', sessionId: 'b', view: null },
+        },
+      },
+      { id: 't2', name: 't2', focusedPaneId: 'p3', root: { kind: 'pane', id: 'p3', sessionId: 'c', view: null } },
+      { id: 't3', name: 't3', focusedPaneId: 'p4', root: { kind: 'pane', id: 'p4', sessionId: 'd', view: null } },
+    ],
+  };
+  const sessions = new Map([
+    ['a', { transcriptPath: 'C:/Users/me/.claude/projects/x/a.jsonl' }],
+    ['b', { transcriptPath: 'C:/Users/me/.claude/projects/x/b.jsonl' }],
+    ['c', { transcriptPath: 'C:/Users/me/.claude/projects/y/c.jsonl' }],
+    ['d', { transcriptPath: null }],
+  ]);
+  // p2 was turned to chat on another session; p4 has no transcript yet.
+  const chatPanes = new Map([
+    ['p1', 'a'],
+    ['p2', 'z'],
+    ['p3', 'c'],
+    ['p4', 'd'],
+  ]);
+  assert.deepEqual(chatPaneFolders(layout, chatPanes, sessions), ['C:\\Users\\me\\.claude\\projects\\x', 'C:\\Users\\me\\.claude\\projects\\y']);
+  assert.deepEqual(chatPaneFolders(layout, new Map(), sessions), []);
 });
 
 test('watchOrder puts the root, then the tab folders, then the open folders newest first', () => {

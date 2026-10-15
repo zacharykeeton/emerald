@@ -20,17 +20,17 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'browser-drive-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-browser-drive';
-const { connect, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, startFromEmpty, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, startFromEmpty, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 180 s');
+  console.error('[verify] WATCHDOG: run exceeded 240 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   server?.close();
   setTimeout(() => process.exit(3), 500);
-}, 180000);
+}, 240000);
 
 // The fixture, routed on the path alone so a query reaches the same page.
 server = http.createServer((req, res) => {
@@ -51,6 +51,9 @@ server = http.createServer((req, res) => {
         '<a id="export" href="/export.json" download>Export</a>',
         `<button id="err" onclick="console.error('fixture error one')">Error</button>`,
         '<input id="up" type="file" aria-label="Import">',
+        '<style>#hov:hover { background: rgb(0, 128, 0); }</style>',
+        `<button id="hov" onmouseover="document.getElementById('hovlog').textContent = 'over'" onmouseenter="this.dataset.entered = 'yes'">Hover me</button>`,
+        '<p id="hovlog"></p>',
       ].join('\n'),
     );
   } else if (pathname === '/two') page('Drive fixture two', '<p>two</p>');
@@ -242,6 +245,29 @@ try {
   expect(await activeIsShell(), 'the window keeps the shell textarea focused through (h)');
   step('M9 fix 672: navigate loads a page, the record follows, and a ref from before it is refused');
 
+  // (h2) M9 fix 692: hover answers promptly and the page reads hovered.
+  // Read through the script's own CDP client on the guest, not the
+  // driver's debugger.
+  const hov = refOf(/^@e\d+ button "Hover me"$/);
+  const hoverStarted = Date.now();
+  r = await cli('hover', hov);
+  const hoverMs = Date.now() - hoverStarted;
+  console.log(`[692] hover answered in ${hoverMs} ms`);
+  const hoverLine = logText().split(/\r?\n/).filter((l) => l.includes(`browser: hover on pane ${driven.id.slice(0, 8)} answered`)).pop();
+  console.log(`[692] main.log: ${hoverLine ?? '(no answered line)'}`);
+  expect(r.code === 0 && r.out === `hovering over ${hov} button "Hover me"`, `hover (${said(r)})`);
+  const hovRead = async () => ({
+    bg: await inGuest(g1, `getComputedStyle(document.getElementById('hov')).backgroundColor`),
+    log: await inGuest(g1, `document.getElementById('hovlog').textContent`),
+    entered: await inGuest(g1, `document.getElementById('hov').dataset.entered ?? ''`),
+  });
+  const hovered = await hovRead();
+  console.log(`[692] the page reads ${JSON.stringify(hovered)}`);
+  expect(hoverMs < 3000, `hover answers within 3 s (${hoverMs} ms)`);
+  expect(hovered.bg === 'rgb(0, 128, 0)' && hovered.log === 'over' && hovered.entered === 'yes', `the page reads hovered: its :hover style, mouseover and mouseenter (${JSON.stringify(hovered)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the hover');
+  step('M9 fix 692: hover answers within 3 s and the page reads hovered: its :hover style, mouseover and mouseenter');
+
   // (i) A target=_blank link and a console error, read in events.
   r = await cli('click', blank);
   expect(r.code === 0 && r.out === `clicked ${blank} link "New tab"`, `click the blank link (${said(r)})`);
@@ -325,6 +351,42 @@ try {
   r = await onDefault('resume');
   expect(r.code === 0 && r.out === 'was not paused', `resume when not paused (${said(r)})`);
   step('M9 fix 673: a click and a key of the person\'s pause the driver; emmer browser resume and the Resume button hand it back');
+
+  // (n) M9 fix 693: a fresh page answers a snapshot with no wait for the
+  // page; a pane never registered stays at "has no page yet" past 5 s.
+  const seen = new Set((await browserPanes()).map((p) => p.id));
+  for (let i = 0; i < 5; i++) {
+    r = await cli('open', `${origin}/?n=${i}`);
+    expect(r.code === 0, `open /?n=${i} (${said(r)})`);
+    let fresh = null;
+    const deadlineN = Date.now() + 5000;
+    while (fresh === null && Date.now() < deadlineN) {
+      fresh = (await browserPanes()).find((p) => !seen.has(p.id)) ?? null;
+      if (fresh === null) await sleep(100);
+    }
+    expect(fresh !== null, `a new browser pane for /?n=${i}`);
+    seen.add(fresh.id);
+    const asked = Date.now();
+    for (;;) {
+      r = await cli('--pane', fresh.id, 'snapshot');
+      if (!(r.code === 1 && r.err.includes('has no page yet')) || Date.now() - asked > 5000) break;
+      await sleep(200);
+    }
+    expect(r.code === 0 && r.out.startsWith('page "Drive fixture" '), `the fresh page /?n=${i} answers a snapshot within 5 s (${said(r)})`);
+    const count = (await browserPanes()).length;
+    // Closed as a person would: a click into its address bar, then the chord.
+    const freshBar = `.pane[data-pane-id=${JSON.stringify(fresh.id)}] .browser-address`;
+    const bar = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(freshBar)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.click(bar.x, bar.y);
+    await s.waitFor(`document.activeElement === document.querySelector(${JSON.stringify(freshBar)})`, `the address bar of /?n=${i} holds the keyboard`);
+    await s.key('W', 'KeyW', 87, CTRL | SHIFT);
+    const deadlineC = Date.now() + 5000;
+    while ((await browserPanes()).length !== count - 1 && Date.now() < deadlineC) await sleep(100);
+    expect((await browserPanes()).length === count - 1, `the pane of /?n=${i} closed (${(await browserPanes()).length} browser panes, the focus on ${await s.evalJs(`(() => { const a = document.activeElement; return a === null ? 'nothing' : a.tagName + '.' + a.className; })()`)})`);
+  }
+  const notAt = (from) => logText().split(/\r?\n/).filter((l) => l.includes(`browser guest not registered at ${from}`)).length;
+  console.log(`[693] note: ${notAt('attach')} browser guest not registered at attach lines, ${notAt('dom-ready')} at dom-ready`);
+  step('M9 fix 693: five fresh pages each answer a snapshot without a wait for the page');
 
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[672] window console: ${line}`);
   step('PASS');

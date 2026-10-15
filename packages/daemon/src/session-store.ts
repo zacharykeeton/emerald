@@ -1,8 +1,7 @@
-import fs from 'node:fs';
 import { folderName, isSessionColor, isSessionPhase, isShellId, pickSessionColor, readTask } from '@emerald/shared';
 import type { ContextWindow, KeptScreen, SessionCommit, SessionCommitAgent, SessionConversation, SessionInfo, SessionKind, SessionPhase, SessionSpan, SessionTask, SessionTokens, SessionTouched, ShellId } from '@emerald/shared';
 import type { Logger } from './log.ts';
-import { setAsideBadFile, writeFileAtomic } from './store-file.ts';
+import { readFileRetried, setAsideBadFile, writeFileAtomic } from './store-file.ts';
 
 // What survives a daemon restart about a session. PTYs cannot be carried
 // across processes, so this is the identity and the exit, enough to list the
@@ -153,7 +152,7 @@ export class SessionStore {
   load(): PersistedSession[] {
     let raw: string;
     try {
-      raw = fs.readFileSync(this.filePath, 'utf8');
+      raw = readFileRetried(this.filePath, this.log);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn('could not read sessions file', err);
       return [];

@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { LayoutTab, SessionInfo } from '@emerald/shared';
-import { describeState, findPane, listPanes, markKind, rollup, workingMotion } from '@emerald/shared';
+import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
 import { closeLayoutTab, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
-import { ATTENTION_STATES, attentionState } from './attention-model.ts';
-import type { AttentionState } from './attention-model.ts';
 import { shadeablePanes } from './shade-model.ts';
 import { Menu } from './Menu.tsx';
 import { RenameBox } from './RenameBox.tsx';
@@ -21,9 +19,9 @@ import { useStore } from './store.ts';
 import { PANES, commitsFolder, dirtyMark, isDocument, isPreview, isTranscript, isWhatsNew, tabName } from './tabs-model.ts';
 import { useEditStates } from './file-edits.ts';
 import { useRunningShells } from './rates-store.ts';
-import { closeAllTabs, closeFileTab, closeOtherTabs, liftPanes, moveTabKey, pinFileTab, revealInFiles, shadePanes, showTab, tabOrderFor, useUi } from './ui.ts';
+import { clearZoom, closeAllTabs, closeFileTab, closeOtherTabs, liftPanes, moveTabKey, pinFileTab, revealInFiles, shadePanes, showTab, tabOrderFor, useUi } from './ui.ts';
 import { layoutTabKey, layoutTabOf } from './tab-order.ts';
-import { ARROW_REPEAT_DELAY_MS, ARROW_REPEAT_MS, pageTarget, stripCut, tabMark, wheelStep } from './tab-strip-model.ts';
+import { ARROW_REPEAT_DELAY_MS, ARROW_REPEAT_MS, pageTarget, stripCut, tabMark, tabWanting, wheelStep } from './tab-strip-model.ts';
 import type { StripCut } from './tab-strip-model.ts';
 import { startTabDrag } from './tab-drag.ts';
 
@@ -42,7 +40,7 @@ const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what}
 // mixed, and a tab picked up and moved along the strip lands where it is
 // dropped; a press that does not move is the click it always was.
 export function TabStrip() {
-  const { tabs, tabTitles, attention, tabOrder, sessionDrag } = useUi();
+  const { tabs, tabTitles, attention, tabOrder, sessionDrag, zoomedPaneId } = useUi();
   // M9 fix 248: the files with unsaved edits, for the mark before the name.
   const edits = useEditStates();
   const dirty = new Set([...edits].filter(([, e]) => e.dirty).map(([k]) => k));
@@ -182,10 +180,13 @@ export function TabStrip() {
     </button>
   );
   // A click on a layout tab shows it and comes back to the panes from a
-  // file tab; the daemon's push moves the mark.
+  // file tab; the daemon's push moves the mark. M9 fix 702: a click on
+  // the current tab while its zoom hides a pane that wants someone undoes
+  // the zoom, the focus staying on the pane that was zoomed.
   const show = (tab: LayoutTab) => {
     showTab(PANES);
     if (tab.id !== currentTabId) void showLayoutTab(tab.id).catch(warn('switch tab'));
+    else if (zoomedPaneId !== null && tabWanting(tab, true, zoomedPaneId, sessions, attention.wanting) !== undefined) clearZoom();
   };
   const rename = (tab: LayoutTab, name: string | null) => {
     setRenaming(null);
@@ -195,7 +196,7 @@ export function TabStrip() {
   const layoutTab = (tab: LayoutTab) => {
     const current = tab.id === currentTabId;
     const focusedSession = focusedSessionOf(tab, sessions);
-    const wanting = tabWanting(tab, current && tabs.active === PANES, sessions, attention.wanting);
+    const wanting = tabWanting(tab, current && tabs.active === PANES, current ? zoomedPaneId : null, sessions, attention.wanting);
     const mark = tabMark(tab, sessions, wanting, runningShells);
     return (
       <div
@@ -445,31 +446,6 @@ function HistoryChevrons() {
       {chevron(1)}
     </div>
   );
-}
-
-// M9 fix 42: the tab pulses with the rows of its panes' sessions that
-// want someone, so with several layout tabs the one on show says when a
-// question waits on another. The most urgent state among them, through
-// the folder heading's rollup, is the value, for the colour. The current
-// tab never pulses (M9 fix 69): its pane title already does, and a pulse
-// on the tab a person is looking at points nowhere, so a tab pulses only
-// for a wanting session whose pane is on another tab, and the current
-// tab's mark keeps its working or idle tone. File tabs are not sessions
-// and stay out, but one in front hides the current layout tab's panes
-// as well, so that tab pulses then too (M9 fix 269), as the sidebar's
-// rows read it: on show means current and the panes in front.
-function tabWanting(tab: LayoutTab, onShow: boolean, sessions: ReadonlyMap<string, SessionInfo>, wanting: ReadonlySet<string>): AttentionState | undefined {
-  if (onShow) return undefined;
-  const waiting: SessionInfo[] = [];
-  for (const pane of listPanes(tab)) {
-    const session = pane.sessionId === null ? undefined : sessions.get(pane.sessionId);
-    if (session !== undefined && wanting.has(session.id)) waiting.push(session);
-  }
-  // A stalled session (M9 fix 232) is not a state the rollup ranks: the
-  // tab takes its tone when nothing ranked wants someone.
-  const state = rollup({ key: tab.id, title: tab.name, sessions: waiting })?.state;
-  if (state !== undefined && ATTENTION_STATES.has(state)) return state;
-  return waiting.some((s) => attentionState(s) === 'quiet') ? 'quiet' : state;
 }
 
 // M9 fix 43: the active tab's top line takes the colour of the session

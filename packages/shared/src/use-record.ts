@@ -81,6 +81,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'whats-new', label: "What's new", group: 'keys' },
   { name: 'open-file', label: 'Open a file…', group: 'keys' },
   { name: 'design-mode', label: 'Design Mode', group: 'keys' },
+  { name: 'toggle-chat', label: 'Chat or terminal', group: 'keys' },
   { name: 'pane-split-right', label: 'Split right', group: 'pane-menu' },
   { name: 'pane-split-down', label: 'Split down', group: 'pane-menu' },
   { name: 'pane-zoom', label: 'Focus', group: 'pane-menu' },
@@ -126,6 +127,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'empty-start-claude', label: 'Start a Claude session from an empty pane', group: 'clicks' },
   { name: 'toggle-skin', label: 'Switch the skin', group: 'clicks' },
   { name: 'check-updates', label: 'Check for updates', group: 'clicks' },
+  { name: 'file-launch', label: 'Open a file from Explorer', group: 'clicks' },
   { name: 'cli-open', label: 'emmer open', group: 'cli' },
 ];
 
@@ -142,7 +144,9 @@ export const USE_FRICTION_MS = 3000;
 export type UseLineIn =
   | { ev: 'action'; name: string; from: UseFrom; view?: UseView }
   | { ev: 'view-open'; view: UseView }
-  | { ev: 'view-close'; view: UseView; ms: number };
+  | { ev: 'view-close'; view: UseView; ms: number }
+  // M9 fix 699: the switch's own line, so the report knows when the record was on.
+  | { ev: 'switch'; on: boolean };
 
 const FROM_SET: ReadonlySet<string> = new Set(USE_FROM);
 const VIEW_SET: ReadonlySet<string> = new Set(USE_VIEWS);
@@ -174,6 +178,10 @@ export function useLineOf(raw: unknown): UseLineIn | null {
     const ms = r.ms;
     if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > 2 ** 31) return null;
     return { ev: 'view-close', view: r.view, ms };
+  }
+  if (r.ev === 'switch') {
+    if (typeof r.on !== 'boolean') return null;
+    return { ev: 'switch', on: r.on };
   }
   return null;
 }

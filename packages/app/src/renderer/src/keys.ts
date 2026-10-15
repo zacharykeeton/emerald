@@ -29,7 +29,10 @@ import {
   toggleFiles,
   toggleSidebar,
   toggleZoom,
+  setChatFace,
 } from './ui.ts';
+import { markKind } from '@emerald/shared';
+import { faceOf } from './chat-model.ts';
 
 // Keybindings: the plain chords from M2 to M4 plus a tmux-style prefix.
 // Press the prefix (Ctrl+B unless ~/.emerald/config.json says otherwise) and
@@ -223,6 +226,18 @@ export function runAction(action: Action, from: UseFrom = 'key'): Promise<unknow
       const tab = shownTab();
       const sessionId = tab === null ? null : (findPane(tab, tab.focusedPaneId)?.sessionId ?? null);
       if (sessionId !== null) openReviewTab(sessionId);
+      return Promise.resolve();
+    }
+    // The focused Claude pane's chat view or its terminal (M9 fix 689); a
+    // shell or an empty pane has no chat face.
+    case 'toggle-chat': {
+      const tab = shownTab();
+      const paneId = tab === null ? null : tab.focusedPaneId;
+      const sessionId = tab === null ? null : (findPane(tab, tab.focusedPaneId)?.sessionId ?? null);
+      const session = sessionId === null ? undefined : getState().sessions.get(sessionId);
+      if (paneId !== null && session !== undefined && markKind(session) === 'claude') {
+        setChatFace(paneId, session.id, faceOf(getUiState().chatPanes, paneId, session.id) !== 'chat');
+      }
       return Promise.resolve();
     }
     // The release notes (M9 fix 227), from the palette or the cheat sheet.

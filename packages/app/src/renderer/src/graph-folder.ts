@@ -9,9 +9,9 @@ import { samePath } from './history-model.ts';
 // Claude or a shell started in a folder with no repository shows that
 // folder's own graph (fix 255); else the last folder it had a branch in,
 // then its spawn folder, so a tool call's `cd` into a log or temp folder
-// keeps the repository (fix 114). `spawnCwd` keeps the spelling it was
-// asked with, so the compare folds slashes, case and a trailing separator,
-// and an 8.3 spelling of the spawn folder reads as away.
+// keeps the repository (fix 114). `spawnCwd` is the real spelling since
+// fix 711, as `cwd` and `groupCwd` are; the compare still folds slashes,
+// case and a trailing separator, which costs nothing.
 export function graphFolder(
   session: Pick<SessionInfo, 'kind' | 'claudeSessionId' | 'cwd' | 'groupCwd' | 'spawnCwd' | 'branch'>,
   lastRepo: string | undefined,

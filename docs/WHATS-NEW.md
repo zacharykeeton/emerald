@@ -2,6 +2,34 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 688 to 712, 2026-10-15
+
+Twenty-five fixes, led by the Chat face of a Claude pane, which is the thing to look at first: the session drawn from its transcript as prompts, steps and replies, with a box to type into and the terminal one click away. Beside it, a question in the pane you are answering no longer chimes at you, a pane hidden by Focus pulses its tab, the empty pane gets a close button and a double-click to start, Design Mode's tray docks under a narrow page, dead hook entries are named and fixed, and the Emerald mark now rests on the filled gem `◆`. The daemon goes to level 64, since it now sends one load push a tick in place of a record per session, so the update restarts it as usual.
+
+### Highlights
+
+**Chat.** A Claude pane has a chat button in its title row, and Ctrl+Shift+M does the same: the pane turns from the terminal to a view drawn from the session's transcript, each prompt a bubble and each turn's steps (thinking, every tool call with what it ran and what came back, the reply) on a rail, with a box at the foot that sends to the session and a Stop while it works. A permission question comes as a card with its options as buttons and number keys; a menu the view cannot show, `/model` say, puts a bar over the box with `Show the terminal`. The terminal stays under it, so the same chord brings it straight back. The empty pane's Claude session tile has an `opens on Terminal / Chat` pair for the face a new session starts on, and it is remembered.
+
+**A question where you are already looking stays quiet.** When the pane asking is the one you clicked or typed in during the last ten seconds, there is no chime, flash, notification or pulse; the badge still says needs input.
+
+**Focus no longer hides a question.** A pane hidden by Focus that wants you pulses its layout tab, and a click on the tab undoes the Focus so you can see it.
+
+**The empty pane.** A split's empty pane has a × in its top right corner to close it, which stays put however the pane scrolls. A double-click on the Shell or Claude session tile starts that kind at once in the folder picked below (the first row when none is). The tiles keep their names whole in narrow panes.
+
+**The gem at rest.** Under the Emerald skin a resting Claude's mark is now `◆`, the filled gem the skin is named for, instead of the `✦` sparkle; it still cycles ◇ ◈ ◆ ✦ while working. The Claude tile, the rail's Sessions tab, the history rows and a review note wear it too.
+
+### Details
+
+**Design Mode.** The hint bar says when a comment box has the keys, and Escape or Ctrl+Enter there hands them back to the page without leaving the mode. With no Claude session in the tab the tray's button copies the notes instead. In a browser pane narrower than 600 px the tray sits under the page rather than squeezing it to a sliver. Crops and `emmer browser screenshot` files older than 14 days are cleared at launch.
+
+**Hooks.** `emmer hooks status` names every hook or status line command in Claude's settings that points at a file no longer there, saying whose it is; `emmer hooks install` takes out emerald's own, and the hooks banner offers Fix for them. Another tool's are named and left alone.
+
+**The browser pane.** A click into the address bar selects the whole address. `emmer browser hover` answers promptly and the page reads hovered. A pane opened a moment ago answers `emmer browser snapshot` without `has no page yet`. Closing a browser pane no longer logs an error.
+
+**The usage record.** `emmer usage report` says when the record was on, and Never used covers only that span. A file opened by a double-click in Explorer is recorded apart from `emmer open`.
+
+**Smaller things.** Reveal in Files says Not in the Files rail as soon as the folder's listing lands. A session's folder is kept in its real spelling rather than Windows' short 8.3 form. The daemon tries the sessions file again when Windows refuses the read for a moment.
+
 ## Fixes 666 to 687, 2026-10-14
 
 Twenty-two fixes, most of them on the browser pane, which is the thing to look at first: a Browser tile in the empty pane, an address bar that takes a bare host or a search, the page kept across a split, the app's keys working from a page, Claude driving the page with `emmer browser`, and Design Mode sending an element of the page to a Claude session. Beside those, a usage record of how you use emerald, off until you turn it on, and a sweep of small fixes to Reveal in Files, the editor and mermaid diagrams. The app's icon is the gem alone now. The daemon goes to level 63, since it now relays `emmer browser` to the window; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.

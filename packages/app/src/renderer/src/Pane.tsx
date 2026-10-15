@@ -26,6 +26,8 @@ import { TasksPopover, TasksReading } from './TasksPopover.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { TurnStateAnchor } from './TurnCard.tsx';
 import { FindBar } from './FindBar.tsx';
+import { ChatView } from './ChatView.tsx';
+import { faceOf } from './chat-model.ts';
 import { terminalMayHandle } from './keys.ts';
 import { CTRL_V, enterSequence, isCopyKey, isModifierKey, isPasteKey, plainKeyFor } from './keys-model.ts';
 import { Menu } from './Menu.tsx';
@@ -62,7 +64,7 @@ import { RollingFigure } from './RollingFigure.tsx';
 import { HushButton } from './HushButton.tsx';
 import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
-import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPane, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
+import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPane, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
   paneId: string;
@@ -107,7 +109,19 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // This session's output samples alone (M9 fix 354), for the mark.
   const rate = useRates(sessionId);
   const session = sessions.get(sessionId ?? '');
-  const { pickerPaneId, zoomedPaneId, sessionDrag, attention, shadedPanes, autoShaded, shadeAfter, splitKind, fontSizes, copyOnSelect } = useUi();
+  const { pickerPaneId, zoomedPaneId, sessionDrag, attention, shadedPanes, autoShaded, shadeAfter, splitKind, fontSizes, copyOnSelect, chatPanes } = useUi();
+  // The face (M9 fix 689): a Claude session's pane shows its chat view or
+  // its terminal; a shell, an empty pane and an unknown session have only
+  // the terminal. A pane shown another session leaves the chat set, so a
+  // session put back opens on the terminal.
+  const claudePane = session !== undefined && markKind(session) === 'claude';
+  const face = claudePane && faceOf(chatPanes, paneId, sessionId) === 'chat' ? 'chat' : 'terminal';
+  const storedChat = chatPanes.get(paneId);
+  useEffect(() => {
+    // Not on an empty pane: startClaudeIn turns a pane to chat as it
+    // fills it, and the layout's push can land after that.
+    if (storedChat !== undefined && sessionId !== null && storedChat !== sessionId) setChatFace(paneId, storedChat, false);
+  }, [storedChat, sessionId, paneId]);
   // The title bar pulses with the sidebar row while the session waits for
   // someone (attention-model.ts); the value is the state, for the colour.
   const wanting = sessionId !== null && attention.wanting.has(sessionId) && session !== undefined ? attentionState(session) : undefined;
@@ -331,6 +345,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       data-color={session?.color ?? undefined}
       data-flash={flashing || undefined}
       data-shaded={shaded || undefined}
+      data-face={face === 'chat' ? 'chat' : undefined}
       style={session === undefined ? undefined : colorStyle(session)}
       onMouseDownCapture={onMouseDown}
       onContextMenu={onContextMenu}
@@ -442,7 +457,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
               Resume
             </button>
           )}
-          <PaneActions paneId={paneId} onlyPane={onlyPane} session={session} shaded={shaded} folder={session?.cwd ?? null} />
+          <PaneActions paneId={paneId} onlyPane={onlyPane} session={session} shaded={shaded} folder={session?.cwd ?? null} face={claudePane ? face : undefined} />
         </div>
       )}
       {menu !== null && (
@@ -495,7 +510,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       {sessionId === null ? (
         <EmptyPane paneId={paneId} onDone={closePicker} showSplits onlyPane={onlyPane} />
       ) : (
-        <TerminalView paneId={paneId} sessionId={sessionId} focused={focused && !pickerOpen} shaded={shaded} autoShade={autoShade} wanting={wanting} figure={figure} />
+        <TerminalView paneId={paneId} sessionId={sessionId} focused={focused && !pickerOpen} shaded={shaded} autoShade={autoShade} wanting={wanting} figure={figure} face={face} />
       )}
       {sessionId !== null && pickerOpen && (
         <div className="picker-overlay">
@@ -548,6 +563,27 @@ function ZoomIcon({ zoomed }: { zoomed: boolean }) {
         <path d="M4.5 4.5h7v7h-7z" fill="currentColor" stroke="none" />
       ) : (
         <path d="M6 6h4v4H6z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}
+
+// What a click on the face button gives (M9 fix 689): a terminal (a
+// rounded box with a prompt and a cursor) while on the chat, a speech
+// bubble with two lines while on the terminal.
+function FaceIcon({ face }: { face: 'terminal' | 'chat' }) {
+  return (
+    <svg className="pane-face-icon" viewBox="0 0 16 16" width={13} height={13} aria-hidden="true">
+      {face === 'chat' ? (
+        <>
+          <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M4.5 6l2 2-2 2M8 10.5h3.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      ) : (
+        <>
+          <path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H8l-3 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+          <path d="M4.5 5.5h7M4.5 8h5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </>
       )}
     </svg>
   );
@@ -697,7 +733,7 @@ function schemeMenuItems(state: ReturnType<typeof useScheme>, session: SessionIn
 // Hide takes the pane away and leaves the session
 // running; × kills it. The mousedown is swallowed so the terminal keeps
 // keyboard focus.
-export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = false }: { paneId: string; onlyPane: boolean; session: SessionInfo | undefined; shaded?: boolean | undefined; folder: string | null; view?: boolean }) {
+export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = false, face }: { paneId: string; onlyPane: boolean; session: SessionInfo | undefined; shaded?: boolean | undefined; folder: string | null; view?: boolean; face?: 'terminal' | 'chat' | undefined }) {
   const { zoomedPaneId, splitKind } = useUi();
   const zoomed = zoomedPaneId === paneId;
   const last = folder === null ? lastFolder() : null;
@@ -719,6 +755,18 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
   };
   return (
     <span className="pane-title-actions" onMouseDown={(ev) => ev.preventDefault()}>
+      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with hide and close at the seventh level; the chord stays. */}
+      {face !== undefined && session !== undefined && (
+        <button
+          className="pane-face-toggle"
+          data-face={face}
+          aria-label={face === 'chat' ? 'Show the terminal' : 'Show the chat'}
+          title={`${face === 'chat' ? 'Show the terminal' : 'Show the chat'} (${plainKeyFor('toggle-chat')})`}
+          onClick={() => setChatFace(paneId, session.id, face !== 'chat')}
+        >
+          <FaceIcon face={face} />
+        </button>
+      )}
       <button
         className="pane-split-right"
         title={`Split right, ${where} (${plainKeyFor('split-vertical')})`}
@@ -809,7 +857,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
 // follows in the same commit adopts it into the new host. React runs every
 // unmount cleanup before any mount effect in one commit, so the handle is
 // there for the re-mount; a pane that is truly gone disposes on the timer.
-function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, figure }: { paneId: string; sessionId: string; focused: boolean; shaded: boolean; autoShade: boolean; wanting: AttentionState | undefined; figure: RunningFigure | null }) {
+function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, figure, face }: { paneId: string; sessionId: string; focused: boolean; shaded: boolean; autoShade: boolean; wanting: AttentionState | undefined; figure: RunningFigure | null; face: 'terminal' | 'chat' }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   // Fits the terminal to its host and tells the PTY; set once the terminal is open.
@@ -992,8 +1040,9 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       return;
     }
     if (shaded) shadeRef.current?.focus();
-    else termRef.current?.focus();
-  }, [focused, sessionId, shaded, autoShade, paneId]);
+    // The chat face's box takes the keyboard itself (ChatView).
+    else if (face !== 'chat') termRef.current?.focus();
+  }, [focused, sessionId, shaded, autoShade, paneId, face]);
 
   const term = termRef.current;
   return (
@@ -1008,6 +1057,8 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       }}
     >
       <div className="term-host" ref={hostRef} data-scheme={scheme.name} style={{ '--pane-bg': scheme.background } as CSSProperties} />
+      {/* M9 fix 689: the chat face over the terminal, which stays mounted and hidden under it; inside .term-wrap so the shade covers both. */}
+      {face === 'chat' && session !== undefined && <ChatView paneId={paneId} session={session} focused={focused} shaded={shaded} />}
       {findSeq !== undefined && term !== null && search !== null && <FindBar paneId={paneId} term={term} search={search} focusSeq={findSeq} />}
       {shaded && session !== undefined && <PaneShade paneId={paneId} session={session} auto={autoShade} wanting={wanting} shadeRef={shadeRef} />}
       {/* M9 fix 397: the counter is the lid's own while the shade is

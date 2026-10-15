@@ -15,12 +15,28 @@ export function hooksProblem(status: HooksStatus): string | null {
   const total = status.installed.length + status.missing.length;
   if (status.installed.length === 0) return 'Claude Code hooks are not installed, so emerald cannot see what its sessions are doing.';
   if (status.missing.length > 0) return `Only ${status.installed.length} of ${total} Claude Code hooks are installed, so some session states will be missed.`;
+  if (status.deadOurs > 0) return deadProblem(status.deadOurs);
   if (!status.scriptPresent) return 'The emerald hook script is missing, so the Claude Code hooks have nothing to run.';
   if (status.scriptStale) return 'The emerald hook script is older than the one this version ships.';
   if (!status.statusLine) return 'The Claude Code status line is not set to report the model and context fill to emerald.';
   if (!status.skill) return 'The emmer-cli skill, which tells a Claude session how to drive emerald, is not installed or is out of date.';
   return 'The Claude Code hooks need attention.';
 }
+
+// Old entries of emerald's own pointing at files no longer there (M9 fix
+// 710), from an old home or an old install; anyone else's never reach the
+// banner, since its one button cannot clear them.
+export function deadProblem(n: number): string {
+  return n === 1 ? "1 hook in Claude's settings points at a missing file." : `${n} hooks in Claude's settings point at missing files.`;
+}
+
+// The banner shows the dead entries' sentence, so its button reads Fix.
+export function isDeadProblem(status: HooksStatus): boolean {
+  return !status.complete && status.installed.length > 0 && status.missing.length === 0 && status.deadOurs > 0;
+}
+
+// The hint beside Fix, in INSTALL_HINT's place.
+export const FIX_HINT = "Fix takes out emerald's old entries and installs the current ones.";
 
 // The hint after the problem. With the longest problem it fits the banner on
 // one line at the window's default 1200px with a few words to spare (M9 fix
@@ -32,15 +48,18 @@ export const INSTALL_HINT = "Install edits Claude Code's settings so new session
 // Install is offered no more until the minute passes.
 export type BannerPhase = 'prompt' | 'installing' | 'failed' | 'fighting';
 
-export function installLabel(phase: BannerPhase): string {
+// `fix` (M9 fix 710): the problem is emerald's dead entries, and the same
+// install is offered as Fix.
+export function installLabel(phase: BannerPhase, fix = false): string {
   if (phase === 'installing') return 'Installing';
   if (phase === 'failed') return 'Retry';
-  return 'Install hooks';
+  return fix ? 'Fix' : 'Install hooks';
 }
 
-export function bannerHint(phase: BannerPhase, error: string): string {
+export function bannerHint(phase: BannerPhase, error: string, fix = false): string {
   if (phase === 'fighting') return OTHER_WRITER;
-  return phase === 'failed' ? `Install failed: ${error}` : INSTALL_HINT;
+  if (phase === 'failed') return `Install failed: ${error}`;
+  return fix ? FIX_HINT : INSTALL_HINT;
 }
 
 // The Test button (M9 fix 606) and what it found, each shorter than

@@ -14,6 +14,14 @@ test('useLineOf keeps a good line of each ev', () => {
   assert.deepEqual(useLineOf({ ev: 'view-close', view: 'file-tab', ms: 1200 }), { ev: 'view-close', view: 'file-tab', ms: 1200 });
 });
 
+test('useLineOf keeps the switch line and nothing else of it', () => {
+  assert.deepEqual(useLineOf({ ev: 'switch', on: true }), { ev: 'switch', on: true });
+  assert.deepEqual(useLineOf({ ev: 'switch', on: false }), { ev: 'switch', on: false });
+  assert.equal(useLineOf({ ev: 'switch' }), null);
+  assert.equal(useLineOf({ ev: 'switch', on: 'yes' }), null);
+  assert.deepEqual(useLineOf({ ev: 'switch', on: true, path: 'C:/x' }), { ev: 'switch', on: true });
+});
+
 test('useLineOf refuses an unknown ev, name, from or view', () => {
   assert.equal(useLineOf({ ev: 'typed', name: 'split-vertical', from: 'key' }), null);
   assert.equal(useLineOf({ ev: 'action', name: 'rm -rf', from: 'key' }), null);

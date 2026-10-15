@@ -23,7 +23,7 @@ import { useSkin } from './skin.ts';
 // the star two pixels smaller than its cell, and a 48px face for the
 // shade over a pane (M63), the same mark read across a room; the CSS
 // sizes the glyphs to match.
-// Under the Emerald skin (M9 fix 570) the still is a ✦ and the frames ◇ ◈ ◆ ✦
+// Under the Emerald skin (M9 fix 570) the still is a ◆ and the frames ◇ ◈ ◆ ✦
 // in Segoe UI Symbol, on the same keyframe and clock, with data-glyphs="gem"
 // on the cell for the CSS. The four are drawn as SVG, not typeset (see GemFrame).
 export type MarkSize = 'row' | 'unit' | 'heading' | 'title' | 'face';

@@ -24,6 +24,7 @@ import type { SidebarFilter } from './sidebar-filter-model.ts';
 import { isShowOffscreen } from './show-model.ts';
 import type { ShowOffscreen } from './show-model.ts';
 import { WHATS_NEW_SEEN_KEY, shouldOpenWhatsNew, whatsNewStamp } from './whats-new-model.ts';
+import { parseChatPanes, serializeChatPanes } from './chat-model.ts';
 
 // Renderer-only state that the daemon has no business knowing: which pane has
 // the session picker or the new-session dialog open, and how the sidebar is
@@ -177,6 +178,11 @@ export interface UiState {
   // The shaded panes the idle timer shaded rather than a person (M63):
   // a focus, a click or a key into one lifts it. Per window.
   autoShaded: ReadonlySet<string>;
+  // The panes showing the chat view rather than the terminal (M9 fix
+  // 689), each with the session it was turned to chat on: a pane shown
+  // another session is on the terminal at once. Kept in localStorage as
+  // the shade is; pruned as panes close.
+  chatPanes: ReadonlyMap<string, string>;
   // Minutes a pane's session sits idle, done or exited with no key into
   // the pane before the shade comes down by itself (M63); 0 for never,
   // the default. Kept in localStorage.
@@ -288,6 +294,8 @@ const TEAM_KEY = 'emerald.teamUnfolded';
 const SHOW_OFFSCREEN_KEY = 'emerald.showOffscreen';
 const ACTIVITY_FOLDED_KEY = 'emerald.activityFolded';
 const SHADED_KEY = 'emerald.shadedPanes';
+const CHAT_KEY = 'emerald.chatPanes';
+const CLAUDE_OPENS_ON_KEY = 'emerald.claudeOpensOn';
 const SHADE_AFTER_KEY = 'emerald.shadeAfter';
 const COPY_ON_SELECT_KEY = 'emerald.copyOnSelect';
 const SPLIT_KIND_KEY = 'emerald.splitKind';
@@ -335,6 +343,7 @@ let state: UiState = {
   showOffscreen: loadShowOffscreen(),
   shadedPanes: loadIds(SHADED_KEY),
   autoShaded: new Set(),
+  chatPanes: loadChatPanes(),
   shadeAfter: loadShadeAfter(),
   copyOnSelect: loadCopyOnSelect(),
   splitKind: loadSplitKind(),
@@ -658,6 +667,42 @@ export function pruneShaded(livePaneIds: ReadonlySet<string>): void {
   saveShaded();
 }
 
+// The chat face (M9 fix 689): a pane on the chat view or back on its
+// terminal, kept against the session it shows.
+export function setChatFace(paneId: string, sessionId: string, chat: boolean): void {
+  const has = state.chatPanes.get(paneId) === sessionId;
+  if (has === chat && (chat || !state.chatPanes.has(paneId))) return;
+  const chatPanes = new Map(state.chatPanes);
+  if (chat) chatPanes.set(paneId, sessionId);
+  else chatPanes.delete(paneId);
+  setState({ ...state, chatPanes });
+  saveChatPanes();
+}
+
+// A closed pane takes its face with it, as pruneShaded does the shade.
+export function pruneChatPanes(livePaneIds: ReadonlySet<string>): void {
+  if ([...state.chatPanes.keys()].every((id) => livePaneIds.has(id))) return;
+  const chatPanes = new Map([...state.chatPanes].filter(([id]) => livePaneIds.has(id)));
+  setState({ ...state, chatPanes });
+  saveChatPanes();
+}
+
+function loadChatPanes(): Map<string, string> {
+  try {
+    return parseChatPanes(localStorage.getItem(CHAT_KEY));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveChatPanes(): void {
+  try {
+    localStorage.setItem(CHAT_KEY, serializeChatPanes(state.chatPanes));
+  } catch {
+    // The faces just will not survive the restart.
+  }
+}
+
 export function setShadeAfter(minutes: number): void {
   const shadeAfter = Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
   if (shadeAfter === state.shadeAfter) return;
@@ -744,6 +789,24 @@ export function rememberEmptyPaneKind(kind: EmptyKind): void {
     localStorage.setItem(EMPTY_PANE_KIND_KEY, kind);
   } catch {
     // A failed write just means the default does not follow.
+  }
+}
+
+// The face a Claude session started from the empty pane opens on (M9 fix
+// 689), the `opens on` pair's pick; the terminal unless Chat was picked.
+export function loadClaudeOpensOn(): 'terminal' | 'chat' {
+  try {
+    return localStorage.getItem(CLAUDE_OPENS_ON_KEY) === 'chat' ? 'chat' : 'terminal';
+  } catch {
+    return 'terminal';
+  }
+}
+
+export function rememberClaudeOpensOn(face: 'terminal' | 'chat'): void {
+  try {
+    localStorage.setItem(CLAUDE_OPENS_ON_KEY, face);
+  } catch {
+    // A failed write just means the pick does not follow.
   }
 }
 
@@ -1344,11 +1407,12 @@ function loadTabOrder(): string[] {
 }
 
 // Runs the attention model over the session list; returns the sessions that
-// joined the set, for the chime.
-export function observeAttention(sessions: Iterable<{ id: string; state: SessionState; stale?: boolean }>): readonly string[] {
-  const { model, arrived } = observe(state.attention, sessions);
+// joined the set, for the chime, and the ones settled as they arrived
+// because the person was answering in their pane (M9 fix 701).
+export function observeAttention(sessions: Iterable<{ id: string; state: SessionState; stale?: boolean }>, answering: string | null = null): { arrived: readonly string[]; settled: readonly string[] } {
+  const { model, arrived, settled } = observe(state.attention, sessions, answering);
   if (model !== state.attention) setState({ ...state, attention: model });
-  return arrived;
+  return { arrived, settled };
 }
 
 // One session looked at (M9 fix 189): its pulse stops and the others'
@@ -1408,7 +1472,11 @@ export function setAttentionNotify(attentionNotify: boolean): void {
 }
 
 export function setUsageRecord(usageRecord: boolean): void {
+  const changed = usageRecord !== state.usageRecord;
+  // M9 fix 699: the switch's own line marks when the record was on, so the report can tell a feature nobody used from a record that was off. Sent while the record is on: after the flip turning on, before it turning off.
+  if (changed && !usageRecord) window.emerald.useRecord.write({ ev: 'switch', on: false });
   setState({ ...state, usageRecord });
+  if (changed && usageRecord) window.emerald.useRecord.write({ ev: 'switch', on: true });
   saveAttentionSettings();
 }
 

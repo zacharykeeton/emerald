@@ -65,7 +65,7 @@ export function sendDesign(paneId: string, notes: DesignNote[], numbered: boolea
   const target = designTargetOf(paneId);
   if (target === null) {
     void window.emerald.clipboard.write(block);
-    flashCornerNote('No Claude session to send to in this tab; copied the note instead');
+    flashCornerNote(`No Claude session to send to in this tab; copied the ${notes.length === 1 ? 'note' : 'notes'} instead`);
     return false;
   }
   typeInto(target, bracketedPaste(block));

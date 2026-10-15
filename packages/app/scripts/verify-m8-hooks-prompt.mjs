@@ -1,7 +1,7 @@
 // M8 acceptance: the hooks banner. Runs the built app under a private
 // EMERALD_HOME, EMERALD_PIPE and CLAUDE_SETTINGS (so the real settings file is
 // never touched), seeded with a foreign hook and a permission that must
-// survive. Five launches: the banner offers to install and Install writes
+// survive. Six launches: the banner offers to install and Install writes
 // all 16 entries plus the script and the emmer-cli skill; a relaunch shows
 // no banner; with the skill edited the banner names it and Install puts
 // the shipped one back; with the script deleted the banner names that and
@@ -12,6 +12,7 @@
 // the installed hook to the daemon, the bytes put back lower it, and a
 // record of three installs with the file rewritten since shows the other
 // writer's phase with Install disabled.
+// M9 fix 710: entries of an old home pointing at missing files raise the banner with Fix, which takes them out and leaves a stranger's.
 // The private daemon the app autostarts is stopped at the end.
 // Logs to %TEMP%\emerald-verify\hooks-prompt.log, or hooks-prompt-<basename of the home>.log when EMERALD_HOME is given; runs on the EMERALD_HOME and EMERALD_PIPE it is given, else its own pair, and refuses a home outside the temp folder (M9 fix 641). Build first (npm run build,
 // then npm run build -w @emerald/app). Run: npm run verify:hooks-prompt -w @emerald/app
@@ -186,6 +187,39 @@ try {
   await s.waitFor(`!document.querySelector('.hooks-banner')`, 'banner gone after the reinstall', 15000);
   expect(!fs.readFileSync(skill, 'utf8').includes('edited'), 'the reinstall wrote the shipped skill back');
   await close(s);
+
+  // 2c. M9 fix 710: entries of an old home pointing at missing files raise
+  // the banner with Fix, which takes them out and leaves a stranger's (the
+  // seed's C:/other/tool.cmd, dead too, is named by the CLI and never counted).
+  {
+    const fwdHome = home.split(path.sep).join('/');
+    const f = readSettings();
+    const oldHook = `"${fwdHome}/old-home/hooks/claude-hook.cmd"`;
+    const oldTool = `"${fwdHome}/old-tool/hook.cmd"`;
+    f.hooks.Stop.push({ hooks: [{ type: 'command', command: oldHook }] });
+    f.hooks.SessionStart.push({ hooks: [{ type: 'command', command: oldHook }] });
+    f.hooks.Stop.push({ hooks: [{ type: 'command', command: oldTool }] });
+    fs.writeFileSync(settings, JSON.stringify(f, null, 2));
+    s = await open(s.port + 1);
+    await s.waitFor(
+      `(() => { const b = document.querySelector('.hooks-banner'); const i = document.querySelector('.hooks-install'); return !!b && b.dataset.phase === 'prompt' && b.textContent.includes("2 hooks in Claude's settings point at missing files.") && b.textContent.includes("Fix takes out emerald's old entries and installs the current ones.") && !!i && i.textContent === 'Fix'; })()`,
+      'the banner names two dead entries of ours and offers Fix',
+      10000,
+    );
+    const line2c = await oneLine(s);
+    expect(line2c.width <= 1200 && line2c.banner - (line2c.install + 8) <= 4, `the banner is one line with the dead entries' sentence: ${JSON.stringify(line2c)}`);
+    await s.screenshot('m8-hooks-dead.png');
+    await s.evalJs(`document.querySelector('.hooks-install').click()`);
+    await s.waitFor(`!document.querySelector('.hooks-banner')`, 'banner gone after Fix', 15000);
+    const fixed = readSettings();
+    const stop = fixed.hooks.Stop.flatMap((g) => g.hooks ?? []).map((h) => h.command);
+    expect(!JSON.stringify(fixed).includes('old-home'), 'Fix took out every entry of the old home');
+    expect(stop.includes(oldTool) && stop.includes('C:/other/tool.cmd'), "the stranger's dead entries stay on Stop");
+    const ourScript = script.split(path.sep).join('/').toLowerCase();
+    const oursNow = Object.keys(fixed.hooks).filter((e) => (fixed.hooks[e] ?? []).some((g) => (g.hooks ?? []).some((h) => String(h.command).toLowerCase().includes(ourScript))));
+    expect(oursNow.length === 16, `16 events carry the hook under the private home after Fix, got ${oursNow.length}`);
+    await close(s);
+  }
 
   // 3. Script deleted: the banner says so, Not now hides it and writes nothing.
   fs.unlinkSync(script);

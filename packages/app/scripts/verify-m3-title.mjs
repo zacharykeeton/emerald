@@ -100,6 +100,12 @@ try {
   // tooltip used to carry it; the word itself has no title attribute.
   const stateSel = `[data-pane-id=${JSON.stringify(p1.id)}] .pane-state`;
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(stateSel)}).getAttribute('title')`)) === null, 'the state word carries no tooltip');
+  // Since M9 fix 689 a Claude pane's title carries the chat button, and at
+  // the harness's 339 px pane the squeeze reaches level 5, where the state
+  // word is display: none; the hover reads at a 1500 px viewport and the
+  // override is cleared after.
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 900, deviceScaleFactor: 0, mobile: false });
+  await s.waitFor(`(document.querySelector(${JSON.stringify(stateSel)})?.getBoundingClientRect().width ?? 0) > 0`, 'the state word shows at 1500 px', 5000);
   const stateAt = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(stateSel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stateAt.x, y: stateAt.y });
   const stateCardSel = `.turn-popover [data-part="state"] .turn-card-text`;
@@ -109,6 +115,7 @@ try {
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`!document.querySelector('.turn-popover')`, 'Escape closes the card');
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
+  await s.send('Emulation.clearDeviceMetricsOverride', {});
 
   await post({ hook_event_name: 'Notification', notification_type: 'agent_needs_input' });
   await waitTitle(s, p1.id, 'needs input: a question', 'question title (the reason in words, M9 fix 123)');

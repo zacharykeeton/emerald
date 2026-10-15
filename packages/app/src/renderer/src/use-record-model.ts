@@ -1,5 +1,5 @@
 import { listPanes } from '@emerald/shared';
-import type { Layout, LayoutNode, LayoutTab, UseLineIn, UseView } from '@emerald/shared';
+import type { Layout, LayoutNode, LayoutTab, UseFrom, UseLineIn, UseView } from '@emerald/shared';
 import type { PaneMenuRun } from './pane-menu-model.ts';
 import { PANES, activityWindow, commitsFolder, isDocument, isTranscript, isWhatsNew, tabKey } from './tabs-model.ts';
 import type { TabsModel } from './tabs-model.ts';
@@ -135,4 +135,10 @@ export function createTurnGate(schedule: (fn: () => void) => void): { take(): bo
       return true;
     },
   };
+}
+
+// A file from outside the window (M9 fix 700): a launch with one (a
+// double-click in Explorer) is recorded apart from emmer open.
+export function outsideOpenUse(extra: { launch?: boolean }): { name: 'file-launch' | 'cli-open'; from: UseFrom } {
+  return extra.launch === true ? { name: 'file-launch', from: 'click' } : { name: 'cli-open', from: 'cli' };
 }

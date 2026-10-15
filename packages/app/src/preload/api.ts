@@ -75,6 +75,8 @@ export interface HooksStatus {
   // fix 606): another program, or a second emerald, keeps taking the
   // hooks out.
   fighting: boolean;
+  // Entries of emerald's own, by their path's shape, in Claude's settings that point at files no longer there (M9 fix 710); Fix takes them out.
+  deadOurs: number;
 }
 
 export interface HooksInstallResult {
@@ -259,6 +261,8 @@ export interface FilesApi {
 // the id the renderer answers the daemon with, both absent on a launch
 // with a file or a plain open.
 export interface OpenExtra {
+  // M9 fix 700: the file came from a launch, not emmer open.
+  launch?: boolean;
   scheme?: string | null;
   openId?: number;
   // The session whose pane the file goes beside (M9 fix 376).

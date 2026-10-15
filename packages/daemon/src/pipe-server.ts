@@ -14,7 +14,7 @@ import type { OutputSink } from './pty-session.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
 import type { ConflictWatch } from './conflicts.ts';
-import { SessionError, SessionManager, type SpawnRequest } from './session-manager.ts';
+import { SessionError, SessionManager, type LoadTick, type SpawnRequest } from './session-manager.ts';
 import { emeraldHomeOf } from '@emerald/shared/pipe-name';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -137,6 +137,11 @@ export const FILE_OPEN_ANSWER_LEVEL = 58;
 // (M9 fix 672); an older window never gets the push.
 export const BROWSER_DRIVE_LEVEL = 63;
 
+// The first app level whose store appends a sessions.load push (M9 fix
+// 703); an older window gets each sampled session's record as
+// session.changed.
+export const LOAD_PUSH_LEVEL = 64;
+
 // Grey, on its own line, like the renderer's own exit note.
 const SCROLLBACK_LOST_NOTE = '\x1b[90m[scrollback lost: this session ended before emmerd restarted]\x1b[0m\r\n';
 
@@ -221,6 +226,7 @@ export class PipeServer {
     // topic since it is the sidebar's rows and the graph's lanes.
     this.opts.conflicts?.on('changed', (report: ConflictReport) => this.broadcast('sessions', { type: 'conflicts.changed', report }));
     manager.on('changed', (info: SessionInfo) => this.broadcast('sessions', { type: 'session.changed', session: info }));
+    manager.on('load', (tick: LoadTick) => this.broadcastLoad(tick));
     // The client that made the change hears it too, so a renderer can treat
     // the push as the single source of truth and ignore the reply body.
     layouts.on('changed', (layout: Layout) => this.broadcast('layout', { type: 'layout.changed', layout }));
@@ -434,6 +440,19 @@ export class PipeServer {
   private broadcast(topic: Topic, msg: ServerMessage): void {
     for (const client of this.clients) {
       if (client.subscribed(topic)) client.send(msg);
+    }
+  }
+
+  // A load tick (M9 fix 703): one sessions.load to a window at
+  // LOAD_PUSH_LEVEL, each sampled record to an older window as before, and
+  // nothing to a CLI, whose wait and prompt read only the state, which a
+  // load tick never moves.
+  private broadcastLoad(tick: LoadTick): void {
+    const push: ServerMessage = { type: 'sessions.load', at: tick.at, samples: tick.samples };
+    for (const client of this.clients) {
+      if (!client.isApp || !client.subscribed('sessions')) continue;
+      if (client.appLevel >= LOAD_PUSH_LEVEL) client.send(push);
+      else for (const session of tick.sessions) client.send({ type: 'session.changed', session });
     }
   }
 }
