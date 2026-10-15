@@ -262,6 +262,32 @@ try {
   r = emerald('help');
   expect(r.code === 0 && /^  open +open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane \(the one on the tab in front, else the first in tab order\); --scheme picks the file's own colour scheme; a URL opens a browser pane$/m.test(r.out), 'help lists open with its summary');
   log('M9 fix 341: emmer open answers exit 69 with no window, its usage on no path, and is listed by help');
+  // M9 fix 672: emmer browser's usage on no verb, an unknown verb, no
+  // browser pane on the tab and no such pane; none opens a pane, so no
+  // later read of the layout moves.
+  expect(/^  browser +drive the page in a browser pane: a snapshot of its controls, a click, a fill, a key, a screenshot \(emmer help browser lists the verbs\)$/m.test(r.out), 'help lists browser with its summary');
+  r = emerald('browser');
+  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot {2,}the page's controls, each with a ref \(@e1\), its role, name, value and state$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('browser', 'frob');
+  expect(r.code === 64 && r.err.split('\n')[0] === 'emmer: unknown verb "frob"; emmer help browser lists them', `browser frob: unknown verb, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('browser', 'snapshot');
+  expect(r.code === 1 && /^emmer: no browser pane on tab .+; emmer browser open <url> makes one$/m.test(r.err), `browser snapshot with no browser pane: exit 1 and the line (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('browser', 'snapshot', '--pane', 'nosuchpane');
+  expect(r.code === 1 && r.err.trim() === 'emmer: no pane nosuchpane', `browser snapshot --pane nosuchpane: exit 1 and the line (${r.code}: ${JSON.stringify(r.err)})`);
+  log("M9 fix 672: emmer browser's usage, an unknown verb, no browser pane and no such pane, and help's summary");
+  // M9 fix 677: emmer usage report reads files only. This home has the
+  // night's four applied hook lines ten days back and no usage.jsonl.
+  r = emerald('usage');
+  expect(r.code === 64 && /missing action/.test(r.err) && /usage: emmer usage report \[--days <n>\]/.test(r.err), `usage with no action: exit 64 and the synopsis (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('usage', 'report', '--days', '0');
+  expect(r.code === 64 && r.err.includes('--days wants a whole number from 1 to 365, got 0'), `usage report --days 0: exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('usage', 'report');
+  expect(r.code === 0 && /^# Emerald usage, the last 30 days \(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\)$/m.test(r.out), `usage report: exit 0 and the heading (${r.code}: ${JSON.stringify(r.out.slice(0, 200))})`);
+  expect(r.out.includes("Nothing recorded yet: the usage record is off until it is turned on from the speaker button's right-click menu (Usage record)."), 'usage report says nothing is recorded yet');
+  expect(r.out.includes(`| ${awayKey} | 1 | 1 | 4 |`), `usage report counts the night's day: one session, one project, four lines (${JSON.stringify(r.out)})`);
+  r = emerald('help');
+  expect(/^  usage +a markdown digest of how emerald is used, from the usage record and the hook log$/m.test(r.out), 'help lists usage with its summary');
+  log('M9 fix 677: emmer usage report answers with no record, refuses a bad --days, and is listed by help');
   const awayJson = emeraldJson('activity', '--day', awayKey, '--json');
   const nightRow = (awayJson.json?.sessions ?? []).find((s) => s.sessionId === 'night');
   expect(awayJson.code === 0 && nightRow?.debt.length === 1 && nightRow.debt[0].kind === 'unread' && nightRow.debt[0].from === awayAt(9, 1) && nightRow.debt[0].to === awayAt(9, 5), `activity --day --json: the overnight done reads as the four minutes from the return plus the grace (${JSON.stringify(nightRow?.debt)})`);

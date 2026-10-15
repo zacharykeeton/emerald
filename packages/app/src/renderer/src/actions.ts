@@ -46,6 +46,7 @@ import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
 import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
 import { normalizePath } from './files-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
+import { recordUse } from './use-record.ts';
 
 // Layout and session actions shared by the sidebar, the picker and the
 // keybindings, so the rules live in one place.
@@ -79,6 +80,7 @@ export function showSession(sessionId: string, paneId: string | null = null): Pr
 // as it is) rather than the focused pane's session pushed off screen. A
 // session already on a pane is still jumped to, as showSession does.
 export async function showSessionBeside(sessionId: string): Promise<void> {
+  recordUse('show-beside');
   const layout = getState().layout;
   if (layout !== null && paneShowingIn(layout, sessionId, layout.currentTabId) !== null) {
     await showSession(sessionId);
@@ -96,6 +98,7 @@ export async function showSessionBeside(sessionId: string): Promise<void> {
 // hide the new tab; a session on a pane of another tab gets a mirror, as
 // the heading's button gives.
 export async function showSessionInNewTab(sessionId: string): Promise<void> {
+  recordUse('show-in-new-tab');
   const { sessions, folders } = getState();
   const session = sessions.get(sessionId);
   if (session === undefined) return;
@@ -121,7 +124,14 @@ export function showSessionAuto(sessionId: string): Promise<unknown> {
 // be a sibling off the zoom path and so invisible until focus moved, and
 // the new pane takes the target's text size. A picker open on the pane
 // was asking what to show there, so a center drop closes it.
-export async function dropSessionOn(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null = null): Promise<void> {
+export function dropSessionOn(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null = null): Promise<void> {
+  recordUse('drop-session');
+  return dropSessionOnUnrecorded(sessionId, paneId, zone, fromPaneId);
+}
+
+// The same unrecorded (M9 fix 676), for placeSession, which reaches it
+// after an await where the turn gate no longer holds.
+async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null): Promise<void> {
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
   const after = await editLayout((l) => {
@@ -149,6 +159,7 @@ export async function dropSessionOn(sessionId: string, paneId: string, zone: Dro
 // It answers the pane the view landed on, or null when the drop changed
 // nothing (M9 fix 437: the drag of a contents hit reveals its line there).
 export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone, fromPaneId: string | null = null): Promise<string | null> {
+  recordUse('drop-view');
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
   let landed: string | null = null;
@@ -176,6 +187,7 @@ export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone,
 // the tab on show, or on the tab the title already sits in, is nothing.
 // The window stays on its tab, so nothing is shown, zoomed or acked.
 export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null): Promise<void> {
+  recordUse('drop-on-layout-tab');
   await editTabs((l) => {
     const tab = findTab(l, tabId);
     if (tab === null || tabId === l.currentTabId) return l;
@@ -193,6 +205,7 @@ export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromP
 // strip's kept order is written with the made tab's id (newGroupTab uses
 // currentTabId, which here stays the source tab).
 export async function dropOnNewTab(content: PaneContent, fromPaneId: string | null = null): Promise<void> {
+  recordUse('drop-on-new-tab');
   let name: string;
   if (content.sessionId !== null) {
     const { sessions, folders } = getState();
@@ -217,7 +230,14 @@ export async function dropOnNewTab(content: PaneContent, fromPaneId: string | nu
 
 // Commits in a pane from a folder heading's + menu (M52): the view in a
 // new pane beside the focused one, where the heading's shell would go.
-export async function openViewBeside(view: PaneView): Promise<void> {
+export function openViewBeside(view: PaneView): Promise<void> {
+  recordUse('open-view-beside');
+  return openViewBesideUnrecorded(view);
+}
+
+// The same unrecorded (M9 fix 676), for openFileFromOutside, whose call
+// is `emmer open`'s and comes after an await.
+async function openViewBesideUnrecorded(view: PaneView): Promise<void> {
   const paneId = await roomBesideFocused();
   await editTab((t) => setPaneView(t, paneId, view), paneId);
 }
@@ -283,7 +303,7 @@ export async function openFileFromOutside(path: string, pane = false, extra: { s
       return;
     }
     showTab(PANES);
-    await openViewBeside(view);
+    await openViewBesideUnrecorded(view);
   } finally {
     if (extra.openId !== undefined) {
       void window.emerald
@@ -317,6 +337,7 @@ export async function openFileByDialog(): Promise<void> {
 // split buttons. A center drop puts the shell in place of whatever the pane
 // showed; that session stays in the sidebar, as after a session drop.
 export async function dropFolderOn(folder: string, paneId: string, zone: DropZone): Promise<void> {
+  recordUse('drop-folder');
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
   const after = await editTab((t) => (split === null ? focusPane(t, paneId) : splitPane(t, paneId, split.direction, undefined, split.place)), paneId);
@@ -335,6 +356,7 @@ export async function dropFolderOn(folder: string, paneId: string, zone: DropZon
 // pane is what you just filled, and an edge drop already leaves the new
 // pane focused through splitPane.
 export async function dropFileOn(path: string, paneId: string, zone: DropZone): Promise<void> {
+  recordUse('drop-file');
   const split = zoneToSplit(zone);
   if (split === null) {
     await editTab((t) => setPaneView(focusPane(t, paneId), paneId, { kind: 'file', path }), paneId);
@@ -409,6 +431,7 @@ export function ackIfDone(sessionId: string): Promise<void> {
 }
 
 export function renameSession(sessionId: string, name: string): Promise<void> {
+  recordUse('rename-session');
   return window.emerald.request('session.rename', { sessionId, name }).then(() => undefined);
 }
 
@@ -421,6 +444,7 @@ export function setSessionComment(sessionId: string, comment: string): Promise<v
 // The colour (M29), from the Colour row of the row menu or the pane menu;
 // one of SESSION_COLORS, already lower-case hex.
 export function setSessionColor(sessionId: string, color: string): Promise<void> {
+  recordUse('set-colour');
   return window.emerald.request('session.set', { sessionId, color }).then(() => undefined);
 }
 
@@ -428,6 +452,7 @@ export function setSessionColor(sessionId: string, color: string): Promise<void>
 // back on the window's pick. The daemon keeps it on the record, so the
 // scheme follows the session between panes and across a restart.
 export function setSessionScheme(sessionId: string, scheme: string | null): Promise<void> {
+  recordUse('set-scheme');
   return window.emerald.request('session.set', { sessionId, scheme }).then(() => undefined);
 }
 
@@ -435,10 +460,18 @@ export function setSessionScheme(sessionId: string, scheme: string | null): Prom
 // heading's box or its menu; an empty string clears it, which the daemon
 // takes as null, and the heading goes back to the folder's name.
 export function setFolderLabel(folder: string, label: string): Promise<void> {
+  recordUse('set-folder-label');
   return window.emerald.request('folders.set', { folder, label: label === '' ? null : label }).then(() => undefined);
 }
 
 export function killSession(sessionId: string, remove = false): Promise<void> {
+  recordUse('kill-session');
+  return killSessionUnrecorded(sessionId, remove);
+}
+
+// The same unrecorded (M9 fix 676), for the closes and the sweep, each
+// recorded under its own name and reaching the kill after an await.
+function killSessionUnrecorded(sessionId: string, remove = false): Promise<void> {
   return window.emerald.request('session.kill', { sessionId, remove }).then(() => undefined);
 }
 
@@ -454,6 +487,7 @@ export function resumeSession(sessionId: string): Promise<void> {
 // a pane beside the focused one rather than in it, so a look at what an
 // exited session did to the log does not push the pane's session out.
 export async function resumeSessionBeside(sessionId: string): Promise<void> {
+  recordUse('resume-beside');
   await window.emerald.request('session.resume', { sessionId, cols: 120, rows: 30 });
   showTab(PANES);
   const paneId = await roomBesideFocused();
@@ -469,7 +503,7 @@ export async function placeSession(sessionId: string, paneId: string, zone: Drop
     await window.emerald.request('session.resume', { sessionId, cols: 120, rows: 30 });
   }
   if (zone === null) await showSession(sessionId, paneId);
-  else await dropSessionOn(sessionId, paneId, zone);
+  else await dropSessionOnUnrecorded(sessionId, paneId, zone, null);
 }
 
 // The daemon empties the panes and drops the session from its list; the
@@ -481,6 +515,7 @@ export function removeSession(sessionId: string): Promise<void> {
 // Removes every exited session, one request each so a failure on one (say
 // it was resumed a moment ago) leaves the rest removed.
 export async function clearExited(): Promise<void> {
+  recordUse('clear-exited');
   const exited = [...getState().sessions.values()].filter((s) => s.state === 'exited');
   const results = await Promise.allSettled(exited.map((s) => removeSession(s.id)));
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
@@ -493,6 +528,7 @@ export async function clearExited(): Promise<void> {
 // as the push lands, and one on no pane goes back to its folder group as
 // a listed row with the unshown marker (M9 fix 91).
 export async function resumeAll(): Promise<void> {
+  recordUse('resume-all');
   const exited = [...getState().sessions.values()].filter((s) => s.state === 'exited');
   const results = await Promise.allSettled(exited.map((s) => window.emerald.request('session.resume', { sessionId: s.id, cols: 120, rows: 30 })));
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
@@ -528,7 +564,7 @@ export async function closeSessionGently(sessionId: string): Promise<void> {
       resolve(false);
     }, CLOSE_GRACE_MS);
   });
-  if (!left) await killSession(sessionId);
+  if (!left) await killSessionUnrecorded(sessionId);
 }
 
 // The folder heading's sweep (M9 fix 193) over the sessions named, one
@@ -536,7 +572,8 @@ export async function closeSessionGently(sessionId: string): Promise<void> {
 // swept. close types each session's exit and kills the ones that stay;
 // kill is the row's Kill; remove kills and forgets each as it exits.
 export async function sweepSessions(sessionIds: readonly string[], mode: SweepMode): Promise<void> {
-  const one = (id: string) => (mode === 'close' ? closeSessionGently(id) : killSession(id, mode === 'remove'));
+  recordUse('sweep-sessions');
+  const one = (id: string) => (mode === 'close' ? closeSessionGently(id) : killSessionUnrecorded(id, mode === 'remove'));
   const results = await Promise.allSettled(sessionIds.map(one));
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed !== undefined) throw failed.reason;
@@ -550,6 +587,7 @@ export async function sweepSessions(sessionIds: readonly string[], mode: SweepMo
 // Hide: the pane goes, the session keeps running and stays in the sidebar.
 // The chord does the same; only the title bar's × and the menu's Close kill.
 export function hidePaneHere(paneId: string): void {
+  recordUse('hide-pane');
   void editTab((t) => closePane(t, paneId), paneId).catch(warn('hide'));
 }
 
@@ -559,13 +597,14 @@ export function hidePaneHere(paneId: string): void {
 // already exited is removed, whatever its kind. The pane closes first so
 // the screen answers the click before the kill lands.
 export async function closeSession(paneId: string): Promise<void> {
+  recordUse('close-session');
   const { layout, sessions } = getState();
   const pane = layout === null ? null : findPane(currentTab(layout), paneId);
   const session = pane?.sessionId === null || pane === null ? undefined : sessions.get(pane.sessionId);
   await editTab((t) => closePane(t, paneId), paneId);
   if (session === undefined) return;
   if (session.state === 'exited') await removeSession(session.id);
-  else await killSession(session.id, session.kind === 'shell');
+  else await killSessionUnrecorded(session.id, session.kind === 'shell');
 }
 
 export function closeSessionHere(paneId: string): void {
@@ -633,6 +672,7 @@ export async function startClaudeIn(paneId: string, folder: string): Promise<voi
 // new pane at the same text size. The row turns live on the next scan
 // once the session's SessionStart hook binds the id.
 export async function resumeTranscript(folder: string, claudeSessionId: string, split: boolean): Promise<void> {
+  recordUse('resume-transcript');
   const layout = getState().layout;
   let paneId = layout === null ? null : currentTab(layout).focusedPaneId;
   if (split) {
@@ -748,6 +788,7 @@ export async function startShellBesideFocused(): Promise<void> {
 // pane. The row lands under the heading it was clicked on, since groups
 // are keyed by the live folder.
 export async function startShellBeside(folder: string, shell?: ShellId): Promise<void> {
+  recordUse('shell-beside');
   return startShell({ pane: 'focused', folder, ...(shell === undefined ? {} : { shell }) });
 }
 
@@ -790,6 +831,7 @@ export async function splitWith(paneId: string, direction: SplitDirection, kind:
 // shell or a Claude as the default (ui.ts's splitKind). The chords and the
 // palette's Split keys are plain splits and never come here.
 export function splitHere(paneId: string, direction: SplitDirection): void {
+  recordUse('split-here');
   void splitWith(paneId, direction, getUiState().splitKind).catch(warn('split'));
 }
 
@@ -813,6 +855,7 @@ export function pullSource(splitId: string): { paneId: string; place: SplitPlace
 // that now holds both, for the drag to keep sizing. The shell is not
 // awaited: the drag must not wait on a spawn.
 export async function pullPane(paneId: string, direction: SplitDirection, place: SplitPlace): Promise<string> {
+  recordUse('pull-pane');
   const folder = paneFolder(paneId);
   const after = await editTab((t) => splitPane(t, paneId, direction, undefined, place), paneId);
   const newPaneId = after.focusedPaneId;
@@ -884,12 +927,14 @@ export function cycleStripTabs(step: 1 | -1): Promise<void> {
 }
 
 export function renameLayoutTab(tabId: string, name: string): Promise<Layout> {
+  recordUse('rename-layout-tab');
   return editTabs((l) => renameTab(l, tabId, name));
 }
 
 // The sessions in the tab's panes keep running and stay listed; only the
 // panes go. Zoom is a way of looking at a pane and the pane is gone.
 export function closeLayoutTab(tabId: string): Promise<Layout> {
+  recordUse('close-layout-tab');
   clearZoom();
   return editTabs((l) => closeTab(l, tabId));
 }

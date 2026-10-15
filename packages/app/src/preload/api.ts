@@ -1,4 +1,4 @@
-import type { ClientMessage, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage } from '@emerald/shared';
+import type { ClientMessage, DesignPick, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage, UseLineIn } from '@emerald/shared';
 import type { GitFile, GitStatusResult } from '../renderer/src/git-status-model.ts';
 import type { TerminalScheme } from '../renderer/src/scheme-model.ts';
 import type { UpdateState } from '../renderer/src/update-model.ts';
@@ -614,13 +614,87 @@ export interface ClipboardApi {
   writeImage(dataUrl: string): Promise<void>;
 }
 
+// Design Mode's grab on a browser pane's page (M9 fix 674): the pick and
+// its crop's path (null when the capture failed), or a cancel.
+export type DesignResult = { kind: 'pick'; pick: DesignPick; shot: string | null } | { kind: 'cancel' };
+
+// The grab runs in main on the pane's guest, found by the pane id as
+// emmer browser finds it; a note is a line for the corner (C and S,
+// which main answers itself).
+export interface DesignApi {
+  start(paneId: string): Promise<DesignResult>;
+  cancel(paneId: string): void;
+  onNote(handler: (text: string) => void): () => void;
+}
+
+// A chord as the main process's guest key rule reads it (M9 fix 670),
+// the renderer's Chord in keys-model.ts.
+export interface GuestChord {
+  code: string;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+}
+
+// A key main heard in a browser pane's page and handed to the window,
+// the slice of KeyboardEvent the key map reads.
+export interface GuestKey {
+  code: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+}
+
+// The app's chords while a page has the keyboard (M9 fix 670): the
+// renderer tells main its chords, its prefix and whether the prefix (or
+// the cheat sheet) is up; main sends back the keys of a page that are
+// the app's, and a press or a key in any page, for presence and for the
+// click that focuses the page's pane.
+export interface KeysApi {
+  configure(chords: GuestChord[], prefix: GuestChord): void;
+  armed(on: boolean): void;
+  onGuestKey(handler: (key: GuestKey) => void): () => void;
+  onGuestInput(handler: (hit: { webContentsId: number; kind: 'mouse' | 'key' }) => void): () => void;
+}
+
+// The usage record (M9 fix 676): send-only; main checks every line
+// against the shared vocabulary before it writes.
+export interface UseRecordApi {
+  write(line: UseLineIn): void;
+}
+
+// emmer browser's mark on a pane (M9 fixes 672 and 673): who drives it,
+// whether a command runs now, and whether the person's click or key
+// paused it; null is no mark.
+export type BrowserDriveState = { by: string; running: boolean; paused: boolean } | null;
+
+// The browser driver's half in the renderer: the guest a pane's page is
+// on, told to main on each attach, the mark's pushes, and the pane's
+// Resume button (fix 673).
+export interface BrowserApi {
+  guest(paneId: string, webContentsId: number): void;
+  onDrive(handler: (paneId: string, state: BrowserDriveState) => void): () => void;
+  resume(paneId: string): void;
+  // A key or a fill needs the page to hold the window's keyboard: main
+  // asks, the pane's page takes the focus, and the answer says whether
+  // it holds it (the guard hands it back when the command ends).
+  onTakeFocus(handler: (paneId: string, token: number) => void): () => void;
+  tookFocus(token: number, ok: boolean): void;
+}
+
 export interface EmeraldApi {
   files: FilesApi;
+  browser: BrowserApi;
+  keys: KeysApi;
   usage: UsageApi;
   schemes: SchemesApi;
   notify: NotifyApi;
+  useRecord: UseRecordApi;
   history: HistoryApi;
   clipboard: ClipboardApi;
+  design: DesignApi;
   whatsNew: WhatsNewApi;
   update: UpdateApi;
   // Facts only the main process knows. The sandboxed preload has no os

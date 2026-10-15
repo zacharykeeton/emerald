@@ -23,7 +23,7 @@
 // sessions' lanes) and the strip at a narrow rail.
 // Uses a private home and pipe unless the environment already names them.
 // Run: npm run verify:files -w @emerald/app
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,7 +36,15 @@ process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m10';
 const openedPaths = path.join(os.tmpdir(), 'emerald-verify', `m10-opened-${process.pid}.log`);
 fs.rmSync(openedPaths, { force: true });
 process.env['EMERALD_OPEN_LOG'] = openedPaths;
-const { CTRL, SHIFT, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, setInput, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, setInput, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+
+// `emmer open` against this window's pipe (the helper verify-m11-tabs.mjs
+// has; M9 fixes 683, 685 and 686 open files through it).
+const cliMain = path.join(repoRoot, 'packages', 'cli', 'dist', 'main.js');
+const cliOpen = (...args) => {
+  const r = spawnSync(process.execPath, [cliMain, 'open', ...args], { env: process.env, encoding: 'utf8', windowsHide: true });
+  return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
+};
 
 let app = null;
 // 58 to 75 s quiet (the forks of fixes 450 to 493), so 120 s sat near it
@@ -367,6 +375,24 @@ try {
   await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'Ctrl+W back to the panes');
   expect((await s.evalJs(`document.querySelectorAll('.files-hit').length`)) === 2, 'the hits are still listed');
   step('a click on a hit opens the file in a tab at its line, lit for a moment');
+
+  // M9 fix 686: sticky scroll is off whichever file opened first. one.json
+  // was opened first in this window (the JSON chunk and the sticky scroll
+  // contribution are loaded), so a .ts file opened now would show sticky
+  // headers if the option were left on.
+  const sticky686 = path.join(seed, 'src', 'deep', 'sticky686.ts');
+  fs.mkdirSync(path.dirname(sticky686), { recursive: true });
+  fs.writeFileSync(sticky686, ['export function outer(): void {', ...Array.from({ length: 80 }, (_, i) => `  const v${i} = ${i};`), '}', ''].join('\n'));
+  expect(cliOpen(sticky686).code === 0, 'emmer open opens sticky686.ts');
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(sticky686)} && !!document.querySelector('.file-editor')?.emeraldEditor`, 'sticky686.ts open in the editor', 8000);
+  await s.evalJs(`document.querySelector('.file-editor').emeraldEditor.setScrollTop(600)`);
+  await sleep(150);
+  const sticky = await s.evalJs(`(() => { const e = document.querySelector('.file-editor'); return { enabled: e.emeraldEditor.getRawOptions().stickyScroll?.enabled, widgets: [...e.querySelectorAll('.sticky-widget')].filter((w) => w.children.length > 0).length }; })()`);
+  expect(sticky.enabled === false && sticky.widgets === 0, `sticky scroll is off in the file editor (${JSON.stringify(sticky)})`);
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'Ctrl+W back to the panes after sticky686.ts');
+  fs.rmSync(sticky686);
+  step('M9 fix 686: sticky scroll is off in the file editor after a .json has loaded');
 
   // M9 fix 437: the same hit dragged onto a pane opens the file pane at
   // its line, with the whole-line flash a tab's reveal gives. Dropped on
@@ -1356,7 +1382,7 @@ try {
     s.evalJs(
       `(() => { const rail = document.querySelector('.files-rail'); const list = document.querySelector('.files-list'); const row = document.querySelector(${JSON.stringify(rowSel(z652))}); const open = (p) => document.querySelector('.files-row[data-path=' + JSON.stringify(p) + ']')?.dataset.expanded === 'true'; if (!rail || !list || !row) return { rail: !!rail, row: !!row }; const { top, bottom } = row.getBoundingClientRect(); const l = list.getBoundingClientRect(); return { rail: true, row: true, tab: rail.dataset.tab, dirs: [open(${JSON.stringify(dir652)}), open(${JSON.stringify(deep652)})], selected: row.dataset.selected === 'true', top, bottom, listTop: l.top, listBottom: l.bottom, scrolled: list.scrollTop }; })()`,
     );
-  const flashRead652 = () => s.evalJs(`(() => { const row = document.querySelector(${JSON.stringify(rowSel(z652))}); return row ? { flash: row.dataset.flash === 'true', animation: getComputedStyle(row, '::after').animationName } : null; })()`);
+  const flashRead652 = () => s.evalJs(`(() => { const row = document.querySelector(${JSON.stringify(rowSel(z652))}); return row ? { flash: row.dataset.flash !== undefined, value: row.dataset.flash ?? null, animation: getComputedStyle(row, '::after').animationName } : null; })()`);
   const expectRevealed652 = async (where) => {
     await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(z652))})?.dataset.selected === 'true'`, `z652.txt selected in the rail (${where})`, 5000);
     // Logged only: the flash lives a second, which a read under load can miss.
@@ -1380,6 +1406,19 @@ try {
   await expectRevealed652('a file tab');
   await s.screenshot('m9-652-reveal-tab.png');
   step('M9 fix 652: Reveal in Files on a file tab opens the rail on Files with the folders opened and the row selected, scrolled into the list');
+
+  // M9 fix 684: a second Reveal in Files on a row still flashing flashes it
+  // again; the attribute alternates between 'a' and 'b' so the animation
+  // name changes and the animation restarts.
+  const v684 = (await flashRead652())?.value ?? null;
+  await sleep(300);
+  await s.rightClick(tabPoint652.x, tabPoint652.y);
+  await s.waitFor(`!!${menuJs}`, 'the file menu in the tab (second reveal)', 3000);
+  await pick('Reveal in Files');
+  await s.waitFor(`!${menuJs}`, 'the second Reveal in Files closes the menu', 2000);
+  await s.waitFor(`(() => { const v = document.querySelector(${JSON.stringify(rowSel(z652))})?.dataset.flash; return (v === 'a' || v === 'b') && v !== ${JSON.stringify(v684)}; })()`, "the second reveal flips the row's flash attribute", 2000);
+  console.log(`[verify] fix 684 flash after the second reveal: ${JSON.stringify(await flashRead652())} (first ${v684})`);
+  step('M9 fix 684: a second Reveal in Files on a row still flashing flashes it again');
 
   // The pane: the tab closed, the file opened in a pane from its row.
   await s.key('w', 'KeyW', 87, CTRL);
@@ -1406,6 +1445,45 @@ try {
   await zreq(s, 'layout.set', { layout: { ...layout652, revision: (await getTabs(s)).revision } });
   await s.waitFor(`!document.querySelector('.pane[data-view="file"]')`, 'the file pane gone with the restored layout', 5000);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(repo)}`, 'the rail back on the repo after the pane', 5000);
+
+  // The tab menu's Reveal in Files on a file tab of the given path.
+  const revealFromTab = async (file) => {
+    const tabSel = `.tab-file[data-tab=${JSON.stringify(file)}]`;
+    await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(file)} && !!document.querySelector(${JSON.stringify(tabSel)})`, `${path.basename(file)} open in a tab`, 5000);
+    const box = await s.evalJs(`(() => { const { x, y, width, height } = document.querySelector(${JSON.stringify(tabSel)}).getBoundingClientRect(); return { x: x + width / 2, y: y + height / 2 }; })()`);
+    await s.rightClick(box.x, box.y);
+    await s.waitFor(`document.querySelector('.tab-menu')?.dataset.path === ${JSON.stringify(file)}`, 'the tab menu', 3000);
+    await s.evalJs(`[...document.querySelectorAll('.tab-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Reveal in Files').click()`);
+  };
+  const tabGone = (file) => `!document.querySelector('.tab-file[data-tab=' + JSON.stringify(${JSON.stringify(file)}) + ']')`;
+  const noteRead = async () => (await s.evalJs(`document.querySelector('.corner-note')?.textContent ?? ''`)) ?? '';
+
+  // M9 fix 683: deep was listed, closed, and a file made while it was
+  // closed; the reveal lists it again before it says Not in the Files rail.
+  await hideRail652();
+  await sleep(300);
+  const new683 = path.join(deep652, 'new683.txt');
+  fs.writeFileSync(new683, 'new683\n');
+  await sleep(300);
+  expect(cliOpen(new683).code === 0, 'emmer open opens new683.txt');
+  await revealFromTab(new683);
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(new683))})?.dataset.selected === 'true'`, 'new683.txt selected in the rail', 5000);
+  expect(!/Not in the Files rail/.test(await noteRead()), 'no Not in the Files rail note for new683.txt');
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(tabGone(new683), 'the new683 tab closed', 3000);
+  step('M9 fix 683: Reveal in Files lists a collapsed folder again and shows a file made while it was closed');
+
+  // M9 fix 685: a tab opened in another case opens the folders in the
+  // disk's case.
+  await hideRail652();
+  const upper685 = path.join(repo, 'REVEAL652', 'DEEP', 'z652.txt');
+  expect(cliOpen(upper685).code === 0, 'emmer open opens the upper-case path');
+  await revealFromTab(upper685);
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(z652))})?.dataset.selected === 'true'`, 'z652.txt selected in the rail through the upper-case tab', 5000);
+  expect(!/Not in the Files rail/.test(await noteRead()), 'no Not in the Files rail note for the upper-case tab');
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(tabGone(upper685), 'the upper-case tab closed', 3000);
+  step("M9 fix 685: Reveal in Files on a tab opened in another case opens the folders in the disk's case");
 
   // The tab menu on a file deleted on disk: the rail cannot show it.
   const gone652 = path.join(repo, 'gone652.txt');

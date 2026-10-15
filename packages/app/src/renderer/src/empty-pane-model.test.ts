@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultKind, emptyKey, folderRows, parentLabel, shellChoice, shellSub, startLabel } from './empty-pane-model.ts';
+import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startLabel } from './empty-pane-model.ts';
 
 test('defaultKind: the split default wins, else the stored kind, else a shell (M9 fix 545)', () => {
   assert.equal(defaultKind('shell', 'claude'), 'shell');
@@ -54,13 +54,23 @@ test('emptyKey: Enter starts, Tab flips, a digit picks a row, arrows move (M9 fi
   const k = (key: string, mods: Partial<{ shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }> = {}) => ({ key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, ...mods });
   assert.deepEqual(emptyKey(k('Enter'), 3), { act: 'start' });
   assert.deepEqual(emptyKey(k('Enter', { shiftKey: true }), 3), { act: 'swallow' });
-  assert.deepEqual(emptyKey(k('Tab'), 3), { act: 'flip' });
-  assert.deepEqual(emptyKey(k('Tab', { shiftKey: true }), 3), { act: 'flip' });
+  assert.deepEqual(emptyKey(k('Tab'), 3), { act: 'flip', delta: 1 });
+  assert.deepEqual(emptyKey(k('Tab', { shiftKey: true }), 3), { act: 'flip', delta: -1 });
   assert.deepEqual(emptyKey(k('3'), 3), { act: 'row', index: 2 });
   assert.deepEqual(emptyKey(k('3'), 2), { act: 'swallow' });
   assert.equal(emptyKey(k('3', { ctrlKey: true }), 3), null);
   assert.deepEqual(emptyKey(k('ArrowDown'), 3), { act: 'move', delta: 1 });
   assert.equal(emptyKey(k('a'), 3), null);
+});
+
+test('nextTile walks shell, claude, browser and wraps, skipping browser without the kind (M9 fix 666)', () => {
+  assert.equal(nextTile('shell', 1, true), 'claude');
+  assert.equal(nextTile('claude', 1, true), 'browser');
+  assert.equal(nextTile('browser', 1, true), 'shell');
+  assert.equal(nextTile('shell', 1, false), 'claude');
+  assert.equal(nextTile('claude', 1, false), 'shell');
+  assert.equal(nextTile('shell', -1, true), 'browser');
+  assert.equal(nextTile('shell', -1, false), 'claude');
 });
 
 // M9 fix 647: the Shell tile starts the picked shell, or the default.

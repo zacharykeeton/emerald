@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FINDINGS, MAPPED, batchInFlight, decide, isBinary, isExcluded, parsePatterns, scanText } from './export-public-lib.mjs';
-import { allowedUnder, renderNotices } from './third-party-notices-lib.mjs';
+import { BUNDLED_DEV, allowedUnder, renderNotices } from './third-party-notices-lib.mjs';
 import { buildNotices } from './third-party-notices.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -336,6 +336,46 @@ test('the real tree ships nothing off the allow list and its notices are current
   assert.equal(committed, got.text, 'THIRD-PARTY-NOTICES.md is stale; run node scripts/third-party-notices.mjs');
 });
 
+// The renderer's bundled dev packages are listed by hand in BUNDLED_DEV; a
+// devDependency the app starts importing would be left out of the notices
+// with nothing failing, so this reads the app's own specifiers and compares.
+function appSpecifiers() {
+  const base = path.join(root, 'packages', 'app', 'src');
+  const found = new Set();
+  const forms = [
+    /^\s*(import|export)\s+(type\s+)?[^;'"]*?\sfrom\s+['"]([^'"]+)['"]/gm,
+    /^\s*import\s+['"]([^'"]+)['"]/gm,
+    /(typeof\s+)?\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ];
+  for (const rel of fs.readdirSync(base, { recursive: true })) {
+    const f = String(rel).split(BS).join('/');
+    if (!/\.tsx?$/.test(f) || /\.test\.tsx?$/.test(f) || f === 'renderer/src/test-support.ts') continue;
+    const text = fs.readFileSync(path.join(base, f), 'utf8');
+    const add = (spec) => {
+      if (/^(\.|\/|node:)/.test(spec)) return;
+      const bare = spec.split('?')[0].split('/');
+      found.add(bare[0].startsWith('@') ? bare.slice(0, 2).join('/') : bare[0]);
+    };
+    for (const m of text.matchAll(forms[0])) if (!m[2]) add(m[3]);
+    for (const m of text.matchAll(forms[1])) add(m[1]);
+    for (const m of text.matchAll(forms[2])) if (!m[1]) add(m[2]);
+  }
+  return found;
+}
+
+test('the dev packages the renderer bundles are BUNDLED_DEV, no more and no fewer', () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  const derived = [...appSpecifiers()]
+    .filter((n) => n !== 'electron' && !n.startsWith('@emerald/'))
+    .filter((n) => lock.packages['node_modules/' + n]?.dev === true)
+    .sort();
+  const listed = [...BUNDLED_DEV].sort();
+  const missing = derived.filter((n) => !listed.includes(n));
+  const extra = listed.filter((n) => !derived.includes(n));
+  assert.deepEqual(missing, [], `a dev package the app imports is missing from BUNDLED_DEV in scripts/third-party-notices-lib.mjs: ${missing.join(', ')}`);
+  assert.deepEqual(extra, [], `BUNDLED_DEV names a package the app no longer imports: ${extra.join(', ')}`);
+});
+
 test('the export refuses a runtime package off the allow list', () => {
   const lock = {
     lockfileVersion: 3,
@@ -371,7 +411,8 @@ test('the update mode lands each export as one commit on the public history', ()
   const first = exportIn(repo, '--update', '--remote', bare, '--out', pub, '--version', '0.1.1');
   assert.equal(first.status, 0, first.err + first.out);
   assert.match(first.out, /on top of nothing \(the first commit\)/);
-  assert.match(first.out, /^ {2}git -c credential\.helper= -c "credential\.helper=!gh auth git-credential" push origin HEAD:main$/m);
+  const pushLine = first.out.split(/\r?\n/).find((l) => l.startsWith('  git -C '));
+  assert.equal(pushLine, `  git -C ${pub.replace(/\\/g, '/')} -c credential.helper= -c "credential.helper=!gh auth git-credential" push origin HEAD:main`, 'a push line with a forward-slash folder, pasteable after !');
   push();
   const firstShort = bareGit('rev-parse', '--short', 'main');
   assert.equal(fs.readFileSync(path.join(pub, 'CLAUDE.md'), 'utf8'), FIXTURE_NOTES, 'the mapped notes land at the root');

@@ -1,13 +1,15 @@
 import { closePane, cycleFocus, findPane, focusPane, neighborPane, splitPane } from '@emerald/shared';
-import type { Direction, SplitDirection } from '@emerald/shared';
+import type { Direction, SplitDirection, UseFrom } from '@emerald/shared';
 import { cycleLayoutTab, cycleStripTabs, newTab, openFileByDialog, rememberSplitSource, showSession, shownTab, startShellHere } from './actions.ts';
 import { waitingOrder } from './attention-model.ts';
+import { toggleDesignMode } from './design.ts';
 import { stepHistory } from './focus-history.ts';
-import { DEFAULT_PREFIX, chordMatches, formatChord, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
-import type { Action, Chord } from './keys-model.ts';
+import { BINDINGS, DEFAULT_PREFIX, chordMatches, formatChord, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
+import type { Action, Chord, KeyLike } from './keys-model.ts';
 import { hasModel, saveFile } from './monaco.ts';
 import { editTab, getState } from './store.ts';
 import { PANES } from './tabs-model.ts';
+import { recordUse } from './use-record.ts';
 import {
   adjustFontSize,
   closeCheatSheet,
@@ -23,6 +25,7 @@ import {
   resetFontSize,
   setPrefixArmed,
   showTab,
+  subscribeUi,
   toggleFiles,
   toggleSidebar,
   toggleZoom,
@@ -77,6 +80,7 @@ export function configurePrefix(spec: string | undefined): void {
   }
   prefix = parsed;
   console.log(`[emerald] prefix key ${formatChord(prefix)}`);
+  sendGuestChords();
 }
 
 // What xterm asks before handling a key: our chords and the prefix are
@@ -129,7 +133,8 @@ async function jumpToWaiting(now = Date.now()): Promise<void> {
   await showSession(target.id);
 }
 
-export function runAction(action: Action): Promise<unknown> {
+export function runAction(action: Action, from: UseFrom = 'key'): Promise<unknown> {
+  recordUse(action, from);
   switch (action) {
     // The chords give an empty pane, unlike the title bar buttons and the
     // menu, which also start a shell: the keyboard route stays the way to
@@ -228,6 +233,10 @@ export function runAction(action: Action): Promise<unknown> {
     // app menu.
     case 'open-file':
       return openFileByDialog();
+    // Design Mode on the focused browser pane (M9 fix 674).
+    case 'design-mode':
+      toggleDesignMode();
+      return Promise.resolve();
     default:
       return Promise.resolve();
   }
@@ -261,38 +270,42 @@ function withFocusedPane(act: (paneId: string) => void): Promise<void> {
 // Installs the window-level handler. Capture phase so a chord is consumed
 // before xterm's textarea sees it; xterm also asks terminalMayHandle as a
 // belt-and-braces measure.
+//
+// M9 fix 670: one key path for two sources. The window's own keydown and
+// a key the main process heard in a browser pane's page and handed over
+// (a page's keys never reach this window) both go through handleKey; a
+// guest key has no target, nothing to consume (main already kept it from
+// the page) and no event for the look-first mark, which attention's
+// listener never hears for it anyway.
 export function installKeybindings(): () => void {
-  const consume = (ev: KeyboardEvent) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-  };
-  const run = (action: Action, ev: KeyboardEvent) => {
-    if (LOOK_FIRST.has(action)) lookFirstKeys.add(ev);
+  const run = (action: Action, mark: Event | null) => {
+    if (mark !== null && LOOK_FIRST.has(action)) lookFirstKeys.add(mark);
     void runAction(action).catch((err: unknown) => console.warn(`[emerald] ${action} failed`, err));
   };
-  const onKeyDown = (ev: KeyboardEvent) => {
+  const handleKey = (ev: KeyLike, target: EventTarget | null, consume: () => void, mark: KeyboardEvent | null) => {
     if (getUiState().cheatSheetOpen) {
       // Any key dismisses the sheet; the key itself is spent on that.
       closeCheatSheet();
-      consume(ev);
+      consume();
       return;
     }
     if (getUiState().prefixArmed) {
       if (isModifierKey(ev.code)) return;
       setPrefixArmed(false);
       if (chordMatches(prefix, ev)) {
-        // Prefix twice: hand this one to the terminal untouched.
-        passThrough = ev;
+        // Prefix twice: hand this one to the terminal untouched (a page
+        // got its literal prefix from main).
+        passThrough = mark;
         return;
       }
-      consume(ev);
+      consume();
       const action = matchPrefixed(ev);
-      if (action !== null) run(action, ev);
+      if (action !== null) run(action, mark);
       // Escape and any unbound key just cancel.
       return;
     }
     if (chordMatches(prefix, ev)) {
-      consume(ev);
+      consume();
       setPrefixArmed(true);
       return;
     }
@@ -300,32 +313,62 @@ export function installKeybindings(): () => void {
     // not ours: PowerShell uses it to delete a word.
     const tab = getUiState().tabs.active;
     if (tab !== PANES && ev.code === 'KeyW' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
-      consume(ev);
+      consume();
       closeFileTab(tab);
       return;
     }
     // M9 fix 489: Ctrl+S saves the file in view wherever the keyboard is
     // on the page, not only while the editor has it.
     if (ev.code === 'KeyS' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
-      const path = saveTarget(ev.target);
+      const path = saveTarget(target);
       if (path !== null) {
-        consume(ev);
+        consume();
         void saveFile(path).catch((err: unknown) => console.warn('[emerald] save failed', err));
         return;
       }
     }
     const action = matchPlain(ev);
     if (action === null) return;
-    consume(ev);
-    run(action, ev);
+    consume();
+    run(action, mark);
   };
+  const onKeyDown = (ev: KeyboardEvent) =>
+    handleKey(
+      ev,
+      ev.target,
+      () => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      },
+      ev,
+    );
   const onKeyUp = () => {
     passThrough = null;
   };
   window.addEventListener('keydown', onKeyDown, { capture: true });
   window.addEventListener('keyup', onKeyUp, { capture: true });
+  // The main process's guest key rule needs the chords and the prefix to
+  // tell an app chord from the page's key, and whether the next key is
+  // the window's (the prefix armed here, or the cheat sheet up).
+  sendGuestChords();
+  let armed = false;
+  const unsubUi = subscribeUi(() => {
+    const ui = getUiState();
+    const next = ui.prefixArmed || ui.cheatSheetOpen;
+    if (next === armed) return;
+    armed = next;
+    window.emerald.keys.armed(next);
+  });
+  const unsubGuest = window.emerald.keys.onGuestKey((key) => handleKey(key, null, () => {}, null));
   return () => {
     window.removeEventListener('keydown', onKeyDown, { capture: true });
     window.removeEventListener('keyup', onKeyUp, { capture: true });
+    unsubUi();
+    unsubGuest();
   };
+}
+
+function sendGuestChords(): void {
+  const chords = BINDINGS.flatMap((b) => (b.plain === null ? [] : [b.plain]));
+  window.emerald.keys.configure(chords, prefix);
 }

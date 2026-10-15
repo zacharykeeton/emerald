@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Swatches } from './Swatches.tsx';
 import type { MenuSwatches } from './Swatches.tsx';
+import { asMenu } from './use-record.ts';
 
 export type { MenuSwatches } from './Swatches.tsx';
 
@@ -179,7 +180,7 @@ export function Menu({ x, y, items, onClose, className, data, anchor }: Props) {
             className={item.separator ? 'menu-item menu-sep' : 'menu-item'}
             onClick={
               item.submenu === undefined
-                ? item.onClick
+                ? () => asMenu(item.onClick)
                 : (ev) => {
                     clearHover();
                     const row = ev.currentTarget;
@@ -238,7 +239,7 @@ function SubMenu({ items, parent, row, subRef }: { items: MenuItem[]; parent: st
         <button
           key={item.label}
           className={item.separator ? 'menu-item menu-sep' : 'menu-item'}
-          onClick={item.onClick}
+          onClick={() => asMenu(item.onClick)}
           disabled={item.disabled}
           title={item.title}
           data-checked={item.checked === undefined ? undefined : String(item.checked)}

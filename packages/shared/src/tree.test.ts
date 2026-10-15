@@ -685,6 +685,14 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'file:///C:/x' }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 3 }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'notes', path: 'C:\a' }))), /kind must be commits, activity, file or browser/);
+  // M9 fix 673: a profile's name is kept, an absent one leaves no key,
+  // and anything BROWSER_PROFILE refuses is refused.
+  const profiled = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b' })));
+  assert.deepEqual((profiled.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/', profile: 'b' });
+  assert.equal('profile' in ((page.tabs[0]!.root as { first: { view: object } }).first.view), false);
+  for (const profile of ['B', '', 3]) {
+    assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', profile }))), /profile must be/);
+  }
 });
 
 test('dropAtRight fills an empty single pane in place, for a session and for a view (M9 fix 651)', () => {

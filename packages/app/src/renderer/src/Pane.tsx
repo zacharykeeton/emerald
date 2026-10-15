@@ -33,6 +33,8 @@ import type { MenuHeading, MenuItem, MenuSwatches } from './Menu.tsx';
 import { closeTitle, hideTitle, menuHint, sessionPaneMenu } from './pane-menu-model.ts';
 import type { PaneMenuRun } from './pane-menu-model.ts';
 import { registerPaneMenu } from './pane-menus.ts';
+import { recordUse } from './use-record.ts';
+import { PANE_USE } from './use-record-model.ts';
 import { startSessionDrag } from './pane-drag.ts';
 import { colorStyle, colorSwatches } from './session-color.ts';
 import { SessionMark } from './session-mark.tsx';
@@ -175,6 +177,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // with the action palette, and this is what each item does here. The
   // palette reaches the same two through the registry below.
   const runMenuItem = (run: PaneMenuRun, shell?: ShellId): void => {
+    recordUse(PANE_USE[run], 'menu');
     switch (run) {
       case 'split-right':
         return splitHere(paneId, 'row');

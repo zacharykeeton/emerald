@@ -361,25 +361,13 @@ function partsUnder(root: string, file: string): string[] | null {
   return parts.length === 0 ? null : parts;
 }
 
-// The folders under root down to the file's parent, the root's child
-// first: what the rail opens so the file's row is drawn. [] for a file
-// straight in the root, null for a file that is not under it.
-export function revealFolders(root: string, file: string): string[] | null {
-  const parts = partsUnder(root, file);
-  if (parts === null) return null;
-  const out: string[] = [];
-  let dir = normalizePath(root);
-  for (const part of parts.slice(0, -1)) {
-    dir = joinPath(dir, part);
-    out.push(dir);
-  }
-  return out;
-}
-
-export type RevealStep = { kind: 'outside' } | { kind: 'waiting' } | { kind: 'missing' } | { kind: 'shown'; row: string };
+export type RevealStep = { kind: 'outside' } | { kind: 'waiting'; open?: string } | { kind: 'missing' } | { kind: 'shown'; row: string };
 
 // Where a reveal stands against the tree: the file is not under the root
-// (outside), a folder on its way is not open or not listed yet (waiting),
+// (outside), a folder on its way is not open or not listed yet (waiting;
+// when it is not open, `open` names it in the listing's own case, which is
+// what the rail expands, since the file's own case may differ from the
+// disk's, M9 fix 685),
 // a listing on its way failed or has no such entry (missing), or its row
 // is drawn (shown, the path in the listing's own case so it matches the
 // row's data-path). A name past a capped listing's cut is not drawn, so
@@ -390,7 +378,7 @@ export function revealStep(m: FilesModel, file: string): RevealStep {
   if (parts === null) return { kind: 'outside' };
   let dir = m.root;
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0 && !m.expanded.has(dir)) return { kind: 'waiting' };
+    if (i > 0 && !m.expanded.has(dir)) return { kind: 'waiting', open: dir };
     const listing = m.listings.get(dir);
     if (listing === undefined) return { kind: 'waiting' };
     if ('error' in listing) return { kind: 'missing' };

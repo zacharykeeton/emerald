@@ -2,6 +2,8 @@ import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, na
 import type { WebContents } from 'electron';
 import { BROWSER_PARTITION } from '@emerald/shared';
 import { attachRefusal, forceGuestPreferences, guestNavigationAllowed } from './browser-guard.ts';
+import { GuestKeys } from './guest-keys.ts';
+import type { GuestChord, GuestVerdict } from './guest-keys.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +22,7 @@ import type { NotifyOutcome } from './notify.ts';
 import { rendererLogLine } from './renderer-log.ts';
 import { awayAfterMs, IDLE_POLL_MS, PresenceTracker } from './presence.ts';
 import { createTaskbar } from './taskbar.ts';
+import { createUseRecord } from './use-record.ts';
 import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
 import { PipeClient } from './pipe-client.ts';
 import { listSchemes, windowsTerminalSettingsFiles } from './schemes.ts';
@@ -35,6 +38,8 @@ import { postGapPoster, postInstallPoster } from './install-poster.ts';
 import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
 import { wireUpdateRelay } from './update-relay.ts';
 import { reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
+import { wireBrowserDriver } from './browser-driver.ts';
+import { wireDesignMode } from './design-wire.ts';
 import { sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
 import { inspectPort } from './inspect.ts';
 import { pipePathOf, emeraldHomeOf } from '@emerald/shared/pipe-name';
@@ -152,6 +157,9 @@ client.on('message', (msg: ServerMessage) => {
   // The relay's own push (M9 fix 271) is handled below; the renderer has
   // no use for it.
   if (msg.type === 'update.requested') return;
+  // The browser driver's (M9 fix 672); an eval or a fill can carry a
+  // secret the renderer has no need to hold.
+  if (msg.type === 'browser.requested') return;
   pushToRenderer(msg);
 });
 client.on('connected', (daemon: DaemonInfo) => pushToRenderer({ type: 'daemon.connected', daemon }));
@@ -238,6 +246,18 @@ const openRelay = wireFileOpenRelay(client, {
   },
 }, log);
 ipcMain.on('emerald:open-file-ready', () => openRelay.ready());
+
+// emmer browser's driver (M9 fix 672, browser-driver.ts): a command from
+// the daemon run on a browser pane's page through its debugger, the
+// pane's driven mark pushed to the window as it runs.
+const browserDriver = wireBrowserDriver(client, {
+  log,
+  home: path.resolve(emeraldHomeOf(process.env)),
+  push: (paneId, state) => {
+    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:browser-drive', paneId, state);
+  },
+  mainContents: () => (win === null || win.isDestroyed() ? null : win.webContents),
+});
 
 // The install's marker (M9 fix 282, install-gap.ts): written at the
 // badge's second click, read at the next launch. A packed build started
@@ -593,6 +613,9 @@ const notifier = createNotifier(
   log,
 );
 ipcMain.on('emerald:notify', (_event, req: NotifyRequest) => notifier.post(req));
+// The usage record (M9 fix 676), written only while the renderer's switch is on.
+const useRecord = createUseRecord(path.join(emeraldHomeOf(process.env), 'logs', 'usage.jsonl'), log);
+ipcMain.on('emerald:use-record', (_event, line: unknown) => useRecord.write(line));
 
 // The taskbar button flashes and wears the count while sessions want
 // someone (taskbar.ts, M9 fix 104); the renderer sends its attention set
@@ -647,23 +670,26 @@ ipcMain.handle('emerald:clipboard-read', async () => {
   if (text !== '') return { text, image: false };
   return { text: null, image: await clipboard.has('image/png') };
 });
-ipcMain.handle('emerald:clipboard-write', (_event, text: string) => {
+// The two writes, factored out so Design Mode's C and S (M9 fix 674),
+// which main makes itself, are held under a private home the same way.
+function writeClipboardText(text: string): void {
   if (heldClipboard !== null) {
     heldClipboard.text = text;
     heldClipboard.image = false;
     return;
   }
   clipboard.writeText(text);
-});
-ipcMain.handle('emerald:clipboard-write-image', (_event, dataUrl: string) => {
+}
+async function writeClipboardPng(png: Buffer): Promise<void> {
   if (heldClipboard !== null) {
     heldClipboard.text = '';
     heldClipboard.image = true;
     return;
   }
-  const png = nativeImage.createFromDataURL(dataUrl).toPNG();
-  return clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
-});
+  await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
+}
+ipcMain.handle('emerald:clipboard-write', (_event, text: string) => writeClipboardText(text));
+ipcMain.handle('emerald:clipboard-write-image', (_event, dataUrl: string) => writeClipboardPng(nativeImage.createFromDataURL(dataUrl).toPNG()));
 
 const RENDERER_LOG_LINES_PER_SECOND = 5;
 
@@ -871,12 +897,64 @@ if (handedOver) {
 // No window of emerald's for a page (M9 fix 477): an http or https URL
 // goes to the browser (held to the log under a private EMERALD_HOME),
 // anything else is refused, and no window opens either way.
-function denyWindows(contents: WebContents): void {
+// M9 fix 673: onAttempt hears every URL handed over, sent or refused, so
+// emmer browser events can say a page tried to open a window.
+function denyWindows(contents: WebContents, onAttempt?: (url: string) => void): void {
   contents.setWindowOpenHandler(({ url }) => {
+    onAttempt?.(url);
     if (/^https?:/i.test(url)) void openExternal(url, log).catch((err: unknown) => log(`open ${url} failed: ${err instanceof Error ? err.message : String(err)}`));
     else log(`window.open refused: ${url}`);
     return { action: 'deny' };
   });
+}
+
+// The app's chords while a page has the keyboard (M9 fix 670, guest-keys.ts).
+// The renderer sends its chords and prefix at install and on each change
+// of the prefix, and whether its prefix or cheat sheet is up.
+const guestKeys = new GuestKeys();
+ipcMain.on('emerald:keys-configure', (_event, chords: GuestChord[], prefix: GuestChord) => guestKeys.configure(chords, prefix));
+ipcMain.on('emerald:keys-armed', (_event, on: boolean) => guestKeys.setArmed(on));
+
+// Design Mode (M9 fix 674, design-wire.ts): the grab on a pane's guest,
+// found as emmer browser's driver registered it, and its C, S and
+// Escape caught ahead of the chords.
+const designMode = wireDesignMode({
+  log,
+  home: path.resolve(emeraldHomeOf(process.env)),
+  mainContents: () => (win === null || win.isDestroyed() ? null : win.webContents),
+  guestFor: (paneId) => browserDriver.guestFor(paneId),
+  note: (text) => {
+    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:design-note', text);
+  },
+  writeText: writeClipboardText,
+  writePng: writeClipboardPng,
+});
+
+// The rules a key pressed in a page goes through, in order, the first
+// answer winning: Design Mode's grab keys, then the chords.
+type GuestInputRule = (contents: WebContents, input: Electron.Input) => GuestVerdict | null;
+const guestInputRules: GuestInputRule[] = [designMode.guestRule, (_contents, input) => guestKeys.decide(input)];
+
+function onGuestInput(contents: WebContents, e: Electron.Event, input: Electron.Input): void {
+  let verdict: GuestVerdict = 'page';  for (const rule of guestInputRules) {
+    const v = rule(contents, input);
+    if (v !== null) {
+      verdict = v;
+      break;
+    }
+  }
+  if (verdict === 'page') return;
+  if (verdict === 'window' || verdict === 'window-and-page') {
+    if (win !== null && !win.isDestroyed()) {
+      win.webContents.send('emerald:guest-key', { code: input.code, ctrlKey: input.control, shiftKey: input.shift, altKey: input.alt, metaKey: input.meta });
+    }
+  }
+  if (verdict === 'window-and-page') return;
+  e.preventDefault();
+  // A reload pressed in a page reloads the page, never the whole window,
+  // whether or not the menu's accelerator would have fired.
+  if (verdict === 'reload') contents.reload();
+  else if (verdict === 'reload-hard') contents.reloadIgnoringCache();
 }
 
 // Every web contents, not the main window's alone (M9 fix 477): none may
@@ -890,11 +968,22 @@ function denyWindows(contents: WebContents): void {
 // javascript: URL, and opens no window.
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() === 'webview') {
-    denyWindows(contents);
+    denyWindows(contents, (url) => browserDriver.record(contents, { at: Date.now(), kind: 'window', url }));
     contents.on('will-navigate', (e, url) => {
       if (guestNavigationAllowed(url)) return;
       e.preventDefault();
       log(`browser: navigation refused: ${url}`);
+    });
+    contents.on('before-input-event', (e, input) => onGuestInput(contents, e, input));
+    // A press or a key in the page, for presence (the window's own
+    // listeners never hear a page's input) and for the click that
+    // focuses the page's pane. Mouse moves are left out.
+    contents.on('input-event', (_e, input) => {
+      const kind = input.type === 'mouseDown' ? 'mouse' : input.type === 'keyDown' || input.type === 'rawKeyDown' ? 'key' : null;      if (kind === null || win === null || win.isDestroyed()) return;
+      // emmer browser's own click or key (M9 fix 672) is not the person:
+      // it must not focus the page's pane or count as presence.
+      if (browserDriver.dispatching(contents)) return;
+      win.webContents.send('emerald:guest-input', { webContentsId: contents.id, kind });
     });
     return;
   }
@@ -907,21 +996,33 @@ app.on('web-contents-created', (_event, contents) => {
       return;
     }
     forceGuestPreferences(webPreferences as unknown as Record<string, unknown>);
+    // A profile's partition (M9 fix 673) is held to the same rules.
+    ensureBrowserSession(params['partition']!);
   });
 });
 
-app.whenReady().then(() => {
-  if (handedOver) return;
-  // The browser pane's partition (M9 fix 659) grants a page nothing but
-  // a sanitized clipboard write: no camera, microphone, location or
-  // notifications from a page beside the shells.
-  const browserSession = session.fromPartition(BROWSER_PARTITION);
+// The browser pane's partition (M9 fix 659) grants a page nothing but
+// a sanitized clipboard write: no camera, microphone, location or
+// notifications from a page beside the shells. M9 fix 673: each
+// profile's partition the same, once each, and a download from any of
+// them saved to the home's downloads folder with no dialog.
+const browserSessions = new Set<string>();
+function ensureBrowserSession(partition: string): void {
+  if (browserSessions.has(partition)) return;
+  browserSessions.add(partition);
+  const browserSession = session.fromPartition(partition);
   browserSession.setPermissionRequestHandler((_wc, permission, done) => {
     const ok = permission === 'clipboard-sanitized-write';
     if (!ok) log(`browser: permission ${permission} refused`);
     done(ok);
   });
   browserSession.setPermissionCheckHandler((_wc, permission) => permission === 'clipboard-sanitized-write');
+  browserSession.on('will-download', (_e, item, wc) => browserDriver.download(item, wc));
+}
+
+app.whenReady().then(() => {
+  if (handedOver) return;
+  ensureBrowserSession(BROWSER_PARTITION);
   // Electron's default menu binds Ctrl+0, Ctrl+= and Ctrl+- to page zoom
   // in the main process, before the renderer ever sees the keys; the
   // renderer uses them for the terminal text size instead. Reload, the
@@ -955,6 +1056,11 @@ app.whenReady().then(() => {
   // Registered here, after the handed-over and gap launches have quit, so
   // those write no will-quit line (M9 fix 657).
   app.on('will-quit', onWillQuit);
+  // M9 fix 671: whether Electron got past the app's last event. A slow
+  // exit with this line is Chromium's own shutdown after it; one without
+  // it is something in before-quit or will-quit. Here and not beside
+  // window-all-closed, so a handed-over or gap launch writes none.
+  app.on('quit', (_event, exitCode) => log(`quit, exit code ${exitCode}`));
   createWindow();
   installHooksOnFirstLaunch();
   updater.start();

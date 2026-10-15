@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { allPanes, currentTab, findPane } from '@emerald/shared';
 import { installAttention } from './attention.ts';
+import { BrowserLayer } from './BrowserLayer.tsx';
 import { CheatSheet, PrefixIndicator } from './CheatSheet.tsx';
 import { DaemonBanner } from './DaemonBanner.tsx';
 import { installExplorerDrop } from './explorer-drop.ts';
@@ -16,6 +17,7 @@ import { focusTerminal } from './focus.ts';
 import { installFocusHistory } from './focus-history.ts';
 import { HooksBanner } from './HooksBanner.tsx';
 import { configurePrefix, installKeybindings } from './keys.ts';
+import { installUseRecord, recordUse } from './use-record.ts';
 import { NewSessionDialog } from './NewSessionDialog.tsx';
 import { UnsavedDialog } from './UnsavedDialog.tsx';
 import { Sidebar } from './Sidebar.tsx';
@@ -24,7 +26,7 @@ import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
 import { PANES, commitsFolder, isDocument, isWhatsNew } from './tabs-model.ts';
 import { start, useStore } from './store.ts';
-import { clearZoom, openWhatsNewOnStart, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
+import { clearZoom, flashCornerNote, openWhatsNewOnStart, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
 
 export function App() {
@@ -46,11 +48,16 @@ export function App() {
     // kept tabs are up so the new tab lands last and active.
     openWhatsNewOnStart();
     const uninstallKeys = installKeybindings();
+    const uninstallUseRecord = installUseRecord();
     const uninstallDrop = installExplorerDrop();
     // A file from outside (M9 fix 341): emmer open, or a launch with one.
-    const uninstallOpen = window.emerald.files.onOpen((path, pane, extra) => void openFileFromOutside(path, pane, extra).catch((err: unknown) => console.warn('[emerald] open from outside failed', err)));
+    const uninstallOpen = window.emerald.files.onOpen((path, pane, extra) => {
+      recordUse('cli-open', 'cli');
+      void openFileFromOutside(path, pane, extra).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
+    });
     return () => {
       uninstallKeys();
+      uninstallUseRecord();
       uninstallDrop();
       uninstallOpen();
     };
@@ -60,6 +67,8 @@ export function App() {
   useEffect(() => installAttention(), []);
   // Where the focus has been, for the strip's back and forward (M9 fix 184).
   useEffect(() => installFocusHistory(), []);
+  // Design Mode's notes from main, for C and S (M9 fix 674).
+  useEffect(() => window.emerald.design.onNote(flashCornerNote), []);
 
   // Zoom follows tmux: it ends when the zoomed pane closes or focus moves
   // to another pane, and survives everything else (a session swap, a
@@ -119,6 +128,10 @@ export function App() {
                   </div>
                 ))
               )}
+              {/* Every browser pane's page (M9 fix 669), laid over its
+                  pane from here so a split or a move keeps it; after the
+                  tabs so it paints above them and under a file tab. */}
+              <BrowserLayer />
             </div>
             {/* The review is keyed by its path (M9 fix 199): a session's tab
                 and a folder's can be open side by side, and one component

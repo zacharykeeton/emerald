@@ -71,6 +71,7 @@ const BLOCKS = [
   { name: 'fix-93', fixes: ['fix-93', 'fix-143', 'fix-146', 'fix-154', 'fix-221', 'fix-155', 'fix-153', 'fix-156'], needs: [] },
   { name: 'fix-204', fixes: ['fix-204', 'fix-355', 'fix-356'], needs: [] },
   { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575'], needs: [] },
+  { name: 'fix-676', fixes: ['fix-676', 'fix-677'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -3468,6 +3469,10 @@ try {
     await s.waitFor(`document.querySelector(${JSON.stringify(sel547(e1) + ' .empty-kind[data-kind="shell"]')})?.getAttribute('aria-pressed') === 'true'`, 'Tab again selected the Shell tile');
     expect((await pressed(e1)) === 'false' && (await startText(e1)).startsWith('Start shell in'), 'the Claude tile is off again and Start says shell');
     expect((await sessionCount()) === count3, 'Tab started nothing');
+    // M9 fix 666: this script's daemon reports level 1, so the Browser tile
+    // is not offered and Tab still flips two; the three-tile walk is
+    // verify:browser's.
+    expect((await s.evalJs(`document.querySelectorAll(${JSON.stringify(sel547(e1) + ' .empty-kind')}).length`)) === 2, 'an old daemon offers no Browser tile');
     step('M9 fix 547: Tab flips the kind both ways, Start follows it, nothing starts');
 
     // Case 4: a digit starts in that row at once.
@@ -3631,6 +3636,100 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       if (Date.now() > end) throw new Error("timed out waiting for the fix 547 block's sessions to go");
     }
     step(`M9 fix 547: the block removed the ${started547.length} sessions it started, so a block after it starts from the rows it found`);
+  });
+  await block('fix-676', async () => {
+    // M9 fix 676: the usage record writes nothing while its switch is off,
+    // and one line per action and per view open or close while it is on,
+    // to this home's logs/usage.jsonl and never the person's own. freshState
+    // leaves logs/ alone, so the block reads only past the size it found.
+    const ownRecord = path.join(home, '.emerald', 'logs', 'usage.jsonl');
+    const ownMtime = () => {
+      try {
+        return fs.statSync(ownRecord).mtimeMs;
+      } catch {
+        return null;
+      }
+    };
+    const ownBefore = ownMtime();
+    const record = path.join(process.env['EMERALD_HOME'], 'logs', 'usage.jsonl');
+    const sizeOf = () => {
+      try {
+        return fs.statSync(record).size;
+      } catch {
+        return 0;
+      }
+    };
+    const offset = sizeOf();
+    const usageSwitch = () => s.evalJs(`document.querySelector('.attention-sound')?.dataset.usage ?? null`);
+    const pickAttention = async (label) => {
+      const c = await centerOf(s, '.attention-sound');
+      await s.rightClick(c.x, c.y);
+      await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
+      await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+      await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+    };
+    const leafCount = async () => leaves(await getLayout(s)).length;
+    const splitByChord676 = async () => {
+      const before = await leafCount();
+      await s.key('E', 'KeyE', 69, CTRL | SHIFT);
+      for (const end = Date.now() + 15000; (await leafCount()) !== before + 1; await sleep(100)) {
+        if (Date.now() > end) throw new Error('timed out waiting for a pane from Ctrl+Shift+E');
+      }
+    };
+    const tree0 = await getLayout(s);
+    const p0 = leaves(tree0)[0].id;
+    await zreq(s, 'layout.set', { layout: { ...tree0, focusedPaneId: p0, root: { kind: 'pane', id: p0, sessionId: null, view: null } } });
+    for (const end = Date.now() + 15000; (await leafCount()) !== 1; await sleep(100)) {
+      if (Date.now() > end) throw new Error('timed out waiting for the tab cut down to one pane');
+    }
+    if ((await usageSwitch()) === 'on') {
+      await pickAttention('Usage record: on');
+      await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off on a rerun');
+    }
+    expect((await usageSwitch()) === 'off', 'the usage record starts off');
+    await splitByChord676();
+    await sleep(500);
+    expect(sizeOf() === offset, `with the switch off a split writes nothing (${sizeOf()} bytes against ${offset})`);
+    await pickAttention('Usage record: off');
+    await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the switch on');
+    expect((await s.evalJs(`JSON.parse(localStorage.getItem('emerald.attention')).usage`)) === true, 'the switch is kept in emerald.attention');
+    await splitByChord676();
+    const mark = await centerOf(s, '.title-bar-mark');
+    await s.click(mark.x, mark.y);
+    await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu open');
+    await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Key cheat sheet').click()`);
+    await s.waitFor(`!!document.querySelector('.cheat-sheet')`, 'the cheat sheet open');
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.cheat-sheet')`, 'the cheat sheet closed');
+    const readLines = () => {
+      let text = '';
+      try {
+        text = fs.readFileSync(record).subarray(offset).toString('utf8');
+      } catch {
+        // Not written yet.
+      }
+      return text
+        .split('\n')
+        .filter((l) => l !== '')
+        .map((l) => JSON.parse(l));
+    };
+    let got = readLines();
+    for (const end = Date.now() + 3000; got.length < 4 && Date.now() < end; await sleep(100)) got = readLines();
+    const pick = (l) => ({ ev: l.ev, ...(l.name === undefined ? {} : { name: l.name }), ...(l.from === undefined ? {} : { from: l.from }), ...(l.ev === 'action' ? {} : { view: l.view }) });
+    const want = [
+      { ev: 'action', name: 'split-vertical', from: 'key' },
+      { ev: 'action', name: 'cheat-sheet', from: 'menu' },
+      { ev: 'view-open', view: 'cheat-sheet' },
+      { ev: 'view-close', view: 'cheat-sheet' },
+    ];
+    expect(got.length === 4 && JSON.stringify(got.map(pick)) === JSON.stringify(want), `the record holds the split, the menu pick and the sheet's open and close, got ${JSON.stringify(got)}`);
+    expect(Number.isInteger(got[3]?.ms), `the close carries its ms, got ${JSON.stringify(got[3])}`);
+    const allowed = new Set(['at', 'ev', 'name', 'from', 'view', 'ms']);
+    expect(got.every((l) => Object.keys(l).every((k) => allowed.has(k))), `every line carries only the known fields, got ${JSON.stringify(got)}`);
+    await pickAttention('Usage record: on');
+    await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off again');
+    expect(ownMtime() === ownBefore, `the person's own usage.jsonl is untouched (${ownBefore} then ${ownMtime()})`);
+    step('M9 fix 676: the usage record writes nothing while off, then the split, the menu pick and the cheat sheet open and close to the private home, and the switch is left off');
   });
   step(blocksRun());
   step('PASS');

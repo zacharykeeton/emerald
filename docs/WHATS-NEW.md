@@ -2,6 +2,36 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 666 to 687, 2026-10-14
+
+Twenty-two fixes, most of them on the browser pane, which is the thing to look at first: a Browser tile in the empty pane, an address bar that takes a bare host or a search, the page kept across a split, the app's keys working from a page, Claude driving the page with `emmer browser`, and Design Mode sending an element of the page to a Claude session. Beside those, a usage record of how you use emerald, off until you turn it on, and a sweep of small fixes to Reveal in Files, the editor and mermaid diagrams. The app's icon is the gem alone now. The daemon goes to level 63, since it now relays `emmer browser` to the window; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.
+
+### Highlights
+
+**A Browser tile.** The empty pane has a third tile, Browser, beside Shell and Claude session: a click opens a browser pane at once with the address box ready. Tab walks the three tiles.
+
+**An address bar that takes what you type.** `example.com` opens as https, `localhost:5173` as http, and words or a single word with no dot search DuckDuckGo. The address shows without `https://` while you are not typing in it. A link the page tries to open that is not a web page, a `file:` link, is said on the error line.
+
+**The page stays put.** A browser pane keeps its page, scroll and form and history alike, when you split beside it, close a pane beside it or move it. And the app's keys work while the page has the keyboard: the prefix, the splits, Focus, the palette. Ctrl+R reloads the page; Ctrl+W and Ctrl+S are the page's.
+
+**Claude drives the page.** `emmer browser` lets a Claude session open a browser pane beside it and work the page while you watch: `snapshot` lists the controls, then `click`, `fill`, `key`, `screenshot`, `wait`, `navigate` and the rest act on them, without taking your keyboard. A click or a key of yours in the page pauses it until you press the pane's Resume. `emmer help browser` lists the verbs.
+
+**Design Mode.** The browser pane's cursor button, or Ctrl+Shift+D, lets you point at an element of the page and click: its HTML, styles, size and a crop go to the Claude session you used last in that tab as one block, ready to say what to change. C copies the block and S the crop instead. Open Notes to gather several picks with a comment each and send them together.
+
+### Details
+
+**A usage record.** The right-click menu of the sidebar's sound button has `Usage record: off`. Turned on, emerald writes a line for each action you run and each view you open to `logs/usage.jsonl` under its home, and never sends it anywhere; `emmer usage report` reads it into a markdown digest.
+
+**Reveal in Files.** Reveal in Files lists the file's folders again before saying `Not in the Files rail`, so a file made a moment ago is found; a second reveal on a row still flashing flashes it again; and a file whose path differs in case from the disk is found.
+
+**The editor.** Sticky scroll is off in every editor, whichever file opened first.
+
+**Mermaid.** Each diagram draws on its own theme, and a draw pass that cannot finish stops rather than holding the next.
+
+**The icon.** The app's icon is the gem alone on a clear ground; the dark rounded square under it, which the taskbar drew as a black plate, is gone. The installed build shows it after the update.
+
+**When the window is slow to close.** The main log now says whether Electron reached its quit, which tells a slow Chromium shutdown from a hang in the app.
+
 ## Fixes 645 to 665, 2026-10-14
 
 Twenty-one fixes, most of them your asks from the last week: a web page in a pane beside your shells, the empty pane's Shell tile picking which shell it starts, Reveal in Files, a pane dragged onto another layout tab, and mermaid diagrams drawn in rendered markdown. The rest are smaller: the pane menu's colours named by what they change, a folder path's Ctrl+click, the row's activity line on the shade, the editor's pop-ups on the Emerald skin, a Claude in a cmd row let go when cmd's prompt comes back, and the code itself now under the MIT licence. The daemon goes to level 62, since it now keeps a browser pane in a layout and lets go of a Claude in a cmd row; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.

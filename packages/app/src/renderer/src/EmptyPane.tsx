@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { hidePaneHere, paneFolder, placeSession, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { defaultKind, emptyKey, folderRows, parentLabel, shellChoice, shellSub, startHead, startLabel } from './empty-pane-model.ts';
+import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startHead, startLabel } from './empty-pane-model.ts';
 import { installedShells } from './daemon-model.ts';
-import type { EmptyKind } from './empty-pane-model.ts';
+import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
+import { recordUse } from './use-record.ts';
 import { formatChord, plainKeyFor } from './keys-model.ts';
 import { describeState, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
 import type { SessionInfo, ShellId } from '@emerald/shared';
@@ -47,7 +48,7 @@ export const PLACEHOLDER_NONE = 'Type > for actions';
 
 // What an empty pane shows (M9 fix 545): what kind to start, then which
 // folder, both filled in so a bare Enter in the box starts something
-// useful; Tab flips the kind, 1 to 9 start in that folder at once, the
+// useful; Tab and Shift+Tab move through the tiles, 1 to 9 start in that folder at once, the
 // arrows move the folder. Under it the jump palette (M21) to show a
 // session that is already running instead: type to filter, and the keys
 // are the palette's again (Enter shows the row here, Shift+Enter beside,
@@ -64,6 +65,9 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   // The split default, else the kind last started from an empty pane
   // (M9 fix 546), else a shell.
   const [kind, setKind] = useState<EmptyKind>(() => defaultKind(getUiState().splitKind, loadEmptyPaneKind()));
+  // The Browser tile (M9 fix 666) is a pick Tab can land on, not a kind:
+  // nothing is remembered of it and the folders do not apply.
+  const [browserPick, setBrowserPick] = useState(false);
   // The folder the person moved the selection to, or null for row 1, so a
   // default row that arrives after mount is selected rather than pushed.
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -186,7 +190,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   const current = Math.min(highlighted, Math.max(0, count - 1));
   const runRow = (row: ActionRow) => {
     onDone();
-    if (row.kind === 'key') void runAction(row.action).catch((err: unknown) => console.warn(`[emerald] ${row.action} failed`, err));
+    if (row.kind === 'key') void runAction(row.action, 'menu').catch((err: unknown) => console.warn(`[emerald] ${row.action} failed`, err));
     else menuHandle?.run(row.run, row.shell);
   };
 
@@ -204,9 +208,16 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   };
   const selectKind = (k: EmptyKind) => {
     setKind(k);
+    setBrowserPick(false);
     setError(null);
   };
+  const openBrowser = () => {
+    if (starting) return;
+    void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url: '' }), paneId).catch((err: unknown) => console.warn('[emerald] browser pane failed', err));
+  };
+  const browserTile = browserViewSupported(daemon);
   const start = (k: EmptyKind, folder: string) => {
+    recordUse(k === 'shell' ? 'empty-start-shell' : 'empty-start-claude');
     if (starting) return;
     setStarting(true);
     setError(null);
@@ -244,12 +255,18 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       const act = emptyKey(ev, folders.length);
       if (act !== null) {
         ev.preventDefault();
-        if (act.act === 'flip') selectKind(kind === 'shell' ? 'claude' : 'shell');
-        else if (act.act === 'move') {
+        if (act.act === 'flip') {
+          const to = nextTile(browserPick ? 'browser' : kind, act.delta, browserTile);
+          if (to === 'browser') setBrowserPick(true);
+          else selectKind(to);
+        } else if (browserPick && (act.act === 'move' || act.act === 'row')) {
+          // The Browser pick has no folder to move or choose.
+        } else if (act.act === 'move') {
           const next = folders[moveHighlight(selectedIndex, act.delta, folders.length)];
           if (next !== undefined) selectFolder(next.folder);
         } else if (act.act === 'start') {
-          if (selected !== null) start(kind, selected.folder);
+          if (browserPick) openBrowser();
+          else if (selected !== null) start(kind, selected.folder);
         } else if (act.act === 'row') {
           const row = folders[act.index];
           if (row !== undefined) start(kind, row.folder);
@@ -389,7 +406,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     );
   }
 
-  const label = selected === null ? { head: startHead(kind, pick), tail: '' } : startLabel(kind, selected.folder, pick);
+  const label = browserPick ? { head: 'Open web page', tail: '' } : selected === null ? { head: startHead(kind, pick), tail: '' } : startLabel(kind, selected.folder, pick);
   return (
     <div className="empty-pane" data-mode="empty" data-filtering={filtering ? 'true' : undefined} data-picker={pickerPaneId === paneId ? 'open' : undefined} ref={rootRef} tabIndex={-1}>
       {/* The body holds the padding and the gaps, since the narrow rules
@@ -405,10 +422,11 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
             <div className="muted">Right-click any pane for more, or the {skin === 'emerald' ? 'gem' : 'Z'} at the top left.</div>
           </div>
         )}
-        {/* What kind: a click selects, it never starts. */}
-        <div className="empty-kinds">
-          <KindTile kind="shell" pressed={kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
-          <KindTile kind="claude" pressed={kind === 'claude'} glyph={skin === 'emerald' ? '✦' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
+        {/* What kind: a click on Shell or Claude session selects and never starts; Browser opens the page at once, having no folder to choose. */}
+        <div className="empty-kinds" data-tiles={browserTile ? 3 : 2}>
+          <KindTile kind="shell" pressed={!browserPick && kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
+          <KindTile kind="claude" pressed={!browserPick && kind === 'claude'} glyph={skin === 'emerald' ? '✦' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
+          {browserTile && <KindTile kind="browser" pressed={browserPick} glyph="://" name="Browser" hint="" sub="a URL, a host or a search" onPick={openBrowser} onMouseDown={keepFocus} />}
         </div>
         {shellMenu !== null && (
           <Menu
@@ -458,7 +476,7 @@ Double-click to start here`}
         </div>
         <div className="empty-start-block">
           <div className="empty-row empty-start-row">
-            <button className="empty-start" disabled={selected === null || starting} onClick={() => selected !== null && start(kind, selected.folder)}>
+            <button className="empty-start" disabled={browserPick ? starting : selected === null || starting} onClick={() => (browserPick ? openBrowser() : selected !== null && start(kind, selected.folder))}>
               {/* One inline label, so the button's text reads as one line. */}
               <span className="empty-start-label">
                 {label.head}
@@ -469,7 +487,7 @@ Double-click to start here`}
             <button className="empty-other" onClick={other}>
               Another folder…
             </button>
-            {kind === 'claude' && (
+            {kind === 'claude' && !browserPick && (
               <button className="empty-more" onClick={() => openNewSession(paneId, { folder: selected?.folder ?? '', split: false })}>
                 More…
               </button>
@@ -486,18 +504,6 @@ Double-click to start here`}
             between the pairs, never between a button and the key after it,
             which read as the next button's key in a half-width pane. */}
         <div className="empty-row empty-foot">
-          {/* M9 fix 659: a web page in this pane. A bare button with no
-              key, outside every .empty-pair, which two scripts count and
-              read for a key; offered once the daemon keeps the kind. */}
-          {browserViewSupported(daemon) && (
-            <button
-              className="secondary empty-browser"
-              title="A web page in this pane: a URL or host:port"
-              onClick={() => void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url: '' }), paneId).catch((err: unknown) => console.warn('[emerald] browser pane failed', err))}
-            >
-              Web page
-            </button>
-          )}
           <span className="empty-pair">
             <button className="secondary empty-split-right" onClick={() => splitHere(paneId, 'row')}>
               Split right
@@ -526,9 +532,9 @@ Double-click to start here`}
   );
 }
 
-// One of the two kind tiles: the glyph, the name, the key that picks it
+// One of the kind tiles: the glyph, the name, the key that picks it
 // and a line on what it starts.
-function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseDown, caret }: { kind: EmptyKind; pressed: boolean; glyph: string; gem?: boolean | undefined; name: string; hint: string; sub: string; onPick: () => void; onMouseDown: (ev: React.MouseEvent) => void; caret?: { ref: React.RefObject<HTMLSpanElement | null>; open: boolean; onOpen: () => void } | undefined }) {
+function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseDown, caret }: { kind: EmptyTile; pressed: boolean; glyph: string; gem?: boolean | undefined; name: string; hint: string; sub: string; onPick: () => void; onMouseDown: (ev: React.MouseEvent) => void; caret?: { ref: React.RefObject<HTMLSpanElement | null>; open: boolean; onOpen: () => void } | undefined }) {
   return (
     <button className="empty-kind" data-kind={kind} aria-pressed={pressed} onMouseDown={onMouseDown} onClick={onPick}>
       <span className="empty-kind-top">

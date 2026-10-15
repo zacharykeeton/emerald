@@ -1,6 +1,6 @@
 {
   "name": "@emerald/app",
-  "version": "0.1.645",
+  "version": "0.1.666",
   "private": true,
   "description": "emerald desktop app: pixels and keystrokes only, the daemon owns the state",
   "license": "MIT",
@@ -52,6 +52,8 @@
     "verify:load": "node scripts/verify-m9-load.mjs",
     "verify:skin": "node scripts/verify-m9-skin.mjs",
     "verify:browser": "node scripts/verify-m9-browser.mjs",
+    "verify:browser-drive": "node scripts/verify-m9-browser-drive.mjs",
+    "verify:design": "node scripts/verify-m9-design.mjs",
     "verify:tour": "node scripts/tour.mjs",
     "bench:latency": "node scripts/bench-latency.mjs",
     "bench:status-cadence": "node scripts/bench-status-cadence.mjs"

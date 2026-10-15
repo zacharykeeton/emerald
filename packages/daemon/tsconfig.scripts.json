@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "scripts",
+    "types": ["node"]
+  },
+  "include": ["scripts"],
+  "references": [
+    { "path": "../shared" }
+  ]
+}

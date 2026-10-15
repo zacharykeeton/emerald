@@ -34,7 +34,8 @@ export type Action =
   | 'history-back'
   | 'history-forward'
   | 'whats-new'
-  | 'open-file';
+  | 'open-file'
+  | 'design-mode';
 
 // A key with its modifiers. `code` is KeyboardEvent.code so a binding does
 // not depend on Shift changing the key name.
@@ -151,6 +152,9 @@ export const BINDINGS: readonly Binding[] = [
   // mnemonic for "go to file" (Ctrl+G there opens the line-number box,
   // close enough in spirit and free here either way).
   { action: 'open-file', label: 'Open a file…', plain: cs('KeyG'), prefixed: chord('KeyO', { shift: true }) },
+  // M9 fix 674: Design Mode on the browser pane. D was free both plain
+  // and after the prefix; Ctrl+Shift+D used to reach a shell as ^D.
+  { action: 'design-mode', label: 'Design Mode', plain: cs('KeyD'), prefixed: chord('KeyD') },
 ];
 
 export function chordMatches(c: Chord, ev: KeyLike): boolean {

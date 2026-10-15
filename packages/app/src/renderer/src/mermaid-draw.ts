@@ -8,6 +8,8 @@ import { diagramErrorLine, remember } from './markdown-mermaid.ts';
 import { VIEW_CHANGE_EVENT } from './view-find-model.ts';
 
 type Mermaid = typeof import('mermaid').default;
+// What a draw needs of mermaid, so a test can hand in a fake.
+export type MermaidLike = Pick<Mermaid, 'initialize' | 'render'>;
 type Drawn = { svg: string } | { error: string };
 
 let loading: Promise<Mermaid> | null = null;
@@ -28,6 +30,25 @@ function load(): Promise<Mermaid> {
     });
   }
   return loading;
+}
+
+// mermaid queues its renders but not initialize, so a second pass on
+// another theme could initialize between the first pass's awaits and the
+// first pass's later boxes would draw on the wrong theme (and be cached
+// under the first pass's key). Every render goes through this chain with
+// its own initialize in front of it, so none comes between a render and
+// its own.
+let chain: Promise<unknown> = Promise.resolve();
+export function renderThemed(m: MermaidLike, theme: MermaidTheme, id: string, source: string): Promise<{ svg: string }> {
+  const run = chain.then(() => {
+    // Strict, so DOMPurify cleans the SVG and a label carries no script
+    // or link; suppressErrorRendering, so a parse failure throws with
+    // mermaid's temporary element gone and no error graphic drawn.
+    m.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme });
+    return m.render(id, source);
+  });
+  chain = run.catch(() => undefined);
+  return run;
 }
 
 function changed(el: HTMLElement) {
@@ -61,10 +82,10 @@ function write(div: HTMLElement, key: string, drawn: Drawn, theme: MermaidTheme)
 // Draws every box in the article, one at a time in document order, from
 // the cache where it can. live() goes false when the view has re-rendered
 // or gone, and a draw that finishes after that is dropped.
-export async function drawMermaid(article: HTMLElement, theme: MermaidTheme, live: () => boolean): Promise<void> {
+export async function drawMermaid(article: HTMLElement, theme: MermaidTheme, live: () => boolean, loadMermaid: () => Promise<MermaidLike> = load): Promise<void> {
   const divs = [...article.querySelectorAll<HTMLElement>('.md-mermaid-diagram')];
   if (divs.length === 0) return;
-  let mermaid: Mermaid | null = null;
+  let mermaid: MermaidLike | null = null;
   for (const div of divs) {
     const source = div.parentElement?.querySelector('.md-mermaid-code code')?.textContent ?? '';
     const key = `${theme}\n${source}`;
@@ -76,7 +97,7 @@ export async function drawMermaid(article: HTMLElement, theme: MermaidTheme, liv
     }
     if (mermaid === null) {
       try {
-        mermaid = await load();
+        mermaid = await loadMermaid();
       } catch (err) {
         console.warn('[emerald] mermaid failed to load', err);
         if (!live()) return;
@@ -86,20 +107,19 @@ export async function drawMermaid(article: HTMLElement, theme: MermaidTheme, liv
         return;
       }
       if (!live()) return;
-      // Strict, so DOMPurify cleans the SVG and a label carries no script
-      // or link; suppressErrorRendering, so a parse failure throws with
-      // mermaid's temporary element gone and no error graphic drawn.
-      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme });
     }
     let drawn: Drawn;
     try {
-      const { svg } = await mermaid.render(`emerald-mermaid-${++seq}`, source);
+      const { svg } = await renderThemed(mermaid, theme, `emerald-mermaid-${++seq}`, source);
       drawn = { svg };
     } catch (err) {
       drawn = { error: diagramErrorLine(err) };
     }
     remember(cache, key, drawn);
-    if (!live() || !div.isConnected) continue;
+    // A pass whose view re-rendered stops; a box that left the page alone
+    // is skipped.
+    if (!live()) return;
+    if (!div.isConnected) continue;
     write(div, key, drawn, theme);
   }
 }

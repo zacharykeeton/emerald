@@ -328,8 +328,11 @@ function run() {
   console.log(
     `export-public: committed ${short} "Emerald ${version}" on top of ${parent ?? 'nothing (the first commit)'} as ${AUTHOR_NAME} <${AUTHOR_EMAIL}>`,
   );
-  console.log(`export-public: nothing is pushed. After the review, from ${out}:`);
-  console.log(`  git -c credential.helper= -c "credential.helper=!gh auth git-credential" push origin HEAD:${branch}`);
+  // The push is the user's, pasted after `!` at a Claude Code prompt, which
+  // is bash: a backslashed -C path loses its backslashes there (the release
+  // of 0.1.645), so the line names the folder with forward slashes.
+  console.log(`export-public: nothing is pushed. After the review, from any folder:`);
+  console.log(`  git -C ${out.replace(/\\/g, '/')} -c credential.helper= -c "credential.helper=!gh auth git-credential" push origin HEAD:${branch}`);
   process.exit(0);
 }
 

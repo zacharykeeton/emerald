@@ -115,8 +115,10 @@ try {
   step(`A=${A.slice(0, 8)} in pane 1, C=${C.slice(0, 8)} (claude, exited) in pane 2, B=${B.slice(0, 8)} unshown`);
   expect(JSON.stringify(await groupOrder(s)) === JSON.stringify([home, 'exited']), 'home group then exited, got ' + JSON.stringify(await groupOrder(s)));
 
-  const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+  // Read per post: fix 194's step below restarts the daemon, and the new one has a hook port and token of its own.
+  const daemonInfo = () => JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
   const post = async (sessionId, payload) => {
+    const daemon = daemonInfo();
     const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
       method: 'POST',
       headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sessionId },
@@ -640,21 +642,10 @@ try {
     expect(cmdAfter.command === null && cmdAfter.state === 'idle', `a cmd row never has a command, got ${JSON.stringify(cmdAfter.command)} ${cmdAfter.state}`);
     // M9 fix 649: cmd writes no C, so a Claude bound in a cmd row is left
     // by its prompt coming back: an empty Enter draws the prompt, whose D
-    // unbinds the row once a hook of the conversation has landed. The
-    // daemon restarted at fix 194 above, so the hook port is read again
-    // rather than taken from post's copy of daemon.json.
-    const postNow = async (sessionId, payload) => {
-      const now = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-      const res = await fetch(`http://127.0.0.1:${now.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': now.hookToken, 'X-Emerald-Session': sessionId },
-        body: JSON.stringify({ session_id: 'sim-' + sessionId.slice(0, 8), cwd: 'C:/sim', ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204, got ${res.status}`);
-    };
-    await postNow(cmdShell.id, { hook_event_name: 'SessionStart', source: 'startup' });
+    // unbinds the row once a hook of the conversation has landed.
+    await post(cmdShell.id, { hook_event_name: 'SessionStart', source: 'startup' });
     await untilRecord(cmdShell.id, 'the cmd row bound by the SessionStart', 4000, (r) => r.claudeSessionId === 'sim-' + cmdShell.id.slice(0, 8));
-    await postNow(cmdShell.id, { hook_event_name: 'UserPromptSubmit' });
+    await post(cmdShell.id, { hook_event_name: 'UserPromptSubmit' });
     await typeIn(cmdShell.id, '');
     const leftCmd = await untilRecord(cmdShell.id, "cmd's prompt to leave the Claude", 8000, (r) => r.claudeSessionId === null);
     expect(same(leftCmd.cwd, path.dirname(home)) && leftCmd.state === 'idle' && leftCmd.command === null, `the cmd row is a shell again in its folder, got ${leftCmd.cwd} ${leftCmd.state} ${JSON.stringify(leftCmd.command)}`);

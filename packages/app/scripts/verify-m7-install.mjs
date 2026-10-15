@@ -744,14 +744,17 @@ async function gapLaunches(env, stub) {
   expect(stampAfter.version === version, `installed.json is stamped ${stampAfter.version} again`);
   await until("the fresh launch's daemon", () => readDaemonInfo() !== null, 20000);
   // M9 fix 631: closed the way a person closes the window, so the quit
-  // runs through window-all-closed and a hang names its holders.
+  // runs through window-all-closed. Its `active resources` line reads the
+  // same on a clean exit and names no holder (fix 671); the `quit, exit
+  // code` line says whether Electron reached its quit.
   const closeLogSize = fs.existsSync(mainLog) ? fs.statSync(mainLog).size : 0;
   await s.send('Page.close').catch(() => {});
   s.close();
   await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000).catch((err) => {
     const since = fs.existsSync(mainLog) ? fs.readFileSync(mainLog, 'utf8').slice(closeLogSize) : '';
     const line = since.split(/\r?\n/).filter((l) => l.includes('window-all-closed; active resources:')).pop();
-    log(`the window's exit timed out; main log since the close: ${line ?? 'no window-all-closed line'}`);
+    const quit = since.split(/\r?\n/).filter((l) => l.includes('quit, exit code')).pop();
+    log(`the window's exit timed out; main log since the close: ${line ?? 'no window-all-closed line'}; ${quit ?? 'no quit line'}`);
     const list = powershell(`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Emerald.exe' -and $_.ExecutablePath -eq '${exe}' } | ForEach-Object { 'pid ' + $_.ProcessId + ' started ' + $_.CreationDate.ToString('HH:mm:ss.fff') + ': ' + $_.CommandLine }`).split(/\r?\n/).filter(Boolean).join('; ');
     log(`Emerald.exe under ${exe}: ${list || 'none'}`);
     throw err;

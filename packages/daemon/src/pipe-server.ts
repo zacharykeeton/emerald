@@ -1,8 +1,8 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { DAEMON_FEATURE_LEVEL, Limits, browserUrl, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
-import type { ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -69,6 +69,9 @@ export interface PipeServerOptions {
   // How long a file.open that waits waits for the window's answer
   // (M9 fix 375); the tests shorten it.
   fileOpenAckMs?: number;
+  // How long past a browser.run's own budget the daemon holds the reply
+  // (M9 fix 672); the tests shorten it.
+  browserRunSlackMs?: number;
   // The hook sink's memory of Test events (M9 fix 606); a server without
   // one (the tests) answers false.
   hookTestArrived?: (testId: string) => boolean;
@@ -104,10 +107,16 @@ interface ServerHooks {
   requestFileOpen: (req: FileOpenAsk) => Promise<FileOpenAnswer>;
   // The window's answer to a push that carried an openId (M9 fix 375).
   fileOpenDone: (openId: number, answer: Omit<FileOpenAnswer, 'apps'>) => void;
+  // Push browser.requested to the windows at level 63 (M9 fix 672) and
+  // hold the reply for the first browser.done, or the deadline.
+  requestBrowserRun: (req: BrowserRunAsk) => Promise<BrowserRunAnswer>;
+  browserRunDone: (runId: number, answer: BrowserAnswer) => void;
 }
 
 type FileOpenAsk = Requests['file.open']['req'];
 type FileOpenAnswer = Requests['file.open']['res'];
+type BrowserRunAsk = Requests['browser.run']['req'];
+type BrowserRunAnswer = Requests['browser.run']['res'];
 
 // How long a file.open that waits waits for the window's answer
 // before replying with the count alone (M9 fix 375): a window that
@@ -115,10 +124,18 @@ type FileOpenAnswer = Requests['file.open']['res'];
 // the CLI. The renderer answers within a frame on a quiet box.
 export const FILE_OPEN_ACK_MS = 3000;
 
+// How long past a browser.run's own budget the daemon holds the reply
+// (M9 fix 672), so the window's own timeout answer arrives first.
+export const BROWSER_RUN_SLACK_MS = 5000;
+
 // The first app level whose hello says its level (M9 fix 582). Every
 // window from level 55 answers an open that carries an id, but only one
 // that says its level can be told from one that stays silent.
 export const FILE_OPEN_ANSWER_LEVEL = 58;
+
+// The first app level whose main process drives a browser pane's page
+// (M9 fix 672); an older window never gets the push.
+export const BROWSER_DRIVE_LEVEL = 63;
 
 // Grey, on its own line, like the renderer's own exit note.
 const SCROLLBACK_LOST_NOTE = '\x1b[90m[scrollback lost: this session ended before emmerd restarted]\x1b[0m\r\n';
@@ -184,6 +201,10 @@ export class PipeServer {
   // 375), by the openId the push carried.
   private openSeq = 0;
   private readonly openWaits = new Map<number, (answer: Omit<FileOpenAnswer, 'apps'>) => void>();
+  // The browser.run replies held for a window's browser.done (M9 fix
+  // 672), by the runId the push carried.
+  private runSeq = 0;
+  private readonly runWaits = new Map<number, (answer: BrowserAnswer) => void>();
   private closing = false;
   private readonly manager: SessionManager;
   private readonly layouts: LayoutStore;
@@ -311,6 +332,14 @@ export class PipeServer {
         this.openWaits.delete(openId);
         resolve(answer);
       },
+      requestBrowserRun: (req) => this.requestBrowserRun(req),
+      browserRunDone: (runId, answer) => {
+        // An unknown or late runId is dropped, as fileOpenDone drops one.
+        const resolve = this.runWaits.get(runId);
+        if (resolve === undefined) return;
+        this.runWaits.delete(runId);
+        resolve(answer);
+      },
     });
     this.clients.add(client);
     socket.once('close', () => {
@@ -366,6 +395,38 @@ export class PipeServer {
       this.openWaits.set(openId, (answer) => {
         clearTimeout(timer);
         resolve({ apps, ...answer, ...(answering ? { answered: true } : {}) });
+      });
+    });
+  }
+
+  // The relay of a browser.run (M9 fix 672), shaped as the file relay:
+  // the push to each window on the app topic that said level 63, never
+  // to an older one, and the reply held for the first browser.done or
+  // the verb's budget and the slack. No argument is logged, since an
+  // eval or a fill can carry a secret.
+  private requestBrowserRun(req: BrowserRunAsk): Promise<BrowserRunAnswer> {
+    const { paneId, verb, args, by, timeoutMs } = req;
+    const apps = this.subscribedCount('app');
+    if (apps === 0) return Promise.resolve({ apps: 0 });
+    const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= BROWSER_DRIVE_LEVEL);
+    const short = paneId.slice(0, 8);
+    if (drivers.length === 0) {
+      this.opts.log.info(`browser: no window at level ${BROWSER_DRIVE_LEVEL} to drive pane ${short}`);
+      return Promise.resolve({ apps, drivers: 0 });
+    }
+    const runId = ++this.runSeq;
+    this.opts.log.info(`browser: ${verb} on pane ${short} for ${by} relayed to the app`);
+    for (const client of drivers) client.send({ type: 'browser.requested', runId, paneId, verb, args, by, timeoutMs });
+    const wait = timeoutMs + (this.opts.browserRunSlackMs ?? BROWSER_RUN_SLACK_MS);
+    return new Promise<BrowserRunAnswer>((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.runWaits.delete(runId)) return;
+        this.opts.log.info(`browser: no answer from the window for ${verb} within ${wait} ms`);
+        resolve({ apps, drivers: drivers.length, answered: false });
+      }, wait);
+      this.runWaits.set(runId, (answer) => {
+        clearTimeout(timer);
+        resolve({ apps, drivers: drivers.length, answered: true, answer });
       });
     });
   }
@@ -750,6 +811,33 @@ class ClientConnection {
         if (req.besidePane !== undefined) answer.besidePane = expectString(req, 'besidePane');
         if (req.besideTab !== undefined) answer.besideTab = expectString(req, 'besideTab');
         this.hooks.fileOpenDone(expectNumber(req, 'openId'), answer);
+        return {};
+      }
+      case 'browser.run': {
+        // M9 fix 672: the daemon checks the shape; the window finds the
+        // pane's page and runs the verb.
+        const paneId = expectString(req, 'paneId');
+        const verb = (req as Record<string, unknown>)['verb'];
+        if (typeof verb !== 'string' || !(BROWSER_VERBS as readonly string[]).includes(verb)) {
+          throw new SessionError('bad-request', `verb must be one of ${BROWSER_VERBS.join(', ')}`);
+        }
+        const args = (req as Record<string, unknown>)['args'];
+        if (!Array.isArray(args) || args.length > 2 || !args.every((a) => typeof a === 'string' && a.length <= BROWSER_ARG_CHARS)) {
+          throw new SessionError('bad-request', `args must be at most two strings of ${BROWSER_ARG_CHARS} characters or fewer`);
+        }
+        const by = (req as Record<string, unknown>)['by'];
+        if (typeof by !== 'string' || by.length > 100) throw new SessionError('bad-request', 'by must be a name of 100 characters or fewer');
+        const timeoutMs = (req as Record<string, unknown>)['timeoutMs'];
+        if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < BROWSER_TIMEOUT_MIN_MS || timeoutMs > BROWSER_TIMEOUT_MAX_MS) {
+          throw new SessionError('bad-request', `timeoutMs must be a whole number from ${BROWSER_TIMEOUT_MIN_MS} to ${BROWSER_TIMEOUT_MAX_MS}`);
+        }
+        return this.hooks.requestBrowserRun({ paneId, verb: verb as BrowserVerb, args: args as string[], by, timeoutMs });
+      }
+      case 'browser.done': {
+        const runId = expectNumber(req, 'runId');
+        const answer = (req as Record<string, unknown>)['answer'];
+        if (!isBrowserAnswer(answer)) throw new SessionError('bad-request', 'answer must be { ok, text } with a reason when not ok');
+        this.hooks.browserRunDone(runId, answer);
         return {};
       }
       case 'hooks.test': {

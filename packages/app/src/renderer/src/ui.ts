@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { isShellId, isSidebarOrder } from '@emerald/shared';
-import type { PaneView, SessionState, ShellId, SidebarOrder } from '@emerald/shared';
+import type { DesignNote, PaneView, SessionState, ShellId, SidebarOrder } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
 import type { EmptyKind } from './empty-pane-model.ts';
 import { acknowledge, emptyAttention, hushAll, isAttentionSound, markUnread, nextSound, observe, setHushed } from './attention-model.ts';
@@ -89,6 +89,12 @@ export interface UiState {
   // after a moment; null is the usual state.
   cornerNote: string | null;
   cheatSheetOpen: boolean;
+  // Design Mode (M9 fix 674): the browser pane in the mode, one per
+  // window. Fix 675: each browser pane's tray of notes, by pane id, and
+  // the pane whose tray is open; never persisted, so a reload empties it.
+  designPaneId: string | null;
+  designNotes: Readonly<Record<string, readonly DesignNote[]>>;
+  designTrayPaneId: string | null;
   // M9 fix 248: a close that met unsaved edits, waiting on the person:
   // the file asked about and what to do once it is saved or discarded
   // (the close again, which asks about the next dirty file if there is
@@ -149,6 +155,10 @@ export interface UiState {
   // Whether an arrival while the window is not focused also posts a system
   // notification. Kept in localStorage beside the sound.
   attentionNotify: boolean;
+  // Whether the usage record (M9 fix 676) writes logs/usage.jsonl. Off
+  // until switched on from the speaker button's menu, kept beside the two
+  // above.
+  usageRecord: boolean;
   // Which chime this window plays (M9 fix 47): the real one, a muted one
   // under a private EMERALD_HOME, or the test chime when the run asked to
   // hear one. From the main process at start; real until it answers.
@@ -295,6 +305,9 @@ let state: UiState = {
   prefixArmed: false,
   cornerNote: null,
   cheatSheetOpen: false,
+  designPaneId: null,
+  designNotes: {},
+  designTrayPaneId: null,
   closeAsk: null,
   fontSizes: loadFontSizes(),
   sessionDrag: null,
@@ -402,6 +415,21 @@ export function flashCornerNote(text: string): void {
     cornerTimer = null;
     if (state.cornerNote !== null) setState({ ...state, cornerNote: null });
   }, CORNER_NOTE_MS);
+}
+
+// Design Mode on one browser pane, or off (M9 fix 674); turning it on
+// for one pane turns it off for any other.
+export function setDesignPane(paneId: string | null): void {
+  if (state.designPaneId !== paneId) setState({ ...state, designPaneId: paneId });
+}
+
+// A pane's tray (M9 fix 675): its notes, and whether it is the open one.
+export function setDesignNotes(paneId: string, update: (notes: readonly DesignNote[]) => readonly DesignNote[]): void {
+  setState({ ...state, designNotes: { ...state.designNotes, [paneId]: update(state.designNotes[paneId] ?? []) } });
+}
+
+export function setDesignTray(paneId: string | null): void {
+  if (state.designTrayPaneId !== paneId) setState({ ...state, designTrayPaneId: paneId });
 }
 
 export function openCheatSheet(): void {
@@ -1379,29 +1407,35 @@ export function setAttentionNotify(attentionNotify: boolean): void {
   saveAttentionSettings();
 }
 
+export function setUsageRecord(usageRecord: boolean): void {
+  setState({ ...state, usageRecord });
+  saveAttentionSettings();
+}
+
 export function setChimeMode(chimeMode: ChimeMode): void {
   if (chimeMode !== state.chimeMode) setState({ ...state, chimeMode });
 }
 
 function saveAttentionSettings(): void {
   try {
-    localStorage.setItem(ATTENTION_KEY, JSON.stringify({ sound: state.attentionSound, notify: state.attentionNotify }));
+    localStorage.setItem(ATTENTION_KEY, JSON.stringify({ sound: state.attentionSound, notify: state.attentionNotify, usage: state.usageRecord }));
   } catch {
     // The settings just will not survive the restart.
   }
 }
 
-function loadAttentionSettings(): Pick<UiState, 'attentionSound' | 'attentionNotify'> {
-  const defaults = { attentionSound: 'repeat' as const, attentionNotify: true };
+function loadAttentionSettings(): Pick<UiState, 'attentionSound' | 'attentionNotify' | 'usageRecord'> {
+  const defaults = { attentionSound: 'repeat' as const, attentionNotify: true, usageRecord: false };
   try {
     const raw = localStorage.getItem(ATTENTION_KEY);
     if (raw === null) return defaults;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return defaults;
-    const { sound, notify } = parsed as { sound?: unknown; notify?: unknown };
+    const { sound, notify, usage } = parsed as { sound?: unknown; notify?: unknown; usage?: unknown };
     return {
       attentionSound: isAttentionSound(sound) ? sound : defaults.attentionSound,
       attentionNotify: typeof notify === 'boolean' ? notify : defaults.attentionNotify,
+      usageRecord: typeof usage === 'boolean' ? usage : false,
     };
   } catch {
     return defaults;

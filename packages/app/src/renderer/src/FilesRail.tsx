@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
-import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealFolders, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
@@ -235,16 +235,22 @@ export function FilesRail() {
   }, []);
 
   const list = (dir: string) =>
-    void window.emerald.files
+    window.emerald.files
       .list(dir, liftKeep(liftChain.current, dir))
-      .then((listing: FileListing) => setModel((m) => applyListing(m, dir, listing)))
-      .catch((err: unknown) => console.warn(`[emerald] could not list ${dir}`, err));
+      .then((listing: FileListing) => {
+        setModel((m) => applyListing(m, dir, listing));
+        return listing;
+      })
+      .catch((err: unknown) => {
+        console.warn(`[emerald] could not list ${dir}`, err);
+        return undefined;
+      });
 
   // A folder is listed the first time it is open on screen; the main
   // process watches exactly the open set.
   useEffect(() => {
     for (const dir of openRef.current) {
-      if (!model.listings.has(dir)) list(dir);
+      if (!model.listings.has(dir)) void list(dir);
     }
     void window.emerald.files
       .watch(watchOrder(openRef.current, expandedRef.current, tabFoldersRef.current))
@@ -259,7 +265,7 @@ export function FilesRail() {
         // listing alone, since it holds names and kinds only; a git push
         // carries no info and relists.
         if (info?.renamed === false) return;
-        if (openRef.current.includes(dir)) list(dir);
+        if (openRef.current.includes(dir)) void list(dir);
       }),
     [],
   );
@@ -271,7 +277,7 @@ export function FilesRail() {
   listingsRef.current = model.listings;
   const relist = () => {
     for (const dir of openRef.current) {
-      if (listingsRef.current.has(dir)) list(dir);
+      if (listingsRef.current.has(dir)) void list(dir);
     }
     setRefreshTick((t) => t + 1);
   };
@@ -301,9 +307,14 @@ export function FilesRail() {
   // root or a listing, and either shows the row (selected, scrolled to,
   // flashed once) or says it cannot. The timer only wakes the read at the
   // deadline, since nothing else may change by then.
-  const revealing = useRef<{ path: string; seq: number; until: number } | null>(null);
+  const revealing = useRef<{ path: string; seq: number; until: number; relist: 'none' | 'pending' | 'done'; fresh: Map<string, FileListing> } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
-  const [flashRow, setFlashRow] = useState<string | null>(null);
+  // The n alternates the row's data-flash between 'a' and 'b' (M9 fix 684),
+  // so a second reveal on a row still flashing restarts the animation: a
+  // changed animation-name restarts it where a changed value under one
+  // rule does not. flashSeq is never reset, so two reveals always differ.
+  const [flashRow, setFlashRow] = useState<{ path: string; n: number } | null>(null);
+  const flashSeq = useRef(0);
   const [scrollToRow, setScrollToRow] = useState<string | null>(null);
   const revealSeq = revealFile?.seq ?? null;
   useEffect(() => {
@@ -315,7 +326,7 @@ export function FilesRail() {
       liftChain.current = [];
       setLift(null);
     }
-    revealing.current = { path, seq, until: Date.now() + REVEAL_IN_FILES_MS };
+    revealing.current = { path, seq, until: Date.now() + REVEAL_IN_FILES_MS, relist: 'none', fresh: new Map() };
     setRevealTick((t) => t + 1);
     const timer = setTimeout(() => setRevealTick((t) => t + 1), REVEAL_IN_FILES_MS + 20);
     return () => clearTimeout(timer);
@@ -327,12 +338,44 @@ export function FilesRail() {
     if (step.kind === 'shown') {
       revealing.current = null;
       setModel((m) => select(m, step.row));
-      setFlashRow(step.row);
+      setFlashRow({ path: step.row, n: ++flashSeq.current });
       setScrollToRow(step.row);
       clearRevealFile(r.seq);
       return;
     }
-    if (step.kind === 'missing' || Date.now() >= r.until) {
+    if (Date.now() >= r.until) {
+      revealing.current = null;
+      flashCornerNote('Not in the Files rail');
+      clearRevealFile(r.seq);
+      return;
+    }
+    if (step.kind === 'missing') {
+      // A folder listed before and closed since keeps a stale listing, so
+      // a file made meanwhile reads as missing; list the file's listed
+      // folders once more before saying so (M9 fix 683).
+      if (r.relist === 'pending') return;
+      if (r.relist === 'none') {
+        r.relist = 'pending';
+        const dirs = [...model.listings.keys()].filter((d) => isUnder(d, r.path));
+        void Promise.all(dirs.map((d) => list(d))).then((got) => {
+          if (revealing.current !== r) return;
+          dirs.forEach((d, i) => {
+            const l = got[i];
+            if (l !== undefined) r.fresh.set(d, l);
+          });
+          r.relist = 'done';
+          setRevealTick((t) => t + 1);
+        });
+        return;
+      }
+      // The render the tick causes can still hold the model from before the
+      // fresh listings were applied (seen in verify:files: a file made while
+      // the folder was closed said Not in the Files rail), so it says so only
+      // once every fresh listing is in the model; their arrival runs this
+      // effect again, and the deadline above ends a wait that never ends.
+      for (const [d, l] of r.fresh) {
+        if (model.listings.get(d) !== l) return;
+      }
       revealing.current = null;
       flashCornerNote('Not in the Files rail');
       clearRevealFile(r.seq);
@@ -341,8 +384,8 @@ export function FilesRail() {
     // Outside (the root has not moved to the file's repository yet) or
     // waiting: open what is known to be on the way and wait for the
     // listings the open set asks for.
-    const folders = model.root === null ? null : revealFolders(model.root, r.path);
-    if (folders !== null && folders.some((d) => !model.expanded.has(d))) setModel((m) => folders.reduce(expandFolder, m));
+    const open = step.kind === 'waiting' ? step.open : undefined;
+    if (open !== undefined && !model.expanded.has(open)) setModel((m) => expandFolder(m, open));
   }, [model, shown, revealTick]);
   // The scroll waits for the row to be in the DOM, so it is a layout
   // effect after every render until the row is there.
@@ -763,7 +806,7 @@ export function FilesRail() {
                 onContextMenu(ev, row.path, row.kind);
               }}
               draggable={filesDrag && row.type === 'entry' && row.kind === 'file'}
-              flash={row.type === 'entry' && row.path === flashRow}
+              flash={row.type === 'entry' && flashRow !== null && row.path === flashRow.path ? (flashRow.n % 2 === 0 ? 'a' : 'b') : undefined}
             />
             ),
           )}
@@ -1413,7 +1456,7 @@ interface FileRowProps {
   // row under a daemon that keeps the kind; a folder row drags nothing.
   draggable: boolean;
   // The row Reveal in Files just showed (M9 fix 652), flashed once.
-  flash: boolean;
+  flash?: 'a' | 'b' | undefined;
 }
 
 function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, selected, onClick, onDoubleClick, onContextMenu, draggable, flash }: FileRowProps) {
@@ -1435,7 +1478,7 @@ function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, sel
       data-depth={row.depth}
       data-expanded={row.expanded || undefined}
       data-selected={selected || undefined}
-      data-flash={flash || undefined}
+      data-flash={flash}
       data-git={status}
       title={status === undefined ? row.name : `${row.name} (${status})`}
       data-draggable={draggable || undefined}

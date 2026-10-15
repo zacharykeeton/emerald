@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, revealFolders, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, canEditFrom, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import type { Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -81,15 +81,6 @@ test('walk: rows in listing order with depth, expanded folders visited, collapse
   assert.equal(collapseAll(closed).expanded.size, 0);
 });
 
-test('revealFolders: the folders down to the file, the root child first; [] in the root; null elsewhere (M9 fix 652)', () => {
-  assert.deepEqual(revealFolders('C:\\repo', 'C:\\repo\\a\\b\\f.txt'), ['C:\\repo\\a', 'C:\\repo\\a\\b']);
-  assert.deepEqual(revealFolders('C:\\repo', 'C:\\repo\\f.txt'), []);
-  assert.equal(revealFolders('C:\\repo', 'D:\\other\\f.txt'), null);
-  assert.equal(revealFolders('C:\\repo', 'C:\\repository\\f.txt'), null);
-  // Forward slashes and another case read the same.
-  assert.deepEqual(revealFolders('c:/REPO/', 'C:/repo/a/b/f.txt'), ['c:\\REPO\\a', 'c:\\REPO\\a\\b']);
-});
-
 test('revealStep: outside, waiting, missing or shown in the listing case (M9 fix 652)', () => {
   const file = 'C:\\repo\\a\\b\\f.txt';
   let m = setRoot(emptyModel(), 'C:\\repo');
@@ -99,7 +90,7 @@ test('revealStep: outside, waiting, missing or shown in the listing case (M9 fix
   m = applyListing(m, 'C:\\repo\\A', list(['B'], ['B']));
   m = expandFolder(m, 'C:\\repo\\A');
   // a is listed, a\b is not expanded yet.
-  assert.deepEqual(revealStep(m, file), { kind: 'waiting' });
+  assert.deepEqual(revealStep(m, file), { kind: 'waiting', open: 'C:\\repo\\A\\B' });
   m = expandFolder(m, 'C:\\repo\\A\\B');
   assert.deepEqual(revealStep(m, file), { kind: 'waiting' });
   m = applyListing(m, 'C:\\repo\\A\\B', list(['F.txt', 'g.txt']));
@@ -111,6 +102,33 @@ test('revealStep: outside, waiting, missing or shown in the listing case (M9 fix
   assert.deepEqual(revealStep(failed, file), { kind: 'missing' });
   assert.deepEqual(revealStep(m, 'D:\\elsewhere\\f.txt'), { kind: 'outside' });
   assert.deepEqual(revealStep(m, 'C:\\repo\\x.txt'), { kind: 'shown', row: 'C:\\repo\\x.txt' });
+});
+
+test('revealStep: a file named in another case than the disk opens the listing-cased folders one by one (M9 fix 685)', () => {
+  const file = 'C:\\repo\\REVEAL652\\DEEP\\z.txt';
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['reveal652'], ['reveal652']));
+  const lists: Record<string, ReturnType<typeof list>> = {
+    'C:\\repo\\reveal652': list(['deep'], ['deep']),
+    'C:\\repo\\reveal652\\deep': list(['z.txt']),
+  };
+  let first: unknown = null;
+  for (let i = 0; i < 10; i++) {
+    const step = revealStep(m, file);
+    if (i === 0) first = step;
+    if (step.kind === 'shown') {
+      assert.deepEqual(first, { kind: 'waiting', open: 'C:\\repo\\reveal652' });
+      assert.equal(step.row, 'C:\\repo\\reveal652\\deep\\z.txt');
+      return;
+    }
+    assert.equal(step.kind, 'waiting');
+    assert.ok(step.kind === 'waiting' && step.open !== undefined, 'a waiting answer names the folder to open');
+    const open = step.kind === 'waiting' ? step.open! : '';
+    m = expandFolder(m, open);
+    const l = lists[open];
+    if (l !== undefined) m = applyListing(m, open, l);
+  }
+  assert.fail('the reveal never reached the row');
 });
 
 test('withPending: the name box under the root, under its expanded folder, or nowhere', () => {

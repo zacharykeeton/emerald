@@ -1,8 +1,39 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { FireAndForget, HooksStatus, OpenExtra, RendererPush, EmeraldApi } from './api.ts';
+import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi } from './api.ts';
 
 const api: EmeraldApi = {
+  // emmer browser (M9 fixes 672 and 673): main checks the guest is this
+  // window's webview before it takes the registration.
+  browser: {
+    guest: (paneId, webContentsId) => ipcRenderer.send('emerald:browser-guest', paneId, webContentsId),
+    onDrive: (handler) => {
+      const listener = (_e: IpcRendererEvent, paneId: string, state: BrowserDriveState) => handler(paneId, state);
+      ipcRenderer.on('emerald:browser-drive', listener);
+      return () => ipcRenderer.off('emerald:browser-drive', listener);
+    },
+    resume: (paneId) => ipcRenderer.send('emerald:browser-resume', paneId),
+    onTakeFocus: (handler) => {
+      const listener = (_e: IpcRendererEvent, paneId: string, token: number) => handler(paneId, token);
+      ipcRenderer.on('emerald:browser-take-focus', listener);
+      return () => ipcRenderer.off('emerald:browser-take-focus', listener);
+    },
+    tookFocus: (token, ok) => ipcRenderer.send('emerald:browser-took-focus', token, ok),
+  },
+  keys: {
+    configure: (chords, prefix) => ipcRenderer.send('emerald:keys-configure', chords, prefix),
+    armed: (on) => ipcRenderer.send('emerald:keys-armed', on),
+    onGuestKey: (handler) => {
+      const listener = (_e: IpcRendererEvent, key: GuestKey) => handler(key);
+      ipcRenderer.on('emerald:guest-key', listener);
+      return () => ipcRenderer.off('emerald:guest-key', listener);
+    },
+    onGuestInput: (handler) => {
+      const listener = (_e: IpcRendererEvent, hit: { webContentsId: number; kind: 'mouse' | 'key' }) => handler(hit);
+      ipcRenderer.on('emerald:guest-input', listener);
+      return () => ipcRenderer.off('emerald:guest-input', listener);
+    },
+  },
   files: {
     list: (dir, keep) => ipcRenderer.invoke('emerald:files-list', dir, keep),
     read: (path) => ipcRenderer.invoke('emerald:files-read', path),
@@ -59,6 +90,10 @@ const api: EmeraldApi = {
       return () => ipcRenderer.off('emerald:notify-clicked', listener);
     },
   },
+  // The usage record (M9 fix 676): a line to main, which checks and writes it.
+  useRecord: {
+    write: (line) => ipcRenderer.send('emerald:use-record', line),
+  },
   history: {
     scan: () => ipcRenderer.invoke('emerald:history-scan'),
     turns: (path) => ipcRenderer.invoke('emerald:history-turns', path),
@@ -77,6 +112,17 @@ const api: EmeraldApi = {
     read: () => ipcRenderer.invoke('emerald:clipboard-read'),
     write: (text) => ipcRenderer.invoke('emerald:clipboard-write', text),
     writeImage: (dataUrl) => ipcRenderer.invoke('emerald:clipboard-write-image', dataUrl),
+  },
+  // Design Mode (M9 fix 674): main checks the pane's guest is this
+  // window's webview before it runs the picker in it.
+  design: {
+    start: (paneId) => ipcRenderer.invoke('emerald:design-start', paneId),
+    cancel: (paneId) => ipcRenderer.send('emerald:design-cancel', paneId),
+    onNote: (handler) => {
+      const listener = (_e: IpcRendererEvent, text: string) => handler(text);
+      ipcRenderer.on('emerald:design-note', listener);
+      return () => ipcRenderer.off('emerald:design-note', listener);
+    },
   },
   whatsNew: {
     read: () => ipcRenderer.invoke('emerald:whats-new-read'),

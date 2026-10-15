@@ -9,9 +9,17 @@ test('a webview attaches on the main window, our partition and a page src alone 
   assert.equal(attachRefusal({ partition: ours, src: undefined, fromMain: true }), null);
   assert.equal(attachRefusal({ partition: ours, src: 'about:blank', fromMain: true }), null);
   assert.equal(attachRefusal({ partition: ours, src: 'http://x.com/', fromMain: false }), 'not the main window');
-  assert.equal(attachRefusal({ partition: 'persist:other', src: 'http://x.com/', fromMain: true }), 'partition persist:other; only persist:emerald-browser attaches');
-  assert.equal(attachRefusal({ partition: undefined, src: 'http://x.com/', fromMain: true }), 'partition (none); only persist:emerald-browser attaches');
-  assert.equal(attachRefusal({ partition: '', src: 'http://x.com/', fromMain: true }), 'partition (none); only persist:emerald-browser attaches');
+  // M9 fix 673: a profile's partition attaches too, and the refusal's old
+  // words are the new words' prefix.
+  const tail = "; only persist:emerald-browser attaches, or a profile's persist:emerald-browser-<name>";
+  assert.equal(attachRefusal({ partition: 'persist:other', src: 'http://x.com/', fromMain: true }), `partition persist:other${tail}`);
+  assert.equal(attachRefusal({ partition: undefined, src: 'http://x.com/', fromMain: true }), `partition (none)${tail}`);
+  assert.equal(attachRefusal({ partition: '', src: 'http://x.com/', fromMain: true }), `partition (none)${tail}`);
+  assert.ok(attachRefusal({ partition: 'persist:other', src: '', fromMain: true })!.includes('partition persist:other; only persist:emerald-browser attaches'));
+  assert.equal(attachRefusal({ partition: 'persist:emerald-browser-b', src: '', fromMain: true }), null);
+  for (const partition of ['persist:emerald-browser-B', 'persist:emerald-browser-', 'persist:emerald-browserx']) {
+    assert.equal(attachRefusal({ partition, src: '', fromMain: true }), `partition ${partition}${tail}`);
+  }
   assert.equal(attachRefusal({ partition: ours, src: 'file:///C:/Windows/win.ini', fromMain: true }), 'src file:///C:/Windows/win.ini');
   assert.equal(attachRefusal({ partition: ours, src: 'localhost:3000', fromMain: true }), 'src localhost:3000');
 });

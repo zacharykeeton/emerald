@@ -229,6 +229,8 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       automaticLayout: true,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
+      // Off (M9 fix 686): the sticky scroll contribution comes in only with the JSON language's chunk, so it would show after the first .json and not before; nobody asked for it, and in a read tab it covers the top lines.
+      stickyScroll: { enabled: false },
       renderLineHighlight: 'line',
       fontSize: 13,
       fontFamily: 'Consolas, "Cascadia Mono", monospace',

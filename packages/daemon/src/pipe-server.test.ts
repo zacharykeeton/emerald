@@ -278,6 +278,75 @@ test('file.open relays a path to the windows on the app topic (M9 fix 341)', asy
   }
 });
 
+// M9 fix 672: browser.run reaches the windows at level 63 alone as
+// browser.requested, the first browser.done answers it, a run nobody
+// answers is given the verb's budget and the slack, and the shape is
+// checked before any push.
+test('browser.run relays a command to a window at level 63 and holds the reply (M9 fix 672)', async () => {
+  const pipe = `${PIPE}-browser`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { paneId: 'pane-1234567890', verb: 'snapshot' as const, args: [], by: 'alpha', timeoutMs: 1000 };
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 0 });
+
+    // An older window is counted and never pushed to.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 62 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 0 });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'browser.requested'), []);
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 63 });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', ask);
+    const push = await requested;
+    assert.equal(push.type, 'browser.requested');
+    const runId = (push as { runId: number }).runId;
+    assert.deepEqual(push, { type: 'browser.requested', runId, paneId: 'pane-1234567890', verb: 'snapshot', args: [], by: 'alpha', timeoutMs: 1000 });
+    const answer = { ok: true, text: 'page "x" http://127.0.0.1/' };
+    await app.request('browser.done', { runId, answer });
+    assert.deepEqual(await reply, { apps: 1, drivers: 1, answered: true, answer });
+    // A late or unknown runId is dropped.
+    await app.request('browser.done', { runId: runId + 99, answer });
+
+    // Nobody answers: the budget and the slack, then answered false.
+    const started = Date.now();
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 1, answered: false });
+    const took = Date.now() - started;
+    assert.ok(took >= 1050 && took < 3000, `answered false after ${took} ms`);
+
+    await assert.rejects(cli.request('browser.run', { ...ask, verb: 'frob' } as never), { code: 'bad-request', message: 'verb must be one of snapshot, click, hover, fill, key, eval, screenshot, wait, navigate, upload, events, resume' });
+    // M9 fix 673: resume is a verb, relayed like the rest.
+    const resumed = waitFor(app, (m) => m.type === 'browser.requested' && m.verb === 'resume');
+    const resumeReply = cli.request('browser.run', { ...ask, verb: 'resume' });
+    const resumePush = (await resumed) as { runId: number };
+    await app.request('browser.done', { runId: resumePush.runId, answer: { ok: true, text: 'was not paused' } });
+    assert.equal((await resumeReply).answered, true);
+    await assert.rejects(cli.request('browser.run', { ...ask, args: ['a', 'b', 'c'] }), { code: 'bad-request', message: 'args must be at most two strings of 65536 characters or fewer' });
+    await assert.rejects(cli.request('browser.run', { ...ask, args: ['x'.repeat(65537)] }), { code: 'bad-request', message: 'args must be at most two strings of 65536 characters or fewer' });
+    await assert.rejects(cli.request('browser.run', { ...ask, timeoutMs: 500 }), { code: 'bad-request', message: 'timeoutMs must be a whole number from 1000 to 120000' });
+    await assert.rejects(cli.request('browser.run', { ...ask, by: 'b'.repeat(101) }), { code: 'bad-request', message: 'by must be a name of 100 characters or fewer' });
+    await assert.rejects(app.request('browser.done', { runId: 1, answer: { ok: false, text: 'x' } } as never), { code: 'bad-request', message: 'answer must be { ok, text } with a reason when not ok' });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
 // M9 fix 659: url says the path is a page for the browser pane; the
 // daemon holds it to what browserUrl writes, refuses a scheme beside it,
 // and the push carries url so the window opens a browser view.

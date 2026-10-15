@@ -5,6 +5,7 @@ import type { ActivitySession, CappedSpan } from './activity.ts';
 import type { SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
 import type { UpdateState } from './update.ts';
 import type { ConflictReport } from './conflicts.ts';
+import type { BrowserAnswer, BrowserVerb } from './browser-drive.ts';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -87,7 +88,9 @@ export const PROTOCOL_VERSION = 1;
 //  61: M9 fix 624, shells on the hello, the shells the daemon found at its start, and shell on session.spawn and SessionInfo, the shell a resume starts again
 //  62: M9 fix 649, a cmd row's prompt with Claude bound and a hook landed unbinds the shell, as fix 360's D does for a shell that writes C
 //  62: M9 fix 659, the browser view, { kind: 'browser', url } in a layout, and url on file.open and its push, a page opened in a pane from emmer open
-export const DAEMON_FEATURE_LEVEL = 62;
+//  63: M9 fix 672, browser.run with its browser.requested push and browser.done, a page in a browser pane driven from emmer browser
+//  63: M9 fix 673, profile on a browser view, and upload, events and resume on browser.run
+export const DAEMON_FEATURE_LEVEL = 63;
 
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
@@ -241,6 +244,14 @@ export interface Requests {
   // whether the session named by beside was on a pane (fix 376), and
   // which of its panes was picked (fix 404).
   'file.open.done': { req: { openId: number; known?: boolean; besideFound?: boolean; besidePane?: string; besideTab?: string };     res: {} };
+  // M9 fix 672: a command for the page in a browser pane, from emmer
+  // browser, relayed to the windows at level 63 as browser.requested. by
+  // is the driving session's name, shown on the pane; drivers counts the
+  // windows that can drive; answered is false when none answered by the
+  // deadline, the verb's own timeoutMs and the daemon's slack.
+  'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer } };
+  // The window's answer to a browser.requested push (M9 fix 672).
+  'browser.done':   { req: { runId: number; answer: BrowserAnswer };             res: {} };
   // Whether a Test event carrying this test_id reached the hook sink
   // within the last minute (M9 fix 606); emmer hooks status --test posts
   // one through the installed hook and then asks; a daemon older than 59
@@ -300,4 +311,8 @@ export type ServerMessage =
   // with a scheme or a beside (M9 fix 375), or to windows at level 58
   // (M9 fix 582), the openId the window answers with.
   // M9 fix 659: url says path holds a URL the browser pane takes.
-  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean };
+  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean }
+  // A command for a browser pane's page relayed from emmer browser (M9 fix
+  // 672), to the app-topic windows at level 63 alone; the window answers
+  // with browser.done and the runId.
+  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number };

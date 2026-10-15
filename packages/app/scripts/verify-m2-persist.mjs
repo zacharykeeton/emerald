@@ -68,9 +68,14 @@ try {
   // 2. App restart. Closing the window quits Electron; the detached daemon stays up.
   const child = s.child;
   // The reply never comes back once the window is gone, so do not wait for it.
+  const closedAt = Date.now();
   s.send('Runtime.evaluate', { expression: 'window.close()' }).catch(() => {});
   s.close();
   await Promise.race([waitExit(child), sleep(10000)]);
+  // M9 fix 671: how long the exit took, so the spread is on record; a
+  // miss prints the child's stdout below, whose `quit, exit code` line
+  // (or its absence) says which half of the quit hung.
+  if (child.exitCode !== null) console.log(`[verify] note: electron exited ${Date.now() - closedAt} ms after window.close()`);
   expect(child.exitCode !== null, 'electron exited on window close');
   await sleep(500);
   const alive = spawn('tasklist', ['/FI', `PID eq ${firstDaemon}`]);

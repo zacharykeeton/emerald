@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { appMenuItems } from './app-menu-model.ts';
 import { runAction } from './keys.ts';
+import { recordUse } from './use-record.ts';
 import { Menu } from './Menu.tsx';
 import { useStore } from './store.ts';
 import { useRunningShells } from './rates-store.ts';
@@ -103,9 +104,13 @@ export function TitleBar() {
             disabled: item.disabled,
             onClick: () => {
               setMenuOpen(false);
-              if (item.action === 'check-updates') void window.emerald.update.act();
-              else if (item.action === 'toggle-skin') setSkin(skin === 'emerald' ? 'classic' : 'emerald');
-              else void runAction(item.action);
+              if (item.action === 'check-updates') {
+                recordUse('check-updates', 'menu');
+                void window.emerald.update.act();
+              } else if (item.action === 'toggle-skin') {
+                recordUse('toggle-skin', 'menu');
+                setSkin(skin === 'emerald' ? 'classic' : 'emerald');
+              } else void runAction(item.action, 'menu');
             },
           }))}
         />

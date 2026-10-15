@@ -15,7 +15,11 @@
 // naming the missing home. M9 fix 631: both windows close through
 // Page.close, the way a person closes one, so each quit goes through
 // window-all-closed; the first gets 90 s and on a hang prints its
-// `active resources` line and the exes left, the second is judged at 10 s.
+// `active resources` line, its `quit, exit code` line and the exes left,
+// the second is judged at 10 s. M9 fix 671: the `active resources` line
+// reads the same on a clean exit as on a hang and names no holder; the
+// `quit, exit code` line, or its absence, says whether Electron reached
+// its quit.
 // Logs to %TEMP%\emerald-verify\package.log. Run: npm run verify:package -w @emerald/app
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -261,8 +265,10 @@ async function main() {
   // Closing the window quits the app; the daemon stays up until the shim stops it.
   // M9 fix 631: the window is closed the way a person closes it, with
   // Page.close as fix 243's step below does, so the quit runs through
-  // window-all-closed and its `active resources` line names whatever holds
-  // the exit open; a hang past the 90 s prints that line and the exes left.
+  // window-all-closed. Its `active resources` line reads the same on a
+  // clean exit and names no holder (fix 671); the `quit, exit code` line
+  // says whether Electron reached its quit. A hang past the 90 s prints
+  // both and the exes left.
   const mainLog = path.join(home, 'logs', 'main.log');
   const closeLogSize = fs.existsSync(mainLog) ? fs.statSync(mainLog).size : 0;
   await s.send('Page.close').catch(() => {});
@@ -270,7 +276,8 @@ async function main() {
   await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000).catch((err) => {
     const since = fs.existsSync(mainLog) ? fs.readFileSync(mainLog, 'utf8').slice(closeLogSize) : '';
     const line = since.split(/\r?\n/).filter((l) => l.includes('window-all-closed; active resources:')).pop();
-    log(`the window's exit timed out; main log since the close: ${line ?? 'no window-all-closed line'}`);
+    const quit = since.split(/\r?\n/).filter((l) => l.includes('quit, exit code')).pop();
+    log(`the window's exit timed out; main log since the close: ${line ?? 'no window-all-closed line'}; ${quit ?? 'no quit line'}`);
     const list = powershell(`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Emerald.exe' -and $_.ExecutablePath -eq '${exe}' } | ForEach-Object { 'pid ' + $_.ProcessId + ' started ' + $_.CreationDate.ToString('HH:mm:ss.fff') + ': ' + $_.CommandLine }`).split(/\r?\n/).filter(Boolean).join('; ');
     log(`Emerald.exe under ${exe}: ${list || 'none'}`);
     throw err;

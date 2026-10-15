@@ -1,5 +1,6 @@
 import type { Command } from '../command.ts';
 import activity from './activity.ts';
+import browser from './browser.ts';
 import conflicts from './conflicts.ts';
 import daemon from './daemon.ts';
 import explain from './explain.ts';
@@ -20,10 +21,11 @@ import set from './set.ts';
 import shell from './shell.ts';
 import skill from './skill.ts';
 import update from './update.ts';
+import usage from './usage.ts';
 import wait from './wait.ts';
 
 // Every command, in the order `emmer help` lists them.
-export const commands: Command[] = [ls, newSession, shell, send, read, wait, prompt, prompts, explain, activity, conflicts, set, kill, resume, rm, focus, open, hooks, skill, daemon, update, feed];
+export const commands: Command[] = [ls, newSession, shell, send, read, wait, prompt, prompts, explain, activity, usage, conflicts, set, kill, resume, rm, focus, open, browser, hooks, skill, daemon, update, feed];
 
 export function findCommand(name: string): Command | undefined {
   return commands.find((c) => c.name === name);

@@ -10,6 +10,20 @@ import { normalizeFolder, RECENT_FOLDERS_MAX } from './new-session-model.ts';
 
 export type EmptyKind = 'shell' | 'claude';
 
+// The tiles Tab walks (M9 fix 666): the Browser tile is not a kind, since it
+// starts on its click and has no folder, so it stays out of EmptyKind and
+// the stored kind.
+export type EmptyTile = EmptyKind | 'browser';
+
+// The tile Tab (delta 1) or Shift+Tab (-1) lands on, in the order shell,
+// claude, browser, wrapping at both ends; browser is skipped when the
+// daemon does not keep the kind.
+export function nextTile(tile: EmptyTile, delta: 1 | -1, browser: boolean): EmptyTile {
+  const order: EmptyTile[] = browser ? ['shell', 'claude', 'browser'] : ['shell', 'claude'];
+  const at = order.indexOf(tile);
+  return order[(Math.max(0, at) + delta + order.length) % order.length]!;
+}
+
 // The kind a fresh empty pane has selected: the split default when the
 // person set one, else the kind last started from an empty pane, else a
 // shell, which is what the filled New shell button used to be.
@@ -95,7 +109,7 @@ export function shellSub(pick: ShellOption | null, shells: readonly ShellOption[
   return `${pick.label} in place of ${shells[0].label}`;
 }
 
-export type EmptyKeyAct = { act: 'start' } | { act: 'flip' } | { act: 'row'; index: number } | { act: 'move'; delta: 1 | -1 } | { act: 'swallow' };
+export type EmptyKeyAct = { act: 'start' } | { act: 'flip'; delta: 1 | -1 } | { act: 'row'; index: number } | { act: 'move'; delta: 1 | -1 } | { act: 'swallow' };
 
 // What a key does in the empty pane's box while the box is empty. null is
 // everything the box keeps as it always did (a letter, > for actions,
@@ -109,7 +123,7 @@ export function emptyKey(ev: { key: string; shiftKey: boolean; ctrlKey: boolean;
     if (ev.shiftKey || ev.ctrlKey) return { act: 'swallow' };
     return null;
   }
-  if (ev.key === 'Tab' && !ev.ctrlKey && !ev.altKey && !ev.metaKey) return { act: 'flip' };
+  if (ev.key === 'Tab' && !ev.ctrlKey && !ev.altKey && !ev.metaKey) return { act: 'flip', delta: ev.shiftKey ? -1 : 1 };
   if (plain && /^[1-9]$/.test(ev.key)) {
     const index = Number(ev.key) - 1;
     return index < rowCount ? { act: 'row', index } : { act: 'swallow' };

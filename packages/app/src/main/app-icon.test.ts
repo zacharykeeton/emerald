@@ -8,7 +8,8 @@ import { ICON_SIZES, drawIcon, readIco } from '../../scripts/make-icon.mjs';
 // The app's icon (M9 fix 571, handoff 8.2): the committed build/icon.ico
 // holds the five gem images, each the drawing of the committed script byte
 // for byte, so the file was regenerated from the script that is checked in.
-// Redrawn as 5f, the gem at full size with no sparkle, by M9 fix 596.
+// Redrawn as 5f, the gem at full size with no sparkle, by M9 fix 596; the
+// dark rounded square under it went on 2026-10-14, so the ground is clear.
 const icoPath = path.resolve(import.meta.dirname, '..', '..', 'build', 'icon.ico');
 const ico = fs.readFileSync(icoPath);
 
@@ -74,22 +75,24 @@ test('each committed image is drawIcon of its size, byte for byte', () => {
   }
 });
 
-test('drawIcon at 16 is the 256 drawing point-sampled', () => {
+test('drawIcon at 16 is the 256 drawing point-sampled, on a clear ground', () => {
   assert.equal(pixel(16, 7, 7), '2fb67aff', 'the table');
   assert.equal(pixel(16, 7, 2), '57d99cff', 'facet 0');
-  assert.equal(pixel(16, 2, 7), '45c98cff', 'facet 6');
+  assert.equal(pixel(16, 3, 7), '45c98cff', 'facet 6');
   assert.equal(pixel(16, 7, 13), '1c7f51ff', 'facet 4');
-  assert.equal(pixel(16, 1, 8), '1a1f1dff', 'the ground');
-  assert.equal(pixel(16, 13, 1), '1a1f1dff', 'no plus');
-  assert.equal(pixel(16, 0, 0).slice(6), '00', 'outside the corner');
-  const corner = drawIcon(16)[(0 * 16 + 1) * 4 + 3]!;
-  assert.ok(corner > 0 && corner < 255, `the anti-aliased corner, alpha ${corner}`);
+  assert.equal(pixel(16, 0, 8).slice(6), '00', 'clear beside the stone');
+  assert.equal(pixel(16, 13, 1).slice(6), '00', 'clear above the shoulder');
+  assert.equal(pixel(16, 0, 0).slice(6), '00', 'clear at the corner');
+  const edge = drawIcon(16)[(0 * 16 + 7) * 4 + 3]!;
+  assert.ok(edge > 0 && edge < 255, `the soft outline at the top, alpha ${edge}`);
+  assert.equal(pixel(16, 7, 0).slice(0, 6), '57d99c', 'the outline pixel takes the facet beside it');
 });
 
-test('drawIcon at 256 is the flush gem, full size', () => {
+test('drawIcon at 256 is the flush gem, full size, on a clear ground', () => {
   assert.equal(pixel(256, 128, 128), '2fb67aff', "the table at the gem's centre");
   assert.equal(pixel(256, 128, 41), '57d99cff', 'facet 0 near the top');
-  assert.equal(pixel(256, 128, 6), '1a1f1dff', 'the ground above the gem');
-  assert.equal(pixel(256, 128, 250), '1a1f1dff', 'the ground below the gem');
-  assert.equal(pixel(256, 0, 0).slice(6), '00', 'outside the corner');
+  assert.equal(pixel(256, 128, 6).slice(6), '00', 'clear above the gem');
+  assert.equal(pixel(256, 128, 250).slice(6), '00', 'clear below the gem');
+  assert.equal(pixel(256, 0, 0).slice(6), '00', 'clear at the corner');
+  assert.equal(pixel(256, 8, 128).slice(6), '00', 'clear beside the gem');
 });

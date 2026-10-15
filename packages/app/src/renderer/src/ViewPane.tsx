@@ -5,6 +5,9 @@ import { hidePaneHere, splitHere } from './actions.ts';
 import { readScope } from './activity-scope.ts';
 import { ActivityView } from './ActivityView.tsx';
 import { BrowserView } from './BrowserView.tsx';
+import { useBrowserPage } from './browser-layer.ts';
+import { driveMark, useBrowserDrive } from './browser-drive-store.ts';
+import { designTargetOf } from './design.ts';
 import { FileView } from './FileView.tsx';
 import { fileIcon } from './file-icons.ts';
 import { folderName, parentPath } from './files-model.ts';
@@ -15,6 +18,8 @@ import { Menu } from './Menu.tsx';
 import { menuHint, viewPaneMenu } from './pane-menu-model.ts';
 import type { PaneMenuRun } from './pane-menu-model.ts';
 import { registerPaneMenu } from './pane-menus.ts';
+import { recordUse } from './use-record.ts';
+import { PANE_USE } from './use-record-model.ts';
 import { PaneActions } from './Pane.tsx';
 import { startDrag } from './pane-drag.ts';
 import { viewName } from './show-model.ts';
@@ -73,11 +78,12 @@ function withoutGraph(view: PaneView): PaneView {
 //
 // M9 fix 659: a fourth kind, a web page (BrowserView.tsx), its toolbar
 // inside the pane; the title bar shows a globe, the page's title (else
-// its host) and the URL. The title is the page's and is kept here, not
-// on the record.
+// its host) and the URL. The title is the page's and is kept by the
+// browser layer (fix 669), not on the record.
 export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
-  const { pickerPaneId, zoomedPaneId, sessionDrag, splitKind } = useUi();
-  const { daemon } = useStore('daemon');
+  const { pickerPaneId, zoomedPaneId, sessionDrag, splitKind, designPaneId } = useUi();
+  // The layout and the sessions for Design Mode's target (fix 674).
+  const { daemon, sessions, layout } = useStore('daemon', 'sessions', 'layout');
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // M9 fix 128 folded the view's controls rows away behind a flag per
   // kind; M9 fix 179 makes it the pane's chrome, the title bar and the
@@ -126,11 +132,23 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
   const dragging = dragged !== null && sameView(dragged, view);
   const file = view.kind === 'file' ? view : null;
   const page = view.kind === 'browser' ? view : null;
-  const [pageTitle, setPageTitle] = useState('');
+  // The page's title from the browser layer (M9 fix 669), so the title
+  // row keeps it across a split that remounts this pane.
+  const { title: pageTitle } = useBrowserPage(paneId);
+  // emmer browser's mark (M9 fixes 672 and 673): who drives the page, or
+  // whose commands the person's click or key paused.
+  const drive = useBrowserDrive(paneId);
+  const mark = page === null ? null : driveMark(drive);
+  // Design Mode's target in the title (M9 fix 674), read on each render
+  // so it follows a focus change on the tab.
+  const designOn = page !== null && designPaneId === paneId;
+  const designTargetId = designOn && layout !== null ? designTargetOf(paneId) : null;
+  const designTargetName = designTargetId === null ? null : (sessions.get(designTargetId)?.name ?? designTargetId);
   // The menu's items (M9 fix 202) are pane-menu-model's list, shared with
   // the action palette through the registry; this maps each to its
   // handler here.
   const runMenuItem = (run: PaneMenuRun): void => {
+    recordUse(PANE_USE[run], 'menu');
     switch (run) {
       case 'open-as-tab':
         return file === null ? undefined : openFileTab(file.path);
@@ -225,7 +243,34 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
             <span className="pane-name" title={page.url === '' ? 'An empty browser pane' : page.url}>
               {pageTitle !== '' ? pageTitle : page.url !== '' ? new URL(page.url).host : 'Browser'}
             </span>
+            {designOn && <span className="design-target">{designTargetName === null ? 'Design Mode, no Claude session here' : `Design Mode → ${designTargetName}`}</span>}
             <span className="pane-cwd">{page.url}</span>
+            {page.profile !== undefined && (
+              <span className="browser-profile" title="Its own cookies and storage, apart from the other browser panes">
+                profile {page.profile}
+              </span>
+            )}
+            {mark !== null && drive !== null && (
+              <span className={drive.paused ? 'browser-driven paused' : 'browser-driven'} title={mark.title}>
+                {mark.text}
+              </span>
+            )}
+            {drive?.paused === true && (
+              <button
+                className="browser-resume"
+                aria-label="Resume"
+                title={`Let ${drive.by} drive this page again`}
+                // A press on a pane title focuses the pane and moves the
+                // layout's revision (GOTCHAS of fixes 645 to 665, item 6).
+                onMouseDown={(ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                }}
+                onClick={() => window.emerald.browser.resume(paneId)}
+              >
+                Resume
+              </button>
+            )}
           </>
         ) : file !== null ? (
           <>
@@ -301,7 +346,7 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
         // M9 fix 659: the page and its toolbar; the address bar writes the
         // record, so the pane comes back on its page after a reload.
         <div className="pane-view" tabIndex={-1} data-view={view.kind}>
-          <BrowserView paneId={paneId} url={view.url} onUrl={(url) => void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url }), paneId).catch(warn('browser url'))} onTitle={setPageTitle} />
+          <BrowserView paneId={paneId} url={view.url} onUrl={(url) => void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url }), paneId).catch(warn('browser url'))} />
         </div>
       ) : (
         // Focusable so a click here takes the keyboard from the terminal
@@ -325,6 +370,6 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
 function sameView(a: PaneView, b: PaneView): boolean {
   if (a.kind === 'commits') return b.kind === 'commits' && a.folder === b.folder;
   if (a.kind === 'activity') return b.kind === 'activity' && a.window === b.window;
-  if (a.kind === 'browser') return b.kind === 'browser' && a.url === b.url;
+  if (a.kind === 'browser') return b.kind === 'browser' && a.url === b.url && a.profile === b.profile;
   return b.kind === 'file' && a.path === b.path;
 }

@@ -146,7 +146,7 @@ function main() {
     const ghArgs = releaseCreateArgs(version, notesFile, [arm64.installer, arm64.blockmap, x64.installer, x64.blockmap, latestFile]);
     if (dryRun) {
       const lines = notes.text.replace(/\n$/, '').split('\n').length;
-      console.log(`release dry run for ${version}: nothing built, synced or uploaded`);
+      console.log(`release dry run for ${version}: nothing built or uploaded`);
       console.log('--- latest.yml');
       process.stdout.write(merged);
       console.log(`--- notes: ${notes.heading} (${lines} lines)`);

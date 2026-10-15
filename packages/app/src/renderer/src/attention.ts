@@ -79,6 +79,14 @@ export function hadRecentInput(now = Date.now()): boolean {
   return isRecentInput(lastInputAt, now);
 }
 
+// M9 fix 670: a press or a key in a browser pane's page, which the
+// window's own listeners never hear, still counts as someone at the
+// keyboard. It acknowledges no session: a key in a page is not a look
+// at a session.
+export function noteGuestInput(now = Date.now()): void {
+  lastInputAt = now;
+}
+
 export function installAttention(): () => void {
   const onSessions = () => {
     const sessions = getState().sessions;
@@ -146,6 +154,7 @@ export function installAttention(): () => void {
   const unsubStore = subscribe(onSessions);
   const unsubUi = subscribeUi(onUi);
   const unsubClicked = window.emerald.notify.onClicked(onClicked);
+  const unsubGuest = window.emerald.keys.onGuestInput(() => noteGuestInput());
   window.addEventListener('mousedown', onInput, { capture: true });
   window.addEventListener('keydown', onInput, { capture: true });
   const pulses = new MutationObserver(syncPulses);
@@ -157,6 +166,7 @@ export function installAttention(): () => void {
     unsubStore();
     unsubUi();
     unsubClicked();
+    unsubGuest();
     window.removeEventListener('mousedown', onInput, { capture: true });
     window.removeEventListener('keydown', onInput, { capture: true });
     syncRepeat(false, getUiState().chimeMode);

@@ -73,8 +73,9 @@ export type FilePaneView = { kind: 'file'; path: string; view?: FileTabView };
 // M9 fix 659: a fourth kind, a web page in a pane. `url` is the page's
 // address as browserUrl writes it, or '' while the pane's address bar
 // has not been filled; the toolbar is the pane, as a file pane's header
-// is, so there is no chrome field.
-export type BrowserPaneView = { kind: 'browser'; url: string };
+// is, so there is no chrome field. M9 fix 673: profile names the page's
+// own cookies and storage (BROWSER_PROFILE); absent is the shared default.
+export type BrowserPaneView = { kind: 'browser'; url: string; profile?: string };
 export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView;
 
 export type LayoutNode =

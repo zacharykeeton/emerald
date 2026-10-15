@@ -1,20 +1,21 @@
-// Writes build/icon.ico: the flush gem, full size, on a dark rounded square
-// (5f, M9 fix 596, in place of fix 571's 5g), as a PNG-compressed ICO of
-// five images, 16, 24, 32, 48 and 256 (Vista and later read those). 24 and
-// up are the 256 drawing scaled with 4 by 4 samples a pixel; 16 is the 256
-// drawing point-sampled at each pixel centre, hard edges but for the
-// square's corners. Hand-rolled so the repo needs no image tooling; the
-// output is committed and this only reruns when the look changes. Importing
-// it writes nothing (app-icon.test.ts reads the drawing against the
-// committed file). Run: node scripts/make-icon.mjs
+// Writes build/icon.ico: the flush gem, full size, alone on a clear ground
+// (5f, M9 fix 596, in place of fix 571's 5g; the dark rounded square it sat
+// on went on 2026-10-14, since the taskbar drew it as a black plate around
+// the stone), as a PNG-compressed ICO of five images, 16, 24, 32, 48 and 256
+// (Vista and later read those). 24 and up are the 256 drawing scaled with 4
+// by 4 samples a pixel; 16 takes its colour from the 256 drawing at each
+// pixel centre, hard facet edges, and its alpha from the same 4 by 4
+// coverage, so the stone's outline is soft and nothing else is drawn.
+// Hand-rolled so the repo needs no image tooling; the output is committed
+// and this only reruns when the look changes. Importing it writes nothing
+// (app-icon.test.ts reads the drawing against the committed file). Run:
+// node scripts/make-icon.mjs
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 export const ICON_SIZES = [16, 24, 32, 48, 256];
-
-const GROUND = [0x1a, 0x1f, 0x1d];
 
 // The flush gem of the handoff's 8.1, in 256-space: facet i is the quad
 // IO[i], IO[i+1], IT[i+1], IT[i], in paint order, then the table.
@@ -31,14 +32,6 @@ const GEM_SHAPES = [
 
 function hex(s) {
   return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
-}
-
-// Rounded square of side `side`: inside when within the inner rectangle or a
-// corner circle.
-function inSquare(x, y, side, radius) {
-  const cx = Math.min(Math.max(x, radius), side - radius);
-  const cy = Math.min(Math.max(y, radius), side - radius);
-  return (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2;
 }
 
 function segDist2(px, py, a, b) {
@@ -74,9 +67,8 @@ function inPolygon(px, py, poly) {
 }
 
 // One sample of the 256 drawing, in canvas space: the topmost layer's colour,
-// or null outside the rounded square.
+// or null outside the stone and its flush stroke, which is clear.
 function sample256(x, y) {
-  if (!inSquare(x, y, 256, 48)) return null;
   // The gem in its own space, through the inverse of translate(128 128)
   // scale(1.32) translate(-128 -128): 5f, full size, so the stone fills about
   // 232 of 256; the width-3 round stroke that makes it flush is the 1.5-unit
@@ -88,7 +80,7 @@ function sample256(x, y) {
     const s = GEM_SHAPES[k];
     if (inPolygon(gx, gy, s.points) || outlineDist2(gx, gy, s.points) <= 2.25) return s.colour;
   }
-  return GROUND;
+  return null;
 }
 
 function draw16() {
@@ -96,18 +88,24 @@ function draw16() {
   const px = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
+      // The stone's coverage of the pixel, 4 by 4 samples, is its alpha, so
+      // the outline is soft on the clear ground; the colour is the 256
+      // drawing at the pixel's centre, no averaging, so the facets keep their
+      // shades with hard edges (5f; a flat two-tone octagon read as a pill).
+      // A centre just outside the stone takes the first covered sample's
+      // colour, the stroke's facet, so an edge pixel is never a wrong shade.
       let covered = 0;
+      let edge = null;
       for (let j = 0; j < 4; j++) {
         for (let i = 0; i < 4; i++) {
-          if (inSquare(x + (i + 0.5) / 4, y + (j + 0.5) / 4, 16, 3)) covered++;
+          const s = sample256((x + (i + 0.5) / 4) * 16, (y + (j + 0.5) / 4) * 16);
+          if (s === null) continue;
+          covered++;
+          if (edge === null) edge = s;
         }
       }
       if (covered === 0) continue;
-      // The 256 drawing point-sampled at the pixel's centre, no averaging, so
-      // the facets keep their shades with hard edges (5f; a flat two-tone
-      // octagon read as a pill). A centre outside the 256 square's corner is
-      // ground; the alpha above already makes that pixel clear.
-      const c = sample256((x + 0.5) * 16, (y + 0.5) * 16) ?? GROUND;
+      const c = sample256((x + 0.5) * 16, (y + 0.5) * 16) ?? edge;
       const o = (y * size + x) * 4;
       px[o] = c[0];
       px[o + 1] = c[1];

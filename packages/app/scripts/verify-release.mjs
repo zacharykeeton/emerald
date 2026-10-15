@@ -103,7 +103,7 @@ const arm64Yml = path.join(good.arm64, 'latest.yml');
 const x64Yml = path.join(good.x64, 'latest.yml');
 expect(r.out.includes(`checked ${installerName(version, 'arm64')}: sha512 and size match ${arm64Yml}\n`), 'the arm64 installer is checked against its own latest.yml');
 expect(r.out.includes(`checked ${installerName(version, 'x64')}: sha512 and size match ${x64Yml}\n`), 'the x64 installer is checked against its own latest.yml');
-expect(r.out.includes(`release dry run for ${version}: nothing built, synced or uploaded\n`), 'the dry run says it built, synced and uploaded nothing');
+expect(r.out.includes(`release dry run for ${version}: nothing built or uploaded\n`), 'the dry run says it built and uploaded nothing');
 
 const a = parseLatestYml(fs.readFileSync(arm64Yml, 'utf8'));
 const x = parseLatestYml(fs.readFileSync(x64Yml, 'utf8'));

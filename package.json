@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "test": "npm run build && npm test --workspaces --if-present",
+    "test": "npm run build && npm run typecheck -w @emerald/daemon && npm test --workspaces --if-present && node --test \"scripts/*.test.mjs\"",
     "smoke": "npm run build && npm run smoke -w @emerald/daemon",
     "daemon": "npm run start -w @emerald/daemon",
     "demo": "node demo/reset.mjs"

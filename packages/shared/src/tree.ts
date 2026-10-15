@@ -1,6 +1,7 @@
 import { unitBounds } from './activity-model.ts';
 import { isGraphScale } from './layout.ts';
 import { browserUrl } from './browser-url.ts';
+import { BROWSER_PROFILE } from './browser-drive.ts';
 import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
 
 // Pure operations on the split tree. Every function returns a new tree and
@@ -480,7 +481,11 @@ function validateView(value: unknown, where: string): PaneView | null {
     // for a pane whose address bar is still empty; nothing else is kept.
     const url = value['url'];
     if (typeof url !== 'string' || (url !== '' && browserUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, or empty`);
-    return { kind: 'browser', url };
+    // M9 fix 673: a profile's name, kept when BROWSER_PROFILE takes it.
+    const profile = value['profile'];
+    if (profile === undefined) return { kind: 'browser', url };
+    if (typeof profile !== 'string' || !BROWSER_PROFILE.test(profile)) throw new LayoutError(`${where}.profile must be lowercase letters, digits and hyphens, up to 32`);
+    return { kind: 'browser', url, profile };
   }
   if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
   const folder = value['folder'];

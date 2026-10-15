@@ -2693,7 +2693,18 @@ button:disabled {
   opacity: 0;
   pointer-events: none;
 }
-@keyframes files-row-flash {
+/* Two identical keyframes, one per letter of data-flash (M9 fix 684): a
+   second reveal on a row still flashing swaps the letter, and the changed
+   animation-name restarts the animation. */
+@keyframes files-row-flash-a {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes files-row-flash-b {
   from {
     opacity: 1;
   }
@@ -2702,8 +2713,11 @@ button:disabled {
   }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .files-row[data-flash]::after {
-    animation: files-row-flash 0.8s ease-out 1;
+  .files-row[data-flash='a']::after {
+    animation: files-row-flash-a 0.8s ease-out 1;
+  }
+  .files-row[data-flash='b']::after {
+    animation: files-row-flash-b 0.8s ease-out 1;
   }
 }
 
@@ -11113,6 +11127,21 @@ button.files-root {
   min-width: 0;
 }
 
+/* M9 fix 666: the Browser tile makes three; under the width where three
+   names no longer fit it drops to a row of its own below the other two. */
+.empty-kinds[data-tiles="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@container empty-pane (max-width: 760px) {
+  .empty-kinds[data-tiles="3"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .empty-kind[data-kind="browser"] {
+    grid-column: 1 / -1;
+  }
+}
+
 .empty-kind {
   display: flex;
   flex-direction: column;
@@ -11731,6 +11760,17 @@ button.files-root {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  container: browser-view / inline-size;
+}
+
+/* M9 fix 667: in a pane about 165 px wide the address kept six characters;
+   Forward and Developer tools give way first, Back, Reload and the address
+   stay. */
+@container browser-view (width < 260px) {
+  .browser-forward,
+  .browser-devtools {
+    display: none;
+  }
 }
 
 .browser-toolbar {
@@ -11805,4 +11845,182 @@ body.dragging-col .browser-page,
 body.dragging-row .browser-page,
 body.dragging-session .browser-page {
   pointer-events: none;
+}
+
+/* M9 fix 669: every browser pane's page sits in one layer over the
+   panes, laid over its pane's slot (BrowserLayer.tsx), so a split or a
+   move re-parents the pane and not the page. The panes view is the
+   layer's anchor; nothing between it and a pane is positioned but the
+   gutter, which is relative, so no other box changes its anchor. The
+   layer takes no pointer; a frame does, except while something is
+   dragged, so the drop hit test reaches the pane under the page. */
+.panes-view {
+  position: relative;
+}
+
+.browser-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.browser-frame {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.browser-frame[hidden] {
+  display: none;
+}
+
+body.dragging-col .browser-frame,
+body.dragging-row .browser-frame,
+body.dragging-session .browser-frame {
+  pointer-events: none;
+}
+
+/* M9 fixes 672 and 673: emmer browser's mark on a browser pane's title
+   row, who drives the page, and the paused form with its Resume button.
+   No animation: it sits on the row for as long as a command runs. */
+.browser-driven,
+.browser-profile {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--focus);
+  color: var(--focus);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.browser-profile {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.browser-driven.paused {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.browser-resume {
+  flex: none;
+  margin-left: 6px;
+  padding: 2px 4px;
+  font-size: 14px;
+}
+
+/* M9 fixes 674 and 675: Design Mode on a browser pane. The toolbar's
+   toggle pressed on the accent ground the empty pane's tiles use, the
+   hint bar between the toolbar and the page, the target in the title
+   row, and the tray of notes beside the page, which narrows to make room
+   (the layer follows the slot's size). */
+.browser-design[aria-pressed="true"],
+.design-notes[aria-pressed="true"] {
+  background: var(--focus-header);
+  color: var(--focus);
+}
+
+.design-notes {
+  flex: none;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.design-hint {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--focus-header);
+  border-bottom: 1px solid var(--gutter);
+  color: var(--text-hi);
+}
+
+.design-hint-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-cancel {
+  flex: none;
+  padding: 2px 6px;
+}
+
+.design-target {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--focus);
+  border-radius: 8px;
+  color: var(--focus);
+  white-space: nowrap;
+}
+
+.browser-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.browser-main > .browser-body {
+  min-width: 0;
+}
+
+.design-tray {
+  flex: none;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--gutter);
+  background: var(--title-bg);
+}
+
+.design-tray-notes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.design-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.design-note-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-hi);
+}
+
+.design-note textarea {
+  min-height: 48px;
+  resize: vertical;
+  font: inherit;
+  color: var(--text-hi);
+  background: var(--bg);
+  border: 1px solid var(--gutter);
+  border-radius: 4px;
+  padding: 4px;
+}
+
+.design-delete {
+  align-self: flex-end;
+  padding: 2px 6px;
+}
+
+.design-send {
+  flex: none;
+  margin: 6px;
+  padding: 4px 8px;
 }

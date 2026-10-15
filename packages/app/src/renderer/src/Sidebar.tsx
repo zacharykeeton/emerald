@@ -34,7 +34,7 @@ import type { Shown } from './shown-sessions.ts';
 import { useStore } from './store.ts';
 import { TurnLineAnchor } from './TurnCard.tsx';
 import { UsageStrip } from './UsageStrip.tsx';
-import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, cycleAttentionSound, markSessionUnread, openFileTab, setSessionHushed, openNewSession, openReviewTab, openTranscriptTab, setAttentionNotify, setAttentionSound, setShowOffscreen, setSidebarFilter, setSidebarOrder, setSidebarWidth, toggleSidebar, toggleSidebarFold, toggleTeamUnfold, useUi } from './ui.ts';
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, cycleAttentionSound, markSessionUnread, openFileTab, setSessionHushed, openNewSession, openReviewTab, openTranscriptTab, setAttentionNotify, setAttentionSound, setShowOffscreen, setSidebarFilter, setSidebarOrder, setSidebarWidth, setUsageRecord, toggleSidebar, toggleSidebarFold, toggleTeamUnfold, useUi } from './ui.ts';
 import { useNow } from './use-now.ts';
 import { FOLDER_LABEL_MAX, LOAD_SPAN_MS, Limits, loadCeiling, loadPeak } from '@emerald/shared';
 import { SIDEBAR_FILTERS, emptyFilterText, filterCounts, filterGroups } from './sidebar-filter-model.ts';
@@ -1390,7 +1390,7 @@ const CHIME_NOTES: Record<ChimeMode, string> = {
 };
 
 function AttentionSoundButton() {
-  const { attentionSound, attentionNotify, chimeMode } = useUi();
+  const { attentionSound, attentionNotify, usageRecord, chimeMode } = useUi();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const onContextMenu = (ev: React.MouseEvent) => {
     ev.preventDefault();
@@ -1406,6 +1406,7 @@ function AttentionSoundButton() {
         className="attention-sound"
         data-sound={attentionSound}
         data-notify={attentionNotify ? 'on' : 'off'}
+        data-usage={usageRecord ? 'on' : 'off'}
         data-chime={chimeMode}
         title={`${SOUND_TITLES[attentionSound]} Right click for the notification setting.${CHIME_NOTES[chimeMode]}`}
         onClick={cycleAttentionSound}
@@ -1431,6 +1432,14 @@ function AttentionSoundButton() {
               onClick: pick(() => setAttentionNotify(!attentionNotify)),
               title: 'A system notification when a session needs you and the window is not focused. Click to turn it ' + (attentionNotify ? 'off' : 'on'),
               separator: true,
+            },
+            // M9 fix 676: the usage record, off until turned on here.
+            {
+              label: usageRecord ? 'Usage record: on' : 'Usage record: off',
+              onClick: pick(() => setUsageRecord(!usageRecord)),
+              title:
+                'A local record of which emerald actions and views you use, for emmer usage report; kept in logs/usage.jsonl under your emerald home and never sent anywhere. Click to turn it ' +
+                (usageRecord ? 'off' : 'on'),
             },
           ]}
         />
