@@ -24,7 +24,7 @@ import { PaneActions } from './Pane.tsx';
 import { startDrag } from './pane-drag.ts';
 import { viewName } from './show-model.ts';
 import { editTab, useStore } from './store.ts';
-import { graphRemotesSupported, graphScaleSupported, hereScopeSupported, panesScopeSupported, rowsFlagSupported, viewStateSupported } from './daemon-model.ts';
+import { graphRemotesSupported, graphScaleSupported, hereScopeSupported, panesScopeSupported, rowsFlagSupported, usageFlagSupported, viewStateSupported } from './daemon-model.ts';
 import { activityView } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
 import { closePicker, openFileTab, openPicker, toggleZoom, useUi } from './ui.ts';
@@ -35,6 +35,8 @@ interface Props {
   view: PaneView;
   focused: boolean;
   onlyPane: boolean;
+  // Whether the layout tab holding the pane is the one on show (M9 fix 765), so a file view holds a reveal until it is seen
+  shown: boolean;
 }
 
 const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
@@ -80,7 +82,7 @@ function withoutGraph(view: PaneView): PaneView {
 // inside the pane; the title bar shows a globe, the page's title (else
 // its host) and the URL. The title is the page's and is kept by the
 // browser layer (fix 669), not on the record.
-export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
+export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   const { pickerPaneId, zoomedPaneId, sessionDrag, splitKind, designPaneId } = useUi();
   // The layout and the sessions for Design Mode's target (fix 674).
   const { daemon, sessions, layout } = useStore('daemon', 'sessions', 'layout');
@@ -118,14 +120,20 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
   // old to keep it the panel falls back to the shared prefs and the
   // activity view keeps its own for its life.
   const stateKept = viewStateSupported(daemon);
+  // M9 fix 766: the usage row's flag rides the record from level 65; on an
+  // older daemon, whose validator drops the field, the pane keeps it in
+  // its own state for its life.
+  const usageKept = usageFlagSupported(daemon);
+  const [ownUsage, setOwnUsage] = useState(true);
   // The scope read through readScope (M9 fix 250), so a record holding
   // M66's tab reads as panes.
-  const activityState: ActivitySnapshot | undefined = view.kind === 'activity' ? { scope: readScope(view.scope), folder: view.folder ?? null, layers: view.layers ?? 'both' } : undefined;
+  const activityState: ActivitySnapshot | undefined = view.kind === 'activity' ? { scope: readScope(view.scope), folder: view.folder ?? null, layers: view.layers ?? 'both', usage: usageKept ? view.usage !== false : ownUsage } : undefined;
   // The record's fields come from activityView (view-state.ts), the one
   // place that knows which scope needs a folder (M9 fix 250: panes does
   // not); the chrome flag rides along untouched.
   const setActivityState = (next: ActivitySnapshot) => {
     if (view.kind !== 'activity') return;
+    if (!usageKept) setOwnUsage(next.usage);
     void editTab((t) => setPaneView(t, paneId, { ...activityView(view.window, next), ...(view.chrome === undefined ? {} : { chrome: view.chrome }) }), paneId).catch(warn('activity state'));
   };
   const dragged = sessionDrag?.view ?? null;
@@ -345,6 +353,7 @@ export function ViewPane({ paneId, view, focused, onlyPane }: Props) {
             onClose={() => hidePaneHere(paneId)}
             inPane
             paneId={paneId}
+            shown={shown}
           />
         </div>
       ) : view.kind === 'browser' ? (

@@ -167,6 +167,13 @@ try {
     const three = eventsFor(claudeId).filter((e) => ['SessionStart', 'UserPromptSubmit', 'Stop'].includes(e.event));
     const once = ['SessionStart', 'UserPromptSubmit', 'Stop'].every((n) => three.filter((e) => e.event === n).length === 1);
     expect(once && three.every((e) => e.mod === true), `turn 1's SessionStart, UserPromptSubmit and Stop came from the mod, once each, the hook file's copies folded (${three.map((e) => `${e.event}${e.mod ? ':mod' : ''}`).join(', ')})`);
+    // M9 fix 738: the mod posts a turn's start and end as events of its own.
+    // turn.complete fires about a second after the Stop (the capture of fix
+    // 738), so its line can land after the ack; it is waited for.
+    const turnStart = eventsFor(claudeId).filter((e) => e.event === 'TurnStart' && e.mod === true);
+    let turnDone = eventsFor(claudeId).filter((e) => e.event === 'TurnComplete' && e.mod === true);
+    for (const end = Date.now() + 5000; turnDone.length === 0 && Date.now() < end; await sleep(200)) turnDone = eventsFor(claudeId).filter((e) => e.event === 'TurnComplete' && e.mod === true);
+    expect(turnStart.length >= 1 && turnDone.length >= 1 && turnDone[0].payload?.is_aborted === false, `turn 1's TurnStart and TurnComplete came from the mod, the turn not aborted (${turnStart.length} TurnStart, ${turnDone.length} TurnComplete, ${JSON.stringify(turnDone[0]?.payload ?? null)})`);
   }
   step(`ack on focus: idle. hooks.jsonl so far: ${names.join(', ')}`);
 

@@ -223,15 +223,18 @@ function exitDetail(exitCode: number | null): string {
 // needs-input), as a question; a question or an elicitation by its kind.
 // Null in every other state. (waitingOn on SessionInfo is the waiting
 // state's task list, a different thing, hence the name.)
-export function waitingOnText(session: Pick<SessionInfo, 'state' | 'needsInputReason' | 'liveTool'> & Partial<Pick<SessionInfo, 'team'>>): string | null {
+// Since M9 fix 742 the mod's ask, when it posted one, names the tool and
+// its subject (`Allow? Bash: npm publish`) ahead of the call's phrase.
+export function waitingOnText(session: Pick<SessionInfo, 'state' | 'needsInputReason' | 'liveTool'> & Partial<Pick<SessionInfo, 'team' | 'askedFor'>>): string | null {
   if (session.state !== 'needs-input') return null;
   switch (session.needsInputReason) {
     case 'permission':
-      return `Allow? ${session.liveTool ?? 'a tool call'}`;
+      return `Allow? ${session.askedFor?.words ?? session.liveTool ?? 'a tool call'}`;
     case 'agent-permission': {
       // The asking member, named as the roster names it (M9 fix 109).
       const asking = (session.team ?? []).find((m) => m.outcome === 'running' && m.permission !== null && m.permission !== undefined);
-      return asking === undefined ? "Allow? an agent's tool call" : `Allow? ${asking.description ?? asking.type ?? 'an agent'}: ${asking.permission}`;
+      if (asking !== undefined) return `Allow? ${asking.description ?? asking.type ?? 'an agent'}: ${asking.permission}`;
+      return session.askedFor ? `Allow? an agent's ${session.askedFor.words}` : "Allow? an agent's tool call";
     }
     case 'question':
       return 'Question for you';

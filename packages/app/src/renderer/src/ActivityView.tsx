@@ -16,6 +16,7 @@ import { ActivityDebt } from './ActivityDebt.tsx';
 import { ActivityLoad } from './ActivityLoad.tsx';
 import { ActivityRidges } from './ActivityRidges.tsx';
 import { ActivityStrip, OUTSIDE_WORD, outsideNote } from './ActivityStrip.tsx';
+import { ActivityUsage } from './ActivityUsage.tsx';
 import type { StripOrientation } from './ActivityStrip.tsx';
 import { activityPath, activityWindow, tabQuery } from './tabs-model.ts';
 import { useStore } from './store.ts';
@@ -23,7 +24,7 @@ import { closeFileTab, openFileTab, setDocumentQuery, useUi } from './ui.ts';
 import { TokensArrow } from './TokensText.tsx';
 import { UsageBar } from './UsageCard.tsx';
 import { CARD_BAR_PX, paceBar, usageWindowName } from './usage-model.ts';
-import { fiveHourBounds, useFiveHourUsage } from './usage-reading.ts';
+import { fiveHourBounds, useFiveHourUsage, useUsageReading } from './usage-reading.ts';
 import { activityFromQuery, activityQuery } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
 
@@ -159,7 +160,7 @@ const WEEK_DENSITY_KEY = 'emerald.activityWeekDensity';
 // like the orientation and the density.
 const STRIP_SCALE_KEY = 'emerald.activityScale';
 
-const DEFAULT_STATE: ActivitySnapshot = { scope: 'all', folder: null, layers: 'both' };
+const DEFAULT_STATE: ActivitySnapshot = { scope: 'all', folder: null, layers: 'both', usage: true };
 
 interface Props {
   // The window's key, as activityPath takes it.
@@ -244,7 +245,11 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
     if (onState === undefined) setOwnState(next);
     else onState(next);
   };
-  const { layers, folder } = state;
+  const { layers, folder, usage } = state;
+  // M9 fix 766: whether the strip has a reading for the usage row, for
+  // the toggle's title when the row is on and has nothing to draw.
+  const usageReading = useUsageReading();
+  const usageEmpty = usageReading === null || usageReading.length === 0;
   // The folder scope needs a folder; the panes scope (M9 fix 250) does
   // not; the here scope (M9 fix 261) needs a pane, so a tab whose query
   // carries it reads as panes.
@@ -579,6 +584,7 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
       data-density={(week ? weekCondensed : condensed) ? 'condensed' : 'rows'}
       data-strip-scale={stripScale}
       data-layers={layers}
+      data-usage={usage ? 'shown' : 'hidden'}
       data-scope={scope}
       data-tab-name={scope === 'here' ? (tabName ?? undefined) : undefined}
       data-folder={folder ?? undefined}
@@ -642,6 +648,16 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
           </button>
           {/* The layers (M9 fix 166): the band, the lanes or both, cycled; the vertical form draws no band, so the button waits for the turn back; the week (M9 fix 230) draws its ridges and no lanes. */}
           <LayersButton value={layers} onChange={chooseLayers} disabled={vertical || week} title={week ? 'The week draws one ridge per day, no lanes' : 'Time across has the band'} />
+          {/* M9 fix 766: the usage windows row under these controls, on by default, kept per tab and pane. */}
+          <button
+            className="files-button activity-usage-toggle"
+            data-active={usage || undefined}
+            aria-label="Usage windows"
+            title={usage ? `Hide the usage windows${usageEmpty ? " (the sidebar's strip has no reading yet)" : ''}` : 'Show the usage windows under these controls'}
+            onClick={() => chooseState({ ...state, usage: !usage })}
+          >
+            ◔
+          </button>
           <button className="files-button activity-orientation" disabled={week} title={week ? 'The week is always time across' : vertical ? 'Time across' : 'Time downwards'} onClick={flip}>
             ⇅
           </button>
@@ -657,6 +673,8 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
           )}
         </div>
       )}
+      {/* M9 fix 766: the usage windows, read off the strip's reading and never asked for; they fold away with the header. */}
+      {!folded && usage && <ActivityUsage now={now} />}
       {/* M9 fix 607: how far back the daemon's history reaches, one muted line under the header; it folds away with the header. */}
       {!folded && historyFrom !== null && (
         <div className="activity-view-history" data-from={historyFrom} title={`The oldest line the daemon read from its hook log, ${dayKey(historyFrom)} ${clockTime(historyFrom)}. The log is kept by size, so a busy week reaches back less far than a quiet one.`}>

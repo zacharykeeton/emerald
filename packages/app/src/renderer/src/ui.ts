@@ -1223,7 +1223,8 @@ export function openWhatsNewOnStart(): void {
     .catch((err: unknown) => console.warn('[emerald] could not read the release notes', err));
 }
 
-// A contents hit dropped on a pane (M9 fix 437): the pane the view
+// A contents hit dropped on a pane (M9 fix 437), or on another layout tab
+// or the + (M9 fix 765, taken when that tab is shown): the pane the view
 // landed on shows the line with the same flash a tab's reveal gives.
 export function revealInPane(paneId: string, path: string, line: number, column = 1): void {
   setState({ ...state, reveal: { path, line, column, seq: (state.reveal?.seq ?? 0) + 1, paneId } });

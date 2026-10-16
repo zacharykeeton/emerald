@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm9-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m9';
@@ -72,6 +73,7 @@ const BLOCKS = [
   { name: 'fix-204', fixes: ['fix-204', 'fix-355', 'fix-356'], needs: [] },
   { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575', 'fix-705'], needs: [] },
   { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
+  { name: 'fix-738', fixes: ['fix-738'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -996,7 +998,7 @@ try {
   const paneStateSel = `[data-pane-id=${JSON.stringify(workingPane)}] .pane-state`;
   // The session mark's motion, read by M46, M41 and fix 122.
   const markMotion = (sel) =>
-    s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(sel)}); if (!m) return null; const f = m.querySelector('.session-mark-frames'); return { working: m.dataset.working ?? null, tone: m.dataset.tone ?? null, frames: f ? f.children.length : 0, animation: f ? getComputedStyle(f.children[0]).animationName : null, own: getComputedStyle(m).animationName, title: m.title }; })()`);
+    s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(sel)}); if (!m) return null; const f = m.querySelector('.session-mark-frames'); return { working: m.dataset.working ?? null, tone: m.dataset.tone ?? null, frames: f ? f.children.length : 0, stepping: (${MARK_STEPPING})(m), own: getComputedStyle(m).animationName, title: m.title }; })()`);
   // The sidebar's width and its drag, read from fix 76 on. The drag sets
   // the width by state, which is what the hook's layout effect follows;
   // a ResizeObserver does not fire in a covered window.
@@ -1034,7 +1036,7 @@ try {
     // the CSS animates on); the pane's state word sits still, the mark
     // being the one motion.
     const rowMotion = await markMotion(rowSel + ' .session-mark');
-    expect(rowMotion !== null && rowMotion.working === 'true' && rowMotion.frames === 4 && rowMotion.animation === 'session-mark-frame', `the row's mark cycles while the session works, got ${JSON.stringify(rowMotion)}`);
+    expect(rowMotion !== null && rowMotion.working === 'true' && rowMotion.frames === 4 && rowMotion.stepping === true, `the row's mark cycles while the session works, got ${JSON.stringify(rowMotion)}`);
     expect((await s.evalJs(`getComputedStyle(document.querySelector(${JSON.stringify(paneStateSel)})).animationName`)) === 'none', 'and the state word sits still (M46)');
     // ConPTY reports a shell's own title (PowerShell's exe path) as it
     // starts, so the third line already shows a title here; a glyph is what
@@ -1060,7 +1062,7 @@ try {
       // four asterisks as text, one visible at a time, none moved.
       const still = m.querySelector('.session-mark-still svg path');
       const visible = frames.map((f) => getComputedStyle(f).opacity === '1');
-      return { cell: h(m), width: m.getBoundingClientRect().width, frames: frames.length, frameHeights: frames.map(h), color: getComputedStyle(m).color, working: m.dataset.working ?? null, animation: getComputedStyle(frames[0]).animationName, first: m.parentElement.firstElementChild === m, star: still !== null, stillShown: getComputedStyle(m.querySelector('.session-mark-still')).visibility, glyphs: frames.map((f) => f.textContent).join(''), shown: visible.filter(Boolean).length, transform: getComputedStyle(m.querySelector('.session-mark-frames')).transform };
+      return { cell: h(m), width: m.getBoundingClientRect().width, frames: frames.length, frameHeights: frames.map(h), color: getComputedStyle(m).color, working: m.dataset.working ?? null, stepping: (${MARK_STEPPING})(m), first: m.parentElement.firstElementChild === m, star: still !== null, stillShown: getComputedStyle(m.querySelector('.session-mark-still')).visibility, glyphs: frames.map((f) => f.textContent).join(''), shown: visible.filter(Boolean).length, transform: getComputedStyle(m.querySelector('.session-mark-frames')).transform };
     })()`);
     const rowMark = await markGeometry(`${rowSel} .session-mark`);
     const titleMark = await markGeometry(`[data-pane-id=${JSON.stringify(workingPane)}] .pane-mark`);
@@ -1068,7 +1070,7 @@ try {
     for (const [where, m] of [['row', rowMark], ['pane title', titleMark], ['tab', tabMark]]) {
       expect(m !== null && m.cell === 16 && m.width === 16 && m.frames === 4 && m.frameHeights.every((x) => x === 16), `the ${where}'s mark is a 16px cell of four 16px frames, got ${JSON.stringify(m)}`);
       expect(m !== null && m.star && m.glyphs === '✳✱✻✽' && m.transform === 'none', `the ${where}'s still frame is the star and its stepping frames the four asterisks, nothing moved (fixes 80 and 86), got ${JSON.stringify(m)}`);
-      expect(m !== null && m.working === 'true' && m.animation === 'session-mark-frame' && m.stillShown === 'hidden' && m.shown === 1, `the ${where}'s mark cycles while the session works, one frame shown and the star hidden, got ${JSON.stringify(m)}`);
+      expect(m !== null && m.working === 'true' && m.stepping === true && m.stillShown === 'hidden' && m.shown === 1, `the ${where}'s mark cycles while the session works, one frame shown and the star hidden, got ${JSON.stringify(m)}`);
     }
     expect(rowMark.first && titleMark.first && tabMark.first, `the mark is the first thing on the row, in the title and on the tab, got ${JSON.stringify([rowMark.first, titleMark.first, tabMark.first])}`);
     expect(rowMark.color === titleMark.color && titleMark.color === tabMark.color, `one colour on all three, got ${rowMark.color}, ${titleMark.color}, ${tabMark.color}`);
@@ -1104,7 +1106,7 @@ try {
     await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(dropped.id)}, data: '1..60 | % { "line $_"; Start-Sleep -m 20 }' + String.fromCharCode(13) })`);
     await sleep(1500);
     const fallbackMotion = await markMotion(rowSel + ' .session-mark');
-    expect(fallbackMotion !== null && fallbackMotion.working === 'true' && fallbackMotion.animation === 'session-mark-frame' && !/output /.test(fallbackMotion.title), `on a level 1 daemon the mark steps while the shell prints and its tooltip has no rate, got ${JSON.stringify(fallbackMotion)}`);
+    expect(fallbackMotion !== null && fallbackMotion.working === 'true' && fallbackMotion.stepping === true && !/output /.test(fallbackMotion.title), `on a level 1 daemon the mark steps while the shell prints and its tooltip has no rate, got ${JSON.stringify(fallbackMotion)}`);
     await sleep(1500);
     step('M41: on a daemon that reports an older level the mark steps while the shell prints and the tooltip never gets the rate');
   });
@@ -1166,8 +1168,8 @@ try {
     const titleUnits = await unitsOf(`[data-pane-id=${JSON.stringify(workingPane)}] .pane-title .roster`);
     expect(JSON.stringify(titleUnits) === JSON.stringify(rowUnits), `the pane title carries the same units, got ${JSON.stringify(titleUnits)}`);
     expect((await s.evalJs(`document.querySelector(${JSON.stringify(paneStateSel)})?.textContent`)) === 'waiting (2)', 'the badge reads waiting (2)');
-    const rosterMarks = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rowSel + ' .roster')}); const u = (k) => r.querySelector('.roster-unit[data-unit="' + k + '"]'); const f = (el) => el.querySelector('.session-mark-frames').children[0]; return { out: getComputedStyle(f(u('out'))).animationName, returned: getComputedStyle(f(u('returned'))).animationName, shell: u('shells').querySelector('.shell-mark').dataset.running ?? null, caret: getComputedStyle(u('shells').querySelector('.shell-mark-caret')).animationName, cell: u('out').querySelector('.session-mark').getBoundingClientRect().height }; })()`);
-    expect(rosterMarks.out === 'session-mark-frame' && rosterMarks.returned === 'none' && rosterMarks.shell === 'true' && rosterMarks.caret === 'shell-caret' && rosterMarks.cell === 12, `the out unit steps at unit size, the returned one is still, the shell's caret blinks, got ${JSON.stringify(rosterMarks)}`);
+    const rosterMarks = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rowSel + ' .roster')}); const u = (k) => r.querySelector('.roster-unit[data-unit="' + k + '"]'); const st = (el) => (${MARK_STEPPING})(el.querySelector('.session-mark')); return { out: st(u('out')), returned: st(u('returned')), shell: u('shells').querySelector('.shell-mark').dataset.running ?? null, caret: getComputedStyle(u('shells').querySelector('.shell-mark-caret')).animationName, cell: u('out').querySelector('.session-mark').getBoundingClientRect().height }; })()`);
+    expect(rosterMarks.out === true && rosterMarks.returned === false && rosterMarks.shell === 'true' && rosterMarks.caret === 'shell-caret' && rosterMarks.cell === 12, `the out unit steps at unit size, the returned one is still, the shell's caret blinks, got ${JSON.stringify(rosterMarks)}`);
     // The members in spawn order were the roster's title tooltip; fix 89's
     // card lists them instead (read below), so the roster carries no title.
     expect((await s.evalJs(`document.querySelector(${JSON.stringify(rowSel + ' .roster')}).getAttribute('title')`)) === null, 'the roster has no title tooltip; its card is the tooltip (fix 89)');
@@ -1179,8 +1181,8 @@ try {
     // it moves by the same contribution as the heading did.
     const barPaused = (await unitsOf('.title-bar .roster')) ?? {};
     expect(barPaused['agents-active'] === barBefore['agents-active'] && barPaused['agents-inactive'] === (barBefore['agents-inactive'] ?? 0) + 2 && barPaused['shells-running'] === (barBefore['shells-running'] ?? 0) + 1, `the title bar's units moved with the team: ${JSON.stringify(barBefore)} to ${JSON.stringify(barPaused)}`);
-    const headingMarks = await s.evalJs(`(() => { const h = document.querySelector(${JSON.stringify(droppedHeadingSel)}); const u = (k) => h.querySelector('.roster-unit[data-unit="' + k + '"]'); const mid = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; }; return { active: getComputedStyle(u('agents-active').querySelector('.session-mark-frames').children[0]).animationName, inactive: getComputedStyle(u('agents-inactive').querySelector('.session-mark')).opacity, inactiveCount: getComputedStyle(u('agents-inactive').querySelector('.roster-count')).opacity, cell: u('agents-active').querySelector('.session-mark').getBoundingClientRect().height, dot: !!h.querySelector('.sidebar-group-dot'), outline: !!h.querySelector('svg.sidebar-group-icon'), slot: h.querySelector('.sidebar-group-icon')?.getBoundingClientRect().width ?? null, nameMid: mid(h.querySelector('.sidebar-group-name')), markMid: mid(u('agents-active').querySelector('.session-mark')), countMid: mid(u('agents-active').querySelector('.roster-count')) }; })()`);
-    expect(headingMarks.active === 'session-mark-frame' && headingMarks.cell === 13 && headingMarks.inactive === '0.7' && headingMarks.inactiveCount === '1', `the heading's active unit steps at heading size and the inactive glyph alone is dim, got ${JSON.stringify(headingMarks)}`);
+    const headingMarks = await s.evalJs(`(() => { const h = document.querySelector(${JSON.stringify(droppedHeadingSel)}); const u = (k) => h.querySelector('.roster-unit[data-unit="' + k + '"]'); const mid = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; }; return { active: (${MARK_STEPPING})(u('agents-active').querySelector('.session-mark')), inactive: getComputedStyle(u('agents-inactive').querySelector('.session-mark')).opacity, inactiveCount: getComputedStyle(u('agents-inactive').querySelector('.roster-count')).opacity, cell: u('agents-active').querySelector('.session-mark').getBoundingClientRect().height, dot: !!h.querySelector('.sidebar-group-dot'), outline: !!h.querySelector('svg.sidebar-group-icon'), slot: h.querySelector('.sidebar-group-icon')?.getBoundingClientRect().width ?? null, nameMid: mid(h.querySelector('.sidebar-group-name')), markMid: mid(u('agents-active').querySelector('.session-mark')), countMid: mid(u('agents-active').querySelector('.roster-count')) }; })()`);
+    expect(headingMarks.active === true && headingMarks.cell === 13 && headingMarks.inactive === '0.7' && headingMarks.inactiveCount === '1', `the heading's active unit steps at heading size and the inactive glyph alone is dim, got ${JSON.stringify(headingMarks)}`);
     // M9 fix 82: the unit's mark and count sit on the name's line, their
     // vertical centres within a pixel of the name's (the text mark's 2px
     // nudge had put the star below it); the row's units are read the same
@@ -1255,7 +1257,7 @@ try {
     const foldBtnSel = rowSel + ' .sidebar-row-team-fold';
     const teamRows = () =>
       s.evalJs(
-        `[...document.querySelectorAll(${JSON.stringify(rowSel + ' .sidebar-row-member')})].map((m) => ({ type: m.querySelector('.sidebar-row-member-type').textContent, model: m.querySelector('.sidebar-row-member-model')?.textContent ?? null, task: m.querySelector('.sidebar-row-member-task').textContent, elapsed: m.querySelector('.sidebar-row-member-elapsed').textContent, working: 'working' in m.dataset, kind: m.dataset.kind, stepping: getComputedStyle(m.querySelector('.session-mark-frames > span, .shell-mark-caret')).animationName }))`,
+        `[...document.querySelectorAll(${JSON.stringify(rowSel + ' .sidebar-row-member')})].map((m) => ({ type: m.querySelector('.sidebar-row-member-type').textContent, model: m.querySelector('.sidebar-row-member-model')?.textContent ?? null, task: m.querySelector('.sidebar-row-member-task').textContent, elapsed: m.querySelector('.sidebar-row-member-elapsed').textContent, working: 'working' in m.dataset, kind: m.dataset.kind, stepping: m.querySelector('.session-mark') ? (${MARK_STEPPING})(m.querySelector('.session-mark')) : getComputedStyle(m.querySelector('.shell-mark-caret')).animationName }))`,
       );
     expect((await s.evalJs(`document.querySelector(${JSON.stringify(foldBtnSel)})?.textContent ?? null`)) === '▸', 'a chevron before the roster, folded');
     expect((await teamRows()).length === 0, 'no team lines while folded');
@@ -1265,7 +1267,7 @@ try {
     // M9 fix 289: no member has a model in this harness (no Claude home),
     // so every line reads model === null; the type is its own span now.
     expect(teamOpen[0].type === 'agent Explore' && teamOpen[0].task === 'Read the log' && teamOpen[0].model === null && !teamOpen[0].working && teamOpen[0].kind === 'agent' && /^returned after \d+s$/.test(teamOpen[0].elapsed), `the first line is the returned Explore in spawn order, got ${JSON.stringify(teamOpen[0])}`);
-    expect(teamOpen[1].type === 'agent fork' && teamOpen[1].task === 'Build the fork' && teamOpen[1].model === null && teamOpen[1].working && teamOpen[1].stepping === 'session-mark-frame' && /^out \d+s$/.test(teamOpen[1].elapsed), `the fork's line steps and says how long it has been out, got ${JSON.stringify(teamOpen[1])}`);
+    expect(teamOpen[1].type === 'agent fork' && teamOpen[1].task === 'Build the fork' && teamOpen[1].model === null && teamOpen[1].working && teamOpen[1].stepping === true && /^out \d+s$/.test(teamOpen[1].elapsed), `the fork's line steps and says how long it has been out, got ${JSON.stringify(teamOpen[1])}`);
     expect(teamOpen[2].type === 'shell' && teamOpen[2].task === 'the build' && teamOpen[2].model === null && teamOpen[2].working && teamOpen[2].kind === 'shell' && teamOpen[2].stepping === 'shell-caret', `the shell's line blinks its caret, got ${JSON.stringify(teamOpen[2])}`);
     expect((await s.evalJs(`document.querySelector(${JSON.stringify(rowSel)}).dataset.state`)) === 'waiting', 'the chevron click did not show or drag the session');
     // The chevron keeps its ▸ text and becomes a real disclosure: at least
@@ -1336,7 +1338,7 @@ try {
     await postTo({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
     await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'the row needs input');
     const needsMark = await markMotion(rowSel + ' .session-mark');
-    expect(needsMark !== null && needsMark.tone === 'needs-input' && needsMark.working === null && needsMark.own === 'needs-pulse' && needsMark.animation === 'none', `a needs-input mark breathes on needs-pulse and never steps, got ${JSON.stringify(needsMark)}`);
+    expect(needsMark !== null && needsMark.tone === 'needs-input' && needsMark.working === null && needsMark.own === 'needs-pulse' && needsMark.stepping === false, `a needs-input mark breathes on needs-pulse and never steps, got ${JSON.stringify(needsMark)}`);
     // Back to work for the steps that follow, which read the working row.
     await postTo({ hook_event_name: 'UserPromptSubmit', prompt: 'find the hash' });
     await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.working === 'pulse'`, 'working again');
@@ -1554,7 +1556,7 @@ try {
         totalShown: vis(total),
         totalColor: total === null ? null : getComputedStyle(total).color,
         totalAlive: total?.dataset.alive ?? null,
-        totalStepping: total === null ? null : getComputedStyle(total.querySelector('.session-mark-frames').children[0]).animationName,
+        totalStepping: total === null ? null : (${MARK_STEPPING})(total.querySelector('.session-mark')),
         foldedTitle: total?.closest('.roster')?.getAttribute('title') ?? null,
         foldedAnchor: total?.closest('.roster')?.dataset.popoverFor ?? null,
         badge: badge.textContent,
@@ -1600,7 +1602,7 @@ try {
         if (foldedAt === null) {
           foldedAt = r;
           expect(r.badge === 'waiting (2)' && r.badgeWhole, `at ${Math.round(r.width)}px, the first width that folds, the badge reads whole beside the total, got ${JSON.stringify(r)}`);
-          expect(r.totalAlive === 'out' && r.totalColor === outColor && r.totalStepping === 'session-mark-frame', `the total takes the out unit's colour and steps, got ${JSON.stringify(r)}`);
+          expect(r.totalAlive === 'out' && r.totalColor === outColor && r.totalStepping === true, `the total takes the out unit's colour and steps, got ${JSON.stringify(r)}`);
           // The folded hover carried the units in words and the members (fix 77); the card does now (fix 89), off the same anchor.
           expect(r.foldedTitle === null && /^roster:/.test(r.foldedAnchor ?? ''), `the folded roster carries no title and is the card's anchor, got ${JSON.stringify({ title: r.foldedTitle, anchor: r.foldedAnchor })}`);
         }
@@ -3790,6 +3792,37 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     expect(got.length === 6 && JSON.stringify(pick(got[5])) === JSON.stringify({ ev: 'switch', on: false }), `the switch off writes its own line last, got ${JSON.stringify(got.slice(5))}`);
     expect(ownMtime() === ownBefore, `the person's own usage.jsonl is untouched (${ownBefore} then ${ownMtime()})`);
     step('M9 fix 676 and 699: the usage record writes nothing while off, then the switch on, the split, the menu pick, the cheat sheet open and close and the switch off to the private home, and the switch is left off');
+  });
+
+  await block('fix-738', async () => {
+    // M9 fix 738: the emerald mod posts the spinner's word and a turn's end
+    // as hooks of its own. Posted here as the dropped shell, whatever state
+    // the blocks before left it in: a turn starts, the mod's word becomes the
+    // row's and the screen's word then yields to it, and an aborted
+    // turn puts the row at idle with the word gone.
+    const rowSel738 = `.sidebar-row[data-session-id=${JSON.stringify(dropped.id)}]`;
+    await postTo({ hook_event_name: 'UserPromptSubmit', prompt: 'mod turn' });
+    await s.waitFor(`document.querySelector(${JSON.stringify(rowSel738)})?.dataset.state === 'working'`, 'the row at working', 5000);
+    // The word is read off the record, not the agent line: the line shows it
+    // only when nothing else fills it (fix 158), and run alone this block's
+    // shell carries its own title there.
+    const verbOf738 = async () => (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === dropped.id).liveVerb ?? null;
+    await postTo({ hook_event_name: 'Spinner', word: 'Perusing' });
+    let verb738 = null;
+    for (const end = Date.now() + 5000; verb738 !== 'Perusing' && Date.now() < end; await sleep(100)) verb738 = await verbOf738();
+    expect(verb738 === 'Perusing', `the mod's spinner word on the record (fix 738), got ${JSON.stringify(verb738)}`);
+    // The stream word as fix 158's step writes it: a glyph, the word and the
+    // ellipsis at the start of a line, which the screen's scanner would take.
+    const writeSpinner738 = (word) => s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(dropped.id)}, data: 'Write-Host "$([char]10)$([char]0x2736) ' + ${JSON.stringify(word)} + '$([char]0x2026) (esc to interrupt)"' + String.fromCharCode(13) })`);
+    await writeSpinner738('Grinding');
+    await sleep(1500);
+    const yielded = await verbOf738();
+    expect(yielded === 'Perusing', `the screen's word yields to the mod's (fix 738), got ${JSON.stringify(yielded)}`);
+    await postTo({ hook_event_name: 'TurnComplete', turn_id: 't-738', is_aborted: true, reason: 'aborted' });
+    await s.waitFor(`document.querySelector(${JSON.stringify(rowSel738)})?.dataset.state === 'idle'`, 'the row at idle after the aborted turn', 5000);
+    const after738 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === dropped.id);
+    expect(after738.state === 'idle' && after738.liveVerb === null, `an aborted turn puts the row at idle and clears the word (fix 738), got ${JSON.stringify({ state: after738.state, liveVerb: after738.liveVerb })}`);
+    step("M9 fix 738: the mod's spinner word is the row's and the screen's yields to it; an aborted turn puts the row at idle with the word cleared");
   });
   step(blocksRun());
   step('PASS');

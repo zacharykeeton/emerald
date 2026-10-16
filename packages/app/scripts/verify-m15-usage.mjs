@@ -748,6 +748,32 @@ try {
   expect(bands.length === 3 && bands.every((c) => c.to > c.from && c.to <= crossings[5].at + 1000) && bands.map((c) => c.window).sort().join(',') === 'five_hour,seven_day,seven_day_fable', `activity.spans answers the three bands closed at the freed edges (${JSON.stringify(bands)})`);
   step('M9 fix 285: a window at 100 percent posts usage.capped with its reset, a reply under it usage.freed, and activity.spans answers the bands');
 
+  // M9 fix 739: a hosted session's mod posts its measure to the hook sink;
+  // the daemon pushes the rate limits to the window, and the strip lays
+  // them over the endpoint's last answer without asking it again. No
+  // session is needed: the limits are read before the record, and the
+  // line reads unknown-session.
+  {
+    const hookInfo = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+    const asked739 = requests.length;
+    const resetsAt739 = reply.body.five_hour?.resets_at ?? at(41 * MIN);
+    const posted = await fetch(`http://127.0.0.1:${hookInfo.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': hookInfo.hookToken, 'X-Emerald-Session': 'sim-739', 'X-Emerald-Hook': 'emerald-mod' },
+      body: JSON.stringify({ hook_event_name: 'Measure', session_id: 'sim-739', measure: { context: { window: 200000, tokens: 50000, percent: 25 }, rateLimits: [{ kind: 'five_hour', percentUsed: 37, resetsAt: resetsAt739 }], changed: ['rateLimits'] } }),
+    });
+    expect(posted.status === 204, `the sink took the measure (${posted.status})`);
+    // The push reaches the strip a moment after the 204.
+    await sleep(1000);
+    await hoverSegment(s, 'five_hour');
+    const card739 = await readUsageCard(s);
+    const row739 = card739?.rows.find((r) => r.key === 'five_hour');
+    expect(row739?.percent === '37% used', `a mod's measure moves the five_hour window between asks (fix 739), got ${JSON.stringify(row739 ?? card739)}`);
+    expect(requests.length === asked739, `and the endpoint was not asked (${asked739} then ${requests.length})`);
+    await leaveUsageCard(s);
+    step("M9 fix 739: a mod's measure moves the five_hour window between asks, the endpoint not asked");
+  }
+
   // The button asks again and the new numbers show; an unknown window
   // comes through under a label made from its key, one without a reset
   // is left out.

@@ -34,6 +34,14 @@ test('a link with another scheme or an anchor loses its href and gains no path (
   assert.ok(html.includes('<a>top</a>'), html);
 });
 
+test('a relative link outside the folder loses its path; one that climbs back in keeps it, and no link is statted (M9 fix 756)', () => {
+  const { html, ask } = renderReply('[up](../other.md), [in](docs/PLAN.md) and [back](../repo/docs/PLAN.md)', 'C:\\repo', () => undefined);
+  assert.ok(html.includes('<a>up</a>'));
+  assert.ok(html.includes('<a data-path="C:\\repo\\docs\\PLAN.md">in</a>'));
+  assert.ok(html.includes('<a data-path="C:\\repo\\docs\\PLAN.md">back</a>'));
+  assert.deepEqual(ask, []);
+});
+
 test('a path outside the folder or with no folder stays plain (M9 fix 716)', () => {
   const all = () => 'file' as const;
   assert.ok(renderReply('`C:/other/x.ts`', 'C:\\repo', all).html.includes('<code>C:/other/x.ts</code>'));

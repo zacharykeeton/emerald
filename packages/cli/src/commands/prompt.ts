@@ -4,8 +4,9 @@ import { integerOption, parse } from '../args.ts';
 import { CliError, EXIT, usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
-import { connect } from '../connect.ts';
+import { connectHello } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
+import { MOD_CHANNEL_LEVEL, modRoutable, refuseBusy } from '../mod-route.ts';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { resolveSession, shortId } from '../resolve.ts';
 import { CLAUDE_ENTER_DELAY_MS } from './send.ts';
@@ -37,11 +38,17 @@ export interface PromptOptions {
   // 0 waits for as long as it takes.
   timeoutMs: number;
   stallMs?: number;
+  // Refuse a working session (M9 fix 741).
+  ifIdle?: boolean;
 }
 
+// How the text went in (M9 fix 741): submitted by the emerald mod, or
+// typed into the pty with the Enter pause.
+type Via = 'mod' | 'typed';
+
 export type PromptOutcome =
-  | { kind: 'done'; session: SessionInfo; reply: string | null; waitedMs: number }
-  | { kind: 'needs-input'; session: SessionInfo; waitedMs: number };
+  | { kind: 'done'; session: SessionInfo; reply: string | null; waitedMs: number; via: Via }
+  | { kind: 'needs-input'; session: SessionInfo; waitedMs: number; via: Via };
 
 type Step = { kind: 'reached'; session: SessionInfo } | { kind: 'timeout' } | { kind: 'gone'; session: SessionInfo | null };
 
@@ -100,7 +107,7 @@ function goneError(step: Extract<Step, { kind: 'gone' }>): CliError {
 
 export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
   const stallMs = opts.stallMs ?? STALL_MS;
-  const client = await connect();
+  const { client, hello } = await connectHello();
   try {
     // Subscribe before the list so no change can fall between the two.
     await client.request('subscribe', { topics: ['sessions'] });
@@ -120,12 +127,23 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
       throw new CliError(`${shortId(found.id)} ${found.name} ${describeState(found).text}; answer it first, or --force to send anyway`);
     }
 
+    if (opts.ifIdle === true) refuseBusy(found);
+
     const watch = new SessionWatch(client, found.id);
-    client.send({ type: 'pty.input', sessionId: found.id, data: text });
-    // The same pause send --enter takes, so Claude Code does not take the
-    // line for a paste and turn the Enter into a newline.
-    if (found.kind === 'claude') await sleep(CLAUDE_ENTER_DELAY_MS);
-    client.send({ type: 'pty.input', sessionId: found.id, data: '\r' });
+    // Through the emerald mod when its channel is up (M9 fix 741), with no
+    // pause; a forced answer to a dialog stays typed, since it is keys for
+    // the dialog rather than a prompt.
+    let via: Via = 'typed';
+    if (found.kind === 'claude' && (hello.featureLevel ?? 1) >= MOD_CHANNEL_LEVEL && found.state !== 'needs-input' && modRoutable(text)) {
+      via = (await client.request('session.submit', { sessionId: found.id, text })).via;
+    }
+    if (via === 'typed') {
+      client.send({ type: 'pty.input', sessionId: found.id, data: text });
+      // The same pause send --enter takes, so Claude Code does not take the
+      // line for a paste and turn the Enter into a newline.
+      if (found.kind === 'claude') await sleep(CLAUDE_ENTER_DELAY_MS);
+      client.send({ type: 'pty.input', sessionId: found.id, data: '\r' });
+    }
     const started = Date.now();
 
     // Gate two: the session has to move. One already busy is taken as
@@ -144,8 +162,8 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
     if (settled.kind === 'timeout') throw new CliError(`timed out after ${opts.timeoutMs} ms waiting for the reply`, EXIT.timeout);
     if (settled.kind === 'gone') throw goneError(settled);
     const s = settled.session;
-    if (s.state === 'done') return { kind: 'done', session: s, reply: s.lastReply, waitedMs };
-    if (s.state === 'needs-input') return { kind: 'needs-input', session: s, waitedMs };
+    if (s.state === 'done') return { kind: 'done', session: s, reply: s.lastReply, waitedMs, via };
+    if (s.state === 'needs-input') return { kind: 'needs-input', session: s, waitedMs, via };
     throw new CliError(`${shortId(s.id)} ${s.name} ${describeState(s).text} after ${waitedMs} ms`);
   } finally {
     client.close();
@@ -160,12 +178,14 @@ const options = {
   // Milliseconds for the reply; 0 or absent waits for as long as it takes.
   timeout: { type: 'string' },
   json: { type: 'boolean', default: false },
+  // Refuse a session that is working (M9 fix 741), exit 1.
+  'if-idle': { type: 'boolean', default: false },
 } as const;
 
 const command: Command = {
   name: 'prompt',
   summary: 'send a prompt and wait for the reply',
-  usage: 'emmer prompt <session> <text...> [--saved] [--force] [--timeout ms] [--json]',
+  usage: 'emmer prompt <session> <text...> [--saved] [--force] [--if-idle] [--timeout ms] [--json]',
   async run(argv) {
     const parsed = parse(argv, options);
     const [ref, ...words] = parsed.positionals;
@@ -173,10 +193,10 @@ const command: Command = {
     if (words.length === 0) throw usageError(parsed.values.saved ? 'missing the name of the saved prompt' : 'missing text');
     if (parsed.values.saved && words.length > 1) throw usageError('one saved prompt name');
     const timeoutMs = integerOption(parsed.values.timeout, 'timeout', 0);
-    const outcome = await runPrompt({ ref, text: words.join(' '), saved: parsed.values.saved, force: parsed.values.force, timeoutMs });
+    const outcome = await runPrompt({ ref, text: words.join(' '), saved: parsed.values.saved, force: parsed.values.force, timeoutMs, ifIdle: parsed.values['if-idle'] });
     const s = outcome.session;
     if (parsed.values.json) {
-      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs });
+      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs, via: outcome.via });
       return EXIT.ok;
     }
     if (outcome.kind === 'done') println(outcome.reply ?? `${shortId(s.id)} ${s.name} is done with no reply text`);

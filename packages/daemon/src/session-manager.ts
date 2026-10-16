@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { HEAD_TOOLS, Limits, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
-import type { HookPayload, KeptScreen, LoadSample, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
+import type { HookPayload, KeptScreen, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
 import type { HookResult } from './hook-sink.ts';
 import { RequestError } from './errors.ts';
 import { findGitDir, onReftableBranch, readBranch, repoKey } from './git-branch.ts';
@@ -58,6 +58,10 @@ export interface SessionRecord {
   // Set by kill(id, true): the record goes when the PTY exit lands, which
   // node-pty reports about a second after the process ends.
   removeOnExit?: boolean;
+  // Once the emerald mod has posted a spinner word for this pty (M9 fix
+  // 738), the screen's scanner yields, since both reading one spinner would
+  // race; a new pty clears it, so a resume without the mod reads the screen.
+  spinnerFromMod?: boolean;
   // The transcript tail while a turn runs (M47), started and stopped by
   // syncTail as the state and the transcript path move.
   tail?: TranscriptTail | null;
@@ -195,6 +199,9 @@ export class SessionManager extends EventEmitter {
   // The conversation ids whose ignored SessionStart has had its line in
   // emmerd.log (M9 fix 734), oldest first.
   private readonly foreignStartsTold = new Set<string>();
+  // The rate limits last emitted (M9 fix 739), as JSON, so a measure that
+  // moved only the context or the cost pushes nothing.
+  private lastLimits: string | null = null;
   private readonly launchers: Record<SessionKind, SessionLauncher>;
   private readonly bashrcPath: string;
   private readonly log: Logger;
@@ -356,6 +363,7 @@ export class SessionManager extends EventEmitter {
       lastEventAt: null,
       stale: false,
       needsInputReason: null,
+      askedFor: null,
       errorType: null,
       waitingOn: [],
       team: [],
@@ -477,6 +485,7 @@ export class SessionManager extends EventEmitter {
     const pty = this.launch(sessionId, rec.info.kind, args, cwd, cols, rows, shell);
     const now = Date.now();
     rec.pty = pty;
+    rec.spinnerFromMod = false;
     rec.kept = null;
     if (rec.typeAtPrompt) clearTimeout(rec.typeAtPrompt.timer);
     rec.typeAtPrompt = plan.typed === null ? null : { line: plan.typed, timer: this.typeTimer(rec, plan.typed) };
@@ -496,6 +505,7 @@ export class SessionManager extends EventEmitter {
       lastEventAt: null,
       stale: false,
       needsInputReason: null,
+      askedFor: null,
       errorType: null,
       waitingOn: [],
       team: [],
@@ -637,10 +647,31 @@ export class SessionManager extends EventEmitter {
     return launcher instanceof ClaudeLauncher && launcher.modDir !== null && this.sessions.get(sessionId)?.info.kind === 'claude';
   }
 
+  // The rate-limit windows of a mod's measure (M9 fix 739), emitted as
+  // `limits` when they differ from the last emitted; an entry without a
+  // string kind and a finite percent is dropped.
+  private noteLimits(payload: HookPayload, at: number): void {
+    const given = payload.measure?.rateLimits;
+    if (!Array.isArray(given) || given.length === 0) return;
+    const limits: UsageLimit[] = [];
+    for (const l of given) {
+      if (typeof l?.kind !== 'string' || typeof l.percentUsed !== 'number' || !Number.isFinite(l.percentUsed)) continue;
+      limits.push({ kind: l.kind, percentUsed: l.percentUsed, resetsAt: typeof l.resetsAt === 'string' ? l.resetsAt : null });
+    }
+    if (limits.length === 0) return;
+    const json = JSON.stringify(limits);
+    if (json === this.lastLimits) return;
+    this.lastLimits = json;
+    this.emit('limits', { at, limits });
+  }
+
   // Entry point for the hook sink. Returns why an event was or was not used,
   // and the state change it made when it made one, so the sink can record
   // both next to the payload in hooks.jsonl.
   applyHook(sessionId: string, given: HookPayload, at: number): HookResult {
+    // The account's rate limits, read before the record: they are not the
+    // session's, and the post already carried the sink's token.
+    if (given.hook_event_name === 'Measure') this.noteLimits(given, at);
     const rec = this.sessions.get(sessionId);
     if (rec === undefined) return { outcome: 'unknown-session' };
     // The folder a hook reports, in its one spelling (fix 108); the sink
@@ -651,6 +682,7 @@ export class SessionManager extends EventEmitter {
     // tool but the git-writing ones dropped.
     if (payload.hook_event_name === 'PreToolUse' && typeof payload.agent_id === 'string') this.noteAgentActivity(rec, payload.agent_id, payload);
     const outcome = classifyHook(rec.info, payload);
+    if (outcome === 'applied' && payload.hook_event_name === 'Spinner') rec.spinnerFromMod = true;
     if (outcome === 'applied-agent') {
       // A known subagent's own Bash call (M61): where the agent works and
       // what it committed. The reducer sees it too, for the one thing an
@@ -1257,7 +1289,7 @@ export class SessionManager extends EventEmitter {
       }
       const words = spinner.push(chunk);
       const verb = words.length === 0 ? null : words[words.length - 1]!;
-      if (verb !== null && verb !== (rec.info.liveVerb ?? null) && rec.pty === pty) {
+      if (verb !== null && verb !== (rec.info.liveVerb ?? null) && rec.pty === pty && rec.spinnerFromMod !== true) {
         rec.info = { ...rec.info, liveVerb: verb };
         publishTitle();
       }

@@ -2,6 +2,42 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 738 to 768, 2026-10-15
+
+Thirty-one fixes, led by the Chat face's third story, which is the thing to look at first: the footer's mode and model chips open menus, a message sent mid-turn shows as queued, a turn's fold opens and closes without moving what you were reading, and the paperclip takes any file. Beside it, the emerald mod now tells Emerald what Claude Code itself shows: the spinner word, an interrupted turn, the usage, and a permission ask named on the row. The activity view shows the usage windows, and the palette reaches the empty pane's shells and the terminal colours. The chat view is still a preview: still to come are the view fed by the mod, a tail read for very long transcripts, and the idle pair. The daemon goes to level 65, since it now takes prompts and permission asks through the mod; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.
+
+### Highlights
+
+**The mode and model menus.** In the chat view's footer the mode chip opens Manual, Accept edits, Plan and Auto, each with Claude Code's own description, and a pick presses Shift+Tab until that mode is reached. The model chip opens the model list and a row of effort levels, low to max: a model pick sends `/model <alias>`, which Claude Code also saves as the default for new sessions, and an effort pick sends `/effort <level>`.
+
+**Queued messages.** A message sent while the turn runs shows as a queued bubble, and the hint reads `N queued · Up to edit`. Up in an empty box pulls every queued message back into the box, joined by newlines, as Claude Code does in the terminal.
+
+**The fold stays put.** Opening or closing a turn's fold keeps the reply you were reading in place, with a short tint that fades. The closed fold's dot is pending while a folded call runs, else the last call's tone.
+
+**Any file through the paperclip.** An image goes in as an image, anything else as an `@` mention, relative inside the session's folder and absolute outside it; a folder dropped on the box becomes an `@folder/` mention. An image dropped anywhere on a Claude pane goes into the prompt, on either face, and the image chips have a × that takes them out again.
+
+**Permission asks named on the row.** A permission ask sets the agent line to `Allow? <Tool>: <input>`, `Allow? Bash: npm publish` say, on the row, the answer card, `emmer ls` and `emmer explain`. It is read only for now: approving from Emerald is still ahead.
+
+**The usage windows in the activity view.** A row under the activity view's controls shows the usage windows, with the strip's card on hover. It is on by default, and the ◔ button hides it per tab or pane.
+
+**The palette's shells and colours.** In the action palette, typing after the `>` (`>shell`, `>colours`) lists the empty pane's shells and the terminal colour schemes, the keyboard's way to both.
+
+### Details
+
+**The mod's state.** The row's working word is Claude Code's own spinner word. A turn interrupted by Escape or Ctrl+C puts the row at idle, with no chime. The context dial and the usage strip's percents follow Claude's own measure between the strip's asks.
+
+**`emmer send` and `emmer prompt`.** `send --enter` and `prompt` to an Emerald Claude session go in through the mod, with no pause before the Enter. Text that starts with `/`, `!` or `#`, or holds an `@` mention, is still typed, as is a send in the first second after Claude goes idle and anything to a session under `--safe-mode`. `send --interrupt` stays a typed Ctrl+C. A new `--if-idle` on both refuses a busy session with exit 1.
+
+**The chat box, smaller things.** The × on the image chips is off while Claude works or asks, and waits two seconds between clicks, since Claude Code exits on two Ctrl+Cs close together. The commands list has `/usage` and `/btw` and no longer `/agents`, and a typed `/cost` or `/stats` brings the fallback bar. The `/` and `@` menus show one highlighted row, which the pointer moves. A mention lands relative to the session's folder however the path is spelled. The chips' carets are chevrons.
+
+**The chat view's paths.** The `/` menu lists every `.claude/skills` from the session's folder up to the repository root (the main checkout's for a worktree) and enabled plugins' skills with their `<plugin>:` prefix. A reply's relative link that climbs out of the session's folder is plain text.
+
+**The sidebar.** A team member's line gives up its activity before its task when space is short.
+
+**Files.** A contents hit dropped on another layout tab or the + shows its line when that tab is shown.
+
+**Smaller things.** The working marks step on one clock, which cut the renderer's share with twenty sessions working from 20 to 7 percent. The main log says how a daemon it started ended, and `EMERALD_KILL_TRACE=1` makes `emmerd.log` trace every kill the daemon makes.
+
 ## Fixes 713 to 737, 2026-10-15
 
 Twenty-five fixes, led by the Chat face's second story, which is the thing to look at first: a footer that reads like Claude Code's own, a Normal view that folds each turn's tool calls, replies as Markdown with live paths, thumbnails for images, `/` and `@` menus in the box, and images pasted, attached or dropped into the prompt. The chat view is still a preview: its pane title carries a `Preview` chip, and the terminal face has everything. Still to come are the view fed by the mod, an image paste going in by Claude Code's own key, and a tail read for very long transcripts. Beside it, Emerald's own Claude sessions now post their hooks through an emerald mod, Design Mode reads whole in a narrow pane, and a pane close can no longer take the daemon down. The daemon stays at level 64, so no daemon restart is asked.

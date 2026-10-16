@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolPhrase } from './tool-phrase.ts';
+import { askWords, toolPhrase } from './tool-phrase.ts';
 
 test('toolPhrase: Bash reads its description as it is, else the first line of the command', () => {
   assert.equal(toolPhrase('Bash', { command: 'cat docs/BACKLOG.md', description: 'Reading the backlog file' }), 'Reading the backlog file');
@@ -42,4 +42,13 @@ test('toolPhrase: a long description is cut the way a prompt is', () => {
   const phrase = toolPhrase('Bash', { description: long });
   assert.equal(phrase?.length, 200);
   assert.ok(phrase?.endsWith('…'));
+});
+
+test('askWords names the tool and its subject, a file by its base name, the bare name when the input names nothing (M9 fix 742)', () => {
+  assert.equal(askWords('Bash', { command: 'npm publish', description: 'Publish the package' }), 'Bash: npm publish');
+  assert.equal(askWords('Edit', { file_path: 'C:/repo/packages/shared/src/session.ts' }), 'Edit: session.ts');
+  assert.equal(askWords('WebFetch', { url: 'https://example.com/a' }), 'WebFetch: https://example.com/a');
+  assert.equal(askWords('mcp__x__y', {}), 'mcp__x__y');
+  assert.equal(askWords('  ', { command: 'ls' }), null);
+  assert.equal(askWords('Bash', { command: 'git add a\ngit commit' }), 'Bash: git add a');
 });

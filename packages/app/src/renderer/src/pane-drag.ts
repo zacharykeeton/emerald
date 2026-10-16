@@ -98,11 +98,13 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
     const dropped = dragging;
     teardown();
     if (dropped && tabTarget !== null) {
-      // A contents hit's line is not revealed here: the file opens at its
-      // top on a tab not on show.
       const content: PaneContent = payload.kind === 'session' ? { sessionId: payload.sessionId, view: null } : { sessionId: null, view: payload.view };
       const drop = 'tabId' in tabTarget ? dropOnLayoutTab(content, tabTarget.tabId, fromPaneId) : dropOnNewTab(content, fromPaneId);
-      void drop.catch((err: unknown) => console.warn('[emerald] drop failed', err));
+      void drop
+        .then((landed) => {
+          if (landed !== null && payload.kind === 'view' && payload.line !== undefined && payload.view.kind === 'file') revealInPane(landed, payload.view.path, payload.line, payload.column);
+        })
+        .catch((err: unknown) => console.warn('[emerald] drop failed', err));
       return;
     }
     if (!dropped || target === null) return;

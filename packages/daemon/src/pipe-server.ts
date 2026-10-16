@@ -2,7 +2,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
-import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState } from '@emerald/shared';
+import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -111,6 +111,10 @@ interface ServerHooks {
   // hold the reply for the first browser.done, or the deadline.
   requestBrowserRun: (req: BrowserRunAsk) => Promise<BrowserRunAnswer>;
   browserRunDone: (runId: number, answer: BrowserAnswer) => void;
+  // The emerald mod's prompt channel (M9 fix 741): this connection takes
+  // the session's mod.submit pushes, and a session.submit is pushed to it.
+  openModChannel: (sessionId: string, client: ClientConnection) => void;
+  submitToMod: (req: Requests['session.submit']['req']) => Requests['session.submit']['res'];
 }
 
 type FileOpenAsk = Requests['file.open']['req'];
@@ -141,6 +145,10 @@ export const BROWSER_DRIVE_LEVEL = 63;
 // 703); an older window gets each sampled session's record as
 // session.changed.
 export const LOAD_PUSH_LEVEL = 64;
+
+// The first app level that takes usage.limits (M9 fix 739), the rate
+// limits a hosted session's mod measured; an older window gets none.
+export const LIMITS_PUSH_LEVEL = 65;
 
 // Grey, on its own line, like the renderer's own exit note.
 const SCROLLBACK_LOST_NOTE = '\x1b[90m[scrollback lost: this session ended before emmerd restarted]\x1b[0m\r\n';
@@ -210,6 +218,9 @@ export class PipeServer {
   // 672), by the runId the push carried.
   private runSeq = 0;
   private readonly runWaits = new Map<number, (answer: BrowserAnswer) => void>();
+  // Each Claude session's emerald mod channel (M9 fix 741), by session id:
+  // the connection of the `emmer mod-channel` its mod started.
+  private readonly modChannels = new Map<string, ClientConnection>();
   private closing = false;
   private readonly manager: SessionManager;
   private readonly layouts: LayoutStore;
@@ -227,11 +238,13 @@ export class PipeServer {
     this.opts.conflicts?.on('changed', (report: ConflictReport) => this.broadcast('sessions', { type: 'conflicts.changed', report }));
     manager.on('changed', (info: SessionInfo) => this.broadcast('sessions', { type: 'session.changed', session: info }));
     manager.on('load', (tick: LoadTick) => this.broadcastLoad(tick));
+    manager.on('limits', (reading: { at: number; limits: UsageLimit[] }) => this.broadcastLimits(reading));
     // The client that made the change hears it too, so a renderer can treat
     // the push as the single source of truth and ignore the reply body.
     layouts.on('changed', (layout: Layout) => this.broadcast('layout', { type: 'layout.changed', layout }));
     manager.on('exit', (info: SessionInfo) => {
       for (const client of this.clients) client.onSessionExit(info);
+      this.dropModChannel(info.id, null);
     });
     manager.on('activity', ({ id, at }: { id: string; at: number }) => this.broadcast('activity', { type: 'pty.activity', sessionId: id, at }));
     manager.on('rate', ({ id, samples, at }: { id: string; samples: number[]; at: number }) => this.broadcast('rate', { type: 'pty.rate', sessionId: id, samples, at }));
@@ -346,11 +359,14 @@ export class PipeServer {
         this.runWaits.delete(runId);
         resolve(answer);
       },
+      openModChannel: (sessionId, channel) => this.openModChannel(sessionId, channel),
+      submitToMod: (req) => this.submitToMod(req),
     });
     this.clients.add(client);
     socket.once('close', () => {
       this.clients.delete(client);
       if (client.isApp) this.onAppClose();
+      for (const [sessionId, channel] of this.modChannels) if (channel === client) this.dropModChannel(sessionId, client);
     });
   }
 
@@ -405,6 +421,33 @@ export class PipeServer {
     });
   }
 
+  // The emerald mod's prompt channel (M9 fix 741). The latest
+  // registration wins: a mod that starts its channel again (a /clear, a
+  // second session.start) replaces the first.
+  private openModChannel(sessionId: string, channel: ClientConnection): void {
+    const held = this.modChannels.get(sessionId);
+    this.modChannels.set(sessionId, channel);
+    this.opts.log.info(`mod channel ${held !== undefined && held !== channel ? 'replaced' : 'up'} for ${sessionId.slice(0, 8)}`);
+  }
+
+  // Drops a session's channel when that connection closed (channel set)
+  // or the session exited (null).
+  private dropModChannel(sessionId: string, channel: ClientConnection | null): void {
+    const held = this.modChannels.get(sessionId);
+    if (held === undefined || (channel !== null && held !== channel)) return;
+    this.modChannels.delete(sessionId);
+    this.opts.log.info(`mod channel down for ${sessionId.slice(0, 8)}`);
+  }
+
+  // No text is logged, as browser.run logs no argument.
+  private submitToMod(req: Requests['session.submit']['req']): Requests['session.submit']['res'] {
+    const channel = this.modChannels.get(req.sessionId);
+    if (channel === undefined) return { via: 'typed' };
+    channel.send({ type: 'mod.submit', sessionId: req.sessionId, text: req.text });
+    this.opts.log.info(`mod submit for ${req.sessionId.slice(0, 8)}: ${req.text.length} characters`);
+    return { via: 'mod' };
+  }
+
   // The relay of a browser.run (M9 fix 672), shaped as the file relay:
   // the push to each window on the app topic that said level 63, never
   // to an older one, and the reply held for the first browser.done or
@@ -447,6 +490,13 @@ export class PipeServer {
   // LOAD_PUSH_LEVEL, each sampled record to an older window as before, and
   // nothing to a CLI, whose wait and prompt read only the state, which a
   // load tick never moves.
+  private broadcastLimits(reading: { at: number; limits: UsageLimit[] }): void {
+    const push: ServerMessage = { type: 'usage.limits', at: reading.at, limits: reading.limits };
+    for (const client of this.clients) {
+      if (client.isApp && client.subscribed('app') && client.appLevel >= LIMITS_PUSH_LEVEL) client.send(push);
+    }
+  }
+
   private broadcastLoad(tick: LoadTick): void {
     const push: ServerMessage = { type: 'sessions.load', at: tick.at, samples: tick.samples };
     for (const client of this.clients) {
@@ -858,6 +908,20 @@ class ClientConnection {
         if (!isBrowserAnswer(answer)) throw new SessionError('bad-request', 'answer must be { ok, text } with a reason when not ok');
         this.hooks.browserRunDone(runId, answer);
         return {};
+      }
+      case 'mod.channel': {
+        // No kind check: the CLI asks for a Claude session's alone, and
+        // the tests use a shell's.
+        const sessionId = expectString(req, 'sessionId');
+        this.manager.get(sessionId);
+        this.hooks.openModChannel(sessionId, this);
+        return {};
+      }
+      case 'session.submit': {
+        const sessionId = expectString(req, 'sessionId');
+        const text = expectString(req, 'text');
+        this.manager.get(sessionId);
+        return this.hooks.submitToMod({ sessionId, text });
       }
       case 'hooks.test': {
         // Checked before the lookup, so a server with no sink still refuses a bad id.

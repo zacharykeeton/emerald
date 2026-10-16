@@ -21,6 +21,12 @@
 // folder and the project folder Claude Code made for it afterwards.
 // Block `more` (fix 723) starts a real Claude from the empty pane's More...
 // dialog with Chat picked and checks the face and the args.
+// Block `turns` (fixes 752 and 753) plays Claude with a shell over a
+// long fixture: opening or closing a turn's fold keeps the reply under
+// the calls in place with a short tint, and the fold dots wear their
+// calls' tones. Block `queued` (fix 754, needs turns) reads a message
+// queued while the stub works, shown and then absorbed into its turn;
+// the real block takes two queued messages back with Edit.
 // Run: npm run verify:chat -w @emerald/app [-- --only stub,ask]
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,7 +39,7 @@ const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort,
 const { block, blocksRun, partial } = blockRunner([
   { name: 'stub', fixes: ['689'], needs: [] },
   { name: 'ask', fixes: ['690'], needs: ['stub'] },
-  { name: 'footer', fixes: ['713', '715'], needs: ['stub'] },
+  { name: 'footer', fixes: ['713', '715', '743', '744', '745'], needs: ['stub'] },
   { name: 'views', fixes: ['714'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
@@ -41,9 +47,11 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
   { name: 'real', fixes: ['690'], needs: [] },
   { name: 'fresh', fixes: ['722'], needs: [] },
-  { name: 'menus', fixes: ['719', '720'], needs: [] },
-  { name: 'image', fixes: ['721'], needs: [] },
+  { name: 'menus', fixes: ['719', '720', '746', '749', '750', '751', '755'], needs: [] },
+  { name: 'image', fixes: ['721', '747', '748'], needs: [] },
   { name: 'more', fixes: ['723'], needs: [] },
+  { name: 'turns', fixes: ['752', '753'], needs: [] },
+  { name: 'queued', fixes: ['754'], needs: ['turns'] },
 ]);
 
 let app = null;
@@ -73,6 +81,22 @@ const waitCursorRow = async (sessionId, test, what) => {
   expect(test(await cursorRow(sessionId)), `${what}, got ${JSON.stringify(await cursorRow(sessionId))}`);
 };
 const typeRaw = (sessionId, text) => s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: ${JSON.stringify(text)} })`);
+// A file dropped at the centre of the element a selector names, as the OS
+// drops one: a hidden file input holds it, then dragenter, dragover and
+// drop at elementFromPoint (fix 721's recipe, a helper since fix 746).
+const dropOn = async (file, selector) => {
+  await s.evalJs(
+    `(() => { let i = document.getElementById('verify-drop'); if (i === null) { i = document.createElement('input'); i.type = 'file'; i.id = 'verify-drop'; i.style.display = 'none'; document.body.appendChild(i); } })()`,
+  );
+  const input = await s.send('Runtime.evaluate', { expression: `document.getElementById('verify-drop')` });
+  await s.send('DOM.setFileInputFiles', { files: [file], objectId: input.result.objectId });
+  const at = await s.evalJs(`(() => { const r = ${q(selector)}.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  for (const type of ['dragenter', 'dragover', 'drop']) {
+    await s.evalJs(
+      `(() => { const dt = new DataTransfer(); dt.items.add(document.getElementById('verify-drop').files[0]); const el = document.elementFromPoint(${at.x}, ${at.y}) ?? document.body; el.dispatchEvent(new DragEvent(${JSON.stringify(type)}, { dataTransfer: dt, clientX: ${at.x}, clientY: ${at.y}, bubbles: true, cancelable: true, relatedTarget: null })); })()`,
+    );
+  }
+};
 const record = async (id) => (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === id);
 const waitRecord = async (id, pred, what, ms) => {
   const until = Date.now() + ms;
@@ -174,6 +198,10 @@ let freshDir = null;
 let freshProject = null;
 let menusId = null;
 let imageId = null;
+// M9 fixes 752 to 754: the turns stub, which `queued` reuses.
+let turnsId = null;
+let turnsPane = null;
+let postTurns = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -422,44 +450,161 @@ try {
     expect(diffText === '+6 −2', `the diff chip reads the fixture's edit, got ${JSON.stringify(diffText)}`);
     step('fix 713 (a): with nothing to read the mode, model and agent chips are absent; the diff chip reads +6 −2');
 
-    // (b) The mode row off the screen, and a click sends Shift+Tab. The
-    // glyph is built from its code point so the typed line is ASCII.
-    // ConPTY hands \x1b[Z over as a Shift press (key 16) and then Tab, so
-    // the read skips the Shift.
-    await typeRaw(stubId, `Write-Host ('  ' + [char]0x23F8 + ' manual mode on'); do { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } while ($k.VirtualKeyCode -eq 16); Write-Host ('key ' + $k.VirtualKeyCode + ' ' + $k.ControlKeyState)\r`);
-    {
-      const until = Date.now() + 10000;
-      while (Date.now() < until && !(await screen(stubId)).rows.some((r) => r.trim() === '⏸ manual mode on')) await sleep(200);
-      expect((await screen(stubId)).rows.some((r) => r.trim() === '⏸ manual mode on'), `the manual row on the screen, got ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.includes('manual')))}`);
-    }
+    // (b) M9 fix 743: the mode row off the screen, and the chip's menu of
+    // the four modes. The stub prints the manual row and steps through
+    // accept edits and plan on each Tab, as Claude Code's footer cycles.
+    // The glyphs are built from their code points so the typed line is
+    // ASCII. ConPTY hands \x1b[Z over as a Shift press (key 16) and then
+    // Tab, so the loops count Tabs alone.
+    const waitRow = async (test, what, ms) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until && !(await screen(stubId)).rows.some(test)) await sleep(200);
+      expect((await screen(stubId)).rows.some(test), `${what}, got ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-6))}`);
+    };
+    const modeMenu = '.menu.chat-mode-menu';
+    const menuRows = (sel) => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sel + ' .menu-item')})].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', checked: b.dataset.checked ?? null, line: b.querySelector('.menu-line')?.textContent ?? null }))`);
+    const openMenu = async (chip, sel) => {
+      await s.evalJs(`${q(foot(chip))}.click()`);
+      try {
+        await s.waitFor(`!!document.querySelector(${JSON.stringify(sel)})`, `the ${chip} menu`, 3000);
+      } catch (err) {
+        const seen = await s.evalJs(`(() => { const c = ${q(foot(chip))}; return { chip: !!c, open: c?.dataset.open ?? null, busy: c?.dataset.busy ?? null, face: ${q(paneSel(stubPane))}?.dataset.face ?? null, menus: [...document.querySelectorAll('.menu')].map((m) => m.className) }; })()`);
+        throw new Error(`${err.message}: ${JSON.stringify(seen)}`);
+      }
+    };
+    const pickRow = async (sel, label) => {
+      await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sel + ' .menu-item')})].find((b) => b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') === ${JSON.stringify(label)}).click()`);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(sel)})`, `the menu gone after ${label}`, 3000);
+    };
+    const escapeMenu = async (sel) => {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(sel)})`, 'Escape closed the menu', 2000);
+    };
+    const hintNow = () => s.evalJs(`${q(paneSel(stubPane) + ' .chat-hint')}?.textContent ?? null`);
+    await typeRaw(stubId, `$m = @(('  ' + [char]0x23F8 + ' manual mode on'), ('  ' + [char]0x23F5 + [char]0x23F5 + ' accept edits on (shift+tab to cycle)'), ('  ' + [char]0x23F8 + ' plan mode on (shift+tab to cycle)')); $i = 0; Write-Host $m[0]; while ($i -lt 2) { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); if ($k.VirtualKeyCode -eq 9) { $i += 1; Write-Host $m[$i] } }; Write-Host ('tabs ' + $i)\r`);
+    await waitRow((r) => r.trim() === '⏸ manual mode on', 'the manual row on the screen', 10000);
     await waitChip('mode', 'Manual');
-    await s.evalJs(`${q(foot('mode'))}.click()`);
+    await openMenu('mode', modeMenu);
     {
-      const until = Date.now() + 5000;
-      while (Date.now() < until && !(await screen(stubId)).rows.some((r) => r.startsWith('key 9'))) await sleep(200);
-      const row = (await screen(stubId)).rows.find((r) => r.startsWith('key 9'));
-      expect(row !== undefined, `the click sent Tab, got ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.startsWith('key')))}`);
-      console.log(`[verify] note: the mode chip's key read as ${JSON.stringify(row.trim())} (ShiftPressed logged, not judged)`);
+      const rows = await menuRows(modeMenu);
+      const labels = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modeMenu + ' .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
+      expect(JSON.stringify(labels) === JSON.stringify(['Permission mode', 'Manual', 'Accept edits', 'Plan', 'Auto']), `the heading and the four modes, got ${JSON.stringify(labels)}`);
+      const checked = rows.filter((r) => r.checked === 'true').map((r) => r.label);
+      expect(JSON.stringify(checked) === '["Manual"]', `Manual ticked alone, got ${JSON.stringify(checked)}`);
+      const lines = rows.filter((r) => r.line !== null).map((r) => r.line);
+      const want = ['ask each time', 'auto-approve file edits and common file commands', 'research and propose changes without making them', 'no routine prompts; a reviewer model screens actions'];
+      expect(JSON.stringify(lines) === JSON.stringify(want), `Claude Code's four lines in order, got ${JSON.stringify(lines)}`);
+      const box = await s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(modeMenu)}).getBoundingClientRect(); const c = ${q(foot('mode'))}.getBoundingClientRect(); return { menuBottom: m.bottom, chipTop: c.top, open: ${q(foot('mode'))}.dataset.open ?? null }; })()`);
+      expect(box.menuBottom <= box.chipTop + 0.5, `the menu opens above the chip, got ${JSON.stringify(box)}`);
+      expect(box.open !== null, 'the chip reads data-open while its menu shows');
     }
+    await pickRow(modeMenu, 'Plan');
+    await waitRow((r) => r.startsWith('tabs 2'), 'two presses reached plan and the loop ended', 8000);
+    await waitChip('mode', 'Plan', 3000);
+    // The pick's own read follows its press by a second, so the poll can
+    // show Plan first; the chip ignores a click until the pick settles.
+    await s.waitFor(`${q(foot('mode'))}?.dataset.busy === undefined`, 'the mode pick settled', 3000);
+    expect((await hintNow()) !== 'Could not reach Plan', 'no miss when Plan was reached');
+    await openMenu('mode', modeMenu);
+    {
+      const checked = (await menuRows(modeMenu)).filter((r) => r.checked === 'true').map((r) => r.label);
+      expect(JSON.stringify(checked) === '["Plan"]', `Plan ticked alone after the pick, got ${JSON.stringify(checked)}`);
+    }
+    await escapeMenu(modeMenu);
     await backOnChat();
-    await typeRaw(stubId, `Write-Host ('  ' + [char]0x23F5 + [char]0x23F5 + ' accept edits on (shift+tab to cycle)')\r`);
-    await waitChip('mode', 'Accept edits', 5000);
+    // The cap: a mode the cycle never reaches reads a miss after five
+    // presses. This loop prints no mode row, so the plan row stays lowest.
+    await typeRaw(stubId, `$n = 0; while ($n -lt 5) { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); if ($k.VirtualKeyCode -eq 9) { $n += 1 } }; Write-Host ('tabs ' + $n)\r`);
+    await sleep(500);
+    await openMenu('mode', modeMenu);
+    await pickRow(modeMenu, 'Auto');
+    try {
+      await s.waitFor(`${q(paneSel(stubPane) + ' .chat-hint')}?.textContent === 'Could not reach Auto'`, 'the miss in the hint', 12000);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await hintNow())}`);
+    }
+    await waitRow((r) => r.startsWith('tabs 5'), 'five presses and no more', 3000);
+    expect((await chipWord('mode')) === 'Plan', `the chip still reads Plan, got ${JSON.stringify(await chipWord('mode'))}`);
     await backOnChat();
-    step('fix 713 (b): the mode chip reads Manual off the screen, a click sends Shift+Tab, and the lower row wins as Accept edits');
+    // A pick of the current mode sends nothing and clears the miss.
+    await openMenu('mode', modeMenu);
+    await pickRow(modeMenu, 'Plan');
+    try {
+      await s.waitFor(`${q(paneSel(stubPane) + ' .chat-hint')}?.textContent !== 'Could not reach Auto'`, 'the miss cleared', 1500);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await hintNow())}`);
+    }
+    step('fix 743: the mode chip opens the four modes with Claude Code\'s lines, a pick of Plan from Manual sends two Shift+Tabs and the tick moves, and Auto never reached reads Could not reach Auto after five');
 
-    // (c) The model off the status line, its effort off the transcript,
-    // and a click types /model with the fallback bar.
-    await post({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5', display_name: 'Opus 5' } });
-    await waitChip('model', 'Opus 5');
+    // (c) M9 fix 744: the model off the status line, its effort off the
+    // transcript, and the chip's menu of the models and the effort row. A
+    // pick types /model <alias> or /effort <level> into the stub, which
+    // echoes what it reads, with no fallback bar.
+    const modelMenu = '.menu.chat-model-menu';
+    await post({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
+    await waitChip('model', 'Opus 5.5');
     fs.appendFileSync(fixture, asstLine([{ type: 'text', text: 'Effort noted.' }], 90, { effort: 'high' }) + '\n');
-    await waitChip('model', 'Opus 5 · high', 5000);
-    await s.evalJs(`${q(foot('model'))}.click()`);
-    await s.waitFor(`!!${q(paneSel(stubPane) + ' .chat-fallback')}`, 'the fallback bar after the model chip', 5000);
-    await boxHasKeys();
-    await s.key('Escape', 'Escape', 27);
-    await s.waitFor(`!${q(paneSel(stubPane) + ' .chat-fallback')}`, 'Escape closed the bar', 2000);
+    await waitChip('model', 'Opus 5.5 · high', 5000);
+    {
+      const title = await s.evalJs(`${q(foot('model'))}.title`);
+      expect(title === 'Model and effort. A model pick is saved as your default for new sessions, as /model does.', `the model chip's title, got ${JSON.stringify(title)}`);
+    }
+    await typeRaw(stubId, `foreach ($i in 1..2) { $l = Read-Host; Write-Host ('got ' + $l) }\r`);
+    await sleep(500);
+    const segments = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modelMenu + ' [data-segments="Effort"] .menu-segment')})].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
+    const ticked = async () => (await menuRows(modelMenu)).filter((r) => r.checked === 'true').map((r) => r.label);
+    await openMenu('model', modelMenu);
+    {
+      const labels = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modelMenu + ' .menu-item .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
+      const want = ['Model', 'Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
+      expect(JSON.stringify(labels) === JSON.stringify(want), `the heading and the nine models, got ${JSON.stringify(labels)}`);
+      expect(JSON.stringify(await ticked()) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(await ticked())}`);
+      const segs = await segments();
+      expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the five effort levels, got ${JSON.stringify(segs)}`);
+      expect(JSON.stringify(segs.filter((x) => x.active).map((x) => x.word)) === '["high"]', `high active alone, got ${JSON.stringify(segs)}`);
+      const box = await s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(modelMenu)}).getBoundingClientRect(); const c = ${q(foot('model'))}.getBoundingClientRect(); return { menuBottom: m.bottom, chipTop: c.top }; })()`);
+      expect(box.menuBottom <= box.chipTop + 0.5, `the menu opens above the chip, got ${JSON.stringify(box)}`);
+    }
+    await pickRow(modelMenu, 'Sonnet 5.5');
+    await waitRow((r) => r.startsWith('got /model sonnet'), 'the pick typed /model sonnet', 5000);
+    await sleep(1500);
+    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .chat-fallback')}`)) === false, 'no fallback bar after a model pick');
+    await openMenu('model', modelMenu);
+    await s.evalJs(`${q(modelMenu + ' [data-segments="Effort"] .menu-segment[data-value="low"]')}.click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(modelMenu)})`, 'the menu gone after the low segment', 3000);
+    await waitRow((r) => r.startsWith('got /effort low'), 'the pick typed /effort low', 5000);
+    await waitChip('model', 'Opus 5.5 · low', 2000);
+    await post({ hook_event_name: 'StatusLine', model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' } });
+    await waitChip('model', 'Sonnet 5.5 · low');
+    fs.appendFileSync(fixture, asstLine([{ type: 'text', text: 'Effort changed.' }], 92, { effort: 'medium' }) + '\n');
+    await waitChip('model', 'Sonnet 5.5 · medium', 5000);
+    await openMenu('model', modelMenu);
+    {
+      expect(JSON.stringify(await ticked()) === '["Sonnet 5.5"]', `Sonnet 5.5 ticked alone, got ${JSON.stringify(await ticked())}`);
+      const segs = await segments();
+      expect(JSON.stringify(segs.filter((x) => x.active).map((x) => x.word)) === '["medium"]', `medium active alone, got ${JSON.stringify(segs)}`);
+    }
+    await escapeMenu(modelMenu);
     await backOnChat();
-    step('fix 713 (c): the model chip reads Opus 5, then Opus 5 · high off the transcript, and a click types /model with the fallback bar');
+    step('fix 744: the model chip opens the models and the effort row; a pick of Sonnet types /model sonnet with no fallback bar, an effort pick types /effort low and the chip shows it until the transcript says otherwise');
+
+    // M9 fix 745: the three chips' carets are drawn chevrons, centred on
+    // their words. The read is on the SVG: the two spans are centred by
+    // the flex row whatever the caret draws inside its own.
+    {
+      const offsets = [];
+      for (const chip of ['mode', 'model', 'view']) {
+        const r = await s.evalJs(`(() => { const c = ${q(foot(chip))}; const svg = c?.querySelector('.chat-chip-caret svg.chat-footer-chevron'); const word = c?.querySelector('.chat-chip-word'); if (!svg || !word) return null; const a = svg.getBoundingClientRect(); const b = word.getBoundingClientRect(); return { w: a.width, h: a.height, mid: a.top + a.height / 2, wordMid: b.top + b.height / 2, text: c.querySelector('.chat-chip-caret').textContent }; })()`);
+        expect(r !== null, `the ${chip} chip's caret holds a chevron SVG`);
+        expect(r.w === 8 && r.h === 5, `the ${chip} chevron is 8 by 5, got ${r.w} by ${r.h}`);
+        expect(r.text === '', `the ${chip} caret carries no text glyph, got ${JSON.stringify(r.text)}`);
+        const off = r.mid - r.wordMid;
+        offsets.push(`${chip} ${off.toFixed(2)}`);
+        expect(Math.abs(off) <= 1, `the ${chip} chevron centred on its word within 1 px, off by ${off}`);
+      }
+      console.log(`[verify] note: fix 745 chevron offsets from the words' centres: ${offsets.join(', ')}`);
+    }
+    step('fix 745: the three chips\' carets are 8 by 5 chevrons centred on their words within 1 px');
 
     // (d) The agents out, the roster card, and the agent returned.
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'send a helper' });
@@ -614,6 +759,9 @@ try {
     await ctrlO('Normal');
     step('fix 714: the view menu opens upward with Normal checked, and a pick sets the mode');
 
+    // Fix 753: the stub's last folded call is the passing Edit.
+    const stubTone = await s.evalJs(`${q(P + ' .chat-fold .chat-dot')}?.dataset.tone ?? null`);
+    expect(stubTone === 'done', `the stub's fold dot reads done, got ${stubTone}`);
     await s.evalJs(`${q(P + ' .chat-fold')}.click()`);
     await s.waitFor(`${q(P)}.querySelectorAll('.chat-step[data-kind="tool"]').length === 3 && ${q(P + ' .chat-fold-caret')}?.textContent === '⌄'`, 'the fold opened', 3000);
     await s.screenshot('m9-chat-views-open.png');
@@ -696,19 +844,20 @@ try {
   await block('thumbs', async () => {
     // M9 fixes 717 and 718: an image result and two pastes, one typed and
     // one riding on a slash command's meta line. The PNGs are made in the
-    // window, a canvas filled and read back.
+    // window, a canvas filled in a colour per image with a white box inside
+    // (fix 758), so a frame tells the three apart, and read back.
     await toChat(stubPane);
-    const pngOf = (w, h) => s.evalJs(`(() => { const c = document.createElement('canvas'); c.width = ${w}; c.height = ${h}; c.getContext('2d').fillRect(0, 0, ${w}, ${h}); return c.toDataURL('image/png').slice(22); })()`);
+    const pngOf = (w, h, fill) => s.evalJs(`(() => { const c = document.createElement('canvas'); c.width = ${w}; c.height = ${h}; const g = c.getContext('2d'); g.fillStyle = ${JSON.stringify(fill)}; g.fillRect(0, 0, ${w}, ${h}); g.fillStyle = 'rgb(255, 255, 255)'; g.fillRect(${Math.round(w / 4)}, ${Math.round(h / 4)}, ${Math.round(w / 2)}, ${Math.round(h / 2)}); return c.toDataURL('image/png').slice(22); })()`);
     const png = (data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } });
     fs.appendFileSync(
       fixture,
       [
-        userLine([{ type: 'text', text: '[Image #1] the page after the key' }, png(await pngOf(64, 40))], 300, { promptId: 'p718a', imagePasteIds: [1] }),
+        userLine([{ type: 'text', text: '[Image #1] the page after the key' }, png(await pngOf(64, 40, 'rgb(220, 0, 0)'))], 300, { promptId: 'p718a', imagePasteIds: [1] }),
         asstLine([useOf('r718', 'Read', { file_path: path.join(longFixtureDir(), 'after-key.png') })], 301),
-        resultOf('r718', [png(await pngOf(48, 30))], 302, { toolUseResult: { type: 'image', file: { type: 'image/png', originalSize: 1234, dimensions: {} } } }),
+        resultOf('r718', [png(await pngOf(48, 30, 'rgb(0, 120, 220)'))], 302, { toolUseResult: { type: 'image', file: { type: 'image/png', originalSize: 1234, dimensions: {} } } }),
         asstLine([{ type: 'text', text: 'Here it is.' }], 303),
         userLine('<command-message>backlog</command-message>\n<command-name>/backlog</command-name>\n<command-args>[Image #2] file this</command-args>', 310, { promptId: 'p718b' }),
-        userLine([png(await pngOf(40, 64)), { type: 'text', text: 'Base directory for this skill: C:/sim' }], 310, { isMeta: true, promptId: 'p718b' }),
+        userLine([png(await pngOf(40, 64, 'rgb(230, 170, 0)')), { type: 'text', text: 'Base directory for this skill: C:/sim' }], 310, { isMeta: true, promptId: 'p718b' }),
         asstLine([{ type: 'text', text: 'Filed.' }], 311),
       ].join('\n') + '\n',
     );
@@ -738,6 +887,7 @@ try {
       expect(JSON.stringify(t.slash.map((x) => x.split(' ').slice(0, 2).join(' '))) === '["40 64"]', `the slash command's paste ${when}, got ${JSON.stringify(t)}`);
       expect(JSON.stringify(t.result) === '["48 30 176 110"]', `the result's thumbnail ${when}, got ${JSON.stringify(t)}`);
     }
+    await s.screenshot('m9-chat-thumbs.png');
     step('fix 718: a pasted image is an 88 by 55 thumbnail on its bubble, natural 64 by 40, and a slash command\'s paste rides on its meta line');
     const thumb = `[...${q(paneSel(stubPane))}.querySelectorAll('.chat-thumb')].at(-1)`;
     await s.evalJs(`${thumb}.click()`);
@@ -880,6 +1030,39 @@ try {
     expect(['Manual', 'Accept edits', 'Plan', 'Auto'].includes(realMode), `the mode chip reads one of the four words, got ${JSON.stringify(realMode)}`);
     step(`fix 713: the real session's footer reads ${realModel} and ${realMode}, with no diff chip`);
 
+    // M9 fix 743: the real session's mode menu, opened and read, never
+    // picked: its permission mode is the harness profile's.
+    const realMenuLabels = (sel) => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sel + ' .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
+    const realMenuChecked = (sel) => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sel + ' .menu-item[data-checked="true"] .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
+    await s.evalJs(`${q(paneSel(pane.id) + ' .chat-chip[data-chip="mode"]')}.click()`);
+    await s.waitFor(`!!document.querySelector('.menu.chat-mode-menu')`, 'the real mode menu', 3000);
+    {
+      const labels = await realMenuLabels('.menu.chat-mode-menu');
+      expect(JSON.stringify(labels) === JSON.stringify(['Permission mode', 'Manual', 'Accept edits', 'Plan', 'Auto']), `the real mode menu's rows, got ${JSON.stringify(labels)}`);
+      const checked = await realMenuChecked('.menu.chat-mode-menu');
+      expect(JSON.stringify(checked) === JSON.stringify([realMode]), `the real mode menu ticks ${realMode} alone, got ${JSON.stringify(checked)}`);
+    }
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.menu.chat-mode-menu')`, 'Escape closed the real mode menu', 2000);
+    step(`fix 743: the real session's mode menu lists the four modes with ${realMode} ticked, read and closed without a pick`);
+
+    // M9 fix 744: the real session's model menu, opened and read, never
+    // picked: a real /model pick saves the user's own default model.
+    await s.evalJs(`${q(paneSel(pane.id) + ' .chat-chip[data-chip="model"]')}.click()`);
+    await s.waitFor(`!!document.querySelector('.menu.chat-model-menu')`, 'the real model menu', 3000);
+    {
+      const labels = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu .menu-item .menu-label')].map((e) => e.textContent.replace(/^✓/, ''))`);
+      const want = ['Model', 'Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
+      expect(JSON.stringify(labels) === JSON.stringify(want), `the real model menu's rows, got ${JSON.stringify(labels)}`);
+      const segs = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu [data-segments="Effort"] .menu-segment')].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
+      expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the real effort row, got ${JSON.stringify(segs)}`);
+      const checked = await realMenuChecked('.menu.chat-model-menu');
+      console.log(`[verify] note: fix 744's real model menu ticks ${JSON.stringify(checked)} with ${JSON.stringify(segs.filter((x) => x.active).map((x) => x.word))} active (the account's display name may name no row; logged, not judged)`);
+    }
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.menu.chat-model-menu')`, 'Escape closed the real model menu', 2000);
+    step('fix 744: the real session\'s model menu lists the nine models and the five effort levels, read and closed without a pick');
+
     // The same reply in the terminal underneath, and back.
     await s.evalJs(`${q(paneSel(pane.id) + ' .pane-face-toggle')}.click()`);
     await s.waitFor(`${q(paneSel(pane.id))}.dataset.face === undefined`, 'the terminal face');
@@ -898,6 +1081,95 @@ try {
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!${q(paneSel(pane.id) + ' .chat-fallback')}`, 'Escape closed the bar', 2000);
     step('fix 690: /model on the real session shows the fallback bar, and Escape closes it');
+
+    // M9 fix 754: two messages queued behind a real turn's sleep; Edit on
+    // the older takes it back into the box (two Ups and Enter in the TUI),
+    // Remove on the other takes it back and drops it, and the turn ends on
+    // the prompt alone.
+    {
+      await sleep(1500);
+      const P = paneSel(pane.id);
+      const boxSel = P + ' .chat-box';
+      const stopsBefore = eventsFor(realId).filter((e) => e.event === 'Stop').length;
+      console.log(`[verify] fix 754: the view before the step reads ${await viewWord(pane.id)}`);
+      if ((await viewWord(pane.id)) !== 'Verbose') await pickView(pane.id, 'Verbose');
+      const qPrompt = `Use the Bash tool to run this exact command in the foreground, not in the background: ping -n 21 127.0.0.1. Then reply with exactly the word ${marker}q and nothing else.`;
+      await s.evalJs(`${q(boxSel)}.focus()`);
+      await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'the box holds the keyboard');
+      await s.type(qPrompt);
+      await s.key('Enter', 'Enter', 13);
+      // Any Bash row pending: the row's words may be the call's
+      // description rather than its command.
+      const sleeping = `[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"][data-tool="Bash"]')})].some((t) => t.querySelector('.chat-dot')?.dataset.tone === 'pending')`;
+      const toolRows = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"]')})].map((t) => [t.dataset.tool, t.querySelector('.chat-tool-arg')?.textContent ?? '', t.querySelector('.chat-dot')?.dataset.tone ?? null])`);
+      const sleepBy = Date.now() + 60000;
+      let asked = false;
+      while (Date.now() < sleepBy && !(await s.evalJs(sleeping))) {
+        if (!asked && (await record(realId)).state === 'needs-input') {
+          await s.waitFor(`!!${q(P + ' .chat-ask-option[data-key="1"]')}`, 'the card offers 1', 10000);
+          await s.evalJs(`${q(P + ' .chat-ask-option[data-key="1"]')}.click()`);
+          asked = true;
+          console.log('[verify] note: the sleep was asked for; answered 1 on the card');
+        }
+        await sleep(200);
+      }
+      if (!(await s.evalJs(sleeping))) {
+        const r = await record(realId);
+        throw new Error(`the sleep never drawn pending: state ${r.state}, rows ${JSON.stringify(await toolRows())}, input ${JSON.stringify((await screen(realId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+      }
+      // The second waits for the first's bubble: a send types the text and
+      // its Enter a moment apart, so two sends inside that moment run into
+      // one message in the TUI.
+      const bubbleTexts = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-queued .chat-queued-text')})].map((e) => e.textContent)`);
+      for (const [k, name] of ['a', 'b'].entries()) {
+        await s.evalJs(`${q(boxSel)}.focus()`);
+        await s.type(`queued-${name}-${marker}`);
+        await s.key('Enter', 'Enter', 13);
+        await s.waitFor(`document.querySelectorAll(${JSON.stringify(P + ' .chat-queued')}).length === ${k + 1}`, `bubble ${k + 1} queued`, 5000).catch(() => {});
+      }
+      try {
+        await s.waitFor(`JSON.stringify([...document.querySelectorAll(${JSON.stringify(P + ' .chat-queued .chat-queued-text')})].map((e) => e.textContent)) === ${JSON.stringify(JSON.stringify([`queued-a-${marker}`, `queued-b-${marker}`]))}`, 'two queued bubbles in order', 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: ${JSON.stringify(await bubbleTexts())}`);
+      }
+      const transcriptPath = (await record(realId)).transcriptPath;
+      const queueOps = () => (fs.existsSync(transcriptPath) ? fs.readFileSync(transcriptPath, 'utf8') : '').split('\n').filter((l) => l.includes('"queue-operation"')).map((l) => JSON.parse(l));
+      const promptText = async () => {
+        const rows = (await screen(realId)).rows;
+        for (let i = rows.length - 1; i >= 0; i--) if (rows[i].trimStart().startsWith('❯')) return rows[i].trimStart().slice(1).trim();
+        return null;
+      };
+      // Claude Code 2.1.301 pulls the whole queue back on one Up (popAll per
+      // message, read here on 2026-10-15), so Edit brings every queued
+      // message into the box in queue order and no bubble offers Remove.
+      expect((await s.evalJs(`document.querySelectorAll(${JSON.stringify(P + ' .chat-queued-remove')}).length`)) === 0, 'no Remove on the pull-all path');
+      const all = `queued-a-${marker}\nqueued-b-${marker}`;
+      await s.evalJs(`${q(P + ' .chat-queued[data-queued-index="0"] .chat-queued-edit')}.click()`);
+      const editBy = Date.now() + 8000;
+      let editRead = null;
+      while (Date.now() < editBy) {
+        editRead = { box: await s.evalJs(`${q(boxSel)}.value`), bubbles: await bubbleTexts(), input: await promptText(), ops: queueOps().map((o) => `${o.operation}:${o.content ?? ''}`) };
+        if (editRead.box === all && editRead.bubbles.length === 0) break;
+        await sleep(250);
+      }
+      console.log(`[verify] fix 754 edit: ${JSON.stringify(editRead)}`);
+      const path754 = editRead.ops.some((o) => o.startsWith('popAll:')) ? 'all' : editRead.ops.some((o) => o.startsWith('popOne:')) ? 'one' : 'none';
+      console.log(`[verify] fix 754: Claude Code took the queued messages back by ${path754 === 'one' ? 'popOne (Up selects, Enter pulls that one)' : path754 === 'all' ? 'popAll (the whole queue at once)' : 'no queue line yet'}`);
+      expect(path754 === 'all', `Claude Code pulled the whole queue (popAll), as QUEUE_PICK in chat-model.ts says; got ${path754}`);
+      expect(editRead.box === all, `the box holds both messages in queue order, got ${JSON.stringify(editRead)}`);
+      expect(editRead.bubbles.length === 0, `no bubble left, got ${JSON.stringify(editRead.bubbles)}`);
+      expect(!(editRead.input ?? '').startsWith('queued-'), `the TUI's input cleared, got ${JSON.stringify(editRead.input)}`);
+      expect(editRead.ops.includes(`popAll:queued-a-${marker}`) && editRead.ops.includes(`popAll:queued-b-${marker}`), `the transcript's popAll for both, got ${JSON.stringify(editRead.ops)}`);
+      expect(editRead.ops.filter((o) => o.startsWith('enqueue:')).length === 2, `nothing sent back into the queue, got ${JSON.stringify(editRead.ops)}`);
+      step('fix 754: Edit on a real queued message takes the queue back from Claude Code into the box, as one Up does in the terminal');
+
+      await s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, ''); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      const replyBy = Date.now() + 90000;
+      while (Date.now() < replyBy && eventsFor(realId).filter((e) => e.event === 'Stop').length <= stopsBefore) await sleep(250);
+      expect(eventsFor(realId).filter((e) => e.event === 'Stop').length > stopsBefore, 'Stop logged for the queued turn');
+      await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-reply')})].at(-1)?.textContent.trim() === ${JSON.stringify(marker + 'q')}`, 'the reply to the prompt alone', 10000);
+      step(`fix 754: the turn ended on the prompt alone, the reply ${marker}q`);
+    }
 
     await sleep(1500);
     await s.waitFor(`document.activeElement === ${q(paneSel(pane.id) + ' .chat-box')}`, 'the box holds the keyboard');
@@ -1067,7 +1339,7 @@ try {
     const seeded = sentA.find((r) => r.name === '/verify-skill-719');
     expect(seeded?.desc === 'Seeded by verify:chat for fix 719.', `the seeded skill's description, got ${JSON.stringify(seeded)}`);
     const terminalA = rowsA.filter((r) => r.section === 'terminal');
-    const TERMINAL = ['/model', '/permissions', '/mcp', '/config', '/agents', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor'];
+    const TERMINAL = ['/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw'];
     expect(JSON.stringify(terminalA.map((r) => r.name)) === JSON.stringify(TERMINAL) && terminalA.every((r) => r.icon), `the terminal rows with their icons, got ${JSON.stringify(terminalA)}`);
     expect((await s.evalJs(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name ?? null`)) === '/compact', 'the first row highlighted');
     await s.screenshot('m9-chat-slash.png');
@@ -1140,10 +1412,9 @@ try {
     await setBoxText('');
     await s.type('abc ');
     const mentionEvent = (paneId, p) => s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:chat-mention', { detail: { paneId: ${JSON.stringify(paneId)}, path: ${JSON.stringify(p)} } }))`);
-    // The path under the session's own folder as the record has it (the
-    // daemon may hold the long form of a short %TEMP% name).
     const menusCwd = (await record(menusId)).cwd;
-    await mentionEvent(menusPane, path.join(menusCwd, 'notes.md'));
+    console.log(`[verify] note: fix 751: the stub's folder is ${menusDir.toLowerCase() === menusCwd.toLowerCase() ? 'spelled long, so the short spelling is not exercised' : 'spelled short against the record\'s long cwd'}`);
+    await mentionEvent(menusPane, path.join(menusDir, 'notes.md'));
     try {
       await s.waitFor(`${q(boxSel)}.value === 'abc @notes.md '`, 'the mention at the caret', 3000);
     } catch (err) {
@@ -1154,6 +1425,94 @@ try {
     expect((await boxValue()) === 'abc @notes.md ', `another pane's mention left the box alone, got ${JSON.stringify(await boxValue())}`);
     step('fix 720 (i, j): a mention event for this pane lands at the caret; one for another pane does nothing');
 
+    // (k) M9 fix 749: /cost, /usage's alias, is no row of the menu, so
+    // Enter sends the box, and the send brings the fallback bar.
+    await setBoxText('');
+    await s.type('/cost');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`!!${q(paneSel(menusPane) + ' .chat-fallback')}`, 'the fallback bar after /cost', 5000);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!${q(paneSel(menusPane) + ' .chat-fallback')}`, 'the fallback bar gone on Escape', 2000);
+    step('fix 749 (k): a typed /cost, /usage\'s alias, brings the fallback bar');
+    // The shell ran /cost as a command; a Stop binds the stub again.
+    await waitRecord(menusId, (r) => r.command?.state !== 'running', 'the stub back at its prompt after /cost', 10000);
+    await postMenus({ hook_event_name: 'Stop', stop_hook_active: false });
+    await sleep(300);
+    await toChat();
+
+    // (l) M9 fix 750: the pointer moves the / menu's highlight, one row is
+    // lit whatever the pointer is over, and Tab takes the lit one. Two
+    // moves, so the second carries movement.
+    await setBoxText('');
+    await s.type('/');
+    await s.waitFor(`!!document.querySelector('.chat-menu')`, 'the / menu for the pointer');
+    const centreOf = (expr) => s.evalJs(`(() => { const r = ${expr}.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+    const boxAt = await centreOf(q(boxSel));
+    const initAt = await centreOf(`document.querySelectorAll('.chat-menu .chat-menu-row')[2]`);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: boxAt.x, y: boxAt.y });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: initAt.x, y: initAt.y });
+    const activeName = () => s.evalJs(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name ?? null`);
+    try {
+      await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-name="/init"]')?.dataset.active === 'true'`, 'the pointer lit /init', 3000);
+    } catch (err) {
+      throw new Error(`${err.message}: the lit row ${JSON.stringify(await activeName())}`);
+    }
+    await s.key('ArrowDown', 'ArrowDown', 40);
+    await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-name="/recap"]')?.dataset.active === 'true'`, 'ArrowDown lit /recap', 3000);
+    const lit = await s.evalJs(`[...document.querySelectorAll('.chat-menu .chat-menu-row')].filter((r) => getComputedStyle(r).backgroundColor !== 'rgba(0, 0, 0, 0)').map((r) => r.dataset.name)`);
+    expect(JSON.stringify(lit) === '["/recap"]', `one row lit, /recap, with the pointer over /init, got ${JSON.stringify(lit)}`);
+    await s.key('Tab', 'Tab', 9);
+    await s.waitFor(`${q(boxSel)}.value === '/recap ' && !document.querySelector('.chat-menu')`, 'Tab took /recap and closed the menu', 3000);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
+    step('fix 750 (l): the pointer moves the / menu\'s highlight and one row is lit; Tab takes it');
+
+    // (m) M9 fix 746: the paperclip attaches any file. Its pick cannot be
+    // driven here (EMERALD_PICK_FILE is the image block's PNG for the whole
+    // run), so the drop, which runs the same takeFile, is the read: a .ts
+    // under the folder goes in as a relative mention, one outside it as
+    // its absolute path, and nothing is typed into the session.
+    expect((await s.evalJs(`${q(paneSel(menusPane) + ' .chat-attach')}.title`)) === 'Attach a file', 'the paperclip reads Attach a file');
+    await setBoxText('');
+    await dropOn(path.join(menusDir, 'src', 'alpha.ts'), boxSel);
+    try {
+      await s.waitFor(`${q(boxSel)}.value === '@src/alpha.ts '`, 'the dropped .ts as a mention', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: box ${JSON.stringify(await boxValue())}`);
+    }
+    expect((await s.evalJs(`!!document.querySelector(${JSON.stringify(paneSel(menusPane) + ' .chat-image-chip')})`)) === false, 'no image chip for a .ts');
+    expect(!(await screen(menusId)).rows.some((r) => r.includes('alpha.ts')), 'nothing typed into the session for the drop');
+    const outside = path.join(emeraldHome, 'outside-746.txt');
+    fs.writeFileSync(outside, 'outside the folder\n');
+    const outsideReal = fs.realpathSync.native(outside).replace(/\\/g, '/');
+    const outsideMention = outsideReal.includes(' ') ? `@"${outsideReal}"` : `@${outsideReal}`;
+    await dropOn(outside, boxSel);
+    try {
+      await s.waitFor(`${q(boxSel)}.value === ${JSON.stringify(`@src/alpha.ts ${outsideMention} `)}`, 'the outside file as its absolute path', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: box ${JSON.stringify(await boxValue())}`);
+    }
+    step('fix 746 (m): the paperclip reads Attach a file; a .ts dropped on the box goes in as @src/alpha.ts, one outside the folder as its absolute path, nothing typed into the session');
+
+    // (n) M9 fix 755: a session in a subfolder of the seeded folder lists the folder's skill, read by the walk up.
+    const srcDir = path.join(menusDir, 'src');
+    const oldId = menusId;
+    const spawnedK = await zreq(s, 'session.spawn', { kind: 'shell', cwd: srcDir, cols: 120, rows: 30 });
+    menusId = spawnedK.session.id;
+    lay = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await zreq(s, 'session.kill', { sessionId: oldId }).catch(() => {});
+    await postMenus({ hook_event_name: 'SessionStart', source: 'startup', cwd: srcDir });
+    await postMenus({ hook_event_name: 'UserPromptSubmit', prompt: 'list the menus', cwd: srcDir });
+    await postMenus({ hook_event_name: 'Stop', stop_hook_active: false, cwd: srcDir });
+    await waitRecord(menusId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the subfolder stub bound with its transcript', 10000);
+    await toChat();
+    await s.waitFor(`document.querySelector(${JSON.stringify(paneSel(menusPane) + ' .chat-view')})?.dataset.sessionId === ${JSON.stringify(menusId)}`, 'the chat view on the subfolder session', 10000);
+    await setBoxText('');
+    await s.type('/');
+    await s.waitFor(`!!document.querySelector('.chat-menu .chat-menu-row[data-name="/verify-skill-719"][data-skill]')`, 'the folder skill listed from the subfolder', 5000);
+    await setBoxText('');
+    step('fix 755 (n): a session in <menusDir>/src lists /verify-skill-719 from <menusDir>/.claude/skills');
+
     await zreq(s, 'session.kill', { sessionId: menusId }).catch(() => {});
     menusId = null;
   });
@@ -1162,9 +1521,9 @@ try {
     // M9 fix 721: images into a real Claude's prompt from the chat box, by
     // the paste, the attach button and a drop. One real turn. The probe
     // (chat-claims-713.md) found a path pasted the way a terminal pastes
-    // becomes `[Image #N]`, and neither Ctrl+L nor Escape clears it, so
-    // the chips have no × and this block clears Claude's prompt itself
-    // with one Ctrl+C on the pty and the chips with a turn of the face.
+    // becomes `[Image #N]`, and neither Ctrl+L nor Escape clears it while
+    // one Ctrl+C does; since fix 748 the chips row's × sends that Ctrl+C,
+    // so this block clears Claude's prompt and the chips with the ×.
     const spawned = await zreq(s, 'session.spawn', { kind: 'claude', cwd: repoRoot, args: ['--permission-mode', 'default'], cols: 120, rows: 30 });
     imageId = spawned.session.id;
     let lay = await getLayout(s);
@@ -1193,21 +1552,28 @@ try {
     const waitPrompt = async (test, what, ms = 5000) => {
       const until = Date.now() + ms;
       while (Date.now() < until && !test(await promptRow())) await sleep(200);
-      expect(test(await promptRow()), `${what}, got ${JSON.stringify(await promptRow())}`);
+      if (!test(await promptRow())) {
+        const sc = await screen(imageId);
+        expect(false, `${what}, got ${JSON.stringify(await promptRow())}; screen ${sc.cols ?? '?'}x${sc.rows.length}, rows ${JSON.stringify(sc.rows.filter((r) => r.trim() !== ''))}`);
+      }
     };
     const chipRead = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(paneSel(imagePane) + ' .chat-image-chip')})].map((c) => ({ label: c.querySelector('.chat-image-chip-label')?.textContent ?? null, width: c.querySelector('img.chat-image-chip-thumb')?.naturalWidth ?? 0 }))`);
     const waitChips = async (n, what) => {
       await s.waitFor(`(() => { const cs = [...document.querySelectorAll(${JSON.stringify(paneSel(imagePane) + ' .chat-image-chip')})]; return cs.length === ${n} && cs.every((c) => /^Image #\\d+$/.test(c.querySelector('.chat-image-chip-label')?.textContent ?? '') && (c.querySelector('img.chat-image-chip-thumb')?.naturalWidth ?? 0) > 0); })()`, what, 5000);
     };
-    // Claude's prompt cleared by one Ctrl+C while it holds a marker, and
-    // the box's chips by turning the face away and back.
-    const clearPrompt = async () => {
-      await typeRaw(imageId, '\x03');
-      await waitPrompt((row) => !row.includes('[Image #'), 'Ctrl+C cleared Claude\'s prompt');
-      await toggle();
-      await s.waitFor(`${q(paneSel(imagePane))}.dataset.face === undefined`, 'the terminal face');
-      await toChat();
-      expect((await chipRead()).length === 0, 'no chips after the face turned');
+    // The chips row's × (fix 748): the chips gone and Claude's prompt
+    // without a marker.
+    const clearSel = paneSel(imagePane) + ' .chat-image-chips-clear';
+    const clearByX = async (what) => {
+      const state = (await record(imageId)).state;
+      const disabled = await s.evalJs(`${q(clearSel)}.disabled`);
+      await s.evalJs(`${q(clearSel)}.click()`);
+      try {
+        await s.waitFor(`!document.querySelector(${JSON.stringify(paneSel(imagePane) + ' .chat-image-chip')})`, `no chips after the × (${what})`, 6000);
+      } catch (err) {
+        throw new Error(`${err.message}: state ${state}, × disabled ${disabled}, prompt row ${JSON.stringify(await promptRow())}, last rows ${JSON.stringify((await screen(imageId)).rows.slice(-8))}`);
+      }
+      await waitPrompt((row) => !row.includes('[Image #'), `the × cleared Claude's prompt (${what})`);
     };
     await toChat();
 
@@ -1229,6 +1595,23 @@ try {
     expect((await s.evalJs(`${q(boxSel)}.value`)) === '', 'the box holds no text after the image paste');
     await s.screenshot('m9-chat-chip.png');
     step(`fix 721 (b): Ctrl+V with an image puts ${(await chipRead())[0].label} in Claude's prompt and a chip over the box`);
+
+    // (b2) M9 fix 748: the chips' × takes the image out of Claude's prompt
+    // with one Ctrl+C, and the session neither ends nor starts a turn.
+    const clearTitle = await s.evalJs(`${q(clearSel)}?.title ?? null`);
+    expect(clearTitle === 'Remove the images (clears Claude Code\'s prompt; your text stays)', `the ×'s title, got ${JSON.stringify(clearTitle)}`);
+    expect((await s.evalJs(`${q(clearSel)}.disabled`)) === false, 'the × enabled while idle');
+    await clearByX('b2');
+    const afterX = (await record(imageId)).state;
+    expect(afterX !== 'exited' && afterX !== 'working', `the session still idle after the ×, got ${afterX}`);
+    step('fix 748 (b2): the chips\' × clears the image from Claude\'s prompt with one Ctrl+C, the session still idle');
+
+    // (b3) A second paste goes in after the ×; the held clipboard still has
+    // the image from (b).
+    await s.key('v', 'KeyV', 86, CTRL);
+    await waitChips(1, 'a chip from the second paste');
+    await waitPrompt((row) => row.includes('[Image #'), 'the second paste in Claude\'s prompt');
+    step('fix 748 (b3): a second paste goes in after the ×');
 
     // (c) The words sent after it: one prompt with the image and the words.
     const hooksLog = path.join(emeraldHome, 'logs', 'hooks.jsonl');
@@ -1260,42 +1643,71 @@ try {
     expect(sent !== undefined && sent.message.content.some((p) => p.type === 'image'), `the transcript's user line holds an image part and the words, got ${JSON.stringify(sent?.message.content.map((p) => p.type) ?? null)}`);
     step(`fix 721 (c): the words went after the image as one prompt (${sent.message.content.map((p) => p.type).join(', ')})`);
 
-    // (d) The attach button: a chip and the image in Claude's prompt; the
-    // chip has no × (the probe), and the words wait in the box.
+    // (d) The attach button: a chip and the image in Claude's prompt, and
+    // the words wait in the box. The chip's number is the prompt row's,
+    // with (c)'s sent marker in the scrollback above (fix 748); the ×
+    // then clears the image and keeps the words. Fix 748's runs found a
+    // Ctrl+C within a second of the Stop left the marker in place (Claude
+    // Code still busy after its hooks), so the step starts three seconds
+    // after (c)'s turn, as a person would.
+    await sleep(3000);
     await toChat();
     await s.evalJs(`${q(paneSel(imagePane) + ' .chat-attach')}.click()`);
     await waitChips(1, 'a chip from the attach button');
     await waitPrompt((row) => row.includes('[Image #'), 'the attached image in Claude\'s prompt');
     await s.type('keep me');
     expect((await s.evalJs(`${q(boxSel)}.value`)) === 'keep me', 'the words wait in the box');
-    expect((await s.evalJs(`!!document.querySelector('.chat-image-chip-remove')`)) === false, 'no × on the chip');
+    const rowN = /\[Image #(\d+)\]/.exec(await promptRow())?.[1] ?? null;
+    const chipLabel = (await chipRead())[0]?.label ?? null;
+    expect(rowN !== null && chipLabel === `Image #${rowN}`, `the chip's number is the prompt row's, chip ${JSON.stringify(chipLabel)}, row ${JSON.stringify(await promptRow())}`);
     step('fix 721 (d): the attach button puts the chosen image in Claude\'s prompt with a chip');
-    await clearPrompt();
+    await clearByX('d');
+    expect((await s.evalJs(`${q(boxSel)}.value`)) === 'keep me', `the box kept its words after the ×, got ${JSON.stringify(await s.evalJs(`${q(boxSel)}.value`))}`);
+    step(`fix 748 (d): the chip read ${chipLabel}, the prompt row's number; the × cleared it and the box kept its words`);
+    await setBoxText('');
 
     // (e) A drop of the image on the box does the same.
-    await s.evalJs(
-      `(() => { let i = document.getElementById('verify-drop'); if (i === null) { i = document.createElement('input'); i.type = 'file'; i.id = 'verify-drop'; i.style.display = 'none'; document.body.appendChild(i); } })()`,
-    );
-    const input = await s.send('Runtime.evaluate', { expression: `document.getElementById('verify-drop')` });
-    await s.send('DOM.setFileInputFiles', { files: [attachPng], objectId: input.result.objectId });
-    const at = await s.evalJs(`(() => { const r = ${q(boxSel)}.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-    for (const type of ['dragenter', 'dragover', 'drop']) {
-      await s.evalJs(
-        `(() => { const dt = new DataTransfer(); dt.items.add(document.getElementById('verify-drop').files[0]); const el = document.elementFromPoint(${at.x}, ${at.y}) ?? document.body; el.dispatchEvent(new DragEvent(${JSON.stringify(type)}, { dataTransfer: dt, clientX: ${at.x}, clientY: ${at.y}, bubbles: true, cancelable: true, relatedTarget: null })); })()`,
-      );
-    }
+    await dropOn(attachPng, boxSel);
     await waitChips(1, 'a chip from the drop');
     await waitPrompt((row) => row.includes('[Image #'), 'the dropped image in Claude\'s prompt');
     expect(!(await promptRow()).includes('attach.png'), 'the path went in as an image, not as text');
     step('fix 721 (e): an image dropped on the box goes into Claude\'s prompt with a chip');
-    await clearPrompt();
+    await clearByX('e');
 
-    // (f) /exit, which no row of the / menu holds, ends the session.
+    // (f) M9 fix 747: an image dropped on the chat face's timeline, not
+    // the box, goes into Claude's prompt as an image, with a chip.
+    await dropOn(attachPng, paneSel(imagePane) + ' .chat-timeline');
+    try {
+      await waitChips(1, 'a chip from the drop on the timeline');
+    } catch (err) {
+      throw new Error(`${err.message}: chips ${JSON.stringify(await chipRead())}, prompt row ${JSON.stringify(await promptRow())}, face ${await s.evalJs(`${q(paneSel(imagePane))}.dataset.face ?? null`)}, state ${(await record(imageId)).state}, rows ${JSON.stringify((await screen(imageId)).rows.filter((r) => r.trim() !== ''))}`);
+    }
+    await waitPrompt((row) => row.includes('[Image #'), 'the image dropped on the timeline in Claude\'s prompt');
+    expect(!(await promptRow()).includes('attach.png'), `the timeline drop went in as an image, not as text, got ${JSON.stringify(await promptRow())}`);
+    step('fix 747 (f): an image dropped on the chat face\'s timeline goes into Claude\'s prompt as an image, with a chip');
+    await clearByX('f');
+
+    // (g) The same on the terminal face, cleared there with one Ctrl+C on
+    // the pty (the terminal face has no ×).
+    await toggle();
+    await s.waitFor(`${q(paneSel(imagePane))}.dataset.face === undefined`, 'the terminal face for the drop');
+    await dropOn(attachPng, paneSel(imagePane) + ' .term-host');
+    await waitPrompt((row) => row.includes('[Image #'), 'the image dropped on the terminal face in Claude\'s prompt');
+    expect(!(await promptRow()).includes('attach.png'), `the terminal drop went in as an image, not as text, got ${JSON.stringify(await promptRow())}`);
+    step('fix 747 (g): an image dropped on the terminal face goes into Claude\'s prompt as an image');
+    // Two Ctrl+Cs inside Claude Code's press-again window end the session
+    // (fix 748), so this one waits out the gap since (f)'s ×.
+    await sleep(2000);
+    await typeRaw(imageId, '\x03');
+    await waitPrompt((row) => !row.includes('[Image #'), 'Ctrl+C cleared the terminal drop');
+    await toChat();
+
+    // (h) /exit, which no row of the / menu holds, ends the session.
     await s.type('/exit');
     await s.key('Enter', 'Enter', 13);
     await waitRecord(imageId, (r) => r.state === 'exited' && r.exitCode === 0, 'the image Claude exited (0)', 30000);
     imageId = null;
-    step('fix 721 (f): /exit from the box ends the session with exit code 0');
+    step('fix 721 (h): /exit from the box ends the session with exit code 0');
   });
 
   await block('more', async () => {
@@ -1333,6 +1745,164 @@ try {
     }
   });
 
+  await block('turns', async () => {
+    // M9 fixes 752 and 753: a shell playing Claude with thirty short turns,
+    // so the timeline scrolls, then turn A: three calls, a reply, three
+    // more calls. Opening or closing A's fold keeps the reply where it
+    // was and tints it once; then turns B and C read the fold dots' tones.
+    const turnsDir = path.join(emeraldHome, 'chat-752');
+    fs.mkdirSync(turnsDir, { recursive: true });
+    const turnsFixture = path.join(turnsDir, 'fixture.jsonl');
+    const bash = (id, sec) => [asstLine([useOf(id, 'Bash', { command: `echo ${id}` })], sec), resultOf(id, id, sec + 1, { toolUseResult: { stdout: id, stderr: '', interrupted: false } })];
+    const lines = [];
+    for (let k = 0; k < 30; k++) lines.push(userLine(`turn ${k}`, k * 10), asstLine([{ type: 'text', text: `Reply ${k}.` }], k * 10 + 1));
+    lines.push(userLine('open the fold', 400), ...bash('a1', 401), ...bash('a2', 403), ...bash('a3', 405), asstLine([{ type: 'text', text: 'Halfway there.' }], 407), ...bash('a4', 408), ...bash('a5', 410), ...bash('a6', 412));
+    fs.writeFileSync(turnsFixture, lines.join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: turnsDir, cols: 120, rows: 30 });
+    turnsId = spawned.session.id;
+    const lay = await getLayout(s);
+    turnsPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === turnsPane ? { ...n, sessionId: turnsId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: turnsPane } });
+    await s.waitFor(`!!${q(paneSel(turnsPane) + ' .term-host')}`, 'the turns stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    postTurns = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': turnsId },
+        body: JSON.stringify({ session_id: 'sim-chat-752', cwd: turnsDir, transcript_path: turnsFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postTurns({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postTurns({ hook_event_name: 'UserPromptSubmit', prompt: 'open the fold' });
+    await postTurns({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(turnsId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the turns stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(turnsPane) + ' .pane-face-toggle')}`, 'the face button on the turns stub', 10000);
+    await toChat(turnsPane);
+    if ((await viewWord(turnsPane)) !== 'Normal') await pickView(turnsPane, 'Normal');
+    const TP = paneSel(turnsPane);
+    const tlSel = TP + ' .chat-timeline';
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Halfway there.')`, 'turn A drawn', 10000);
+    const replyOf = (text) => `[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-reply')})].find((r) => r.textContent.trim() === ${JSON.stringify(text)})`;
+    const room = await s.evalJs(`(() => { const t = ${q(tlSel)}; return t.scrollHeight - t.clientHeight; })()`);
+    expect(room > 400, `the timeline scrolls by more than 400 px, got ${room}`);
+    await s.evalJs(`(() => { const t = ${q(tlSel)}; t.scrollTop = t.scrollHeight; })()`);
+    await sleep(200);
+    // One toggle of A's fold (the last fold in the pane): the reply's top
+    // before and 50 ms after, the timeline's box, the flash class, and the
+    // tint's opacity at 50 and 350 ms, logged and not judged (the box's
+    // animation setting decides it).
+    const toggle = () =>
+      s.evalJs(`(async () => {
+        const reply = ${replyOf('Halfway there.')};
+        const before = reply.getBoundingClientRect().top;
+        const folds = document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')});
+        folds[folds.length - 1].click();
+        await new Promise((r) => setTimeout(r, 50));
+        const after = ${replyOf('Halfway there.')};
+        const { top, bottom } = after.getBoundingClientRect();
+        const t = ${q(tlSel)}.getBoundingClientRect();
+        const early = getComputedStyle(after, '::before').opacity;
+        const flashed = after.classList.contains('chat-fold-flash');
+        await new Promise((r) => setTimeout(r, 300));
+        return { before, top, bottom, tTop: t.top, tBottom: t.bottom, flashed, early, late: getComputedStyle(after, '::before').opacity, open: folds[folds.length - 1].dataset.open ?? null };
+      })()`);
+    const opened = await toggle();
+    console.log(`[verify] fix 752 open: ${JSON.stringify(opened)}`);
+    expect(opened.open !== null || (await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')})].pop().dataset.open ?? null`)) !== null, 'the fold opened');
+    expect(Math.abs(opened.top - opened.before) <= 2, `the reply stayed where it was on opening, ${opened.before} then ${opened.top}`);
+    expect(opened.top >= opened.tTop - 1 && opened.bottom <= opened.tBottom + 1, `the reply is inside the timeline's box, ${JSON.stringify(opened)}`);
+    expect(opened.flashed, 'the reply carries the flash on opening');
+    await s.waitFor(`!${replyOf('Halfway there.')}.classList.contains('chat-fold-flash')`, 'the flash class gone by its timer', 3000);
+    const closed = await toggle();
+    console.log(`[verify] fix 752 close: ${JSON.stringify(closed)}`);
+    expect(Math.abs(closed.top - closed.before) <= 2, `the reply stayed where it was on closing, ${closed.before} then ${closed.top}`);
+    expect(closed.top >= closed.tTop - 1 && closed.bottom <= closed.tBottom + 1, `the reply is inside the timeline's box, ${JSON.stringify(closed)}`);
+    expect(closed.flashed, 'the reply carries the flash on closing');
+    // The paint read (fix 86's shape): two frames of the reply's box, 100
+    // and 400 ms after a toggle, logged as the same or different.
+    const clipOf = async () => {
+      const r = await s.evalJs(`(() => { const { left, top, width, height } = ${replyOf('Halfway there.')}.getBoundingClientRect(); return { x: left - 8, y: top - 4, width: width + 16, height: height + 8 }; })()`);
+      return { ...r, scale: 1 };
+    };
+    await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')})].pop().click()`);
+    await sleep(100);
+    const f1 = (await s.send('Page.captureScreenshot', { format: 'png', clip: await clipOf() })).data;
+    await sleep(300);
+    const f2 = (await s.send('Page.captureScreenshot', { format: 'png', clip: await clipOf() })).data;
+    console.log(`[verify] fix 752 paint read: the frames at 100 and 400 ms are ${f1 === f2 ? 'the same (no fade painted)' : 'different (the fade painted)'}`);
+    fs.writeFileSync(path.join(os.tmpdir(), 'emerald-verify', 'm9-chat-turns-flash-100.png'), Buffer.from(f1, 'base64'));
+    fs.writeFileSync(path.join(os.tmpdir(), 'emerald-verify', 'm9-chat-turns-flash-400.png'), Buffer.from(f2, 'base64'));
+    await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')})].pop().click()`);
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')})].pop().dataset.open === undefined`, 'the fold closed again', 3000);
+    // The view still sticks after the anchor.
+    await s.evalJs(`(() => { const t = ${q(tlSel)}; t.scrollTop = t.scrollHeight; })()`);
+    await sleep(200);
+    fs.appendFileSync(turnsFixture, [userLine('one more', 600), asstLine([{ type: 'text', text: 'One more reply.' }], 601)].join('\n') + '\n');
+    await s.waitFor(`!!${replyOf('One more reply.')}`, 'the next turn drawn', 10000);
+    await s.waitFor(`(() => { const t = ${q(tlSel)}; return t.scrollTop + t.clientHeight >= t.scrollHeight - 2; })()`, 'the view stuck to the end after the anchor', 3000);
+    step('fix 752: opening and closing a fold keeps the reply under the calls where it was, tinted once, and the view sticks to the end after');
+
+    // Fix 753: turn B's last call fails, turn C's call is still out.
+    fs.appendFileSync(
+      turnsFixture,
+      [
+        userLine('break it', 700),
+        ...bash('b1', 701),
+        asstLine([useOf('b2', 'Bash', { command: 'exit 1' })], 703),
+        resultOf('b2', 'Exit code 1', 704, { toolUseResult: 'Error: Exit code 1' }, true),
+        asstLine([{ type: 'text', text: 'It broke.' }], 705),
+        userLine('still going', 800),
+        asstLine([useOf('c1', 'Bash', { command: 'sleep 60' })], 801),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')}).length >= 3 && !!${replyOf('It broke.')}`, 'turns B and C drawn', 10000);
+    const tones = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold .chat-dot')})].map((d) => d.dataset.tone).slice(-3)`);
+    expect(JSON.stringify(tones) === '["done","error","pending"]', `the fold dots of turns A, B and C, got ${JSON.stringify(tones)}`);
+    step('fix 753: a fold dot reads done, error after a failed last call, and pending while a call runs');
+  });
+
+  await block('queued', async () => {
+    // M9 fix 754: on turns' stub, a message queued while the turn runs
+    // shows under the live line with Edit (Claude Code 2.1.301 pulls the
+    // whole queue back, so no Remove), and one Claude read mid-turn shows
+    // in its turn as a small bubble. The stub is a shell, so Edit is not
+    // clicked here: PowerShell would take Up as a history recall (the
+    // real block clicks it).
+    const TP = paneSel(turnsPane);
+    const turnsFixture = path.join(emeraldHome, 'chat-752', 'fixture.jsonl');
+    const qline = (operation, content, extra = {}) => JSON.stringify({ type: 'queue-operation', operation, timestamp: at(900), sessionId: 'sim-chat-752', ...(content === undefined ? {} : { content }), ...extra });
+    await toChat(turnsPane);
+    await postTurns({ hook_event_name: 'UserPromptSubmit', prompt: 'still going' });
+    await waitRecord(turnsId, (r) => r.state === 'working', 'the turns stub working', 10000);
+    fs.appendFileSync(turnsFixture, [qline('enqueue', 'also check the footer'), qline('enqueue', '<task-notification>\n<task-id>x</task-id>\n</task-notification>')].join('\n') + '\n');
+    const bubbles = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-queued')})].map((b) => ({ text: b.querySelector('.chat-queued-text')?.textContent ?? null, edit: !!b.querySelector('button.chat-queued-edit'), remove: !!b.querySelector('button.chat-queued-remove') }))`);
+    try {
+      await s.waitFor(`document.querySelectorAll(${JSON.stringify(TP + ' .chat-queued')}).length === 1`, 'one queued bubble', 10000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await bubbles())}`);
+    }
+    const shown = await bubbles();
+    expect(JSON.stringify(shown) === JSON.stringify([{ text: 'also check the footer', edit: true, remove: false }]), `the person's message queued with Edit (no Remove on the pull-all path), the notification left out, got ${JSON.stringify(shown)}`);
+    const hint = await s.evalJs(`${q(TP + ' .chat-hint')}?.textContent ?? null`);
+    expect(hint === '1 queued · Up to edit', `the hint with one queued, got ${JSON.stringify(hint)}`);
+    step('fix 754: a message queued while the turn runs shows under the live line with Edit, the hint reading 1 queued · Up to edit');
+
+    fs.appendFileSync(
+      turnsFixture,
+      [
+        qline('remove', 'also check the footer', { reason: 'absorbed_mid_turn' }),
+        JSON.stringify({ type: 'attachment', isSidechain: false, timestamp: at(905), attachment: { type: 'queued_command', prompt: 'also check the footer', commandMode: 'prompt', origin: { kind: 'human' }, humanTurn: true, timestamp: at(900) } }),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(TP + ' .chat-queued')}).length === 0 && ${q(TP + ' .chat-queued-step .chat-queued-bubble')}?.textContent === 'also check the footer'`, 'the bubble gone and the message in its turn', 10000);
+    const when = await s.evalJs(`${q(TP + ' .chat-queued-step .chat-queued-time')}?.textContent ?? null`);
+    expect(typeof when === 'string' && when.startsWith('sent mid-turn'), `the absorbed message's time, got ${JSON.stringify(when)}`);
+    await postTurns({ hook_event_name: 'Stop', stop_hook_active: false });
+    step('fix 754: a message Claude read mid-turn leaves the queue and shows in its turn, marked sent mid-turn');
+  });
+
   step(`PASS (${blocksRun()})`);
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -1345,6 +1915,7 @@ try {
   if (freshId !== null) await zreq(s, 'session.kill', { sessionId: freshId }).catch(() => {});
   if (menusId !== null) await zreq(s, 'session.kill', { sessionId: menusId }).catch(() => {});
   if (imageId !== null) await zreq(s, 'session.kill', { sessionId: imageId }).catch(() => {});
+  if (turnsId !== null) await zreq(s, 'session.kill', { sessionId: turnsId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();

@@ -15,9 +15,9 @@ import os from 'node:os';
 import { CTRL, SHIFT, expect, freshPort, getLayout, killTree, launch, leaves, sleep, splitWithShell, startSessionByKey, startShellByKey, step, stopDaemon, zreq } from './cdp.mjs';
 
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 180 s');
+  console.error('[verify] WATCHDOG: run exceeded 240 s');
   process.exit(3);
-}, 180000);
+}, 240000);
 
 const read = async (s, id) => Buffer.from((await zreq(s, 'session.read', { sessionId: id })).data, 'base64').toString();
 
@@ -842,6 +842,91 @@ try {
   await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(secondEmpty)}]')`, 'the secondEmpty empty pane closed');
   await s.send('Emulation.clearDeviceMetricsOverride', {});
   step("M9 fix 647: the Shell tile's caret picks Command Prompt, Start starts it, the next empty pane remembers it, and the default clears the pick, and a double-click on its caret starts nothing (fix 705)");
+
+  // M9 fix 768: the palette picks the empty pane's shell and the terminal colours.
+  const pickRow768 = async (sel) => {
+    for (let i = 0; i < 40 && !(await s.evalJs(`document.querySelector(${JSON.stringify(sel)})?.dataset.highlighted === 'true'`)); i++) await s.key('ArrowDown', 'ArrowDown', 40);
+    expect(await s.evalJs(`document.querySelector(${JSON.stringify(sel)})?.dataset.highlighted === 'true'`), `${sel} highlighted`);
+    await s.key('Enter', 'Enter', 13);
+  };
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 2400, height: viewport647.height, deviceScaleFactor: 0, mobile: false });
+  await s.key('E', 'KeyE', 69, CTRL | SHIFT);
+  const empty768 = await emptyFocused();
+  const box768 = `[data-pane-id=${JSON.stringify(empty768)}] .empty-pane .palette-input`;
+  await s.key('P', 'KeyP', 80, CTRL | SHIFT);
+  await s.waitFor(`document.querySelector(${JSON.stringify(box768)})?.dataset.mode === 'actions' && document.querySelector(${JSON.stringify(box768)}).value === '>'`, 'the empty pane in action mode');
+  await s.type('shell:');
+  const shellSel768 = `[data-pane-id=${JSON.stringify(empty768)}] .action-row[data-kind="shell"]`;
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(shellSel768)}).length === ${shells647.length}`, 'the Shell rows');
+  const shellRead768 = await s.evalJs(`(() => ({ rows: [...document.querySelectorAll(${JSON.stringify(shellSel768)})].map((r) => ({ label: r.querySelector('.action-label').textContent, shell: r.dataset.shell, checked: r.dataset.checked ?? null, detail: r.querySelector('.action-detail').textContent })), groups: [...document.querySelectorAll('[data-pane-id=${JSON.stringify(empty768)}] .palette-group')].map((g) => g.textContent) }))()`);
+  expect(JSON.stringify(shellRead768.rows.map((r) => r.label)) === JSON.stringify(shells647.map((o) => `Shell: ${o.label}`)), `the Shell rows list the installed shells, got ${JSON.stringify(shellRead768)}`);
+  expect(shellRead768.rows[0].checked === 'true' && shellRead768.rows[0].detail === 'default · in use' && shellRead768.rows.slice(1).every((r) => r.checked === null), `the default is checked alone, got ${JSON.stringify(shellRead768)}`);
+  expect(JSON.stringify(shellRead768.groups) === JSON.stringify(['Shell']), `the group is Shell alone, got ${JSON.stringify(shellRead768.groups)}`);
+  const count768 = (await zreq(s, 'session.list', {})).sessions.length;
+  await pickRow768(`${shellSel768}[data-shell="cmd"]`);
+  await s.waitFor(`localStorage.getItem('emerald.emptyPaneShell') === 'cmd'`, 'the pick stored');
+  const tile768 = await tileRead(empty768);
+  expect(tile768.pressed === 'true' && tile768.sub === `Command Prompt in place of ${shells647[0].label}`, `the tile shows the pick, got ${JSON.stringify(tile768)}`);
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(box768)}).value`)) === '', 'the box is empty again');
+  expect((await zreq(s, 'session.list', {})).sessions.length === count768, 'a pick starts nothing');
+  await s.key('P', 'KeyP', 80, CTRL | SHIFT);
+  await s.waitFor(`document.querySelector(${JSON.stringify(box768)})?.dataset.mode === 'actions'`, 'the empty pane in action mode again');
+  await s.type('shell:');
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(shellSel768)}).length === ${shells647.length}`, 'the Shell rows again');
+  await s.key('Enter', 'Enter', 13);
+  await s.waitFor(`localStorage.getItem('emerald.emptyPaneShell') === null`, 'the pick cleared');
+  const tileClear768 = await tileRead(empty768);
+  expect(tileClear768.sub === 'your default shell, nothing else asked', `the first row clears the pick, got ${JSON.stringify(tileClear768)}`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(empty768)}] .empty-close').click()`);
+  await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(empty768)}]')`, 'the empty pane closed');
+  await s.send('Emulation.clearDeviceMetricsOverride', {});
+  step('M9 fix 768: on an empty pane >shell: lists Shell: <name> for each installed shell, the default checked, and Enter on Command Prompt picks it for the Shell tile as the caret does, starting nothing');
+
+  const tileCentre768 = await centerOf(s, `[data-pane-id=${JSON.stringify(tilePane)}] .term-host`);
+  await s.click(tileCentre768.x, tileCentre768.y);
+  for (let i = 0; i < 50 && (await getLayout(s)).focusedPaneId !== tilePane; i++) await sleep(100);
+  expect((await getLayout(s)).focusedPaneId === tilePane, 'the cmd session pane focused');
+  const root768 = await s.evalJs('document.documentElement.dataset.scheme');
+  const overlayRows768 = `.picker-overlay .action-row[data-kind="scheme"]`;
+  const openPalette768 = async (text, count) => {
+    await s.key('P', 'KeyP', 80, CTRL | SHIFT);
+    await s.waitFor(`document.querySelector('.picker-overlay .palette-input')?.dataset.mode === 'actions'`, 'the palette in action mode');
+    await s.type(text);
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(overlayRows768)}).length === ${count}`, `${count} rows for ${text}`);
+  };
+  await openPalette768('colours:', 6);
+  const colours768 = await s.evalJs(`(() => ({ rows: [...document.querySelectorAll(${JSON.stringify(overlayRows768)})].map((r) => ({ label: r.querySelector('.action-label').textContent, scope: r.dataset.scope, scheme: r.dataset.scheme, checked: r.dataset.checked ?? null })), groups: [...document.querySelectorAll('.picker-overlay .palette-group')].map((g) => g.textContent) }))()`);
+  const names768 = ['emerald', 'emerald gem', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'];
+  expect(JSON.stringify(colours768.rows.map((r) => r.scheme)) === JSON.stringify(names768) && colours768.rows.every((r) => r.scope === 'window' && r.label === `Terminal colours: ${r.scheme}`), `the window rows list the six schemes, got ${JSON.stringify(colours768)}`);
+  expect(JSON.stringify(colours768.rows.filter((r) => r.checked === 'true').map((r) => r.scheme)) === JSON.stringify([root768]), `the window's scheme is checked alone, got ${JSON.stringify(colours768)}`);
+  expect(JSON.stringify(colours768.groups) === JSON.stringify(['Terminal colours']), `the group is Terminal colours alone, got ${JSON.stringify(colours768.groups)}`);
+  const target768 = root768 === 'Dracula' ? 'Tokyo Night' : 'Dracula';
+  await pickRow768(`.picker-overlay .action-row[data-scope="window"][data-scheme=${JSON.stringify(target768)}]`);
+  await s.waitFor(`!document.querySelector('.picker-overlay') && document.documentElement.dataset.scheme === ${JSON.stringify(target768)}`, 'the window on the picked scheme');
+  expect((await sessionScheme(tileSession.id)) === null, 'the session has no scheme of its own yet');
+  await openPalette768('this session:', 7);
+  const session768 = await s.evalJs(`(() => [...document.querySelectorAll(${JSON.stringify(overlayRows768)})].map((r) => ({ label: r.querySelector('.action-label').textContent, scope: r.dataset.scope, checked: r.dataset.checked ?? null })))()`);
+  expect(session768.every((r) => r.scope === 'session') && session768[0].label === "This session: The window's" && session768[0].checked === 'true', `the clear row is first and checked, got ${JSON.stringify(session768)}`);
+  await pickRow768(`.picker-overlay .action-row[data-scope="session"][data-scheme="Solarized Dark"]`);
+  let own768 = null;
+  for (let i = 0; i < 50 && own768 !== 'Solarized Dark'; i++) {
+    own768 = await sessionScheme(tileSession.id);
+    if (own768 !== 'Solarized Dark') await sleep(100);
+  }
+  expect(own768 === 'Solarized Dark', `the session's record holds Solarized Dark, got ${own768}`);
+  await s.waitFor(`${hostOf(tilePane)}.emeraldTerm.options.theme.background === '#002b36'`, "the session's terminal on Solarized Dark");
+  await openPalette768('this session:', 7);
+  await s.key('Enter', 'Enter', 13);
+  let cleared768 = 'x';
+  for (let i = 0; i < 50 && cleared768 !== null; i++) {
+    cleared768 = await sessionScheme(tileSession.id);
+    if (cleared768 !== null) await sleep(100);
+  }
+  expect(cleared768 === null, 'the clear row empties the session record');
+  await openPalette768('colours:', 6);
+  await pickRow768(`.picker-overlay .action-row[data-scope="window"][data-scheme=${JSON.stringify(root768)}]`);
+  await s.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(root768)}`, 'the window back on its scheme');
+  step("M9 fix 768: >colours: lists Terminal colours: <name> with the window's checked and Enter sets the window's scheme; >this session: lists This session: The window's and the schemes, and Enter puts Solarized Dark on the session's record and clears it again");
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

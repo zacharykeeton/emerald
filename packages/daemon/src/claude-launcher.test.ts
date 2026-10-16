@@ -108,6 +108,10 @@ test('with the mod, --plugin-dir comes before the session arguments on the nativ
   const dir = shimFolder({ script: true, node: true });
   const shim = new ClaudeLauncher({ env: { PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' }, home: emptyHome, modDir: 'C:\\m' }).command(['--resume', 'x']);
   assert.deepEqual(shim.args, [path.join(dir, SCRIPT_REL), '--plugin-dir', 'C:\\m', '--resume', 'x']);
+  // M9 fix 741: the mod's channel command rides the launch's own env.
+  const channel = { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve('C:\\m', '..', 'dist', 'main.js'), 'mod-channel']) };
+  assert.deepEqual(native.env, channel);
+  assert.deepEqual(shim.env, channel);
 });
 
 test("resolveClaudeModDir answers off under EMERALD_CLAUDE_MOD=0 and the repo's cli/mod otherwise (M9 fix 725)", () => {

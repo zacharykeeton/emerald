@@ -2,7 +2,7 @@ import { isSessionId } from './session.ts';
 import type { ContextWindow, NeedsInputReason, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
 import { Limits } from './limits.ts';
 import { ackable, folderName, runningKind, staleSince, titleGlyph, titleText } from './session-label.ts';
-import { toolPhrase } from './tool-phrase.ts';
+import { askWords, toolPhrase } from './tool-phrase.ts';
 import { HEAD_TOOLS } from './command-dir.ts';
 import { memberParts } from './team.ts';
 
@@ -56,6 +56,28 @@ export interface HookPayload {
   // UserPromptSubmit carries what was typed; Stop carries the reply.
   prompt?: string;
   last_assistant_message?: string;
+  // The emerald mod's own events (M9 fix 738), posted to the sink as hooks:
+  // Spinner carries the spinner's word and the draw's id; TurnStart and
+  // TurnComplete a turn's id, and TurnComplete how it ended and the turn's
+  // summed usage. A subagent's turn names its agent in turn_agent_id, never
+  // agent_id, which would send the event down the agent path.
+  word?: string;
+  spinner_id?: string;
+  turn_id?: string;
+  turn_agent_id?: string;
+  reason?: string;
+  is_aborted?: boolean;
+  duration_ms?: number;
+  usage?: unknown;
+  // The mod's Measure (M9 fix 739): what $.session.usage() answers when a
+  // unit moves, under one key so it meets none of the status line's fields.
+  measure?: {
+    context?: { tokens?: number; window?: number; percent?: number };
+    rateLimits?: Array<{ kind?: string; percentUsed?: number; resetsAt?: string }>;
+    cost?: { usd?: number };
+    changed?: string[];
+    model?: string | null;
+  };
   // Stop: the background tasks (subagents and shells) still running when
   // the turn ended. Claude Code wakes the agent again when one finishes.
   background_tasks?: unknown;
@@ -72,6 +94,12 @@ export interface HookPayload {
   // The same status line's cost block (M9 fix 154): the dollars so far at
   // API rates, beside durations and line counts the record does not keep.
   cost?: { total_cost_usd?: number };
+  // The emerald mod's ToolAsk (M9 fix 742): the agent whose call asked,
+  // under its own key since an agent_id would send the post to the agent
+  // reducer, and the decision's rule; its reason is the `reason` above,
+  // which TurnComplete uses for how a turn ended.
+  ask_agent_id?: string;
+  rule?: string;
   [key: string]: unknown;
 }
 
@@ -428,6 +456,7 @@ function reduceHook(session: SessionInfo, payload: HookPayload, at: number): Ses
 
 function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number): SessionInfo {
   const outcome = classifyHook(session, payload);
+  session = settleAsk(session, payload);
   // A subagent's own hooks say nothing about the parent's turn, with one
   // exception (M9 fix 109): its permission prompt blocks the agent, and
   // nothing but the agent's own next event answers it.
@@ -436,6 +465,8 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
   // A status line says what the session is running, not whether Claude is
   // busy, so it leaves the state and lastEventAt alone.
   if (payload.hook_event_name === 'StatusLine') return applyStatusLine(session, payload);
+  // Nor does the mod's measure (M9 fix 739).
+  if (payload.hook_event_name === 'Measure') return applyMeasure(session, payload);
 
   // Any accepted event proves the session is alive, whatever it says.
   let next: SessionInfo = { ...session, lastEventAt: at, stale: false, staleThresholdMs: null };
@@ -567,9 +598,47 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       return leave(next, at);
     case 'CwdChanged':
       return placeIn(next, payload.cwd);
+    // The emerald mod's events (M9 fix 738). The spinner's word as the
+    // engine draws it, where the screen's scanner guessed it off the pty.
+    case 'Spinner': {
+      const word = payload.word;
+      if ((next.state !== 'working' && next.state !== 'needs-input') || typeof word !== 'string' || word === '' || word === next.liveVerb) return next;
+      return { ...next, liveVerb: word };
+    }
+    // The line is the record; UserPromptSubmit stays what moves the row.
+    case 'TurnStart':
+      return next;
+    // An interrupted turn fires no Stop, so the row sat at working until the
+    // stale check. It waits on the person, who interrupted it, so it is idle,
+    // never done: no chime and no attention. A subagent's turn moves nothing.
+    case 'TurnComplete':
+      if (payload.is_aborted === true && payload.turn_agent_id === undefined && (next.state === 'working' || next.state === 'needs-input')) return transition(next, 'idle', at, null);
+      return next;
+    case 'ToolAsk':
+      // The mod's ask at the decision (M9 fix 742) names what is asked
+      // for and moves nothing: in auto mode an ask goes to the classifier
+      // and nobody is asked, and a needs-input would chime falsely. The
+      // PermissionRequest that follows a real dialog moves the row, and
+      // transition keeps the field through it.
+      return { ...next, askedFor: { words: askWords(payload.tool_name, payload.tool_input) ?? 'a tool call', toolUseId: payload.tool_use_id ?? null, agentId: payload.ask_agent_id ?? null, at } };
     default:
       return next;
   }
+}
+
+// The mod's ask is over (M9 fix 742) when the turn is, or when the call
+// it was for ends: allowed and run, failed, or denied. Any agent's event
+// counts, since the ask may be an agent's. One with no call id is ended
+// by any call's end. The same object when nothing is cleared.
+const ASK_ENDS_TURN = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionStart', 'SessionEnd']);
+const ASK_ENDS_CALL = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']);
+
+function settleAsk(session: SessionInfo, payload: HookPayload): SessionInfo {
+  const asked = session.askedFor;
+  if (asked === undefined || asked === null) return session;
+  const name = payload.hook_event_name ?? '';
+  const ended = ASK_ENDS_TURN.has(name) || (ASK_ENDS_CALL.has(name) && (asked.toolUseId === null || payload.tool_use_id === asked.toolUseId));
+  return ended ? { ...session, askedFor: null } : session;
 }
 
 // Claude Code's task list tools (M9 fix 153), read off the parent's own
@@ -979,6 +1048,23 @@ function applyStatusLine(session: SessionInfo, payload: HookPayload): SessionInf
   const costUsd = typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : (session.costUsd ?? null);
   if (model === session.model && contextPercent === session.contextPercent && contextWindow === session.contextWindow && tokens === session.tokens && costUsd === (session.costUsd ?? null)) return session;
   return { ...session, model, contextPercent, contextWindow, tokens, costUsd };
+}
+
+// The mod's measure (M9 fix 739) as a status line: its context and cost
+// read the same as the status line's of the same moment (the capture of fix
+// 738), and it arrives whenever one moves rather than after a turn. No
+// model, so the row keeps the status line's display name and never flips
+// between it and an id; no current_usage, so the token sum is left alone.
+function applyMeasure(session: SessionInfo, payload: HookPayload): SessionInfo {
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const context = payload.measure?.context;
+  const usd = payload.measure?.cost?.usd;
+  const contextWindow: NonNullable<HookPayload['context_window']> = {
+    ...(finite(context?.percent) ? { used_percentage: context.percent } : {}),
+    ...(finite(context?.window) ? { context_window_size: context.window } : {}),
+    ...(finite(context?.tokens) ? { total_input_tokens: context.tokens } : {}),
+  };
+  return applyStatusLine(session, { hook_event_name: 'StatusLine', context_window: contextWindow, ...(finite(usd) ? { cost: { total_cost_usd: usd } } : {}) });
 }
 
 // The running sum of the status line's counts (M9 fix 143). Claude Code

@@ -19,26 +19,34 @@ test('a commits state round-trips through its query, the defaults leaving the qu
 });
 
 test('an activity state round-trips through its query, the folder riding along under all for the toggle (M9 fix 178)', () => {
-  const folder = { scope: 'folder' as const, folder: 'C:\\Users\\z\\code\\emerald', layers: 'band' as const };
+  const folder = { scope: 'folder' as const, folder: 'C:\\Users\\z\\code\\emerald', layers: 'band' as const, usage: true };
   const q = activityQuery(folder);
   assert.equal(q, 'scope=folder&folder=C%3A%5CUsers%5Cz%5Ccode%5Cemerald&layers=band');
   assert.deepEqual(activityFromQuery(q), folder);
-  assert.deepEqual(activityFromQuery('scope=folder'), { scope: 'all', folder: null, layers: 'both' }, 'a folder scope without a folder is all');
-  assert.deepEqual(activityFromQuery(null), { scope: 'all', folder: null, layers: 'both' });
-  assert.equal(activityQuery({ scope: 'all', folder: null, layers: 'both' }), '');
-  assert.equal(activityQuery({ scope: 'folder', folder: null, layers: 'lanes' }), 'layers=lanes', 'no folder, no scope');
+  assert.deepEqual(activityFromQuery('scope=folder'), { scope: 'all', folder: null, layers: 'both', usage: true }, 'a folder scope without a folder is all');
+  assert.deepEqual(activityFromQuery(null), { scope: 'all', folder: null, layers: 'both', usage: true });
+  assert.equal(activityQuery({ scope: 'all', folder: null, layers: 'both', usage: true }), '');
+  assert.equal(activityQuery({ scope: 'folder', folder: null, layers: 'lanes', usage: true }), 'layers=lanes', 'no folder, no scope');
   assert.deepEqual(activityView('2026-09-15', folder), { kind: 'activity', window: '2026-09-15', scope: 'folder', folder: folder.folder, layers: 'band' });
-  assert.deepEqual(activityView('2026-09-15', { scope: 'all', folder: folder.folder, layers: 'both' }), { kind: 'activity', window: '2026-09-15', folder: folder.folder });
+  assert.deepEqual(activityView('2026-09-15', { scope: 'all', folder: folder.folder, layers: 'both', usage: true }), { kind: 'activity', window: '2026-09-15', folder: folder.folder });
   // M9 fix 250: the panes scope with or without a folder, and M66's tab
   // read back as panes.
-  assert.equal(activityQuery({ scope: 'panes', folder: null, layers: 'both' }), 'scope=panes');
+  assert.equal(activityQuery({ scope: 'panes', folder: null, layers: 'both', usage: true }), 'scope=panes');
   // M9 fix 261: the here scope rides the same way.
-  assert.equal(activityQuery({ scope: 'here', folder: null, layers: 'both' }), 'scope=here');
-  assert.deepEqual(activityView('2026-09-15', { scope: 'here', folder: null, layers: 'both' }), { kind: 'activity', window: '2026-09-15', scope: 'here' });
+  assert.equal(activityQuery({ scope: 'here', folder: null, layers: 'both', usage: true }), 'scope=here');
+  assert.deepEqual(activityView('2026-09-15', { scope: 'here', folder: null, layers: 'both', usage: true }), { kind: 'activity', window: '2026-09-15', scope: 'here' });
   assert.equal(activityFromQuery('scope=here').scope, 'here');
-  assert.deepEqual(activityFromQuery('scope=panes'), { scope: 'panes', folder: null, layers: 'both' });
-  assert.deepEqual(activityFromQuery('scope=tab'), { scope: 'panes', folder: null, layers: 'both' }, 'an old query reads as panes');
-  assert.deepEqual(activityView('2026-09-15', { scope: 'panes', folder: folder.folder, layers: 'both' }), { kind: 'activity', window: '2026-09-15', scope: 'panes', folder: folder.folder });
-  assert.deepEqual(activityView('2026-09-15', { scope: 'panes', folder: null, layers: 'both' }), { kind: 'activity', window: '2026-09-15', scope: 'panes' });
+  assert.deepEqual(activityFromQuery('scope=panes'), { scope: 'panes', folder: null, layers: 'both', usage: true });
+  assert.deepEqual(activityFromQuery('scope=tab'), { scope: 'panes', folder: null, layers: 'both', usage: true }, 'an old query reads as panes');
+  assert.deepEqual(activityView('2026-09-15', { scope: 'panes', folder: folder.folder, layers: 'both', usage: true }), { kind: 'activity', window: '2026-09-15', scope: 'panes', folder: folder.folder });
+  assert.deepEqual(activityView('2026-09-15', { scope: 'panes', folder: null, layers: 'both', usage: true }), { kind: 'activity', window: '2026-09-15', scope: 'panes' });
   assert.deepEqual(activityView('2026-09-15', null), { kind: 'activity', window: '2026-09-15' });
+});
+
+test("the usage row's flag rides as usage=off and usage: false, absent while shown (M9 fix 766)", () => {
+  assert.equal(activityQuery({ scope: 'all', folder: null, layers: 'both', usage: false }), 'usage=off');
+  assert.equal(activityFromQuery('usage=off').usage, false);
+  assert.equal(activityFromQuery('').usage, true);
+  assert.deepEqual(activityView('2026-09-15', { scope: 'all', folder: null, layers: 'both', usage: false }), { kind: 'activity', window: '2026-09-15', usage: false });
+  assert.deepEqual(activityView('2026-09-15', { scope: 'all', folder: null, layers: 'both', usage: true }), { kind: 'activity', window: '2026-09-15' });
 });

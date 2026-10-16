@@ -23,6 +23,8 @@ export interface ActivitySnapshot {
   scope: ActivityViewScope;
   folder: string | null;
   layers: ActivityViewLayers;
+  // The usage windows row under the controls (M9 fix 766), on by default
+  usage: boolean;
 }
 
 // The pane's record for a snapshot (or a bare one for an older daemon,
@@ -43,6 +45,7 @@ export function activityView(window: string, snapshot: ActivitySnapshot | null):
     ...(snapshot.scope === 'panes' || snapshot.scope === 'here' ? { scope: snapshot.scope } : snapshot.scope === 'folder' && snapshot.folder !== null ? { scope: 'folder' as const } : {}),
     ...(snapshot.folder === null ? {} : { folder: snapshot.folder }),
     ...(snapshot.layers === 'both' ? {} : { layers: snapshot.layers }),
+    ...(snapshot.usage ? {} : { usage: false }),
   };
 }
 
@@ -147,6 +150,7 @@ export function activityQuery(snapshot: ActivitySnapshot): string {
   else if (snapshot.scope === 'folder' && snapshot.folder !== null) q.set('scope', 'folder');
   if (snapshot.folder !== null) q.set('folder', snapshot.folder);
   if (snapshot.layers !== 'both') q.set('layers', snapshot.layers);
+  if (!snapshot.usage) q.set('usage', 'off');
   return q.toString();
 }
 
@@ -159,5 +163,6 @@ export function activityFromQuery(query: string | null): ActivitySnapshot {
     folder: folder === null || folder === '' ? null : folder,
     scope: scope === 'folder' && (folder === null || folder === '') ? 'all' : scope,
     layers: layers === 'band' || layers === 'lanes' ? layers : 'both',
+    usage: q.get('usage') !== 'off',
   };
 }

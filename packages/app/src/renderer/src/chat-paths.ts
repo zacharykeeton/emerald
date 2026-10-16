@@ -85,3 +85,9 @@ export function insideFolder(cwd: string, abs: string): boolean {
   const prefix = base.endsWith('\\') ? base : `${base}\\`;
   return normalizePath(abs).toLowerCase().startsWith(prefix.toLowerCase());
 }
+
+// A path a reply names, made absolute in the session's folder, or null when it resolves outside it (M9 fix 756): the rule a reply's code span and its relative link share.
+export function folderPath(cwd: string, rel: string): string | null {
+  const abs = resolveIn(cwd, rel);
+  return abs !== null && insideFolder(cwd, abs) ? abs : null;
+}

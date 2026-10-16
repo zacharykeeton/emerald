@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { contextWords, describeState, effortOf, formatDuration, parseSteps, resultText, teamCounts } from '@emerald/shared';
+import { contextWords, describeState, effortOf, formatDuration, parseSteps, queuedOf, resultText, teamCounts } from '@emerald/shared';
 import type { SessionInfo, Step, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendPrompt, typeInto } from './actions.ts';
-import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, SCREEN_READ_MS, agentChipText, askHeading, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modeOf, modelChipText, nextChatMode, opensMenu, pastedPath, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, timelineItems } from './chat-model.ts';
+import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, effortShown, fileHref, filterMention, filterSlash, foldText, hintText, inputHolds, isImageName, mentionQuery, mentionText, modelChipText, modeOf, nextChatMode, opensMenu, pastedPath, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems } from './chat-model.ts';
 import type { ChatMode, FoldItem, SlashRow } from './chat-model.ts';
-import { MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
+import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
 import { isPasteKey } from './keys-model.ts';
 import type { MentionRow } from './ChatMenus.tsx';
 import type { SkillEntry } from '../../preload/api.ts';
@@ -14,7 +14,7 @@ import { pendingEdit } from './chat-hunk.ts';
 import type { PendingEdit } from './chat-hunk.ts';
 import { resolveIn } from './chat-paths.ts';
 import { Menu } from './Menu.tsx';
-import type { MenuHeading, MenuItem } from './Menu.tsx';
+import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
 import { answerOptions, promptExcerpt } from './screen-prompt-model.ts';
@@ -35,6 +35,8 @@ type Read = { text: string } | { error: string } | null;
 // The box grows from two rows to this many before it scrolls.
 const BOX_MAX_LINES = 8;
 const BOX_LINE_PX = 18;
+// The least time between two Ctrl+Cs the image chips' × sends (M9 fix 748).
+const CTRL_C_GAP_MS = 2000;
 // The scroll sticks to the end while the person is within this of it.
 const STICK_PX = 24;
 // The view menu's words beside each mode (M9 fix 714).
@@ -95,6 +97,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const turns = useMemo(() => parseSteps(text), [text]);
   const tooLarge = read !== null && 'error' in read && read.error.startsWith('Too large') ? read.error : null;
 
+  // M9 fix 754: the person's messages queued behind the turn. An idle,
+  // done or exited session shows none, so a queue a crash left behind
+  // never lingers.
+  const queued = useMemo(() => (session.state === 'working' || session.state === 'needs-input' ? queuedOf(text) : []), [text, session.state]);
+
   const effort = useMemo(() => effortOf(text), [text]);
   const diff = useMemo(() => sessionDiff(turns), [turns]);
 
@@ -142,9 +149,34 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // against the height the last layout left, with no scroll event.
   const timelineRef = useRef<HTMLDivElement>(null);
   const lastHeight = useRef(0);
+  // M9 fix 752: a fold toggle stores where the reply the person was
+  // reading stood, and the next layout puts it back there in place of
+  // the stick, then tints it once.
+  const anchor = useRef<{ turn: number; top: number } | null>(null);
+  const flash = useRef<{ el: HTMLElement; timer: ReturnType<typeof setTimeout> } | null>(null);
   useLayoutEffect(() => {
     const el = timelineRef.current;
     if (el === null) return;
+    const held = anchor.current;
+    if (held !== null) {
+      anchor.current = null;
+      const target = foldAnchorIn(el, held.turn);
+      if (target !== null) {
+        el.scrollTop += target.getBoundingClientRect().top - el.getBoundingClientRect().top - held.top;
+        lastHeight.current = el.scrollHeight;
+        if (target.classList.contains('chat-reply')) {
+          if (flash.current !== null) {
+            clearTimeout(flash.current.timer);
+            flash.current.el.classList.remove('chat-fold-flash');
+          }
+          target.classList.add('chat-fold-flash');
+          // Removed by the timer, never by animationend, so the class goes
+          // when animations are off too.
+          flash.current = { el: target, timer: setTimeout(() => target.classList.remove('chat-fold-flash'), 700) };
+        }
+        return;
+      }
+    }
     const atEnd = lastHeight.current === 0 || el.scrollTop + el.clientHeight >= lastHeight.current - STICK_PX;
     if (atEnd) el.scrollTop = el.scrollHeight;
     lastHeight.current = el.scrollHeight;
@@ -294,14 +326,25 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   cwdRef.current = session.cwd;
   const askingRef = useRef(asking);
   askingRef.current = asking;
+  // A mention of an absolute path at from..to, made relative to the
+  // session's folder once main gives the path its long spelling, since
+  // the daemon keeps the folder long and a reply or %TEMP% may name it
+  // short (M9 fix 751). Every mention source goes through here.
+  // A folder goes in finished, `@dir/ `, since a drop is not a typeahead
+  // (M9 fix 746).
+  const insertMention = async (abs: string, from: number, to: number, dir = false) => {
+    const real = await window.emerald.files.real(abs).catch(() => abs);
+    const rel = relativeMention(cwdRef.current, real);
+    replaceInBox(from, to, `${mentionText(dir ? `${rel}/` : rel)} `);
+    if (!askingRef.current) boxRef.current?.focus();
+  };
   useEffect(() => {
     const onMention = (ev: Event) => {
       const detail = (ev as CustomEvent<{ paneId?: unknown; path?: unknown }>).detail;
       if (detail?.paneId !== paneId || typeof detail.path !== 'string') return;
       const el = boxRef.current;
       if (el === null) return;
-      replaceInBox(el.selectionStart, el.selectionEnd, `${mentionText(relativeMention(cwdRef.current, detail.path))} `);
-      if (!askingRef.current) el.focus();
+      void insertMention(detail.path, el.selectionStart, el.selectionEnd);
     };
     window.addEventListener('emerald:chat-mention', onMention);
     return () => window.removeEventListener('emerald:chat-mention', onMention);
@@ -312,6 +355,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const send = (text = box) => {
     const prompt = text;
     if ((prompt.trim() === '' && chipsRef.current.length === 0) || asking) return;
+    setModeMiss(null);
     setBox('');
     setChips([]);
     const menu = opensMenu(prompt);
@@ -321,15 +365,112 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     });
   };
   const stop = () => typeInto(session.id, '\x1b');
-  // M9 fix 713: the model chip types /model as the box would send it, so
-  // the fallback bar shows as for a typed one.
-  const sendModel = () => {
-    void sendPrompt(session.id, '/model').then((outcome) => {
+  // M9 fix 754: a queued message taken back from Claude Code's queue the
+  // way its own keys do it, by QUEUE_PICK: on 'all' (2.1.301) one Up pulls
+  // the whole queue into the TUI's input; on 'one' Up to the message (the
+  // newest is one Up) and Enter pulls that one. Backspaces then empty the
+  // input, and an Edit puts the text in the box. Escape is never sent,
+  // since it cancels the turn. A bubble goes when the transcript's popAll
+  // or popOne line lands.
+  const [takingBack, setTakingBack] = useState(false);
+  const takingRef = useRef(false);
+  const queuePath = QUEUE_PICK;
+  const takeBack = async (k: number, then: 'edit' | 'remove') => {
+    const message = queued[k];
+    if (message === undefined || takingRef.current) return;
+    const all = queuePath === 'all';
+    // The pull-all path brings the whole queue back, oldest first.
+    const target = all ? queued[0]! : message;
+    const texts = all ? queued.map((m) => m.text) : [message.text];
+    takingRef.current = true;
+    setTakingBack(true);
+    const id = session.id;
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const rows = async () => (await window.emerald.request('pty.screen', { sessionId: id })).rows;
+    const until = async (want: boolean, ms = 3000) => {
+      const end = Date.now() + ms;
+      for (;;) {
+        if (inputHolds(await rows(), target.text) === want) return true;
+        if (Date.now() >= end) return false;
+        await wait(150);
+      }
+    };
+    try {
+      const ups = all ? 1 : queued.length - k;
+      for (let i = 0; i < ups; i++) {
+        typeInto(id, '\x1b[A');
+        await wait(80);
+      }
+      // On the pull-all path the Up brings the queue back by itself, and an
+      // Enter would send it again, so Enter goes on the one path alone.
+      if (!all) typeInto(id, '\r');
+      if (!(await until(true))) {
+        setRefusal('The terminal did not take the message back; Show the terminal to edit it');
+        return;
+      }
+      // Ctrl+L, the keymap's chat:clearInput, leaves the text on 2.1.301
+      // (read on a real session), so the input is emptied by Backspace,
+      // one per character the pull put there and a few more; a Backspace
+      // in an empty input does nothing.
+      const pulled = texts.join('\n');
+      typeInto(id, '\x7f'.repeat(pulled.length + 4));
+      if (!(await until(false))) {
+        setRefusal('The message is in the terminal\'s input; Show the terminal to clear it');
+        return;
+      }
+      if (then === 'edit') {
+        const el = boxRef.current;
+        const now = el === null ? box : el.value;
+        const next = now === '' ? texts.join('\n') : `${now}\n${texts.join('\n')}`;
+        setBox(next);
+        pendingCaret.current = next.length;
+        el?.focus();
+      }
+    } catch (err) {
+      console.warn('[emerald] queued take-back failed', err);
+    } finally {
+      takingRef.current = false;
+      setTakingBack(false);
+    }
+  };
+  // M9 fix 744: the model chip's menu, the models and a row of the effort
+  // levels. A pick is typed as the box sends a prompt, but not through
+  // send, whose terminal-command read would open the fallback bar for
+  // `/model`. A picked effort shows until a later assistant line says one.
+  const modelChipRef = useRef<HTMLButtonElement>(null);
+  const [modelMenu, setModelMenu] = useState<{ x: number; y: number } | null>(null);
+  const [effortPick, setEffortPick] = useState<{ level: string; length: number } | null>(null);
+  useEffect(() => setEffortPick(null), [session.id]);
+  const openModelMenu = () => {
+    const el = modelChipRef.current;
+    if (el === null) return;
+    const r = el.getBoundingClientRect();
+    setModelMenu((open) => (open === null ? { x: r.left, y: r.top } : null));
+  };
+  const pickModel = (alias: string) => {
+    setModelMenu(null);
+    void sendPrompt(session.id, `/model ${alias}`).then((outcome) => {
       if (outcome.kind === 'refused') setRefusal(outcome.reason);
-      else setFallback({ length: textRef.current.length });
     });
   };
-  const modelText = modelChipText(contextWords(session), effort);
+  const pickEffort = (level: string) => {
+    setModelMenu(null);
+    void sendPrompt(session.id, `/effort ${level}`).then((outcome) => {
+      if (outcome.kind === 'refused') setRefusal(outcome.reason);
+      else setEffortPick({ level, length: textRef.current.length });
+    });
+  };
+  const shownEffort = effortShown(text, effort, effortPick);
+  const modelText = modelChipText(contextWords(session), shownEffort);
+  const modelItems: Array<MenuItem | MenuHeading | MenuSegments> = [
+    { heading: 'Model' },
+    ...MODEL_CHOICES.map(({ alias, name, line }) => ({ label: name, line, checked: name === session.model, onClick: () => pickModel(alias) })),
+    {
+      segments: 'Effort',
+      separator: true,
+      options: EFFORT_LEVELS.map((l) => ({ word: l, title: EFFORT_LINES[l], active: l === shownEffort, onPick: () => pickEffort(l) })),
+    },
+  ];
   const counts = teamCounts(session);
   const agentsText = agentChipText(counts);
   const rosterId = `chat-roster:${session.id}`;
@@ -343,13 +484,17 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const view = chatModes.get(paneId) ?? 'normal';
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(() => new Set());
   useEffect(() => setUnfolded(new Set()), [view]);
-  const toggleFold = (i: number) =>
+  const toggleFold = (i: number) => {
+    const el = timelineRef.current;
+    const target = el === null ? null : foldAnchorIn(el, i);
+    anchor.current = el === null || target === null ? null : { turn: i, top: target.getBoundingClientRect().top - el.getBoundingClientRect().top };
     setUnfolded((open) => {
       const next = new Set(open);
       if (next.has(i)) next.delete(i);
       else next.add(i);
       return next;
     });
+  };
   const viewChipRef = useRef<HTMLButtonElement>(null);
   const [viewMenu, setViewMenu] = useState<{ x: number; y: number } | null>(null);
   const openViewMenu = () => {
@@ -372,18 +517,72 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     { heading: 'Ctrl+O cycles them' },
   ];
 
+  // M9 fix 743: the mode chip's menu, built as the view chip's is. A pick
+  // presses Shift+Tab and reads the footer after each press until the mode
+  // is reached (stepModeTo), one pick at a time; a pick made on another
+  // session, or with the view gone, stops pressing.
+  const modeChipRef = useRef<HTMLButtonElement>(null);
+  const [modeMenu, setModeMenu] = useState<{ x: number; y: number } | null>(null);
+  const [modeMiss, setModeMiss] = useState<string | null>(null);
+  const stepping = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const sessionRef = useRef(session.id);
+  sessionRef.current = session.id;
+  useEffect(() => setModeMiss(null), [session.id]);
+  const openModeMenu = () => {
+    const el = modeChipRef.current;
+    if (el === null || busy) return;
+    const r = el.getBoundingClientRect();
+    setModeMenu((open) => (open === null ? { x: r.left, y: r.top } : null));
+  };
+  const pickMode = (word: string) => {
+    setModeMenu(null);
+    setModeMiss(null);
+    if (word === mode || stepping.current) return;
+    stepping.current = true;
+    setBusy(true);
+    const id = session.id;
+    void stepModeTo(word, {
+      press: () => typeInto(id, '\x1b[Z'),
+      read: async () => (await window.emerald.request('pty.screen', { sessionId: id })).rows,
+      wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+      cancelled: () => !alive.current || sessionRef.current !== id,
+    }).then((got) => {
+      stepping.current = false;
+      if (!alive.current) return;
+      setBusy(false);
+      if (!got.reached && !got.cancelled) setModeMiss(`Could not reach ${word}`);
+    });
+  };
+  const modeItems: Array<MenuItem | MenuHeading> = [
+    { heading: 'Permission mode' },
+    ...MODE_CHOICES.map(({ word, line }) => ({ label: word, line, checked: word === mode, onClick: () => pickMode(word) })),
+  ];
+
   // M9 fix 721: an image goes into Claude Code's own prompt as a pasted
   // path (pastedPath: the probe found a typed path stays text and a
   // bracketed paste of it becomes `[Image #N]`), and a chip over the box
-  // shows it, labelled with the number the prompt row gains. The probe
-  // found neither Ctrl+L nor Escape clears the marker, so a chip has no ×
-  // and the chips go on Send; Escape and Stop leave them alone.
+  // shows it, labelled with the number the prompt row gains. The chips go
+  // on Send. The probe found neither Ctrl+L nor Escape clears the marker
+  // and one Ctrl+C does, so the chips row's × sends one Ctrl+C once a
+  // screen read shows a marker on the prompt row, and never while the
+  // session works or asks (M9 fix 748); Escape and Stop leave the chips
+  // alone.
   const [chips, setChips] = useState<{ id: number; thumb: string; n: number | null }[]>([]);
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   const nextChip = useRef(0);
   const sessionIdRef = useRef(session.id);
   sessionIdRef.current = session.id;
+  const stateRef = useRef(session.state);
+  stateRef.current = session.state;
   const addChip = (thumb: string) => {
     nextChip.current += 1;
     const id = nextChip.current;
@@ -394,13 +593,71 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
         .request('pty.screen', { sessionId: sessionIdRef.current })
         .then((res) => {
           const held = new Set(chipsRef.current.map((c) => c.n));
-          const fresh = imageMarkers(res.rows).filter((n) => !held.has(n));
+          const fresh = promptRowImages(res.rows).filter((n) => !held.has(n));
           if (fresh.length > 0) setChips((c) => c.map((x) => (x.id === id ? { ...x, n: Math.max(...fresh) } : x)));
           else if (Date.now() < until) setTimeout(look, 250);
         })
         .catch(() => {});
     };
     setTimeout(look, 250);
+  };
+  // An image dropped anywhere else on this pane was pasted into the prompt
+  // by explorer-drop.ts, which says so with this event; the chip is all
+  // that is left to do. Not while asking: the paste went into the ask
+  // dialog, so no marker will come (M9 fix 747).
+  const addChipRef = useRef(addChip);
+  addChipRef.current = addChip;
+  useEffect(() => {
+    const onImage = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ paneId?: unknown; path?: unknown }>).detail;
+      if (detail?.paneId !== paneId || typeof detail.path !== 'string' || askingRef.current) return;
+      addChipRef.current(fileHref(detail.path));
+    };
+    window.addEventListener('emerald:chat-image', onImage);
+    return () => window.removeEventListener('emerald:chat-image', onImage);
+  }, [paneId]);
+  // The ×: one Ctrl+C, never a second within a click, since a Ctrl+C on an
+  // empty prompt is the first half of Claude Code's exit; the read before
+  // it is that guard. The box's words are React state and stay.
+  // Claude Code 2.1.301 counts any Ctrl+C toward its press-again exit, the
+  // one that clears the input too: two × clicks 0.4 s apart ended the
+  // session in fix 748's runs, 1.6 s apart did not. So a click waits out
+  // CTRL_C_GAP_MS since the last Ctrl+C it sent before it reads.
+  const clearing = useRef(false);
+  const lastCtrlC = useRef(0);
+  const sessionBusy = () => stateRef.current === 'working' || stateRef.current === 'needs-input';
+  const clearImages = async () => {
+    if (clearing.current) return;
+    clearing.current = true;
+    try {
+      const gap = lastCtrlC.current + CTRL_C_GAP_MS - Date.now();
+      if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+      if (sessionBusy()) return;
+      const id = sessionIdRef.current;
+      const before = await window.emerald.request('pty.screen', { sessionId: id });
+      if (promptRowImages(before.rows).length === 0) {
+        setChips([]);
+        return;
+      }
+      if (sessionBusy()) return;
+      lastCtrlC.current = Date.now();
+      typeInto(id, '\x03');
+      // Read again every 250 ms for two seconds, since a loaded box can
+      // redraw the prompt late; the Ctrl+C is never sent twice.
+      for (let waited = 0; waited < 2000; waited += 250) {
+        await new Promise((r) => setTimeout(r, 250));
+        const after = await window.emerald.request('pty.screen', { sessionId: id });
+        if (promptRowImages(after.rows).length === 0) {
+          setChips([]);
+          return;
+        }
+      }
+      console.warn('[emerald] the images stayed in the prompt after Ctrl+C');
+    } catch {
+      // A screen read that fails ends the click with the chips kept.
+    } finally {
+      clearing.current = false;
+    }
   };
   // A file into the prompt: the path pasted, then its chip.
   const attachPath = (p: string, thumb: string) => {
@@ -425,9 +682,22 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       if (el !== null) replaceInBox(el.selectionStart, el.selectionEnd, c.text);
     } else if (c.image) await attachClipboard();
   };
+  // A file from the paperclip or a drop on the box (M9 fix 746): an image
+  // into Claude Code's prompt, anything else (a folder too) a mention at
+  // the caret, with its absolute path when it is outside the folder.
+  const takeFile = (p: string, kind: 'file' | 'dir') => {
+    if (kind === 'file' && isImageName(p)) {
+      attachPath(p, fileHref(p));
+      return;
+    }
+    const el = boxRef.current;
+    const from = el === null ? box.length : el.selectionStart;
+    const to = el === null ? box.length : el.selectionEnd;
+    void insertMention(p, from, to, kind === 'dir');
+  };
   const attach = async () => {
-    const p = await window.emerald.pickFile(session.cwd, true);
-    if (p !== null) attachPath(p, fileHref(p));
+    const p = await window.emerald.pickFile(session.cwd);
+    if (p !== null) takeFile(p, 'file');
   };
   // The box's own right-click menu: Cut, Copy and Paste.
   const [boxMenu, setBoxMenu] = useState<{ x: number; y: number } | null>(null);
@@ -445,7 +715,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   };
 
   const last = turns.length === 0 ? null : turns[turns.length - 1]!;
-  const hint = refusal ?? hintText(session.state);
+  const hint = refusal ?? modeMiss ?? hintText(session.state, queued.length);
   return (
     <div
       className="chat-view"
@@ -479,7 +749,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             </div>
           )}
           {turns.map((turn, i) => (
-            <ChatTurn key={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} />
+            <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} />
           ))}
           {asking && <AskCard session={session} screen={askScreen} rootRef={askRef} paneId={paneId} edit={pendingEdit(turns)} />}
           {working && (
@@ -493,6 +763,24 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 {last?.at != null ? formatDuration(last.at, now) : ''}
                 {spinner?.down != null ? ` · ↓${spinner.down}` : ''}
               </span>
+            </div>
+          )}
+          {queued.length > 0 && (
+            <div className="chat-queued-list">
+              {queued.map((m, k) => (
+                <div key={k} className="chat-queued" data-queued-index={k}>
+                  <span className="chat-queued-mark">Queued</span>
+                  <div className="chat-queued-text">{m.text}</div>
+                  <button type="button" className="secondary chat-queued-edit" disabled={takingBack} onClick={() => void takeBack(k, 'edit')}>
+                    Edit
+                  </button>
+                  {queuePath === 'one' && (
+                    <button type="button" className="secondary chat-queued-remove" disabled={takingBack} onClick={() => void takeBack(k, 'remove')}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -522,6 +810,17 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                   <span className="chat-image-chip-label">{c.n === null ? 'Image' : `Image #${c.n}`}</span>
                 </span>
               ))}
+              <button
+                type="button"
+                className="chat-image-chips-clear"
+                title="Remove the images (clears Claude Code's prompt; your text stays)"
+                aria-label="Remove the images"
+                disabled={working || asking}
+                onMouseDown={keepKeys}
+                onClick={() => void clearImages()}
+              >
+                ×
+              </button>
             </div>
           )}
           <textarea
@@ -546,17 +845,28 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               ev.stopPropagation();
               setBoxMenu({ x: ev.clientX, y: ev.clientY });
             }}
-            // An image file dropped on the box is pasted as the attach
-            // button's is; explorer-drop.ts leaves a prevented drop alone,
-            // where it would type the path as text. Anything else is the
-            // window's drop as before.
+            // A file dropped on the box goes in as the attach button's does:
+            // an image pasted into Claude Code's prompt, anything else (a
+            // folder too) a mention at the caret (M9 fix 746).
+            // explorer-drop.ts leaves a prevented drop alone, where it would
+            // type the path as text.
             onDrop={(ev) => {
               const file = ev.dataTransfer.files[0];
               if (file === undefined || asking) return;
               const p = window.emerald.files.pathFor(file);
-              if (p === '' || !isImageName(p)) return;
+              if (p === '') return;
               ev.preventDefault();
-              attachPath(p, fileHref(p));
+              if (isImageName(p)) {
+                takeFile(p, 'file');
+                return;
+              }
+              window.emerald.files
+                .stat(p)
+                .then((st) => {
+                  if ('error' in st) return;
+                  takeFile(p, st.kind === 'dir' ? 'dir' : 'file');
+                })
+                .catch(() => {});
             }}
             onBlur={() => {
               if (slashShown) setSlashDismissed(box);
@@ -598,6 +908,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                   return;
                 }
               }
+              // M9 fix 754: a bare Up in the empty box with messages queued
+              // takes the newest back to edit, as Up does in the terminal.
+              if (ev.key === 'ArrowUp' && !ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.nativeEvent.isComposing && box === '' && !asking && !takingBack && queued.length > 0) {
+                ev.preventDefault();
+                void takeBack(queued.length - 1, 'edit');
+                return;
+              }
               // Enter is the box's and Escape the view's (above); every
               // other key passes, so the window's chords (Ctrl+O among
               // them) still work from in here.
@@ -607,8 +924,8 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               }
             }}
           />
-          {slashShown && <SlashMenu box={boxRef.current} rows={slashFiltered} active={Math.min(slashActive, slashFiltered.length - 1)} onPick={(row) => pickSlash(row, 'send')} onClose={() => setSlashDismissed(box)} />}
-          {mentionShown && mention !== null && <MentionMenu box={boxRef.current} dir={mention.dir} rows={mentionRows} active={Math.min(mentionActive, mentionRows.length - 1)} onPick={pickMention} onClose={() => setMentionDismissed(mentionKey)} />}
+          {slashShown && <SlashMenu box={boxRef.current} rows={slashFiltered} active={Math.min(slashActive, slashFiltered.length - 1)} onPick={(row) => pickSlash(row, 'send')} onHover={setSlashActive} onClose={() => setSlashDismissed(box)} />}
+          {mentionShown && mention !== null && <MentionMenu box={boxRef.current} dir={mention.dir} rows={mentionRows} active={Math.min(mentionActive, mentionRows.length - 1)} onPick={pickMention} onHover={setMentionActive} onClose={() => setMentionDismissed(mentionKey)} />}
           {boxMenu !== null && (
             <Menu
               x={boxMenu.x}
@@ -649,29 +966,54 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             />
           )}
           <div className="chat-foot">
-            <button type="button" className="chat-attach" title="Attach an image" aria-label="Attach an image" disabled={asking} onClick={() => void attach()}>
+            <button type="button" className="chat-attach" title="Attach a file" aria-label="Attach a file" disabled={asking} onClick={() => void attach()}>
               <PaperclipIcon />
             </button>
             {mode !== null && (
-              <button type="button" className="chat-chip" data-chip="mode" onMouseDown={keepKeys} title="Sends Shift+Tab to the session, which cycles the mode" onClick={() => typeInto(session.id, '\x1b[Z')}>
+              <button
+                ref={modeChipRef}
+                type="button"
+                className="chat-chip"
+                data-chip="mode"
+                data-open={modeMenu !== null || undefined}
+                data-busy={busy || undefined}
+                onMouseDown={keepKeys}
+                title="Permission mode; pick one from the list"
+                onClick={openModeMenu}
+              >
                 <span className="chat-chip-word">{mode}</span>
                 <span className="chat-chip-caret" aria-hidden="true">
-                  ⌄
+                  <ChevronIcon />
                 </span>
               </button>
             )}
+            {modeMenu !== null && (
+              <Menu x={modeMenu.x} y={modeMenu.y} above items={modeItems} onClose={() => setModeMenu(null)} className="chat-mode-menu" data={{ menu: 'chat-mode' }} anchor={modeChipRef.current} />
+            )}
             {modelText !== null && (
-              <button type="button" className="chat-chip" data-chip="model" onMouseDown={keepKeys} title="Types /model; the terminal shows the picker" onClick={sendModel}>
+              <button
+                ref={modelChipRef}
+                type="button"
+                className="chat-chip"
+                data-chip="model"
+                data-open={modelMenu !== null || undefined}
+                onMouseDown={keepKeys}
+                title="Model and effort. A model pick is saved as your default for new sessions, as /model does."
+                onClick={openModelMenu}
+              >
                 <span className="chat-chip-word">{modelText}</span>
                 <span className="chat-chip-caret" aria-hidden="true">
-                  ⌄
+                  <ChevronIcon />
                 </span>
               </button>
+            )}
+            {modelMenu !== null && (
+              <Menu x={modelMenu.x} y={modelMenu.y} above items={modelItems} onClose={() => setModelMenu(null)} className="chat-model-menu" data={{ menu: 'chat-model' }} anchor={modelChipRef.current} />
             )}
             <button ref={viewChipRef} type="button" className="chat-chip" data-chip="view" data-open={viewMenu !== null || undefined} onMouseDown={keepKeys} title="What the timeline shows (Ctrl+O)" onClick={openViewMenu}>
               <span className="chat-chip-word">{CHAT_MODE_WORDS[view]}</span>
               <span className="chat-chip-caret" aria-hidden="true">
-                ⌄
+                <ChevronIcon />
               </span>
             </button>
             {viewMenu !== null && (
@@ -815,12 +1157,28 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   );
 }
 
-function ChatTurn({ turn, paneId, session, mode, open, onToggle }: { turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void }) {
+// M9 fix 752: the step a fold toggle keeps in place, inside the turn with
+// this index: the last reply after the turn's fold row, else the fold row.
+// Closed, the fold stands before the first text after the first call;
+// open, at the first call; so the replies after it are the same steps
+// either way, and no node identity is needed (the rows remount).
+function foldAnchorIn(timeline: Element, turn: number): HTMLElement | null {
+  const turnEl = timeline.querySelector(`.chat-turn[data-turn-index=${JSON.stringify(String(turn))}]`);
+  const rail = turnEl?.querySelector(':scope > .chat-rail');
+  if (rail === null || rail === undefined) return null;
+  const rows = [...rail.children];
+  const at = rows.findIndex((r) => r.classList.contains('chat-fold'));
+  if (at < 0) return null;
+  const replies = rows.slice(at + 1).filter((r): r is HTMLElement => r instanceof HTMLElement && r.classList.contains('chat-reply'));
+  return replies[replies.length - 1] ?? (rows[at] as HTMLElement);
+}
+
+function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void }) {
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   const links = usePathLinks(paneId);
   return (
-    <div className="chat-turn" {...links.handlers}>
+    <div className="chat-turn" data-turn-index={index} {...links.handlers}>
       <div className="chat-prompt-row">
         <div className="chat-prompt">
           {turn.prompt}
@@ -856,10 +1214,11 @@ function ChatTurn({ turn, paneId, session, mode, open, onToggle }: { turn: StepT
 }
 
 // M9 fix 714: a turn's tool calls folded into one row; a click opens it.
+// Fix 753: its dot wears the folded calls' tone (foldTone).
 function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) {
   return (
     <button type="button" className="chat-step chat-fold" data-kind="fold" data-open={fold.open || undefined} onClick={onToggle}>
-      <span className="chat-dot" data-tone="done" />
+      <span className="chat-dot" data-tone={fold.tone} />
       <span className="chat-fold-text">{foldText(fold)}</span>
       {fold.added + fold.removed > 0 && (
         <>
@@ -890,6 +1249,17 @@ function ChatStep({ step, paneId, session }: { step: Step; paneId: string; sessi
       <div className="chat-step chat-note" data-kind="note">
         <span className="chat-dot" data-tone="thinking" />
         {step.text}
+      </div>
+    );
+  }
+  if (step.kind === 'queued') {
+    // M9 fix 754: a message Claude read mid-turn, a small bubble in place.
+    const when = timeOf(step.at);
+    return (
+      <div className="chat-step chat-queued-step" data-kind="queued">
+        <span className="chat-dot" data-tone="thinking" />
+        <div className="chat-queued-bubble">{step.text}</div>
+        <span className="chat-queued-time">{when === null ? 'sent mid-turn' : `sent mid-turn · ${when}`}</span>
       </div>
     );
   }

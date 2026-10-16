@@ -199,15 +199,16 @@ export function installAttention(): () => void {
 // that appears later than its row (a pane opened on a done session, a
 // reload) beats out of step with it and the two read as two signals. Every
 // pulse is started from the document's time zero instead, so they all
-// share one clock. M39 puts the working marks on the same clock: the
-// mark's step (M46, the meter's ripple before it), the band (fix 535, the
-// sheen before it) and the
+// share one clock. M39 puts the working rows on the same clock: the band
+// (fix 535, the sheen before it) and the
 // needs-pulse run inside the rows, the titles and the tabs, so every
 // element is read with its subtree, and [data-working] joins the list,
-// or two working sessions would step out of phase with each other, as
+// or two working sessions would pulse out of phase with each other, as
 // does a needs-input mark, whose breathing outlives the pulse a click
 // ends, and a shell's blinking caret; the roster's units sit under the
-// rows and titles, so a whole team steps as one. Since fix 729 the pass
+// rows and titles, so a whole team beats as one. The mark's step has its
+// own clock in mark-clock.ts since M9 fix 767, an attribute on the root
+// that every mark reads, so it needs no sync. Since fix 729 the pass
 // runs on a pulse's animationstart and on a change of those attributes,
 // no longer on every insert into the page, and it is one walk over the
 // document's animations in place of a subtree read under every pulsing

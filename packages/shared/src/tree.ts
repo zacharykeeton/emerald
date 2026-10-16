@@ -458,6 +458,10 @@ function validateView(value: unknown, where: string): PaneView | null {
     if (scope === 'folder' && typeof folder !== 'string') throw new LayoutError(`${where}.scope folder needs a folder`);
     const layers = value['layers'];
     if (layers !== undefined && layers !== null && layers !== 'both' && layers !== 'band' && layers !== 'lanes') throw new LayoutError(`${where}.layers must be both, band or lanes`);
+    // M9 fix 766 (level 65): the usage windows row's flag, kept only when
+    // false, as chrome is.
+    const usage = value['usage'];
+    if (usage !== undefined && usage !== null && typeof usage !== 'boolean') throw new LayoutError(`${where}.usage must be a boolean`);
     return {
       kind: 'activity',
       window,
@@ -465,6 +469,7 @@ function validateView(value: unknown, where: string): PaneView | null {
       ...(typeof folder === 'string' ? { folder } : {}),
       ...(layers === 'band' || layers === 'lanes' ? { layers } : {}),
       ...chromeField(value, where),
+      ...(usage === false ? { usage: false } : {}),
     };
   }
   if (value['kind'] === 'file') {

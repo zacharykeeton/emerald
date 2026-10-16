@@ -32,7 +32,7 @@ export interface OpenRequest {
 }
 
 // What rides the open to the renderer beside the path and the pane flag.
-export function openExtraOf(req: OpenRequest): { scheme?: string | null; openId?: number; beside?: string; url?: boolean; launch?: boolean } {
+export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; launch?: boolean | undefined } {
   return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, launch: req.launch };
 }
 

@@ -1396,3 +1396,68 @@ test('a team keeps its last 200 members, the dropped one\'s commits folded into 
   assert.equal(after.commits[0]!.hash, 'f'.repeat(40));
   assert.equal(after.commits[0]!.agent?.id, 'a0', 'the commit keeps its agent');
 });
+
+test('the mod\'s Spinner sets the word while a turn runs and nowhere else (M9 fix 738)', () => {
+  const working = reduce(session({ state: 'working' }), hook('Spinner', { word: 'Perusing' }));
+  assert.equal(working.liveVerb, 'Perusing');
+  assert.equal(working.state, 'working');
+  assert.equal(reduce(session({ state: 'needs-input', needsInputReason: 'permission' }), hook('Spinner', { word: 'Perusing' })).liveVerb, 'Perusing');
+  assert.equal(reduce(session({ state: 'idle' }), hook('Spinner', { word: 'Perusing' })).liveVerb ?? null, null);
+  assert.equal(reduce(session({ state: 'working', liveVerb: 'Grinding' }), hook('Spinner', { word: '' })).liveVerb, 'Grinding', 'an empty word keeps the last');
+});
+
+test('an aborted TurnComplete puts a running turn at idle with the live fields cleared (M9 fix 738)', () => {
+  const live = { liveVerb: 'Perusing', liveReply: 'half a reply', liveTool: null };
+  for (const state of ['working', 'needs-input'] as const) {
+    const after = reduce(session({ state, ...live }), hook('TurnComplete', { turn_id: 't-1', is_aborted: true, reason: 'aborted' }));
+    assert.equal(after.state, 'idle', `${state} goes to idle`);
+    assert.equal(after.liveVerb, null);
+    assert.equal(after.liveReply, null);
+    assert.equal(after.needsInputReason, null);
+  }
+  assert.equal(reduce(session({ state: 'done' }), hook('TurnComplete', { turn_id: 't-1', is_aborted: true })).state, 'done', 'a done session stays done');
+  assert.equal(reduce(session({ state: 'working' }), hook('TurnComplete', { turn_id: 't-2', is_aborted: true, turn_agent_id: 'a1' })).state, 'working', 'a subagent\'s aborted turn moves nothing');
+  assert.equal(reduce(session({ state: 'working' }), hook('TurnComplete', { turn_id: 't-3', is_aborted: false, reason: 'answer' })).state, 'working', 'an answered turn waits for its Stop');
+});
+
+test('a Measure sets the context percent and the cost and leaves the model, the state and the clock (M9 fix 739)', () => {
+  const before = session({ state: 'working', model: 'Opus 5.5', lastEventAt: T0 + 1 });
+  const after = reduce(before, hook('Measure', { measure: { context: { percent: 25, window: 200000, tokens: 50000 }, cost: { usd: 1.5 }, rateLimits: [], changed: ['context', 'cost'], model: 'claude-opus-5-5' } }));
+  assert.equal(after.contextPercent, 25);
+  assert.equal(after.costUsd, 1.5);
+  assert.equal(after.contextWindow?.size, 200000);
+  assert.equal(after.contextWindow?.used, 50000);
+  assert.equal(after.model, 'Opus 5.5', 'the row keeps the status line\'s name');
+  assert.equal(after.state, 'working');
+  assert.equal(after.lastEventAt, T0 + 1, 'a measure says nothing about whether Claude is busy');
+  assert.equal(reduce(after, hook('Measure', { measure: { changed: ['rateLimits'], rateLimits: [{ kind: 'five_hour', percentUsed: 30 }] } })), after, 'a limits-only measure changes nothing on the row');
+});
+
+test('TurnStart moves nothing but the clock (M9 fix 738)', () => {
+  const after = reduce(session({ state: 'idle' }), hook('TurnStart', { turn_id: 't-1' }));
+  assert.equal(after.state, 'idle');
+  assert.equal(after.lastEventAt, T0 + 5000);
+});
+
+test("a ToolAsk names the ask without moving the state, a PermissionRequest keeps it, the call's PostToolUse clears it (M9 fix 742)", () => {
+  const asked = reduce(session({ state: 'working', needsInputReason: null }), hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_use_id: 'u1' }));
+  assert.equal(asked.state, 'working');
+  assert.equal(asked.askedFor?.words, 'Bash: npm publish');
+  assert.equal(asked.askedFor?.toolUseId, 'u1');
+  const dialog = reduce(asked, hook('PermissionRequest', { tool_name: 'Bash' }));
+  assert.equal(dialog.state, 'needs-input');
+  assert.equal(dialog.askedFor?.words, 'Bash: npm publish', 'the dialog keeps it');
+  const other = reduce(dialog, hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'u2' }));
+  assert.equal(other.askedFor?.words, 'Bash: npm publish', "another call's end keeps it");
+  assert.equal(reduce(other, hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'u1' })).askedFor, null, "the call's own end clears it");
+});
+
+test("a new prompt clears the ask, and an agent's ToolAsk is applied with its agent named (M9 fix 742)", () => {
+  const asked = reduce(session({ state: 'working' }), hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_use_id: 'u1' }));
+  assert.equal(reduce(asked, hook('UserPromptSubmit', { prompt: 'next' })).askedFor, null);
+  const payload: HookPayload = { hook_event_name: 'ToolAsk', session_id: BOUND, tool_name: 'Edit', tool_input: { file_path: 'C:/r/a.ts' }, tool_use_id: 'u3', ask_agent_id: 'a1' };
+  assert.equal(classifyHook(session({ state: 'working' }), payload), 'applied');
+  const agentAsk = reduce(session({ state: 'working' }), { type: 'hook', at: T0 + 5000, payload });
+  assert.equal(agentAsk.askedFor?.agentId, 'a1');
+  assert.equal(agentAsk.askedFor?.words, 'Edit: a.ts');
+});

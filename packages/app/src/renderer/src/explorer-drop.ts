@@ -1,6 +1,7 @@
-import { findPane, tabHolding } from '@emerald/shared';
+import { findPane, markKind, tabHolding } from '@emerald/shared';
 import type { LayoutTab } from '@emerald/shared';
 import { dropFileOn, dropFolderOn, openFileFromOutside, typeInto } from './actions.ts';
+import { isImageName, pastedPath } from './chat-model.ts';
 import { fileViewSupported } from './daemon-model.ts';
 import { zoneAt } from './drop-zone-model.ts';
 import { getState } from './store.ts';
@@ -21,8 +22,10 @@ import type { DropTarget } from './ui.ts';
 // path is a folder. A folder becomes a shell in a new pane on the zone's
 // side of the target (or in the target itself, for center). A file dropped
 // on a pane with a session types its absolute path into that session, as
-// the files rail's Insert path does, and lights the whole pane on the way
-// in so the two outcomes look different. A file dropped on an empty pane
+// the files rail's Insert path does: an image on a Claude session's pane
+// is pasted as a terminal pastes it, so Claude Code takes it as an image,
+// and the chat face shows its chip (M9 fix 747). It lights the whole pane
+// on the way in so the two outcomes look different. A file dropped on an empty pane
 // (M9 fix 387) opens a file view there instead, the same geometry as a
 // folder: center into the pane, an edge splits it beside; gated on
 // fileViewSupported, so an older daemon still lights and does nothing.
@@ -184,7 +187,8 @@ async function dropOutside(file: File): Promise<void> {
 
 // The drop stats the path rather than trusting the hover's guess. A file
 // is typed the way Insert path types one: quoted when it has a space,
-// no Enter, so the person can finish the command.
+// no Enter, so the person can finish the command. An image on a Claude
+// session is pasted rather than typed (M9 fix 747).
 async function dropFile(file: File, target: DropTarget): Promise<void> {
   const path = window.emerald.files.pathFor(file);
   if (path === '') return;
@@ -201,6 +205,12 @@ async function dropFile(file: File, target: DropTarget): Promise<void> {
     return;
   }
   recordUse('drop-path');
+  const session = getState().sessions.get(sessionId);
+  if (session !== undefined && markKind(session) === 'claude' && isImageName(path)) {
+    typeInto(sessionId, pastedPath(path));
+    window.dispatchEvent(new CustomEvent('emerald:chat-image', { detail: { paneId: target.paneId, path } }));
+    return;
+  }
   typeInto(sessionId, path.includes(' ') ? `"${path}"` : path);
 }
 

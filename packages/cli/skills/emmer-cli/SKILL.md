@@ -33,9 +33,10 @@ A Claude session or a plain shell in a folder, listed in the sidebar at once. Ar
 ```
 emmer send <session> <text...> --enter
 emmer send <session> --interrupt
+emmer send <session> <text...> --enter --if-idle
 ```
 
-`--enter` presses Enter after the text; a Claude session gets a short pause first so the text is not taken for a paste. `--interrupt` sends Ctrl+C. Send a prompt to a Claude session only when it is `idle` or `done`; a `working` session queues it.
+`--enter` presses Enter after the text; a Claude session gets a short pause first so the text is not taken for a paste. To an Emerald Claude session whose mod is loaded, `send --enter` goes in through the mod instead, with no pause; a slash command, a `!`, a `#` or an `@` mention is still typed. `--interrupt` sends Ctrl+C, typed as before. Send a prompt to a Claude session only when it is `idle` or `done`; a `working` session queues it. `--if-idle` refuses a session that is busy (exit 1) and sends nothing, so a prompt never lands in a turn you did not mean to queue it behind.
 
 ## Read what a session wrote
 
@@ -55,7 +56,7 @@ emmer prompt <session> "the prompt" --json
 emmer prompt <session> tests --saved
 ```
 
-`send --enter` and `wait` in one: types the text, presses Enter, waits for the session to go `working` and then for the turn to end, and prints the first line of the reply (`--json` has the whole session, its `state` and the `reply`). Two gates. A session that `needs-input` is refused (exit 1) since the text would land as the answer to whatever it is asking; read the screen, answer it with `send`, or pass `--force` to send anyway. A session that does not go `working` within five seconds is `stalled` (exit 3): the text is most likely sitting in its input box, or it is not a Claude session; `read --screen` shows which. A turn that ends in a question prints `needs input: ...` with exit 0; `--timeout` (milliseconds) is exit 2 as `wait`'s. Prefer it over `send` plus `wait` whenever you want the answer. `--saved` takes the text from a saved prompt by name: `emmer prompts ls` lists them, `emmer prompts add <name> <text>` and `emmer prompts rm <name>` keep the list, which is the daemon's, so the app's prompt box (Send a prompt on a row's menu) cycles the same ones.
+`send --enter` and `wait` in one: types the text, presses Enter, waits for the session to go `working` and then for the turn to end, and prints the first line of the reply (`--json` has the whole session, its `state` and the `reply`). Two gates. A session that `needs-input` is refused (exit 1) since the text would land as the answer to whatever it is asking; read the screen, answer it with `send`, or pass `--force` to send anyway. A session that does not go `working` within five seconds is `stalled` (exit 3): the text is most likely sitting in its input box, or it is not a Claude session; `read --screen` shows which. A turn that ends in a question prints `needs input: ...` with exit 0; `--timeout` (milliseconds) is exit 2 as `wait`'s. Prefer it over `send` plus `wait` whenever you want the answer. To an Emerald Claude session whose mod is loaded the prompt goes in through the mod, as `send --enter` does; `--if-idle` refuses a busy session with exit 1. `--saved` takes the text from a saved prompt by name: `emmer prompts ls` lists them, `emmer prompts add <name> <text>` and `emmer prompts rm <name>` keep the list, which is the daemon's, so the app's prompt box (Send a prompt on a row's menu) cycles the same ones.
 
 ## Wait for a session
 

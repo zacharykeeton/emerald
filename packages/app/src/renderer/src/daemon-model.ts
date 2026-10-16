@@ -235,6 +235,15 @@ export function browserViewSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= BROWSER_VIEW_LEVEL;
 }
 
+// The level at which the daemon keeps an activity pane's usage flag (M9
+// fix 766); an older daemon's validator drops the field, so a pane on one
+// keeps the flag in its own state for its life.
+export const USAGE_FLAG_LEVEL = 65;
+
+export function usageFlagSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= USAGE_FLAG_LEVEL;
+}
+
 // The level at which the daemon keeps folder labels (M9 fix 194); an
 // older daemon answers folders.list with bad-request, so the heading
 // offers no rename and the store keeps an empty map.

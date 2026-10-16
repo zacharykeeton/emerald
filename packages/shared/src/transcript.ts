@@ -159,7 +159,10 @@ export type Step =
   | { kind: 'thinking'; text: string; ms: number | null; at: number | null }
   | { kind: 'tool'; id: string; name: string; arg: string; input: Record<string, unknown>; at: number | null; result: StepResult | null }
   | { kind: 'text'; text: string; at: number | null }
-  | { kind: 'note'; text: 'Interrupted'; at: number | null };
+  | { kind: 'note'; text: 'Interrupted'; at: number | null }
+  // M9 fix 754: a message the person sent while the turn ran, which
+  // Claude read mid-turn; `at` is its send time.
+  | { kind: 'queued'; text: string; at: number | null };
 
 export interface StepResult {
   error: boolean;
@@ -337,6 +340,14 @@ export function parseSteps(text: string): StepTurn[] {
       if (sameId || (noIds && promptUuid !== null && o['parentUuid'] === promptUuid)) turn.images.push(...imagesOf(o));
     }
     if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+    // M9 fix 754: a message of the person's that Claude absorbed mid-turn
+    // is an attachment line after the call it waited on; Claude Code's own
+    // queued kinds (task notifications, peer messages) are skipped.
+    if (o['type'] === 'attachment') {
+      const queued = queuedStepOf(o['attachment']);
+      if (queued !== null) turn.steps.push(queued);
+      continue;
+    }
     const message = o['message'];
     if (!isObject(message) || !Array.isArray(message['content'])) continue;
     if (o['type'] === 'assistant') {
@@ -488,6 +499,77 @@ export function usageFold(state: UsageState, text: string, agent: string | null)
 
 export function usageList(state: UsageState): UsageMessage[] {
   return [...state.byId.values(), ...state.loose].sort((a, b) => a.at - b.at);
+}
+
+// M9 fix 754: Claude Code's queue of messages sent while a turn runs, off
+// its `queue-operation` lines, in usageFold's shape so a reader of a
+// growing transcript can fold only what was appended. The state holds the
+// whole queue in order, Claude Code's own items too (task notifications,
+// agent and cross-session messages), so a `dequeue`, which names no
+// content, takes the right one; the list is the person's alone.
+export interface QueuedMessage {
+  text: string;
+  at: number | null;
+}
+
+export interface QueueState {
+  items: { content: string | null; at: number | null; mine: boolean }[];
+}
+
+const MACHINE_QUEUED = ['<task-notification>', '<agent-message', '<cross-session-message'];
+
+export function queueState(): QueueState {
+  return { items: [] };
+}
+
+export function queueFold(state: QueueState, text: string): void {
+  const take = (content: unknown) => {
+    if (typeof content !== 'string') return;
+    const k = state.items.findIndex((i) => i.content === content);
+    if (k >= 0) state.items.splice(k, 1);
+  };
+  for (const raw of text.split('\n')) {
+    const o = parseObject(raw);
+    if (o === null) continue;
+    if (o['type'] === 'queue-operation') {
+      const op = o['operation'];
+      if (op === 'enqueue') {
+        const content = typeof o['content'] === 'string' ? o['content'] : null;
+        const mine = content !== null && !MACHINE_QUEUED.some((m) => content.startsWith(m));
+        state.items.push({ content, at: lineTime(o), mine });
+      } else if (op === 'dequeue') state.items.shift();
+      else if (op === 'remove' || op === 'popOne' || op === 'popAll') take(o['content']);
+      continue;
+    }
+    // A message that waited for the turn's end goes in as a prompt; when
+    // its dequeue was missed the prompt line still takes it.
+    if (o['isSidechain'] !== true) take(promptOf(o));
+  }
+}
+
+export function queueList(state: QueueState): QueuedMessage[] {
+  return state.items.filter((i) => i.mine && i.content !== null).map((i) => ({ text: i.content!, at: i.at }));
+}
+
+export function queuedOf(text: string): QueuedMessage[] {
+  const state = queueState();
+  queueFold(state, text);
+  return queueList(state);
+}
+
+// A `queued_command` attachment's step when it is the person's (a human
+// origin or a human turn), its prompt a string or text parts joined; an
+// image part is not drawn in this cut.
+function queuedStepOf(a: unknown): Step | null {
+  if (!isObject(a) || a['type'] !== 'queued_command') return null;
+  const origin = a['origin'];
+  if (!((isObject(origin) && origin['kind'] === 'human') || a['humanTurn'] === true)) return null;
+  const prompt = a['prompt'];
+  let text = '';
+  if (typeof prompt === 'string') text = prompt;
+  else if (Array.isArray(prompt)) text = prompt.filter((p): p is { type: 'text'; text: string } => isObject(p) && p['type'] === 'text' && typeof p['text'] === 'string').map((p) => p.text).join('\n');
+  if (text.trim() === '') return null;
+  return { kind: 'queued', text, at: lineTime(a) };
 }
 
 // The image parts of a user line's content, each with its base64 text;

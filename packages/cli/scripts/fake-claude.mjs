@@ -58,6 +58,8 @@ for await (const line of rl) {
     await post({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: hung } });
     console.log(`fake-claude quiet: ${text}`);
   } else if (text.startsWith('ask')) {
+    // The emerald mod's ask at the decision (M9 fix 742), then the dialog.
+    await post({ hook_event_name: 'ToolAsk', tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_use_id: 'fake-ask-1' });
     await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
     console.log(`fake-claude asks: ${text}`);
   } else if (text.startsWith('pause')) {

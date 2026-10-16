@@ -78,6 +78,25 @@ function phraseFor(toolName: string, input: ToolInput): string | null {
   }
 }
 
+// The words of a permission ask (M9 fix 742), `<tool>: <subject>`, from
+// the mod's ToolAsk: the tool's name as the dialog shows it and the first
+// field of its input that names what it acts on, a file by its base name;
+// the bare name when the input names nothing. Null for no name.
+export function askWords(toolName: unknown, toolInput: unknown): string | null {
+  if (typeof toolName !== 'string' || toolName.trim() === '') return null;
+  const input: ToolInput = typeof toolInput === 'object' && toolInput !== null ? (toolInput as ToolInput) : {};
+  const subject =
+    summarize(input.command) ??
+    baseName(input.file_path) ??
+    baseName(input.notebook_path) ??
+    summarize(input.url) ??
+    summarize(input.pattern) ??
+    summarize(input.query) ??
+    summarize(input.skill) ??
+    summarize(input.description);
+  return subject === null ? toolName : `${toolName}: ${subject}`;
+}
+
 export function toolPhrase(toolName: unknown, toolInput: unknown): string | null {
   if (typeof toolName !== 'string' || toolName.trim() === '') return null;
   const input: ToolInput = typeof toolInput === 'object' && toolInput !== null ? (toolInput as ToolInput) : {};

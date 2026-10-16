@@ -43,11 +43,24 @@ const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const HEAD_KEYS = ['hook_event_name', 'session_id', 'agent_id', 'cwd', 'tool_name', 'tool_use_id'] as const;
 const HEAD_INPUT_KEYS = ['file_path', 'notebook_path', 'command'] as const;
 
-export function readHeadFields(head: string): HookPayload | null {
+// The last bytes of a body past the limit, also kept (M9 fix 740): Claude
+// Code writes a PostToolUse's tool_use_id after tool_input and
+// tool_response, so past a megabyte of content the id is beyond the head,
+// and the fold that keys on it needs it.
+export const HEAD_TAIL_BYTES = 4096;
+
+export function readHeadFields(head: string, tail = ''): HookPayload | null {
   const out: Record<string, unknown> = {};
   for (const key of HEAD_KEYS) {
     const v = firstString(head, key, 0);
     if (v !== undefined) out[key] = v;
+  }
+  // The id from the tail when the head has none (M9 fix 740): the last
+  // match, since a top-level key is written after any value that could
+  // hold its name, and one inside a string has its quotes escaped.
+  if (out['tool_use_id'] === undefined && tail !== '') {
+    const v = lastString(tail, 'tool_use_id');
+    if (v !== undefined) out['tool_use_id'] = v;
   }
   if (typeof out['hook_event_name'] !== 'string') return null;
   const input = head.indexOf('"tool_input"');
@@ -61,6 +74,19 @@ export function readHeadFields(head: string): HookPayload | null {
   }
   out['truncated'] = true;
   return out as HookPayload;
+}
+
+function lastString(text: string, key: string): string | undefined {
+  const re = new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`, 'g');
+  let last: string | undefined;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) last = m[1];
+  if (last === undefined) return undefined;
+  try {
+    const v: unknown = JSON.parse(last);
+    return typeof v === 'string' ? v : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function firstString(text: string, key: string, from: number): string | undefined {
@@ -147,10 +173,15 @@ function trimValue(value: unknown, state: { cut: boolean }): unknown {
 // command once per event, and the verify scripts post the same body
 // within a second on purpose), so only a different file folds. Two
 // genuine events of one kind inside the window (two PreToolUse for two
-// tool calls) differ in their payloads and both pass. The ring is small
-// since the window is short.
-const DUPLICATE_WINDOW_MS = 1000;
-const DUPLICATE_RING = 8;
+// tool calls) differ in their payloads and both pass. M9 fix 740: a tool
+// event with a tool_use_id folds on its event name and the id, so the
+// mod's whole copy and the hook file's copy cut at the limit meet; the
+// window is two seconds (the live gaps ran 3 to 447 ms, p90 227) and the
+// ring is pruned by age, so a burst of other events between the copies
+// cannot push the first out. The cap bounds memory under a flood; it is
+// not the bound the fold relies on.
+const DUPLICATE_WINDOW_MS = 2000;
+const DUPLICATE_RING_CAP = 1024;
 
 // The sessions the mod has posted for, and those already warned of a mod
 // that posted nothing (M9 fix 725); insertion-ordered, the oldest dropped.
@@ -359,12 +390,22 @@ export class HookSink {
     const chunks: Buffer[] = [];
     let size = 0;
     let kept = 0;
+    // The bytes past the head, at most HEAD_TAIL_BYTES of the newest (M9
+    // fix 740), for the id Claude writes after the content.
+    let tail = Buffer.alloc(0);
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (kept >= maxBody) return;
-      const part = chunk.length > maxBody - kept ? chunk.subarray(0, maxBody - kept) : chunk;
-      chunks.push(part);
-      kept += part.length;
+      const room = Math.max(0, maxBody - kept);
+      if (room > 0) {
+        const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
+        chunks.push(part);
+        kept += part.length;
+      }
+      const dropped = chunk.length > room ? chunk.subarray(room) : null;
+      if (dropped !== null) {
+        const joined = Buffer.concat([tail, dropped]);
+        tail = joined.length > HEAD_TAIL_BYTES ? Buffer.from(joined.subarray(joined.length - HEAD_TAIL_BYTES)) : joined;
+      }
     });
     req.on('end', () => {
       let payload: unknown;
@@ -374,7 +415,7 @@ export class HookSink {
       const body = Buffer.concat(chunks, kept).toString('utf8').replace(/^\uFEFF/, '');
       const overLimit = size > maxBody;
       if (overLimit) {
-        payload = readHeadFields(body);
+        payload = readHeadFields(body, tail.toString('utf8'));
         if (payload === null) {
           this.log.warn('hook body past the limit with no event name', { sessionId: headerSession, bytes: size });
           res.writeHead(413).end();
@@ -419,7 +460,7 @@ export class HookSink {
       // The hook is released here. Whatever happens next is our problem, not Claude's.
       res.writeHead(204).end();
       if (hook === MOD_HOOK_NAME) remember(this.modSeen, sessionId);
-      if (this.isDuplicate(sessionId, overLimit ? body : canonicalJson(payload), at, hook)) {
+      if (this.isDuplicate(sessionId, foldKey(payload as HookPayload, overLimit, body), at, hook)) {
         this.log.info(`hook duplicate ${(payload as HookPayload).hook_event_name ?? '?'} ${sessionId}`, { hook, at });
         return;
       }
@@ -461,14 +502,17 @@ export class HookSink {
   // The body is the payload's canonical form when it parsed whole (M9 fix
   // 725: the mod's JSON.stringify and Claude's stdin text are never the
   // same bytes for one event) and the raw head past the limit.
-  // A hit is not re-stamped, so a third copy inside the window of the
-  // first is dropped too.
+  // A tool event with an id keys on its name and the id instead (M9 fix
+  // 740, foldKey). A hit is not re-stamped, so a third copy inside the
+  // window of the first is dropped too. Entries past the window go first,
+  // so the ring holds the window's posts whatever came between.
   private isDuplicate(sessionId: string, body: string, at: number, hook: string): boolean {
+    while (this.recent.length > 0 && at - this.recent[0]!.at > DUPLICATE_WINDOW_MS) this.recent.shift();
     const key = sessionId + ':' + createHash('sha1').update(body).digest('hex');
     const hit = this.recent.some((r) => r.key === key && r.hook !== hook && at - r.at <= DUPLICATE_WINDOW_MS);
     if (!hit) {
       this.recent.push({ key, at, hook });
-      if (this.recent.length > DUPLICATE_RING) this.recent.shift();
+      if (this.recent.length > DUPLICATE_RING_CAP) this.recent.shift();
     }
     return hit;
   }
@@ -478,6 +522,17 @@ export class HookSink {
     const b = Buffer.from(this.token, 'utf8');
     return a.length === b.length && timingSafeEqual(a, b);
   }
+}
+
+// What the fold keys a post on (M9 fix 740): a tool event's name and its
+// tool_use_id when the copy carries both, so two copies of one call that
+// differ elsewhere (one cut at the limit, one whole) meet; else the
+// payload's canonical form, or the raw head past the limit, as before.
+export function foldKey(payload: HookPayload, overLimit: boolean, body: string): string {
+  const name = payload.hook_event_name;
+  const id = payload.tool_use_id;
+  if (typeof name === 'string' && name !== '' && typeof id === 'string' && id !== '') return 'id:' + name + ':' + id;
+  return overLimit ? body : canonicalJson(payload);
 }
 
 // The payload as one text whatever its keys' order (M9 fix 725): every

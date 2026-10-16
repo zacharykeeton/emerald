@@ -91,13 +91,31 @@ export const PROTOCOL_VERSION = 1;
 //  63: M9 fix 672, browser.run with its browser.requested push and browser.done, a page in a browser pane driven from emmer browser
 //  63: M9 fix 673, profile on a browser view, and upload, events and resume on browser.run
 //  64: M9 fix 703, sessions.load on the sessions topic, one push per load tick with each sampled session's newest sample and names, to app windows at level 64; an older window gets session.changed per session as before, a CLI none
-export const DAEMON_FEATURE_LEVEL = 64;
+//  65: M9 fix 766, usage on an activity view's record, false while its usage windows row is hidden, absent while shown
+//  65: M9 fix 739, usage.limits on the app topic, the rate limits a hosted session's mod measured, to app windows at level 65
+//  65: M9 fix 738, the mod's Spinner, TurnStart and TurnComplete events on the hook sink, an aborted turn putting the row at idle
+//  65: M9 fix 741, session.submit and mod.channel with its mod.submit push, a prompt to a Claude session whose emerald mod opened its channel submitted by the mod rather than typed
+//  65: M9 fix 742, askedFor on SessionInfo, the tool and its input from the mod's ToolAsk post at a permission ask
+export const DAEMON_FEATURE_LEVEL = 65;
+
+// One rate-limit window as the mod's measure gives it (M9 fix 739): its
+// kind (five_hour, seven_day, ...), the percent used and when it resets.
+export interface UsageLimit {
+  kind: string;
+  percentUsed: number;
+  resetsAt: string | null;
+}
 
 // What the emerald mod (M9 fix 725, packages/cli/mod) sends as
 // X-Emerald-Hook in place of a hook file's path, so the sink knows its
 // posts from the hook file's copies; register.js carries the same literal
 // and the CLI's mod test holds the two together.
 export const MOD_HOOK_NAME = 'emerald-mod';
+
+// The event the emerald mod posts at a permission ask (M9 fix 742), as its
+// hook_event_name: the tool and a short form of its input, at the
+// decision rather than at the dialog. register.js carries the literal.
+export const MOD_TOOL_ASK = 'ToolAsk';
 
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
@@ -270,6 +288,14 @@ export interface Requests {
   // read on a minute's poll and after every credited commit. Every
   // change goes out as conflicts.changed on the sessions topic.
   'conflicts.get':  { req: {};                                                             res: ConflictReport };
+  // The emerald mod's prompt channel (M9 fix 741): `emmer mod-channel`,
+  // which the mod starts inside a hosted Claude, asks this and the
+  // connection takes that session's mod.submit pushes until it closes.
+  'mod.channel':    { req: { sessionId: string };                                  res: {} };
+  // A prompt for a Claude session (M9 fix 741): with its mod's channel
+  // up the daemon pushes mod.submit to it and answers 'mod'; with none it
+  // does nothing and answers 'typed', and the caller types the text.
+  'session.submit': { req: { sessionId: string; text: string };                    res: { via: 'mod' | 'typed' } };
 }
 
 // A session's last screen (M9 fix 159): the rows and the cursor the
@@ -309,6 +335,10 @@ export type ServerMessage =
   // the names replace loadNames. A window at an older level gets each
   // sampled session's whole record as session.changed, and a CLI gets none.
   | { type: 'sessions.load';   at: number; samples: Array<{ sessionId: string; sample: LoadSample; names: string[] }> }
+  // The rate-limit windows a hosted session's mod last measured (M9 fix
+  // 739), on the app topic to windows at level 65; the account's, so one
+  // push whichever session measured them, and only when they moved.
+  | { type: 'usage.limits';    at: number; limits: UsageLimit[] }
   | { type: 'session.removed'; sessionId: string }
   | { type: 'layout.changed';  layout: Layout }
   // The whole list after a folders.set (M9 fix 194), on the sessions topic.
@@ -327,4 +357,7 @@ export type ServerMessage =
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.
-  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number };
+  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number }
+  // A prompt for the emerald mod to submit (M9 fix 741), to the session's
+  // mod.channel connection alone.
+  | { type: 'mod.submit'; sessionId: string; text: string };

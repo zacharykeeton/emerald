@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo } from '@emerald/shared';
-import { actionRows, chordsText, isActionQuery, matchSession, moveHighlight, orderRows, rankSessions, segments, subsequence, waitText } from './palette-model.ts';
+import { actionGroup, actionKey, actionRows, chordsText, isActionQuery, matchSession, moveHighlight, orderRows, pickRows, rankSessions, segments, subsequence, waitText } from './palette-model.ts';
 import { BINDINGS } from './keys-model.ts';
 import { sessionPaneMenu } from './pane-menu-model.ts';
 import { aSession } from './test-support.ts';
@@ -145,4 +145,49 @@ test('>git lists New Git Bash here in the pane group with its shell', () => {
     actionRows('>', 'Ctrl+B', pane).filter((r) => r.kind === 'pane').map((r) => r.label),
     ['New Git Bash here', 'New Command Prompt here', 'New Claude session here', 'Rename session', 'Close session'],
   );
+});
+
+const shells768 = [{ id: 'powershell', label: 'Windows PowerShell' }, { id: 'cmd', label: 'Command Prompt' }] as never;
+const picks768 = (session: { own: string | null } | null) => ({ shells: shells768, shell: 'cmd' as never, schemes: ['emerald', 'Dracula'], windowScheme: 'emerald', session });
+
+test('M9 fix 768: a bare > lists no pick row', () => {
+  assert.deepEqual(pickRows('>', picks768(null)), []);
+  assert.deepEqual(pickRows('> ', picks768(null)), []);
+});
+
+test('M9 fix 768: >shell: lists each shell, the default and the one in use', () => {
+  assert.deepEqual(
+    pickRows('>shell:', picks768(null)).map((r) => [r.kind, r.label, r.detail, r.kind === 'shell' && r.checked]),
+    [['shell', 'Shell: Windows PowerShell', 'default', false], ['shell', 'Shell: Command Prompt', 'in use', true]],
+  );
+});
+
+test('M9 fix 768: >colours: lists the window rows with the current one checked', () => {
+  const rows = pickRows('>colours:', picks768(null));
+  assert.deepEqual(rows.map((r) => [r.kind, r.kind === 'scheme' && r.scope, r.label, r.detail, r.kind === 'scheme' && r.checked]), [
+    ['scheme', 'window', 'Terminal colours: emerald', 'in use', true],
+    ['scheme', 'window', 'Terminal colours: Dracula', '', false],
+  ]);
+});
+
+test('M9 fix 768: >this session: lists the clear row and the schemes only over a session', () => {
+  const rows = pickRows('>this session:', picks768({ own: 'Dracula' }));
+  assert.deepEqual(rows.map((r) => r.label), ["This session: The window's", 'This session: emerald', 'This session: Dracula']);
+  assert.equal(rows[0]!.detail, 'emerald');
+  assert.equal(rows[0]!.kind === 'scheme' && rows[0]!.checked, false);
+  assert.equal(rows[2]!.kind === 'scheme' && rows[2]!.checked, true);
+  const clear = pickRows('>this session:', picks768({ own: null }))[0]!;
+  assert.equal(clear.kind === 'scheme' && clear.checked, true);
+  assert.equal(clear.detail, 'emerald · in use');
+  assert.equal(pickRows('>this session:', picks768(null)).some((r) => r.kind === 'scheme' && r.scope === 'session'), false);
+});
+
+test('M9 fix 768: actionGroup and actionKey name each kind', () => {
+  const rows = [...pickRows('>this session:', picks768({ own: null })), ...pickRows('>shell:', picks768(null))];
+  const clear = rows[0]!;
+  assert.equal(actionKey(clear), 'scheme:session:');
+  assert.equal(actionGroup(clear), 'Terminal colours');
+  assert.equal(actionGroup(rows.find((r) => r.kind === 'shell')!), 'Shell');
+  assert.equal(actionGroup(actionRows('>', 'Ctrl+B', null)[0]!), 'Keys');
+  assert.equal(actionKey(rows.find((r) => r.kind === 'shell')!), 'shell:powershell');
 });

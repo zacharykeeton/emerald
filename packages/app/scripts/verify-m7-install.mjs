@@ -848,8 +848,18 @@ async function installHalf() {
   expect(after.entries.length === before.entries.length + 1 && before.entries.every((e, i) => after.entries[i] === e), 'the other PATH entries are untouched and unexpanded');
 
   const fresh = freshPath();
+  const firstAt = Date.now();
   const r = spawnSync('cmd.exe', ['/d', '/c', 'emmer', '--version'], { env: { ...process.env, PATH: fresh, Path: fresh }, encoding: 'utf8', windowsHide: true });
+  const firstMs = Date.now() - firstAt;
   expect(r.status === 0 && r.stdout.trim() === version, `a fresh cmd finds emerald on PATH and gets ${r.stdout.trim()}`);
+  // M9 fix 763: a cold first emmer took 39 to 59 s twice on this box,
+  // cause not traced; the line is read before a warm-up at install is
+  // decided. help touches neither the daemon nor the pipe, so its time is
+  // the second start alone; its output is not read.
+  const helpAt = Date.now();
+  spawnSync('cmd.exe', ['/d', '/c', 'emmer', 'help'], { env: { ...process.env, PATH: fresh, Path: fresh }, encoding: 'utf8', windowsHide: true, timeout: 120000 });
+  const helpMs = Date.now() - helpAt;
+  log(`first emmer --version after install: ${firstMs} ms, then help: ${helpMs} ms`);
   const where = spawnSync('cmd.exe', ['/d', '/c', 'where', 'emmer'], { env: { ...process.env, PATH: fresh, Path: fresh }, encoding: 'utf8', windowsHide: true });
   expect(where.stdout.trim().toLowerCase() === path.join(binDir, 'emmer.cmd').toLowerCase(), `where emerald -> ${where.stdout.trim()}`);
   // M9 fix 342: the install registered emerald as an opener for .md and

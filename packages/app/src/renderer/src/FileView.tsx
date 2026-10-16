@@ -41,6 +41,7 @@ import { useSqueeze } from './squeeze.ts';
 // reveal names the pane it is for (M9 fix 437: a contents hit dropped on
 // a pane), so a pane takes only one with its own id and a tab only one
 // with none; a tab and a pane on the same file never both flash.
+// A pane's reveal waits while its layout tab is not on show (M9 fix 765).
 //
 // M9 fix 248: the Raw view is an editor. Ctrl+S in it saves (monaco.ts
 // writes the model's text through the file service, line ends and BOM
@@ -113,12 +114,13 @@ interface Props {
   onClose?: () => void;
   inPane?: boolean;
   paneId?: string;
+  shown?: boolean;
 }
 
-export function FileView({ path, view: viewProp, onView, onClose, inPane = false, paneId }: Props) {
+export function FileView({ path, view: viewProp, onView, onClose, inPane = false, paneId, shown = true }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const { tabs, reveal: revealed, wrapLines } = useUi();
-  const reveal = revealed !== null && (inPane ? revealed.paneId !== undefined && revealed.paneId === paneId : revealed.paneId === undefined) ? revealed : null;
+  const reveal = revealed !== null && (inPane ? shown && revealed.paneId !== undefined && revealed.paneId === paneId : revealed.paneId === undefined) ? revealed : null;
   const own = defaultView(path);
   const view = viewProp ?? viewFor(tabs, path);
   // M9 fix 615: a picture shows as an <img> on the file: URL the page can
@@ -394,6 +396,11 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     if (model === null) return;
     const line = Math.max(1, Math.min(reveal.line, model.getLineCount()));
     endFlash();
+    // The editor may have been hidden until this render (M9 fix 765: a
+    // reveal held for a layout tab not on show); lay it out at its size
+    // now, before centring the line, rather than waiting for
+    // automaticLayout's observer.
+    editor.layout();
     editor.revealLineInCenter(line);
     const column = Math.max(1, Math.min(reveal.column, model.getLineMaxColumn(line)));
     editor.setPosition({ lineNumber: line, column });

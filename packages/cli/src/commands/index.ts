@@ -53,6 +53,11 @@ export const commands: CommandEntry[] = [
     load: () => import('./browser.ts').then((m) => m.default),
   },
   { name: 'hooks', summary: "install or remove emerald's Claude Code hooks", load: () => import('./hooks.ts').then((m) => m.default) },
+  {
+    name: 'mod-channel',
+    summary: "stream a session's queued prompts to the emerald mod, which starts this itself",
+    load: () => import('./mod-channel.ts').then((m) => m.default),
+  },
   { name: 'skill', summary: 'print the emmer-cli skill, the guide a Claude session reads to drive emerald', load: () => import('./skill.ts').then((m) => m.default) },
   { name: 'daemon', summary: 'start, stop or show emmerd', load: () => import('./daemon.ts').then((m) => m.default) },
   { name: 'update', summary: "show the app's update state, or click its badge: --check, --download, --install", load: () => import('./update.ts').then((m) => m.default) },

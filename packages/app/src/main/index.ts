@@ -12,6 +12,7 @@ import type { AttentionRequest, ChimeMode, FileStamp, HooksInstallResult, HooksS
 import { runCliJson } from './cli.ts';
 import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, revealPath, statPath } from './files.ts';
+import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
 import { createFile, makeFolder, heldTrash, renameEntry, trashEntry, writeFileText } from './file-write.ts';
 import { folderIcon, folderIconForget } from './folder-icon.ts';
@@ -508,14 +509,12 @@ ipcMain.handle('emerald:pick-folder', async (_event, defaultPath: string | null)
 // EMERALD_PICK_FILE is a harness flag, as EMERALD_WHATS_NEW is: a verify
 // script cannot drive a native dialog, so under it the answer is that
 // path and no dialog is shown.
-// `images` (M9 fix 721, the chat box's attach) offers image files alone.
-ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null, images?: boolean) => {
+ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null) => {
   const picked = process.env['EMERALD_PICK_FILE'];
   if (picked !== undefined && picked !== '') return picked;
   const opts = {
     properties: ['openFile' as const],
     ...(defaultPath !== null ? { defaultPath } : {}),
-    ...(images === true ? { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] } : {}),
   };
   const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
   return result.canceled ? null : (result.filePaths[0] ?? null);
@@ -564,6 +563,7 @@ ipcMain.handle('emerald:files-open', (_event, p: string) => openPath(p));
 ipcMain.handle('emerald:files-reveal', (_event, p: string) => revealPath(p, log));
 ipcMain.handle('emerald:files-open-folder', (_event, p: string) => openFolder(p, log));
 ipcMain.handle('emerald:files-stat', (_event, p: string) => statPath(p));
+ipcMain.handle('emerald:files-real', (_event, p: string) => realPath(p));
 ipcMain.handle('emerald:files-open-external', (_event, url: string) => openExternal(url, log));
 ipcMain.handle('emerald:files-git-status', (_event, dir: string) => gitStatus(dir));
 ipcMain.handle('emerald:files-git-changes', (_event, dir: string) => gitChanges(dir));

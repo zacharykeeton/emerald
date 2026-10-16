@@ -251,14 +251,14 @@ test('the same event posted by two hook files within a second reaches the handle
   assert.equal(calls.length - before, 2, 'no header against a header is folded');
 });
 
-test('the same event a second apart, or twice from one hook file, reaches the handler twice (M9 fix 260)', async () => {
+test('the same event two seconds apart, or twice from one hook file, reaches the handler twice (M9 fixes 260 and 740)', async () => {
   const before = calls.length;
   const payload = { hook_event_name: 'Stop', session_id: 'dup-2', stop_hook_active: false };
   await post(payload, HOOK_A);
-  await sleep(1100);
+  await sleep(2100);
   await post(payload, HOOK_B);
   await settle();
-  assert.equal(calls.length - before, 2, 'a second apart');
+  assert.equal(calls.length - before, 2, 'two seconds apart');
   // The same file twice, and no header twice (the verify scripts' posts).
   await post({ ...payload, n: 2 }, HOOK_A);
   await post({ ...payload, n: 2 }, HOOK_A);
@@ -289,6 +289,38 @@ test("the mod's post and the hook file's copy of one Stop, keys in another order
   const lines = logLines().filter((l) => (l['payload'] as { session_id?: string }).session_id === 'mod-1');
   assert.equal(lines.length, 1, 'one line in hooks.jsonl');
   assert.equal(lines[0]!['mod'], true);
+});
+
+test('an over-limit hook-file PostToolUse and the mod\'s whole copy of one tool_use_id reach the handler once (M9 fix 740)', async () => {
+  const before = calls.length;
+  const filePath = 'C:/repo/big.txt';
+  // In Claude Code's own key order: the id after the content, past the limit.
+  const big = `{"session_id":"fold-740","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"${filePath}","content":"${'x'.repeat(6000)}"},"tool_response":{"ok":true},"tool_use_id":"tu-740","duration_ms":5}`;
+  await post(big, HOOK_A);
+  await post({ session_id: 'fold-740', hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: filePath, content: 'short' }, tool_response: { ok: true }, tool_use_id: 'tu-740', duration_ms: 5 }, { 'X-Emerald-Hook': 'emerald-mod' });
+  await settle();
+  assert.equal(calls.length - before, 1, 'the two copies fold on the id');
+  assert.equal(calls.at(-1)!.payload.tool_use_id, 'tu-740', 'the over-limit copy carries the id from its tail');
+});
+
+test('the fold holds at a second and a half with ten other events between (M9 fix 740)', async () => {
+  const before = calls.length;
+  const payload = { hook_event_name: 'Stop', session_id: 'fold-740b', stop_hook_active: false };
+  await post(payload, HOOK_A);
+  for (let i = 0; i < 10; i++) await post({ hook_event_name: 'Stop', session_id: `fold-740-other-${i}` }, { ...HOOK_A, 'X-Emerald-Session': `other-${i}` });
+  await sleep(1500);
+  await post(payload, HOOK_B);
+  await settle();
+  const ours = calls.slice(before).filter((c) => c.payload.session_id === 'fold-740b');
+  assert.equal(ours.length, 1, 'the second copy is folded');
+});
+
+test('readHeadFields takes the tail\'s last tool_use_id, not one inside a string there (M9 fix 740)', () => {
+  const head = '{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"content":"xxxx';
+  const tail = 'xx \\"tool_use_id\\": \\"inside\\" xx"},"tool_response":{"ok":true},"tool_use_id":"tu-tail","duration_ms":5}';
+  assert.equal(readHeadFields(head, tail)?.tool_use_id, 'tu-tail');
+  const inString = 'xx \\"tool_use_id\\": \\"inside\\" xx"}}';
+  assert.equal(readHeadFields(head, inString)?.tool_use_id, undefined, 'an escaped key inside a string is no key');
 });
 
 test('canonicalJson sorts keys at every depth and keeps arrays in order (M9 fix 725)', () => {

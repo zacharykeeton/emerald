@@ -73,6 +73,35 @@ export function parseUsageReply(body: unknown): UsageWindow[] | null {
   return out;
 }
 
+// M9 fix 739: a hosted session's mod measures the account's rate limits on
+// every whole-point move, and the daemon pushes them as usage.limits. Laid
+// over the endpoint's windows while the push is the newer reading: a window
+// whose key is a limit's kind takes its percent (whole, as the endpoint's
+// are) and its reset when that parses; no window is added, an unknown kind
+// (spend_limit) matches nothing, and the same array comes back when nothing
+// moved. An endpoint answer newer than the push wins.
+export interface LimitsOverlay {
+  at: number;
+  limits: ReadonlyArray<{ kind: string; percentUsed: number; resetsAt: string | null }>;
+}
+
+export function overlayLimits(windows: readonly UsageWindow[] | null, overlay: LimitsOverlay | null, fetchedAt: number | null): UsageWindow[] | null {
+  if (windows === null) return null;
+  if (overlay === null || (fetchedAt !== null && overlay.at <= fetchedAt)) return windows as UsageWindow[];
+  let changed = false;
+  const out = windows.map((w) => {
+    const limit = overlay.limits.find((l) => l.kind === w.key);
+    if (limit === undefined || !Number.isFinite(limit.percentUsed)) return w;
+    const percent = Math.min(100, Math.max(0, Math.round(limit.percentUsed)));
+    const at = limit.resetsAt === null ? null : parseTime(limit.resetsAt);
+    const resetsAt = at ?? w.resetsAt;
+    if (percent === w.percent && resetsAt === w.resetsAt) return w;
+    changed = true;
+    return { ...w, percent, resetsAt };
+  });
+  return changed ? out : (windows as UsageWindow[]);
+}
+
 const SCOPED_PREFIX = 'weekly_scoped_';
 
 function parseScopedLimit(value: unknown): UsageWindow | null {

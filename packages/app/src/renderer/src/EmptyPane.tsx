@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { hidePaneHere, paneFolder, placeSession, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
+import { hidePaneHere, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
 import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
 import { installedShells } from './daemon-model.ts';
@@ -7,15 +7,16 @@ import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
 import { recordUse } from './use-record.ts';
 import { formatChord, plainKeyFor } from './keys-model.ts';
-import { describeState, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
+import { currentTab, describeState, findPane, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
 import type { SessionInfo, ShellId } from '@emerald/shared';
 import { normalizeFolder } from './new-session-model.ts';
 import { Menu, menuOpen } from './Menu.tsx';
-import { ACTION_PREFIX, actionRows, isActionQuery, moveHighlight, orderRows, rankSessions, segments, waitText } from './palette-model.ts';
+import { ACTION_PREFIX, actionGroup, actionKey, actionRows, isActionQuery, moveHighlight, orderRows, pickRows, rankSessions, segments, waitText } from './palette-model.ts';
 import type { ActionRow, Match } from './palette-model.ts';
 import { paneMenuOf } from './pane-menus.ts';
 import { lastFolder, loadRecent } from './recent-folders.ts';
 import { colorStyle } from './session-color.ts';
+import { setScheme, useScheme } from './scheme-store.ts';
 import { shownSessions, shownWords } from './shown-sessions.ts';
 import type { Shown } from './shown-sessions.ts';
 import { useSkin } from './skin.ts';
@@ -56,6 +57,7 @@ export const PLACEHOLDER_NONE = 'Type > for actions';
 // same component as an overlay, list first, with no tiles and no folders.
 export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false }: Props) {
   const { sessions, layout, daemon } = useStore('sessions', 'layout', 'daemon');
+  const schemeState = useScheme();
   const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId } = useUi();
   const skin = useSkin();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -186,13 +188,42 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   // pane has a session or a view (an empty pane's menu is the keys').
   const menuHandle = paneMenuOf(paneId);
   const paneForActions = menuHandle !== null && menuHandle.name() !== '' ? { name: menuHandle.name(), items: menuHandle.items() } : null;
-  const actions = actionMode ? actionRows(query, formatChord(currentPrefix()), paneForActions) : [];
+  // Then, once something is typed, the empty pane's shells and the terminal
+  // colours (M9 fix 768); the Shell rows only on the empty pane itself, under
+  // the caret's own rule.
+  const leaf = layout === null ? null : findPane(currentTab(layout), paneId);
+  const paneSession = leaf?.sessionId == null ? undefined : sessions.get(leaf.sessionId);
+  const actions = actionMode
+    ? [
+        ...actionRows(query, formatChord(currentPrefix()), paneForActions),
+        ...pickRows(query, {
+          shells: showSplits && shells.length > 1 ? shells : [],
+          shell: (pick ?? shells[0])?.id ?? null,
+          schemes: schemeState.schemes.map((sc) => sc.name),
+          windowScheme: schemeState.current.name,
+          session: paneSession === undefined ? null : { own: paneSession.scheme ?? null },
+        }),
+      ]
+    : [];
   const count = actionMode ? actions.length : rows.length;
   const current = Math.min(highlighted, Math.max(0, count - 1));
   const runRow = (row: ActionRow) => {
+    // A shell or scheme pick empties the box, so the empty pane's tile keys work at once.
+    if (row.kind === 'shell' || row.kind === 'scheme') {
+      setQuery('');
+      setHighlighted(0);
+    }
     onDone();
     if (row.kind === 'key') void runAction(row.action, 'menu').catch((err: unknown) => console.warn(`[emerald] ${row.action} failed`, err));
-    else menuHandle?.run(row.run, row.shell);
+    else if (row.kind === 'pane') menuHandle?.run(row.run, row.shell);
+    else if (row.kind === 'shell') {
+      const o = shells.find((x) => x.id === row.shell);
+      if (o !== undefined) pickShell(o);
+    } else if (row.scope === 'window') {
+      if (row.scheme !== null) setScheme(row.scheme);
+    } else if (paneSession !== undefined) {
+      void setSessionScheme(paneSession.id, row.scheme).catch((err: unknown) => console.warn('[emerald] set scheme failed', err));
+    }
   };
 
   // The folders, row 1 the default, and which is selected. The folder
@@ -352,10 +383,10 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       {actionMode &&
         actions.map((r, i) => (
           <ActionPaletteRow
-            key={r.kind === 'key' ? `key:${r.action}` : `pane:${r.run}:${r.shell ?? ''}`}
+            key={actionKey(r)}
             row={r}
             // A heading above the first row of each group.
-            heading={i === 0 ? 'Keys' : r.kind === 'pane' && actions[i - 1]?.kind === 'key' ? 'Pane' : null}
+            heading={i === 0 || actionGroup(actions[i - 1]!) !== actionGroup(r) ? actionGroup(r) : null}
             highlighted={i === current}
             onHover={() => setHighlighted(i)}
             onPick={() => runRow(r)}
@@ -667,7 +698,10 @@ function ActionPaletteRow({ row, heading, highlighted, onHover, onPick }: { row:
         data-kind={row.kind}
         data-action={row.kind === 'key' ? row.action : undefined}
         data-run={row.kind === 'pane' ? row.run : undefined}
-        data-shell={row.kind === 'pane' ? row.shell : undefined}
+        data-shell={row.kind === 'pane' || row.kind === 'shell' ? row.shell : undefined}
+        data-scope={row.kind === 'scheme' ? row.scope : undefined}
+        data-scheme={row.kind === 'scheme' ? row.scheme ?? undefined : undefined}
+        data-checked={(row.kind === 'shell' || row.kind === 'scheme') && row.checked ? 'true' : undefined}
         data-highlighted={highlighted ? 'true' : undefined}
         onMouseMove={onHover}
         onClick={onPick}

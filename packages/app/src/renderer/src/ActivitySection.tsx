@@ -146,7 +146,7 @@ export function ActivitySection({ folder, scope, onScope, paneIds, place, unit: 
   };
   // What the tab and the pane open with (M9 fix 178): this section as it
   // stands; the view's pill (M9 fix 250) reaches the panes scope itself.
-  const snapshot = (): ActivitySnapshot => ({ scope: scope === 'folder' && folder !== null ? 'folder' : scope === 'panes' ? 'panes' : 'all', folder, layers });
+  const snapshot = (): ActivitySnapshot => ({ scope: scope === 'folder' && folder !== null ? 'folder' : scope === 'panes' ? 'panes' : 'all', folder, layers, usage: true });
   return (
     <div className="activity-card" data-place={place} data-scope={scope} data-unit={unit} data-window={windowKey} data-folded={activityFolded || undefined} data-sessions={shown.length} data-peak={stats.peak} data-median={load.median} data-tools={tools ? 'shown' : 'folded'} data-layers={layers}>
       <div className="activity-card-head">

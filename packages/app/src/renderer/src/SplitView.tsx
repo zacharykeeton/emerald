@@ -25,7 +25,7 @@ export function SplitView({ tab, current, zoomedPaneId }: Props) {
   const zoomPath = zoomedPaneId === null ? null : pathTo(tab.root, zoomedPaneId);
   return (
     <div className={zoomPath === null ? 'splitview' : 'splitview zoomed'} data-tab-id={tab.id} data-zoomed-pane={zoomedPaneId ?? undefined}>
-      <Node node={tab.root} focusedPaneId={current ? tab.focusedPaneId : null} zoomPath={zoomPath} paneCount={listPanes(tab).length} />
+      <Node node={tab.root} focusedPaneId={current ? tab.focusedPaneId : null} zoomPath={zoomPath} paneCount={listPanes(tab).length} shown={current} />
     </div>
   );
 }
@@ -40,10 +40,10 @@ function pathTo(node: LayoutNode, paneId: string): Set<string> | null {
   return below;
 }
 
-function Node({ node, focusedPaneId, zoomPath, paneCount }: { node: LayoutNode; focusedPaneId: string | null; zoomPath: Set<string> | null; paneCount: number }) {
+function Node({ node, focusedPaneId, zoomPath, paneCount, shown }: { node: LayoutNode; focusedPaneId: string | null; zoomPath: Set<string> | null; paneCount: number; shown: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   if (node.kind === 'pane') {
-    if (node.view !== null) return <ViewPane key={node.id} paneId={node.id} view={node.view} focused={node.id === focusedPaneId} onlyPane={paneCount === 1} />;
+    if (node.view !== null) return <ViewPane key={node.id} paneId={node.id} view={node.view} focused={node.id === focusedPaneId} onlyPane={paneCount === 1} shown={shown} />;
     return <Pane key={node.id} paneId={node.id} sessionId={node.sessionId} focused={node.id === focusedPaneId} onlyPane={paneCount === 1} />;
   }
   const onPath = zoomPath !== null && zoomPath.has(node.id);
@@ -52,11 +52,11 @@ function Node({ node, focusedPaneId, zoomPath, paneCount }: { node: LayoutNode; 
   return (
     <div className={`split split-${node.direction}`} data-split-id={node.id} ref={containerRef}>
       <div className="split-first" style={{ flexBasis: onPath ? '100%' : `${node.ratio * 100}%` }} hidden={firstHidden}>
-        <Node key={node.first.id} node={node.first} focusedPaneId={focusedPaneId} zoomPath={zoomPath} paneCount={paneCount} />
+        <Node key={node.first.id} node={node.first} focusedPaneId={focusedPaneId} zoomPath={zoomPath} paneCount={paneCount} shown={shown} />
       </div>
       <Gutter splitId={node.id} direction={node.direction} containerRef={containerRef} hidden={onPath} />
       <div className="split-second" hidden={secondHidden}>
-        <Node key={node.second.id} node={node.second} focusedPaneId={focusedPaneId} zoomPath={zoomPath} paneCount={paneCount} />
+        <Node key={node.second.id} node={node.second} focusedPaneId={focusedPaneId} zoomPath={zoomPath} paneCount={paneCount} shown={shown} />
       </div>
     </div>
   );

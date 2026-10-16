@@ -1,3 +1,4 @@
+import { effortOf } from '@emerald/shared';
 import type { NeedsInputReason, SessionState, Step, StepTurn, TeamCounts } from '@emerald/shared';
 
 // The chat view's pure parts (M9 fix 689), kept out of the components so
@@ -98,12 +99,18 @@ export const SCREEN_READ_MS = 1000;
 
 // The slash commands that open a picker or a dialog of their own in the
 // TUI, which the chat view cannot draw: a send of one shows the fallback
-// bar over the box.
-export const TERMINAL_COMMANDS: readonly string[] = ['/model', '/permissions', '/mcp', '/config', '/agents', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor'];
+// bar over the box. Read off Claude Code 2.1.301's command table (M9 fix
+// 749).
+export const TERMINAL_COMMANDS: readonly string[] = ['/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw'];
+
+// Claude Code 2.1.301's aliases of /usage: a typed one opens the same
+// dialog, so it brings the bar, but the menu lists /usage alone (M9 fix
+// 749).
+export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats'];
 
 export function opensMenu(text: string): boolean {
   const first = text.trim().split(/\s+/)[0] ?? '';
-  return TERMINAL_COMMANDS.includes(first);
+  return TERMINAL_COMMANDS.includes(first) || TERMINAL_ALIASES.includes(first);
 }
 
 // Whether the fallback bar goes when the transcript grows: claim 6 of M9
@@ -113,10 +120,12 @@ export function opensMenu(text: string): boolean {
 // the menu is gone.
 export const FALLBACK_ON_GROWTH = true;
 
-// The words under the box, by the session's state.
-export function hintText(state: SessionState | undefined): string {
-  if (state === 'working') return 'Sent when the turn ends';
+// The words under the box, by the session's state and (M9 fix 754) the
+// person's messages queued behind the turn.
+export function hintText(state: SessionState | undefined, queued = 0): string {
   if (state === 'needs-input') return 'The ask takes the keys';
+  if (queued > 0) return `${queued} queued · Up to edit`;
+  if (state === 'working') return 'Sent when the turn ends';
   return '';
 }
 
@@ -141,6 +150,79 @@ export function modeOf(rows: readonly string[]): string | null {
     if (m !== null) return MODE_WORDS[m[1]!] ?? null;
   }
   return null;
+}
+
+// M9 fix 743: the mode chip's menu. The words modeOf reads, each with
+// the line Claude Code's own mode list gives it (the parenthesis of its
+// map in the 2.1.301 bundle, verbatim); kept by hand at each Claude Code
+// update. All four are always listed: a mode the session's settings
+// leave out of the cycle is never reached, and the press cap says so.
+export const MODE_CHOICES: readonly { word: string; line: string }[] = [
+  { word: 'Manual', line: 'ask each time' },
+  { word: 'Accept edits', line: 'auto-approve file edits and common file commands' },
+  { word: 'Plan', line: 'research and propose changes without making them' },
+  { word: 'Auto', line: 'no routine prompts; a reviewer model screens actions' },
+];
+
+// Claude Code has no command that sets a mode by name, so a pick presses
+// Shift+Tab and reads the footer after each press, at most this often.
+export const MODE_PICK_PRESSES = 5;
+
+export async function stepModeTo(
+  target: string,
+  io: { press: () => void; read: () => Promise<readonly string[]>; wait: (ms: number) => Promise<void>; cancelled: () => boolean },
+): Promise<{ reached: boolean; presses: number; cancelled: boolean }> {
+  let presses = 0;
+  while (presses < MODE_PICK_PRESSES) {
+    if (io.cancelled()) return { reached: false, presses, cancelled: true };
+    io.press();
+    presses += 1;
+    await io.wait(SCREEN_READ_MS);
+    let rows: readonly string[] = [];
+    try {
+      rows = await io.read();
+    } catch {
+      // A failed read is a read of no mode; the next press tries again.
+    }
+    if (modeOf(rows) === target) return { reached: true, presses, cancelled: false };
+  }
+  return { reached: false, presses, cancelled: false };
+}
+
+// M9 fix 744: the model chip's menu, read from Claude Code 2.1.301 (the
+// aliases `/model` takes, the catalog's names and the `/model` picker's
+// own lines) and kept by hand at each update. `best` is left out: it
+// resolves to the account tier's default and has no name of its own.
+export const MODEL_CHOICES: readonly { alias: string; name: string; line: string }[] = [
+  { alias: 'default', name: 'Default', line: 'Use the default model' },
+  { alias: 'opus', name: 'Opus 5.5', line: 'Best for everyday, complex tasks' },
+  { alias: 'opus[1m]', name: 'Opus 5.5 (1M context)', line: 'Opus 5.5 with 1M context' },
+  { alias: 'sonnet', name: 'Sonnet 5.5', line: 'Efficient for routine tasks' },
+  { alias: 'sonnet[1m]', name: 'Sonnet 5.5 (1M context)', line: 'Sonnet 5.5 with 1M context' },
+  { alias: 'haiku', name: 'Haiku 5.5', line: 'Fastest for quick answers' },
+  { alias: 'fable', name: 'Fable 5.1', line: 'Most capable for your hardest and longest-running tasks' },
+  { alias: 'fable[1m]', name: 'Fable 5.1 (1M context)', line: 'Fable 5.1 with 1M context' },
+  { alias: 'opusplan', name: 'Opus Plan', line: 'Opus in plan mode, else Sonnet' },
+];
+
+// The levels `/effort` takes, with the bundle's own line for each. `auto`
+// hands the choice back to Claude Code and is not a level in the row.
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export const EFFORT_LINES: Readonly<Record<EffortLevel, string>> = {
+  low: 'Quick, straightforward implementation',
+  medium: 'Balanced approach with standard testing',
+  high: 'Comprehensive implementation with extensive testing',
+  xhigh: 'Extended reasoning with thorough analysis (on supported models)',
+  max: 'Maximum capability with deepest reasoning (on supported models)',
+};
+
+// The effort the chip shows. Claude Code writes `effort` only on an
+// assistant line, so after a pick the picked level shows until a line
+// written after the pick (the transcript past its length then) says one.
+export function effortShown(text: string, effort: string | null, pick: { level: string; length: number } | null): string | null {
+  if (pick === null) return effort;
+  return effortOf(text.slice(pick.length)) ?? pick.level;
 }
 
 // The model chip's words: the title's short model, with the effort when
@@ -195,6 +277,7 @@ export interface FoldItem {
   added: number;
   removed: number;
   open: boolean;
+  tone: FoldTone;
 }
 export type TimelineItem = { kind: 'step'; step: Step } | FoldItem | { kind: 'images'; steps: ToolStep[] };
 
@@ -204,7 +287,7 @@ export function timelineItems(steps: readonly Step[], mode: ChatMode, open: bool
   const kept = steps.filter((s) => s.kind !== 'thinking' || mode === 'thinking');
   const tools = kept.filter((s): s is ToolStep => s.kind === 'tool');
   if (tools.length === 0) return kept.map(one);
-  const fold: FoldItem = { kind: 'fold', count: tools.length, names: tools.map((t) => t.name), ...stepsDiff(tools), open };
+  const fold: FoldItem = { kind: 'fold', count: tools.length, names: tools.map((t) => t.name), ...stepsDiff(tools), open, tone: foldTone(tools) };
   const out: TimelineItem[] = [];
   let placed = false;
   if (open) {
@@ -229,7 +312,7 @@ export function timelineItems(steps: readonly Step[], mode: ChatMode, open: bool
       seenTool = true;
       continue;
     }
-    if (seenTool && !placed && (s.kind === 'text' || s.kind === 'note')) place();
+    if (seenTool && !placed && (s.kind === 'text' || s.kind === 'note' || s.kind === 'queued')) place();
     out.push(one(s));
   }
   if (!placed) place();
@@ -402,3 +485,52 @@ export function imageMarkers(rows: readonly string[]): number[] {
   for (const row of rows) for (const m of row.matchAll(/\[Image #(\d+)\]/g)) out.push(Number(m[1]));
   return out;
 }
+
+// M9 fix 753: a fold row's dot. Pending while any folded call still runs,
+// else the last call's tone, so an error the turn recovered from does not
+// paint the whole row red (that call still reads red inside the open fold).
+export type FoldTone = 'done' | 'error' | 'pending';
+export function foldTone(tools: readonly ToolStep[]): FoldTone {
+  if (tools.some((t) => t.result === null)) return 'pending';
+  return tools[tools.length - 1]?.result?.error ? 'error' : 'done';
+}
+
+// Claude Code's prompt row: the last screen row starting with its glyph
+// (M9 fix 748).
+export function promptRow(rows: readonly string[]): string | null {
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.trimStart().startsWith('❯')) return rows[i]!;
+  return null;
+}
+
+// The image numbers on the prompt row alone, so a sent prompt's marker in
+// the scrollback above is never taken for a fresh one (M9 fix 748).
+export function promptRowImages(rows: readonly string[]): number[] {
+  const row = promptRow(rows);
+  return row === null ? [] : imageMarkers([row]);
+}
+
+// M9 fix 754: the text in Claude Code's input, after the `❯`, trimmed;
+// null with no prompt row.
+export function promptRowText(rows: readonly string[]): string | null {
+  const row = promptRow(rows);
+  if (row === null) return null;
+  return row.trimStart().slice(1).trim();
+}
+
+// Whether Claude Code's input holds a queued message taken back: its text
+// starts with the message's first line cut to 20 characters. It reads
+// text, never emptiness, so a placeholder or a queue hint on the empty
+// prompt never matches.
+export function inputHolds(rows: readonly string[], text: string): boolean {
+  const head = (text.split('\n')[0] ?? '').trim().slice(0, 20);
+  const now = promptRowText(rows);
+  return head !== '' && now !== null && now.startsWith(head);
+}
+
+// Which way Claude Code takes a queued message back: 'one' when Up
+// selects a message and Enter pulls that one alone (popEditableAt, a
+// `popOne` line), 'all' when Up pulls the whole queue into the input
+// (popAllEditable, a `popAll` line per message). Read on a real 2.1.301
+// session on 2026-10-15 (verify:chat's real block): one Up wrote `popAll`
+// for both queued messages, and an Enter after it sent them back as one.
+export const QUEUE_PICK: 'one' | 'all' = 'all';

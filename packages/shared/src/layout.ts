@@ -61,7 +61,8 @@ export interface GraphViewState {
 export type ActivityViewScope = 'folder' | 'all' | 'panes' | 'here';
 export type ActivityViewLayers = 'both' | 'band' | 'lanes';
 export type CommitsPaneView = { kind: 'commits'; folder: string; strip?: { scope: ActivityStripScope }; rows?: boolean; graph?: GraphViewState; chrome?: boolean };
-export type ActivityPaneView = { kind: 'activity'; window: string; scope?: ActivityViewScope; folder?: string; layers?: ActivityViewLayers; chrome?: boolean };
+// usage: kept only when false, the row hidden (M9 fix 766, level 65).
+export type ActivityPaneView = { kind: 'activity'; window: string; scope?: ActivityViewScope; folder?: string; layers?: ActivityViewLayers; chrome?: boolean; usage?: boolean };
 // M9 fix 180: a third kind, one file, the body a file tab shows (the
 // editor, a markdown file rendered or raw, a transcript's turns), so a
 // file from the rail can sit in the layout beside the shells. The path

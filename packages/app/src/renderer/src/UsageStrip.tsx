@@ -1,9 +1,9 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { UsageAsk, UsageResult, UsageWindow } from '../../preload/api.ts';
-import { HIGH_PERCENT, NO_SCHEDULE, STRIP_BAR_PX, STRIP_BAR_TALL_PX, STRIP_FORMS, STRIP_METER_PX, USAGE_FLOOR_MS, dialStyle, errorText, fitForm, nextSchedule, paceBar, refreshTitle, segmentLabel, segmentRest, shouldPoll, staleText, stripNeeds, stripRunway, stripText } from './usage-model.ts';
+import { HIGH_PERCENT, NO_SCHEDULE, STRIP_BAR_PX, STRIP_BAR_TALL_PX, STRIP_FORMS, STRIP_METER_PX, USAGE_FLOOR_MS, dialStyle, errorText, fitForm, nextSchedule, overlayLimits, paceBar, refreshTitle, segmentLabel, segmentRest, shouldPoll, staleText, stripNeeds, stripRunway, stripText } from './usage-model.ts';
 import { UsageBar, UsageWindowAnchor } from './UsageCard.tsx';
-import { setUsageReading } from './usage-reading.ts';
-import type { StripForm, StripNeeds, StripWindowNeed, UsageSchedule } from './usage-model.ts';
+import { markUsageFolded, setUsageAge, setUsageReading } from './usage-reading.ts';
+import type { LimitsOverlay, StripForm, StripNeeds, StripWindowNeed, UsageSchedule } from './usage-model.ts';
 
 // The account's Claude usage at the bottom of the sidebar: one segment
 // per window, "5h" then a pace bar then "resets 41m" (the window's name
@@ -73,6 +73,9 @@ export function UsageStrip() {
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [kept, setKept] = useState<UsageWindow[] | null>(null);
   const [askedAt, setAskedAt] = useState<number | null>(null);
+  // M9 fix 739: the rate limits a hosted session's mod last measured,
+  // pushed by the daemon between the strip's asks of the endpoint.
+  const [overlay, setOverlay] = useState<LimitsOverlay | null>(null);
   // A fetch that lands after unmount must not set state; a click during a
   // fetch is ignored rather than queued, since the answer is the same.
   const inFlight = useRef(false);
@@ -149,6 +152,14 @@ export function UsageStrip() {
     };
   }, [refresh, poll]);
 
+  useEffect(
+    () =>
+      window.emerald.on((msg) => {
+        if (msg.type === 'usage.limits') setOverlay({ at: msg.at, limits: msg.limits });
+      }),
+    [],
+  );
+
   // While held the countdown moves by the second, and stops when the
   // hold has passed, so the strip is quiet the rest of the time.
   const held = schedule.allowedAt > now;
@@ -202,9 +213,18 @@ export function UsageStrip() {
   // The windows on show: the answer's, or the kept reading while the
   // answer is unavailable, which is the stale case.
   const unavailable = result !== null && 'error' in result && result.error === 'unavailable' ? result : null;
-  const windows = result !== null && 'windows' in result ? result.windows : unavailable !== null ? kept : null;
+  const asked = result !== null && 'windows' in result ? result.windows : unavailable !== null ? kept : null;
+  // Laid over by the mod's newer reading, if any (M9 fix 739); the ask
+  // schedule is unchanged and an endpoint answer newer than it wins.
+  const windows = useMemo(() => overlayLimits(asked, overlay, fetchedAt), [asked, overlay, fetchedAt]);
   useEffect(() => setUsageReading(windows), [windows]);
   const stale = unavailable !== null && windows !== null && askedAt !== null ? staleText(unavailable, askedAt, schedule.allowedAt, now) : null;
+  // M9 fix 766: the reading's age beside it, for the activity view's usage
+  // row; the strip unmounts while the sidebar is folded, which marks the
+  // kept reading as nobody's to refresh until it is back. The fold effect
+  // is declared first so its cleanup runs after the age's last write.
+  useEffect(() => () => markUsageFolded(), []);
+  useEffect(() => setUsageAge(fetchedAt, stale), [fetchedAt, stale]);
   // The texts a window shows, once, for the strip and the probe alike.
   // The bar here is always at the model's need (STRIP_BAR_PX): the text
   // beside it (tone, rest, runway) never depends on the drawn width, and

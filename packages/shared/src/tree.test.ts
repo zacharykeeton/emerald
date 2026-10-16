@@ -664,6 +664,10 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   assert.deepEqual(viewOf(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', scope: 'here' }))), { kind: 'activity', window: '2026-09-13', scope: 'here' });
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', layers: 'none' }))), LayoutError, 'layers');
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', folder: '' }))), LayoutError, 'empty folder');
+  // M9 fix 766: the usage row's flag is kept only when false.
+  assert.deepEqual(viewOf(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', usage: false }))), { kind: 'activity', window: '2026-09-13', usage: false });
+  assert.deepEqual(viewOf(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', usage: true }))), { kind: 'activity', window: '2026-09-13' });
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'activity', window: '2026-09-13', usage: 'no' }))), LayoutError, 'usage');
 
   // M9 fix 180: a file view is a path and an optional view switch; an
   // unknown kind is still refused.

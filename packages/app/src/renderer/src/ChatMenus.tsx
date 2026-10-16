@@ -41,13 +41,21 @@ export function ChatMenu({ box, kind, onClose, children }: { box: HTMLTextAreaEl
   );
 }
 
+// The pointer moves the highlight, so one row is lit and it is the one
+// Enter and Tab take (M9 fix 750). Only a real move counts: a menu opening
+// under a still pointer, and the move Chromium sends after the arrows'
+// scrollIntoView, carry no movement and leave the keys' row lit.
+function moved(ev: React.MouseEvent, i: number, onHover: (i: number) => void) {
+  if (ev.movementX !== 0 || ev.movementY !== 0) onHover(i);
+}
+
 const SECTION_HEADINGS: Record<SlashRow['section'], string> = {
   sent: 'Sent to the session',
   terminal: 'Open in the terminal',
 };
 
 // The `/` menu's rows under their two headings; `active` indexes `rows`.
-export function SlashMenu({ box, rows, active, onPick, onClose }: { box: HTMLTextAreaElement | null; rows: readonly SlashRow[]; active: number; onPick: (row: SlashRow) => void; onClose: () => void }) {
+export function SlashMenu({ box, rows, active, onPick, onHover, onClose }: { box: HTMLTextAreaElement | null; rows: readonly SlashRow[]; active: number; onPick: (row: SlashRow) => void; onHover: (i: number) => void; onClose: () => void }) {
   const items: ReactNode[] = [];
   rows.forEach((row, i) => {
     if (i === 0 || rows[i - 1]!.section !== row.section) {
@@ -68,6 +76,7 @@ export function SlashMenu({ box, rows, active, onPick, onClose }: { box: HTMLTex
         data-active={i === active ? 'true' : undefined}
         title={row.description === '' ? undefined : row.description}
         onMouseDown={(ev) => ev.preventDefault()}
+        onMouseMove={(ev) => moved(ev, i, onHover)}
         onClick={() => onPick(row)}
       >
         <span className="chat-menu-name">{row.name}</span>
@@ -91,6 +100,17 @@ export function PaperclipIcon() {
   );
 }
 
+// The footer chips' caret (M9 fix 745): a drawn chevron, whose box is
+// the mark, so the chip's flex row centres it on the words; the text
+// glyph it replaces sat at the bottom of its line box.
+export function ChevronIcon() {
+  return (
+    <svg className="chat-footer-chevron" viewBox="0 0 8 5" width={8} height={5} aria-hidden="true">
+      <path d="M0.5 0.5 4 4.5 7.5 0.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export interface MentionRow {
   name: string;
   kind: 'dir' | 'file';
@@ -99,7 +119,7 @@ export interface MentionRow {
 // The `@` menu (M9 fix 720): the entries of the one folder the typed
 // path names, a folder's name with its slash, the folder the row sits in
 // beside it, and a line saying the keys under them.
-export function MentionMenu({ box, dir, rows, active, onPick, onClose }: { box: HTMLTextAreaElement | null; dir: string; rows: readonly MentionRow[]; active: number; onPick: (row: MentionRow) => void; onClose: () => void }) {
+export function MentionMenu({ box, dir, rows, active, onPick, onHover, onClose }: { box: HTMLTextAreaElement | null; dir: string; rows: readonly MentionRow[]; active: number; onPick: (row: MentionRow) => void; onHover: (i: number) => void; onClose: () => void }) {
   return (
     <ChatMenu box={box} kind="mention" onClose={onClose}>
       {rows.map((row, i) => (
@@ -111,6 +131,7 @@ export function MentionMenu({ box, dir, rows, active, onPick, onClose }: { box: 
           data-path={`${dir}${row.name}${row.kind === 'dir' ? '/' : ''}`}
           data-active={i === active ? 'true' : undefined}
           onMouseDown={(ev) => ev.preventDefault()}
+          onMouseMove={(ev) => moved(ev, i, onHover)}
           onClick={() => onPick(row)}
         >
           <span className="chat-mention-name">{row.kind === 'dir' ? `${row.name}/` : row.name}</span>

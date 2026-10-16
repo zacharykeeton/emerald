@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm9-skin-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m9-skin';
@@ -393,7 +394,7 @@ try {
           pads: frames.map((f) => getComputedStyle(f).paddingTop),
           tops: [still, ...frames].map((f) => getComputedStyle(f).top),
           shift: (() => { const c = m.getBoundingClientRect(); const p = (still.querySelector('svg path') ?? still).getBoundingClientRect(); return (p.top + p.height / 2) - (c.top + c.height / 2); })(),
-          animation: getComputedStyle(frames[0]).animationName,
+          stepping: (${MARK_STEPPING})(m),
           own: getComputedStyle(m).animationName,
           shown: frames.filter((f) => getComputedStyle(f).opacity === '1').length,
         };
@@ -419,7 +420,7 @@ try {
       const shape = m.glyphs === 'gem' && m.frameData === '◇◈◆✦' && m.frameSvgs === 4 && m.still === '◆' && m.stillSvg && m.cell === 16;
       expect(shape, `the ${where}'s mark is the gem in a 16px cell, got ${JSON.stringify(m)}`);
       sitsAt(where, m, want);
-      if (mustWork || m.working === 'true') expect(m.animation === 'session-mark-frame' && m.shown === 1, `the ${where}'s working mark shows one frame on the keyframe, got ${JSON.stringify(m)}`);
+      if (mustWork || m.working === 'true') expect(m.stepping === true && m.shown === 1, `the ${where}'s working mark shows one frame, the root's (fix 767), got ${JSON.stringify(m)}`);
     }
     // The heading and a roster unit read at 0.5px low or less, so they
     // keep the centred gem (fix 593's measurement); the unit is a probe in
@@ -446,16 +447,15 @@ try {
     step('M9 fixes 593 and 626: under Emerald the gem sits on its text: each mark beside a line of text is offset by its measured top, the pane title, the row, the tab, the heading and the units, re-measured against the whole word');
     const stepRead = () =>
       s.evalJs(`(() => {
-        const frames = [...document.querySelector(${q(row(A) + ' .session-mark')}).querySelector('.session-mark-frames').children];
-        const t = frames.map((f) => { const a = f.getAnimations()[0]; const delay = a.effect.getTiming().delay; return { time: a.currentTime, active: (((a.currentTime - delay) % 1000) + 1000) % 1000 }; });
-        const keyed = t.map((x) => x.active < 250);
+        const m = document.querySelector(${q(row(A) + ' .session-mark')});
+        const frames = [...m.querySelector('.session-mark-frames').children];
         const shown = frames.map((f) => getComputedStyle(f).opacity === '1');
-        return { time: t[0].time, keyed: keyed.indexOf(true), keyedCount: keyed.filter(Boolean).length, shown: shown.indexOf(true), shownCount: shown.filter(Boolean).length };
+        return { frame: Number(document.documentElement.dataset.markFrame), shown: shown.indexOf(true), shownCount: shown.filter(Boolean).length, stepping: (${MARK_STEPPING})(m) };
       })()`);
     const r1 = await stepRead();
     await sleep(300);
     const r2 = await stepRead();
-    expect(r1.keyedCount === 1 && r1.keyed === r1.shown && r2.keyedCount === 1 && r2.keyed === r2.shown && r2.time - r1.time >= 250, `the keyframe's frame is the one shown, and the clock runs, got ${JSON.stringify([r1, r2])}`);
+    expect(r1.stepping === true && r2.stepping === true && r1.shownCount === 1 && r2.shownCount === 1 && r1.shown === r1.frame && r2.shown === r2.frame && r1.frame !== r2.frame, `the root's frame is the one shown, and the clock runs (fix 767), got ${JSON.stringify([r1, r2])}`);
     const restMark = await readMark(`${row(C)} .session-mark`);
     expect(restMark.working === null && restMark.still === '◆' && restMark.stillVisibility === 'visible', `a resting mark shows the still ◆, got ${JSON.stringify(restMark)}`);
     await post(C, 'c', { hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
@@ -527,18 +527,18 @@ try {
 
     // Step 4: one clock.
     const clock = await s.evalJs(`(() => {
-      const read = (sel) => { const fr = [...document.querySelector(sel).querySelector('.session-mark-frames').children]; return { idx: fr.findIndex((f) => getComputedStyle(f).opacity === '1'), start: fr[0].getAnimations()[0].startTime }; };
+      const read = (sel) => { const fr = [...document.querySelector(sel).querySelector('.session-mark-frames').children]; return { idx: fr.findIndex((f) => getComputedStyle(f).opacity === '1'), frame: Number(document.documentElement.dataset.markFrame) }; };
       return [read(${q(row(A) + ' .session-mark')}), read(${q(row(B) + ' .session-mark')})];
     })()`);
-    expect(clock[0].idx === clock[1].idx && clock[0].start === clock[1].start && clock[0].idx !== -1, `two working marks share the frame and the start time, got ${JSON.stringify(clock)}`);
+    expect(clock[0].idx === clock[1].idx && clock[0].idx !== -1 && clock[0].idx === clock[0].frame, `two working marks share the frame, the root's (fix 767), got ${JSON.stringify(clock)}`);
     step('M9 fix 570: two working Emerald marks show the same frame, on the one clock');
 
     // Step 5: reduced motion.
     await s.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     try {
       await s.waitFor(
-        `[${q(row(A))}, ${q(row(B))}].every((r) => document.querySelector(r + ' .session-mark').getAnimations({ subtree: true }).filter((a) => a.animationName === 'session-mark-frame').length === 0)`,
-        'no running mark animation under reduced motion',
+        `[${q(row(A))}, ${q(row(B))}].every((r) => { const m = document.querySelector(r + ' .session-mark'); return (${MARK_STEPPING})(m) === false && [...m.querySelector('.session-mark-frames').children].every((f) => getComputedStyle(f).opacity !== '1'); })`,
+        'no frame shown under reduced motion',
         3000,
       );
       for (const who of [A, B]) {

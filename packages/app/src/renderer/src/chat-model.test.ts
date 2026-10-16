@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Step, StepResult, StepTurn } from '@emerald/shared';
-import { IMAGE_PASTE_KEY, MENTION_ROWS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, faceOf, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modeOf, modelChipText, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, timelineItems } from './chat-model.ts';
+import { EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, effortShown, faceOf, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 
@@ -55,6 +55,12 @@ test('opensMenu: a picker command first in the box, case-sensitive', () => {
   assert.equal(opensMenu('/compact'), false);
   assert.equal(opensMenu('model'), false);
   assert.equal(opensMenu('/Model'), false);
+  // Claude Code 2.1.301's table (M9 fix 749).
+  assert.equal(opensMenu('/usage'), true);
+  assert.equal(opensMenu('/cost'), true);
+  assert.equal(opensMenu('/stats'), true);
+  assert.equal(opensMenu('/btw why?'), true);
+  assert.equal(opensMenu('/agents'), false);
 });
 
 test('hintText: by the state', () => {
@@ -95,7 +101,7 @@ test('agentChipText: agents out and returned, shells running, nothing for none',
 
 const res = (over: Partial<StepResult> = {}): StepResult => ({ error: false, exitCode: null, endAt: null, lines: null, added: null, removed: null, image: null, ...over });
 const tool = (name: string, result: StepResult | null): Step => ({ kind: 'tool', id: name, name, arg: '', input: {}, at: null, result });
-const turnOf = (steps: Step[]): StepTurn => ({ prompt: 'p', at: null, endAt: null, steps });
+const turnOf = (steps: Step[]): StepTurn => ({ prompt: 'p', images: [], at: null, endAt: null, steps });
 
 test('sessionDiff: the edits that came back, summed over the turns', () => {
   const turns = [turnOf([tool('Edit', res({ added: 6, removed: 2 })), tool('Bash', res({ exitCode: 0 }))]), turnOf([tool('Write', res({ added: 3, removed: 0 }))])];
@@ -141,7 +147,7 @@ test('timelineItems: the stub turn in each mode', () => {
   const steps = stubSteps();
   const normal = timelineItems(steps, 'normal', false);
   assert.deepEqual(shape(normal), ['fold', 'text']);
-  assert.deepEqual(normal[0], { kind: 'fold', count: 3, names: ['Bash', 'Bash', 'Edit'], added: 6, removed: 2, open: false });
+  assert.deepEqual(normal[0], { kind: 'fold', count: 3, names: ['Bash', 'Bash', 'Edit'], added: 6, removed: 2, open: false, tone: 'done' });
   assert.deepEqual(shape(timelineItems(steps, 'thinking', false)), ['thinking', 'fold', 'text']);
   assert.deepEqual(shape(timelineItems(steps, 'verbose', false)), ['thinking', 'Bash', 'Bash', 'Edit', 'text']);
   assert.deepEqual(shape(timelineItems(steps, 'normal', true)), ['fold(open)', 'Bash', 'Bash', 'Edit', 'text']);
@@ -151,7 +157,7 @@ test('timelineItems: the thinking above the fold, no fold without tools, images 
   const steps = [think(1000), tool('Bash', res({ exitCode: 0 })), think(2000), tool('Edit', res({ added: 1, removed: 0 })), reply('ok')];
   assert.deepEqual(shape(timelineItems(steps, 'thinking', false)), ['thinking', 'thinking', 'fold', 'text']);
   assert.deepEqual(shape(timelineItems([think(1000), reply('hi')], 'normal', false)), ['text']);
-  const img = tool('Read', res({ image: { mediaType: 'image/png', bytes: 2048 } }));
+  const img = tool('Read', res({ image: { mediaType: 'image/png', bytes: 2048, data: '' } }));
   const items = timelineItems([img, tool('Bash', res({ exitCode: 0 })), reply('seen')], 'normal', false);
   assert.deepEqual(shape(items), ['fold', 'images', 'text']);
   assert.deepEqual((items[1] as { steps: Step[] }).steps, [img]);
@@ -200,6 +206,10 @@ test('SENT_COMMANDS: the five built-ins in order, and slashRows puts the skills 
     rows.filter((r) => r.section === 'terminal').map((r) => r.name),
     [...TERMINAL_COMMANDS],
   );
+  const terminal = rows.filter((r) => r.section === 'terminal').map((r) => r.name);
+  assert.ok(terminal.includes('/usage'));
+  assert.ok(!terminal.includes('/cost'));
+  assert.ok(!terminal.includes('/agents'));
 });
 
 test('mentionQuery: the @ token before the caret, split at its last slash', () => {
@@ -250,4 +260,131 @@ test('the image helpers: quotedPath, pastedPath, isImageName, fileHref, imageMar
   assert.deepEqual(imageMarkers(['❯ [Image #1] [Image #3] hi']), [1, 3]);
   assert.deepEqual(imageMarkers(['❯ hi', '']), []);
   assert.equal(IMAGE_PASTE_KEY, null);
+});
+
+// M9 fix 753: the fold row's tone, from the folded calls. The import sits
+// here so the three chat branches' imports do not meet on one line.
+import { foldTone } from './chat-model.ts';
+import type { ToolStep } from './chat-model.ts';
+
+const foldOf = (steps: Step[]) => {
+  const fold = timelineItems(steps, 'normal', false).find((i) => i.kind === 'fold');
+  return fold?.kind === 'fold' ? fold.tone : null;
+};
+
+test('foldTone: the last call failed reads error', () => {
+  assert.equal(foldOf([tool('Bash', res({ exitCode: 0 })), tool('Bash', res({ error: true, exitCode: 1 })), reply('broke')]), 'error');
+});
+
+test('foldTone: a failed Bash then a passing Edit reads done', () => {
+  assert.equal(foldOf([tool('Bash', res({ error: true, exitCode: 1 })), tool('Edit', res({ added: 1, removed: 0 })), reply('fixed')]), 'done');
+});
+
+test('foldTone: a call with no result among passing ones reads pending', () => {
+  const tools = [tool('Bash', res({ exitCode: 0 })), tool('Bash', null), tool('Edit', res({ added: 1, removed: 0 }))] as ToolStep[];
+  assert.equal(foldTone(tools), 'pending');
+  assert.equal(foldOf(tools), 'pending');
+});
+
+test('foldTone: the stub turn reads done', () => {
+  assert.equal(foldOf(stubSteps()), 'done');
+});
+
+// M9 fix 754: the hint with messages queued, Claude Code's input read off
+// its prompt row, and a queued step's place in a closed fold.
+import { inputHolds, promptRowText } from './chat-model.ts';
+
+test('hintText: the queued count while working, the ask still first', () => {
+  assert.equal(hintText('working', 2), '2 queued · Up to edit');
+  assert.equal(hintText('working', 1), '1 queued · Up to edit');
+  assert.equal(hintText('needs-input', 1), 'The ask takes the keys');
+  assert.equal(hintText('working', 0), 'Sent when the turn ends');
+});
+
+test('promptRowText: the last prompt row, and inputHolds reads text, not emptiness', () => {
+  const rows = ['❯ an old line', 'some output', '──────', '❯ queued-a-77', '──────', '  ⏵⏵ accept edits on'];
+  assert.equal(promptRowText(rows), 'queued-a-77');
+  assert.equal(promptRowText(['no prompt here']), null);
+  assert.equal(inputHolds(rows, 'queued-a-77'), true);
+  assert.equal(inputHolds(rows, 'queued-b-77'), false);
+  assert.equal(inputHolds(['❯ Press up to edit queued messages'], 'fix the footer'), false);
+  assert.equal(inputHolds(['❯ '], ''), false);
+});
+
+test('timelineItems: a queued step stands after a closed fold like a reply', () => {
+  const queuedStep: Step = { kind: 'queued', text: 'also this', at: null };
+  const steps = [tool('Bash', res({ exitCode: 0 })), queuedStep, tool('Bash', res({ exitCode: 0 })), reply('done')];
+  assert.deepEqual(
+    timelineItems(steps, 'normal', false).map((i) => (i.kind === 'step' ? i.step.kind : i.kind)),
+    ['fold', 'queued', 'text'],
+  );
+});
+
+// M9 fix 743: the mode chip's menu and the stepping behind a pick.
+test('MODE_CHOICES: the four modes in order, each with Claude Code 2.1.301 line', () => {
+  assert.deepEqual(MODE_CHOICES.map((c) => c.word), ['Manual', 'Accept edits', 'Plan', 'Auto']);
+  assert.deepEqual(MODE_CHOICES.map((c) => c.line), [
+    'ask each time',
+    'auto-approve file edits and common file commands',
+    'research and propose changes without making them',
+    'no routine prompts; a reviewer model screens actions',
+  ]);
+});
+
+test('stepModeTo: presses until the footer reads the target, five at most, and stops when cancelled', async () => {
+  const manual = ['  ⏸ manual mode on · ← 1 agent'];
+  const accept = ['  ⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent'];
+  const plan = ['  ⏸ plan mode on (shift+tab to cycle) · ← 1 agent'];
+  const wait = () => Promise.resolve();
+  let pressed = 0;
+  const cycle = [manual, accept, plan];
+  const got = await stepModeTo('Plan', { press: () => (pressed += 1), read: () => Promise.resolve(cycle[pressed]!), wait, cancelled: () => false });
+  assert.deepEqual(got, { reached: true, presses: 2, cancelled: false });
+  assert.equal(pressed, 2);
+  const never = await stepModeTo('Auto', { press: () => {}, read: () => Promise.resolve(plan), wait, cancelled: () => false });
+  assert.deepEqual(never, { reached: false, presses: 5, cancelled: false });
+  const broken = await stepModeTo('Plan', { press: () => {}, read: () => Promise.reject(new Error('no pane')), wait, cancelled: () => false });
+  assert.deepEqual(broken, { reached: false, presses: 5, cancelled: false });
+  let n = 0;
+  const gone = await stepModeTo('Plan', { press: () => (n += 1), read: () => Promise.resolve(manual), wait, cancelled: () => n >= 1 });
+  assert.deepEqual(gone, { reached: false, presses: 1, cancelled: true });
+});
+
+// M9 fix 744: the model chip's menu and the effort it shows after a pick.
+test('MODEL_CHOICES: the aliases in order, each one /model takes on Claude Code 2.1.301', () => {
+  assert.deepEqual(MODEL_CHOICES.map((c) => c.alias), ['default', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'fable', 'fable[1m]', 'opusplan']);
+  // The bundle's own list beside `/model`'s usage line, at 2.1.301.
+  const t4 = ['sonnet', 'opus', 'haiku', 'fable', 'best', 'sonnet[1m]', 'opus[1m]', 'fable[1m]', 'opusplan'];
+  for (const c of MODEL_CHOICES) if (c.alias !== 'default') assert.ok(t4.includes(c.alias), c.alias);
+  assert.deepEqual([...EFFORT_LEVELS], ['low', 'medium', 'high', 'xhigh', 'max']);
+});
+
+test('effortShown: the transcript effort, or a pick until a later assistant line says one', () => {
+  const asst = (extra: Record<string, unknown>) => JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [] }, ...extra });
+  const before = `${asst({ effort: 'high' })}\n`;
+  const pick = { level: 'low', length: before.length };
+  assert.equal(effortShown(before, 'high', null), 'high');
+  assert.equal(effortShown(before, 'high', pick), 'low');
+  assert.equal(effortShown(`${before}${asst({ effort: 'medium' })}\n`, 'medium', pick), 'medium');
+  assert.equal(effortShown(`${before}${asst({})}\n`, 'high', pick), 'low');
+});
+
+test('promptRowImages: the markers on the prompt row alone (M9 fix 748)', () => {
+  // The rows of chat-claims-713.raw.json's `around` reads, the folder row
+  // renamed.
+  const head = [' ▐▛███▛█   Claude Code v2.1.300', '▝▜██████▀  Opus 5.5 · Claude Max', ' ▝▝   ▝▝   ~\\code\\project'];
+  const rule = '─'.repeat(82);
+  const bare = [...head, rule, '❯ [Image #2]', rule, '  ⏸ manual mode on'];
+  const cleared = [...head, rule, '❯ Try "how do I log an error?"', rule, '  ⏸ manual mode on · ← 1 agent'];
+  assert.deepEqual(promptRowImages(bare), [2]);
+  assert.equal(promptRow(bare), '❯ [Image #2]');
+  assert.deepEqual(promptRowImages(cleared), []);
+  // A sent prompt's marker in the scrollback is not the prompt's.
+  const sentAbove = [...head, '❯ [Image #4] describe this image in one word', '⏺ Red', rule, '❯ Try "how do I log an error?"', rule, '  ⏸ manual mode on'];
+  assert.deepEqual(promptRowImages(sentAbove), []);
+  assert.deepEqual(imageMarkers(sentAbove), [4]);
+  const freshBelow = [...head, '❯ [Image #4] describe this image in one word', '⏺ Red', rule, '❯ [Image #5]', rule, '  ⏸ manual mode on'];
+  assert.deepEqual(promptRowImages(freshBelow), [5]);
+  assert.deepEqual(promptRowImages(['', 'no prompt']), []);
+  assert.equal(promptRow(['', 'no prompt']), null);
 });

@@ -131,6 +131,9 @@ test('a daemon that dies at start is started again on a backoff, each try logged
     assert.ok(t3 - t1 >= 7800 && t3 - t1 < 13_000, `the third try 8 s after the first, got ${t3 - t1} ms: ${JSON.stringify(log)}`);
     assert.equal(at.has(4), false, `no fourth try before 38 s: ${JSON.stringify(log)}`);
     await until('three fake daemons ran', () => starts() >= 3, 10_000);
+    // M9 fix 762: each child's end is logged with its exit code.
+    const exits = () => log.filter((m) => /^emmerd pid \d+ exited: code 1 \(0x00000001\), signal null$/.test(m)).length;
+    await until('three exit lines', () => exits() >= 3, 10_000);
   } finally {
     c.stop();
     fs.rmSync(dir, { recursive: true, force: true });

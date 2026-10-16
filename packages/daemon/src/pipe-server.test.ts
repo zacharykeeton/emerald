@@ -12,7 +12,7 @@ import { currentTab, replaceTab, splitPane } from '@emerald/shared';
 import { PipeClient } from '@emerald/shared/pipe-client';
 import { LayoutStore } from './layout-store.ts';
 import { silentLogger } from './log.ts';
-import { FILE_OPEN_ANSWER_LEVEL, LOAD_PUSH_LEVEL, PipeServer, claimPipe } from './pipe-server.ts';
+import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer, claimPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
 import type { LoadTick } from './session-manager.ts';
 
@@ -345,6 +345,44 @@ test('browser.run relays a command to a window at level 63 and holds the reply (
     cli.close();
   } finally {
     await own.close();
+  }
+});
+
+test('mod.channel takes a session\'s prompts and session.submit routes through it while it is open (M9 fix 741)', async () => {
+  const cli = await PipeClient.connect(PIPE);
+  const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  try {
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'typed' }, 'no channel: the caller types');
+    await assert.rejects(cli.request('mod.channel', { sessionId: 'nope' }), { code: 'not-found' });
+    await assert.rejects(cli.request('session.submit', { sessionId: session.id } as never), { code: 'bad-request', message: 'text must be a string' });
+
+    const first = await PipeClient.connect(PIPE);
+    await first.request('mod.channel', { sessionId: session.id });
+    const pushed = waitFor(first, (m) => m.type === 'mod.submit');
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'mod' });
+    assert.deepEqual(await pushed, { type: 'mod.submit', sessionId: session.id, text: 'hi' });
+
+    // A second registration takes the pushes from the first.
+    const second = await PipeClient.connect(PIPE);
+    await second.request('mod.channel', { sessionId: session.id });
+    const firstHeard: ServerMessage[] = [];
+    first.on('message', (m: ServerMessage) => firstHeard.push(m));
+    const toSecond = waitFor(second, (m) => m.type === 'mod.submit');
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'again' }), { via: 'mod' });
+    assert.equal((await toSecond as { text: string }).text, 'again');
+    assert.deepEqual(firstHeard.filter((m) => m.type === 'mod.submit'), []);
+
+    // The first closing leaves the second's channel; the second closing ends it.
+    first.close();
+    await once(first, 'close');
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'x' }), { via: 'mod' });
+    second.close();
+    await once(second, 'close');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'y' }), { via: 'typed' });
+  } finally {
+    await cli.request('session.kill', { sessionId: session.id });
+    cli.close();
   }
 });
 
@@ -785,6 +823,36 @@ test('a load tick goes to a level 64 window as one sessions.load, to an older wi
       ['load-a', 'load-b'],
     );
     assert.deepEqual(ours(cli.heard), []);
+  } finally {
+    for (const c of clients) c.close();
+    await own.close();
+  }
+});
+
+test('a mod measure\'s rate limits go to a level 65 window subscribed to app, and not to one at 64 (M9 fix 739)', async () => {
+  const pipe = `${PIPE}-limits`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  const clients: PipeClient[] = [];
+  try {
+    const join = async (hello: Record<string, unknown>) => {
+      const c = await PipeClient.connect(pipe);
+      clients.push(c);
+      await c.request('hello', { protocolVersion: PROTOCOL_VERSION, ...hello } as never);
+      await c.request('subscribe', { topics: ['app'] });
+      const heard: ServerMessage[] = [];
+      c.on('message', (m: ServerMessage) => heard.push(m));
+      return { c, heard };
+    };
+    const fresh = await join({ client: 'app', featureLevel: LIMITS_PUSH_LEVEL });
+    const older = await join({ client: 'app', featureLevel: 64 });
+    const limits = [{ kind: 'five_hour', percentUsed: 37, resetsAt: '2026-10-15T23:20:00.000Z' }];
+    const freshHeard = waitFor(fresh.c, (m) => m.type === 'usage.limits');
+    manager.emit('limits', { at: 7001, limits });
+    await freshHeard;
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(fresh.heard.filter((m) => m.type === 'usage.limits'), [{ type: 'usage.limits', at: 7001, limits }]);
+    assert.deepEqual(older.heard.filter((m) => m.type === 'usage.limits'), []);
   } finally {
     for (const c of clients) c.close();
     await own.close();

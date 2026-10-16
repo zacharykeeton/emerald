@@ -189,6 +189,34 @@ try {
   expect(secondEvents.includes('SessionStart:applied') && secondEvents.includes('Stop:applied'), `second hook events: ${secondEvents.join(' ')}`);
   // M9 fix 726: the -p session loads --plugin-dir fresh.
   expect(hookLines(second.id).some((e) => e.event === 'Stop' && e.mod === true), "the -p session's Stop came from the mod");
+  // M9 fix 741: first's mod opened its prompt channel at its start, so a
+  // send --enter goes in through the mod with no Enter pause and lands as
+  // one prompt; a --safe-mode session, whose mod never loads, is typed.
+  expect(fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8').includes(`mod channel up for ${first.id.slice(0, 8)}`), "first's mod opened its prompt channel");
+  const text741 = 'Reply with the single word mod-741 and nothing else.';
+  let sentAt = Date.now();
+  r = emerald('send', 'first', text741, '--enter');
+  const elapsed741 = Date.now() - sentAt;
+  expect(r.code === 0 && /through the emerald mod$/m.test(r.out) && elapsed741 < 1500, `send --enter went in through the mod with no Enter pause (${elapsed741} ms: ${r.out.trim()})`);
+  r = emerald('wait', 'first', '--for', 'done', '--timeout', '90000');
+  expect(r.code === 0, `first answered the submitted prompt (${r.out.trim()})`);
+  j = emeraldJson('ls', '--json');
+  const answered = j.json?.sessions.find((s) => s.id === first.id);
+  expect(answered?.lastPrompt === text741 && (answered.lastReply ?? '').includes('mod-741'), `the submitted prompt landed as one line and was answered (${JSON.stringify({ lastPrompt: answered?.lastPrompt, lastReply: answered?.lastReply })})`);
+  expect(hookLines(first.id).filter((e) => e.event === 'UserPromptSubmit').length === 1, 'one UserPromptSubmit for the submitted prompt');
+  j = emeraldJson('new', repoRoot, '--name', 'safe', '--json', '--', '--safe-mode');
+  const safe = j.json?.session;
+  expect(j.code === 0 && safe?.kind === 'claude', 'new: a --safe-mode Claude session');
+  r = emerald('wait', 'safe', '--for', 'tui-idle', '--quiet-ms', '3000', '--timeout', '30000');
+  expect(r.code === 0, `safe drew its prompt (${r.out.trim()})`);
+  sentAt = Date.now();
+  r = emerald('send', 'safe', 'Reply with the single word safe.', '--enter');
+  expect(r.code === 0 && /^sent "Reply with the single word safe\." \+ Enter to [0-9a-f]{8} safe$/m.test(r.out) && Date.now() - sentAt >= 1500, `a --safe-mode session, whose mod never loads, takes the typed path with its pause (${r.out.trim()})`);
+  expect(!fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8').includes(`mod channel up for ${safe.id.slice(0, 8)}`), 'and opened no channel');
+  r = emerald('kill', 'safe');
+  r = emerald('wait', 'safe', '--for', 'exited', '--timeout', '10000');
+  expect(r.code === 0, 'safe exited');
+  log('M9 fix 741: a send --enter to a hosted Claude goes in through its mod; one under --safe-mode is typed');
 
   // M9 fix 233: a Claude emerald did not start. This checkout's hook
   // wrapper is rendered for this Node, as an install does; a settings

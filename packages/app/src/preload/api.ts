@@ -103,7 +103,8 @@ export interface FileEntry {
 export interface SkillEntry {
   name: string;
   description: string;
-  scope: 'project' | 'user';
+  // Where the skill was found (M9 fix 755): a `.claude/skills` from the session's folder up to its repository root or the main checkout's, the user's Claude home, or an enabled plugin, named `<plugin>:<skill>`.
+  scope: 'project' | 'user' | 'plugin';
 }
 
 // A folder read for the files rail: folders first, then names in case
@@ -214,6 +215,9 @@ export interface FilesApi {
   // and preload-only: the sandboxed renderer sees a File with no path on it.
   pathFor(file: File): string;
   stat(path: string): Promise<FileStat>;
+  // The long spelling of an absolute path, the path back as given when
+  // neither it nor its folder exists (M9 fix 751).
+  real(path: string): Promise<string>;
   // A URL in the browser: a link from a rendered markdown file, or one
   // Ctrl+clicked in a terminal (M9 fix 204). http and https only; anything
   // else rejects. Held to the main log under a private EMERALD_HOME.
@@ -732,7 +736,7 @@ export interface EmeraldApi {
   pickFolder(defaultPath: string | null): Promise<string | null>;
   // Native file chooser (M9 fix 341), the same way; EMERALD_PICK_FILE
   // answers it for a harness.
-  pickFile(defaultPath: string | null, images?: boolean): Promise<string | null>;
+  pickFile(defaultPath: string | null): Promise<string | null>;
   // The skills Claude Code would take in a session started in `folder`
   // (M9 fix 719): the folder's own first, then the user's.
   skills(folder: string | null): Promise<SkillEntry[]>;

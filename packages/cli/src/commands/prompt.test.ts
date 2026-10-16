@@ -17,6 +17,8 @@ type Push = (session: SessionInfo) => void;
 let onEnter: (push: Push) => void = () => {};
 let sessions: SessionInfo[] = [];
 const inputs: string[] = [];
+const submits: { sessionId: string; text: string }[] = [];
+let modVia: 'mod' | 'typed' = 'mod';
 const sockets = new Set<net.Socket>();
 let server: net.Server;
 
@@ -78,6 +80,11 @@ before(async () => {
         else if (msg.type === 'pty.input') {
           inputs.push(msg.data ?? '');
           if (msg.data === '\r') onEnter(push);
+        } else if (msg.type === 'session.submit') {
+          // M9 fix 741: the mod's channel up ('mod') or not ('typed').
+          submits.push(raw as { sessionId: string; text: string });
+          reply({ via: modVia });
+          if (modVia === 'mod') onEnter(push);
         } else sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: false, error: { code: 'bad-request', message: `fake daemon does not do ${msg.type}` } }));
       }
     });
@@ -95,6 +102,8 @@ after(() => {
 function scenario(state: SessionInfo['state'], script: (push: Push) => void, over: Partial<SessionInfo> = {}): void {
   sessions = [session({ state, ...over })];
   inputs.length = 0;
+  submits.length = 0;
+  modVia = 'mod';
   onEnter = script;
 }
 
@@ -203,4 +212,51 @@ test('an errored turn is exit 1 with the error', async () => {
   const err = await failure(runPrompt({ ref: 'fix-login', text: 'go', force: false, timeoutMs: 5000 }));
   assert.equal(err.exitCode, EXIT.failure);
   assert.match(err.message, /errored: rate_limit after \d+ ms/);
+});
+
+function turns(push: Push): void {
+  push(session({ kind: 'claude', state: 'working' }));
+  setTimeout(() => push(session({ kind: 'claude', state: 'done', lastReply: 'Done.' })), 30);
+}
+
+test("a Claude session whose channel is up: one session.submit with the text, no pty.input and no 1.5 s pause (M9 fix 741)", async () => {
+  scenario('idle', turns, { kind: 'claude' });
+  const t0 = Date.now();
+  const out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.deepEqual(submits.map((s) => s.text), ['fix it']);
+  assert.deepEqual(inputs, []);
+  assert.equal(out.via, 'mod');
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+});
+
+test('a channel that is not up types as before (M9 fix 741)', async () => {
+  scenario('idle', turns, { kind: 'claude' });
+  modVia = 'typed';
+  const out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.deepEqual(inputs, ['fix it', '\r']);
+  assert.equal(out.via, 'typed');
+});
+
+test('--force to a session that needs input is typed, never submitted (M9 fix 741)', async () => {
+  scenario('needs-input', turns, { kind: 'claude', needsInputReason: 'permission' });
+  const out = await runPrompt({ ref: 'fix-login', text: 'y', force: true, timeoutMs: 5000 });
+  assert.deepEqual(submits, []);
+  assert.deepEqual(inputs, ['y', '\r']);
+  assert.equal(out.via, 'typed');
+});
+
+test('a slash command is typed (M9 fix 741)', async () => {
+  scenario('idle', turns, { kind: 'claude' });
+  await runPrompt({ ref: 'fix-login', text: '/compact', force: false, timeoutMs: 5000 });
+  assert.deepEqual(submits, []);
+  assert.deepEqual(inputs, ['/compact', '\r']);
+});
+
+test('--if-idle refuses a working session, exit 1, and sends nothing (M9 fix 741)', async () => {
+  scenario('working', () => assert.fail('nothing should be sent'), { kind: 'claude' });
+  const err = await failure(runPrompt({ ref: 'fix-login', text: 'more', force: false, timeoutMs: 1000, ifIdle: true }));
+  assert.equal(err.exitCode, EXIT.failure);
+  assert.match(err.message, /fix-login is working; --if-idle sends only to a session that is not working/);
+  assert.deepEqual(submits, []);
+  assert.deepEqual(inputs, []);
 });

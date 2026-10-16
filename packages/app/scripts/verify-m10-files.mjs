@@ -422,6 +422,70 @@ try {
   expect((await s.evalJs(`document.querySelectorAll('.files-hit').length`)) === 2, 'the hits are still listed');
   step('M9 fix 437: a contents hit dropped on a pane opens the file pane at its line, lit, and no tab');
 
+  // M9 fix 765: the same hit dropped on another layout tab, then on the +.
+  // The file opens on a tab not on show and its view holds the reveal
+  // while hidden (line 1, no flash); shown, the pane takes it: the cursor
+  // on the hit's line, in view and lit. Each tab is closed after, so the
+  // window is as fix 437's step left it.
+  const tabPanes765 = (id) => `.tab-panes[data-tab-id=${JSON.stringify(id)}]`;
+  const layoutTab765 = (id) => `.layout-tab[data-tab-id=${JSON.stringify(id)}]`;
+  const currentIs765 = (id) => `(async () => (await window.emerald.request('layout.get', {})).layout.currentTabId === ${JSON.stringify(id)})()`;
+  const centre765 = (sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  const dragHitTo765 = async (targetSel) => {
+    await s.waitFor(`!!document.querySelector('.files-hit[data-line="${HIT_LINE}"]')`, `fix 765: the hit still listed before the drag (${await s.evalJs(`JSON.stringify({ hits: document.querySelectorAll('.files-hit').length, root: document.querySelector('.files-rail')?.dataset.root ?? null, rail: document.querySelector('.rail-tab[data-active]')?.dataset.tab ?? null })`)})`, 5000);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(targetSel)})`, `fix 765: ${targetSel} drawn before the drag`, 5000);
+    const from = await centre765(`.files-hit[data-line="${HIT_LINE}"]`);
+    const to = await centre765(targetSel);
+    await s.mouse('mousePressed', from.x, from.y);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + 10, y: from.y, button: 'left', buttons: 1 });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: to.x, y: to.y, button: 'left', buttons: 1 });
+    expect(await s.evalJs(`!!document.querySelector(${JSON.stringify(targetSel + '[data-pane-drop]')})`), `fix 765: ${targetSel} is lit under the drag`);
+    await s.mouse('mouseReleased', to.x, to.y);
+  };
+  const paneEd765 = (tabId) => `document.querySelector(${JSON.stringify(layoutTab765(tabId) + ' .pane[data-view="file"] .file-editor')})?.emeraldEditor`;
+  const shownReveal765 = async (tabId, what) => {
+    await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes765(tabId))}).click()`);
+    await s.waitFor(currentIs765(tabId), `${what}: the tab shown`);
+    await s.waitFor(`${paneEd765(tabId)}?.getPosition()?.lineNumber === ${HIT_LINE}`, `${what}: the pane's cursor on the hit's line once shown`, 5000);
+    const landed = await s.evalJs(
+      `(() => { const e = ${paneEd765(tabId)}; return { visible: e.getVisibleRanges().some((r) => r.startLineNumber <= ${HIT_LINE} && r.endLineNumber >= ${HIT_LINE}), flashed: e.getModel().getAllDecorations().some((d) => d.options.className === 'file-line-flash' && d.range.startLineNumber === ${HIT_LINE}) }; })()`,
+    );
+    expect(landed.visible, `${what}: the hit's line is in the pane's visible range once shown (${JSON.stringify(landed)})`);
+    expect(landed.flashed, `${what}: the hit's line is lit once shown (${JSON.stringify(landed)})`);
+  };
+  const closeTab765 = async (tabId, firstId, what) => {
+    await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes765(tabId) + ' .tab-close')}).click()`);
+    await s.waitFor(`document.querySelectorAll('.tab-panes').length === 1`, `${what}: the tab closed`);
+    await s.waitFor(currentIs765(firstId), `${what}: the first tab on show again`);
+  };
+  // (a) Another layout tab.
+  await s.evalJs(`document.querySelector('.tab-add').click()`);
+  await s.waitFor(`document.querySelectorAll('.tab-panes').length === 2`, 'fix 765: a second layout tab');
+  const tabs765 = await getTabs(s);
+  const first765 = tabs765.tabs[0].id;
+  const second765 = tabs765.tabs[1].id;
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes765(first765))}).click()`);
+  await s.waitFor(currentIs765(first765), 'fix 765: the first tab shown again');
+  await dragHitTo765(tabPanes765(second765));
+  await s.waitFor(`document.querySelector(${JSON.stringify(layoutTab765(second765) + ' .pane[data-view="file"] .file-view')})?.dataset.state === 'text'`, 'fix 765: the file read into a pane of the second tab', 10000);
+  expect((await getTabs(s)).currentTabId === first765, 'fix 765: the window stays on the first tab after the drop');
+  await sleep(300);
+  const hidden765 = await s.evalJs(`(() => { const e = ${paneEd765(second765)}; return { line: e.getPosition()?.lineNumber ?? null, flashed: e.getModel().getAllDecorations().some((d) => d.options.className === 'file-line-flash') }; })()`);
+  expect(hidden765.line === 1 && !hidden765.flashed, `the reveal waits while the tab is hidden (${JSON.stringify(hidden765)})`);
+  await shownReveal765(second765, 'fix 765 on a tab');
+  await closeTab765(second765, first765, 'fix 765 on a tab');
+  step('M9 fix 765: a contents hit dropped on another layout tab waits hidden at line 1 and reveals its line, lit, when the tab is shown');
+
+  // (b) The +.
+  await dragHitTo765('.tab-add');
+  await s.waitFor(`document.querySelectorAll('.tab-panes').length === 2`, 'fix 765: the + made a tab');
+  const made765 = (await getTabs(s)).tabs.at(-1).id;
+  expect((await getTabs(s)).currentTabId === first765, 'fix 765: the window stays on the first tab after the drop on the +');
+  await s.waitFor(`document.querySelector(${JSON.stringify(layoutTab765(made765) + ' .pane[data-view="file"] .file-view')})?.dataset.state === 'text'`, 'fix 765: the file read into the new tab', 10000);
+  await shownReveal765(made765, 'fix 765 on the +');
+  await closeTab765(made765, first765, 'fix 765 on the +');
+  step('M9 fix 765: a contents hit dropped on the + reveals its line when the new tab is shown');
+
   // A markdown hit: the tab opens in Raw for the jump, since the rendered
   // view has no lines.
   await s.evalJs(`document.querySelector('.files-hit[data-line="1"]').click()`);

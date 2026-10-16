@@ -2,9 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Swatches } from './Swatches.tsx';
 import type { MenuSwatches } from './Swatches.tsx';
+import { Segments } from './Segments.tsx';
+import type { MenuSegments } from './Segments.tsx';
 import { asMenu } from './use-record.ts';
 
 export type { MenuSwatches } from './Swatches.tsx';
+export type { MenuSegments } from './Segments.tsx';
 
 export interface MenuItem {
   label: string;
@@ -22,6 +25,9 @@ export interface MenuItem {
   // A row that opens a list of its own at its right edge (M9 fix 624);
   // its onClick is not called.
   submenu?: MenuItem[] | undefined;
+  // A second line under the label, in the hint's colour (M9 fix 743, the
+  // chat footer's mode and model menus).
+  line?: string | undefined;
 }
 
 // How long the pointer rests on a row before its list opens, or before
@@ -32,8 +38,14 @@ const SUBMENU_HOVER_MS = 300;
 // MenuSwatches, drawn by Swatches.tsx (M9 fix 134, which put the same
 // row on the lane card); a pick closes the menu through its own handler
 // like an item does.
-export function isSwatches(item: MenuItem | MenuSwatches | MenuHeading): item is MenuSwatches {
+export function isSwatches(item: MenuItem | MenuSwatches | MenuHeading | MenuSegments): item is MenuSwatches {
   return 'swatches' in item;
+}
+
+// A labelled row of segment buttons (M9 fix 744, the chat footer's effort
+// row), drawn by Segments.tsx.
+export function isSegments(item: MenuItem | MenuSwatches | MenuHeading | MenuSegments): item is MenuSegments {
+  return 'segments' in item;
 }
 
 // A section's heading (M9 fix 567): not clickable and not a disabled
@@ -43,7 +55,7 @@ export interface MenuHeading {
   title?: string | undefined;
 }
 
-export function isHeading(item: MenuItem | MenuSwatches | MenuHeading): item is MenuHeading {
+export function isHeading(item: MenuItem | MenuSwatches | MenuHeading | MenuSegments): item is MenuHeading {
   return 'heading' in item;
 }
 
@@ -62,7 +74,7 @@ export function menuOpen(): boolean {
 interface Props {
   x: number;
   y: number;
-  items: Array<MenuItem | MenuSwatches | MenuHeading>;
+  items: Array<MenuItem | MenuSwatches | MenuHeading | MenuSegments>;
   onClose: () => void;
   className?: string;
   // Extra data-* attributes for the verify scripts.
@@ -165,7 +177,7 @@ export function Menu({ x, y, items, onClose, className, data, anchor, above }: P
 
   const attrs: Record<string, string> = {};
   for (const [k, v] of Object.entries(data ?? {})) attrs[`data-${k}`] = v;
-  const subItems = sub === null ? undefined : items.find((i): i is MenuItem => !isHeading(i) && !isSwatches(i) && i.label === sub.label)?.submenu;
+  const subItems = sub === null ? undefined : items.find((i): i is MenuItem => !isHeading(i) && !isSwatches(i) && !isSegments(i) && i.label === sub.label)?.submenu;
   return (
     <>
       {createPortal(
@@ -175,12 +187,14 @@ export function Menu({ x, y, items, onClose, className, data, anchor, above }: P
           <div key={`heading:${item.heading}`} className="menu-item menu-sep menu-heading" role="presentation" title={item.title}>
             <span className="menu-label">{item.heading}</span>
           </div>
+        ) : isSegments(item) ? (
+          <Segments key={`segments:${item.segments}`} item={item} />
         ) : isSwatches(item) ? (
           <Swatches key={item.label} item={item} />
         ) : (
           <button
             key={item.label}
-            className={item.separator ? 'menu-item menu-sep' : 'menu-item'}
+            className={`menu-item${item.separator ? ' menu-sep' : ''}${item.line !== undefined ? ' menu-item-lined' : ''}`}
             onClick={
               item.submenu === undefined
                 ? () => asMenu(item.onClick)
@@ -206,6 +220,7 @@ export function Menu({ x, y, items, onClose, className, data, anchor, above }: P
               {item.label}
             </span>
             {item.submenu !== undefined ? <span className="menu-hint">{item.hint === undefined ? '›' : `${item.hint} ›`}</span> : item.hint !== undefined && <span className="menu-hint">{item.hint}</span>}
+            {item.line !== undefined && <span className="menu-line">{item.line}</span>}
           </button>
         ),
       )}

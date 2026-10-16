@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NO_SCHEDULE, STRIP_BAR_PX, USAGE_FLOOR_MS, breakFor, breakText, dialPercent, dialStyle, errorText, fitForm, holdText, labelFor, nextSchedule, paceBar, parseRetryAfter, parseUsageReply, refreshTitle, resetText, resetWhen, runway, runwayText, segmentLabel, segmentRest, segmentText, shortLabelFor, shouldPoll, staleText, stripNeeds, stripRunway, stripText, windowElapsed, windowLengthMs, windowName } from './usage-model.ts';
+import { NO_SCHEDULE, STRIP_BAR_PX, USAGE_FLOOR_MS, breakFor, breakText, dialPercent, dialStyle, errorText, fitForm, holdText, labelFor, nextSchedule, overlayLimits, paceBar, parseRetryAfter, parseUsageReply, refreshTitle, resetText, resetWhen, runway, runwayText, segmentLabel, segmentRest, segmentText, shortLabelFor, shouldPoll, staleText, stripNeeds, stripRunway, stripText, windowElapsed, windowLengthMs, windowName } from './usage-model.ts';
 import type { StripWindowNeed } from './usage-model.ts';
 
 const NOW = Date.parse('2026-09-11T12:00:00Z');
@@ -483,4 +483,21 @@ test('stripNeeds and fitForm: the row, the row with runways under, the column, a
   // No windows: nothing needed, the row.
   assert.deepEqual(stripNeeds({ windows: [], dot: 3 }), { '': 0, runway: 0, column: 0, 'column-runway': 0 });
   assert.equal(fitForm({ windows: [], dot: 3 }, 0), '');
+});
+
+test('overlayLimits lays a newer mod reading over the matching windows only (M9 fix 739)', () => {
+  const windows = [
+    { key: 'five_hour', label: '5 hour', kind: 'time' as const, percent: 20, resetsAt: NOW + HOUR },
+    { key: 'seven_day', label: '7 day', kind: 'time' as const, percent: 60, resetsAt: NOW + DAY },
+  ];
+  const later = { at: NOW + 1000, limits: [{ kind: 'five_hour', percentUsed: 37.5, resetsAt: at(2 * HOUR) }, { kind: 'spend_limit', percentUsed: 90, resetsAt: null }] };
+  const laid = overlayLimits(windows, later, NOW)!;
+  assert.equal(laid.length, 2, 'no window added for an unknown kind');
+  assert.equal(laid[0]!.percent, 38, '37.5 rounds to 38');
+  assert.equal(laid[0]!.resetsAt, NOW + 2 * HOUR);
+  assert.equal(laid[1], windows[1], 'the other window is the same object');
+  assert.equal(overlayLimits(windows, { ...later, at: NOW - 1 }, NOW), windows, 'an older reading is ignored');
+  assert.equal(overlayLimits(windows, { at: NOW + 1, limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: null }] }, NOW), windows, 'nothing moved: the same array');
+  assert.equal(overlayLimits(windows, null, NOW), windows);
+  assert.equal(overlayLimits(null, later, NOW), null);
 });

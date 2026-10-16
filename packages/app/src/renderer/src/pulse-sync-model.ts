@@ -8,11 +8,11 @@
 // pulse-sync-model.test.ts reads style.css and fails when a keyframe is in
 // none of the three sets, so a new one is filed here by someone.
 
-// The endless pulses: the working marks' frames, the shell caret, the
-// needs-input breathing, the turn band, the live dot and the attention
-// row, ring and wash.
+// The endless pulses: the shell caret, the needs-input breathing, the
+// turn band, the live dot and the attention row, ring and wash. The
+// working marks' frames step on their own clock since M9 fix 767
+// (mark-clock.ts) and run no animation.
 export const PULSE_ANIMATIONS: ReadonlySet<string> = new Set([
-  'session-mark-frame',
   'shell-caret',
   'needs-pulse',
   'turn-band',
@@ -35,6 +35,8 @@ export const ONE_OFF_ANIMATIONS: ReadonlySet<string> = new Set([
   'figure-roll-in',
   'figure-fade-out',
   'figure-fade-in',
+  // M9 fix 752: the tint behind a reply a fold toggle kept in place.
+  'chat-fold-flash',
 ]);
 
 // Endless, but never under a pulsing element: the usage refresh spinner and

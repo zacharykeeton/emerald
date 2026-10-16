@@ -275,3 +275,10 @@ test('a plain shell\'s command words (M9 fix 196): the badge at done and errored
   assert.equal(elapsedText(120_000), '2m');
   assert.equal(elapsedText(3_720_000), '1h 2m');
 });
+
+test("waitingOnText names the mod's ask ahead of the call's phrase, and an agent's ask when no member is found (M9 fix 742)", () => {
+  const askedFor = { words: 'Bash: npm publish', toolUseId: 'u1', agentId: null, at: 0 };
+  assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'permission', liveTool: 'Running npm', askedFor }), 'Allow? Bash: npm publish');
+  assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'agent-permission', liveTool: null, team: [], askedFor }), "Allow? an agent's Bash: npm publish");
+  assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'permission', liveTool: 'Running npm', askedFor: null }), 'Allow? Running npm');
+});

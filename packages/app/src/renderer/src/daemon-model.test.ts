@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, ShellOption } from '@emerald/shared';
-import { BROWSER_VIEW_LEVEL, LEGACY_TAB_ID, TABS_LEVEL, VIEWS_LEVEL, browserViewSupported, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, viewsSupported } from './daemon-model.ts';
+import { BROWSER_VIEW_LEVEL, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserViewSupported, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
 
 test('a daemon with no feature level is level 1 and counts as outdated against 2', () => {
   const old = { pid: 7, version: '0.1.0', featureLevel: null, otherHome: null };
@@ -119,6 +119,14 @@ test('a browser pane is offered from level 62 on (M9 fix 659)', () => {
   assert.equal(browserViewSupported(older), false);
   assert.equal(browserViewSupported({ ...older, featureLevel: BROWSER_VIEW_LEVEL }), true);
   assert.equal(browserViewSupported(null), false);
+});
+
+test('the usage flag is kept from level 65 on (M9 fix 766)', () => {
+  const older = { pid: 7, version: '0.1.0', featureLevel: USAGE_FLAG_LEVEL - 1, otherHome: null };
+  assert.equal(USAGE_FLAG_LEVEL, 65);
+  assert.equal(usageFlagSupported(older), false);
+  assert.equal(usageFlagSupported({ ...older, featureLevel: USAGE_FLAG_LEVEL }), true);
+  assert.equal(usageFlagSupported(null), false);
 });
 
 test('the installed shells are all the reported ones, on a daemon at level 61 alone (M9 fix 647)', () => {

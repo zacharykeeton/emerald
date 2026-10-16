@@ -15,6 +15,6 @@ test('every entry loads its module, and the name and summary match the copy (M9 
 test('the commands are listed in help order (M9 fix 736)', () => {
   assert.deepEqual(
     commands.map((c) => c.name),
-    ['ls', 'new', 'shell', 'send', 'read', 'wait', 'prompt', 'prompts', 'explain', 'activity', 'usage', 'conflicts', 'set', 'kill', 'resume', 'rm', 'focus', 'open', 'browser', 'hooks', 'skill', 'daemon', 'update', 'feed'],
+    ['ls', 'new', 'shell', 'send', 'read', 'wait', 'prompt', 'prompts', 'explain', 'activity', 'usage', 'conflicts', 'set', 'kill', 'resume', 'rm', 'focus', 'open', 'browser', 'hooks', 'mod-channel', 'skill', 'daemon', 'update', 'feed'],
   );
 });

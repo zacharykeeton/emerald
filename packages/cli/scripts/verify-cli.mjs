@@ -276,6 +276,11 @@ try {
   r = emerald('browser', 'snapshot', '--pane', 'nosuchpane');
   expect(r.code === 1 && r.err.trim() === 'emmer: no pane nosuchpane', `browser snapshot --pane nosuchpane: exit 1 and the line (${r.code}: ${JSON.stringify(r.err)})`);
   log("M9 fix 672: emmer browser's usage, an unknown verb, no browser pane and no such pane, and help's summary");
+  // M9 fix 741: the mod's channel command, which the mod starts itself.
+  r = emerald('help');
+  expect(/^  mod-channel +stream a session's queued prompts to the emerald mod, which starts this itself$/m.test(r.out), 'help lists mod-channel with its summary');
+  r = emerald('mod-channel');
+  expect(r.code === 64 && /missing session/.test(r.err) && /usage: emmer mod-channel <session>/.test(r.err), `mod-channel with no session: usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   // M9 fix 677: emmer usage report reads files only. This home has the
   // night's four applied hook lines ten days back and no usage.jsonl.
   r = emerald('usage');
@@ -652,10 +657,20 @@ try {
   expect(r.code === 0 && /claudish needs input: permission after \d+ ms$/.test(r.out.trim()), 'prompt that ends in a question says so, exit 0');
   j = emeraldJson('ls', '--json');
   expect((j.json?.sessions ?? []).find((s) => s.id === claudish.id)?.waitingOn?.length === 0, 'the next turn drops the tasks');
+  // M9 fix 742: the fake posts the mod's ToolAsk before its dialog, so the
+  // row names the tool and its command rather than a bare tool call.
+  expect((j.json?.sessions ?? []).find((s) => s.id === claudish.id)?.askedFor?.words === 'Bash: npm publish', 'ls --json carries the ask the mod posted');
+  r = emerald('ls');
+  expect(r.out.split(/\r?\n/).some((l) => l.includes('claudish') && l.endsWith('Allow? Bash: npm publish')), `ls ends claudish's row with the ask, got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.includes('claudish')))}`);
+  r = emerald('explain', 'claudish');
+  expect(r.out.split(/\r?\n/).includes('waiting on: Allow? Bash: npm publish'), `explain's waiting on line names the ask, got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.startsWith('waiting on:')))}`);
   r = emerald('prompt', 'claudish', 'yes');
   expect(r.code === 1 && /claudish needs input: permission; answer it first, or --force to send anyway/.test(r.err), 'gate one: prompt to a session that needs input is refused, exit 1');
   r = emerald('prompt', 'claudish', 'yes', '--force');
   expect(r.code === 0 && r.out.trim() === 'echo: yes', 'prompt --force sends anyway and waits');
+  j = emeraldJson('ls', '--json');
+  expect((j.json?.sessions ?? []).find((s) => s.id === claudish.id)?.askedFor === null, 'the next prompt cleared the ask');
+  log("M9 fix 742: the mod's ask names the tool on ls and explain, and the next prompt clears it");
   // M9 fix 153: a turn that builds a checklist (three TaskCreates, two
   // TaskUpdates) puts the count after the badge, ls --json carries the
   // list, explain lists it with the one in progress marked, and the next
@@ -696,6 +711,12 @@ try {
   expect(/^  \d\d:\d\d:\d\d  PreToolUse +applied/m.test(r.out), 'explain lists the PreToolUse the silence started after');
   r = emerald('wait', 'claudish', '--for', 'stale');
   expect(r.code === 0 && /claudish is quiet \d+s after \d+ ms$/.test(r.out.trim()), 'wait --for stale on a session already flagged returns at once');
+  // M9 fix 741: --if-idle refuses the working row and sends nothing.
+  r = emerald('prompt', 'claudish', 'more', '--if-idle');
+  expect(r.code === 1 && /claudish is .+; --if-idle sends only to a session that is not working/.test(r.err), `prompt --if-idle refuses a working session, exit 1 (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('send', 'claudish', 'more', '--enter', '--if-idle');
+  expect(r.code === 1 && /claudish is .+; --if-idle sends only to a session that is not working/.test(r.err), `send --if-idle refuses a working session, exit 1 (${r.code}: ${JSON.stringify(r.err)})`);
+  log('M9 fix 741: --if-idle refuses a working session on send and prompt');
   emerald('send', 'claudish', 'carry', 'on', '--enter');
   r = emerald('wait', 'claudish', '--for', 'done', '--timeout', '5000');
   expect(r.code === 0, 'the hung call ends and the turn with it');
@@ -915,7 +936,8 @@ try {
   r = emerald('explain', 'claudish');
   expect(r.code === 0 && /^[0-9a-f]{8} claudish  shell  killed for \d+[sm]/.test(r.out) && /^emmerd is not running; the session is as sessions.json last wrote it$/m.test(r.out), 'explain with emmerd down reads sessions.json');
   // 25 events since the plan turn (M9 fix 153) added its seven and the prompt after it two; explain shows its last 20 by default.
-  expect(/^last 20 of 29 hook events/m.test(r.out) && /working -> done$/m.test(r.out) && /working -> needs-input$/m.test(r.out), `explain with emmerd down still lists the events, got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.includes('hook events')))}`);
+  // M9 fix 742: the ask's ToolAsk is one more, 30.
+  expect(/^last 20 of 30 hook events/m.test(r.out) && /working -> done$/m.test(r.out) && /working -> needs-input$/m.test(r.out), `explain with emmerd down still lists the events, got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.includes('hook events')))}`);
   r = emerald('explain', 'nobody');
   expect(r.code === 1 && /no session matches "nobody"/.test(r.err), 'explain an unknown session with emmerd down: exit 1');
 

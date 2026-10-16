@@ -51,6 +51,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm14-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m14';
@@ -767,9 +768,10 @@ try {
 
   // M39: one heartbeat. With the other tab's session pulsing again and the
   // target working, every animation under the rows, the pane titles and
-  // the tabs, subtrees included (the mark's step on its frames (M46), the
-  // sheen on the line, the needs-pulse on a mark, the attention pulse on
-  // the surfaces), starts from the document's time zero.
+  // the tabs, subtrees included (the sheen on the line, the needs-pulse on
+  // a mark, the attention pulse on the surfaces), starts from the
+  // document's time zero; the mark's step runs no animation since fix 767
+  // and is read off the root's frame instead.
   await postOther({ hook_event_name: 'UserPromptSubmit', prompt: 'again' });
   await postOther({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
   await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(secondTabId)}]')?.dataset.attention === 'needs-input'`, 'the hidden tab pulses again', 5000);
@@ -784,8 +786,9 @@ try {
     return out;
   })()`);
   const names = new Set(beat.map((a) => a.name));
-  expect(['attention-pulse', 'session-mark-frame', 'turn-band', 'needs-pulse', 'live-dot'].every((n) => names.has(n)), `the pulse, the mark's step (M46), the sheen, the breathing and the marker's dot (M40) all run, got ${JSON.stringify([...names])}`);
-  expect(beat.length >= 8 && beat.every((a) => a.start === 0), `every one of the ${beat.length} animations starts from the document's time zero, got ${JSON.stringify(beat.filter((a) => a.start !== 0))}`);
+  expect(['attention-pulse', 'turn-band', 'needs-pulse', 'live-dot'].every((n) => names.has(n)), `the pulse, the sheen, the breathing and the marker's dot (M40) all run, got ${JSON.stringify([...names])}`);
+  expect(beat.length >= 4 && beat.every((a) => a.start === 0), `every one of the ${beat.length} animations starts from the document's time zero, got ${JSON.stringify(beat.filter((a) => a.start !== 0))}`);
+  expect((await s.evalJs(`(${MARK_STEPPING})(document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(target)}] .session-mark`)}))`)) === true, "the target's mark steps on the root's frame (fix 767)");
   await acknowledge();
   step(`M39: ${beat.length} animations under the rows, the titles and the tabs, subtrees included, all on one clock`);
 
@@ -802,7 +805,7 @@ try {
   // ForEach-Object adds its own time to each 20 ms sleep) the last push
   // is all zeros and the tooltip says 0 B/s within a couple of seconds.
   const markRate = (sel) =>
-    s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(sel)}); if (!m) return null; const f = m.querySelector('.session-mark-frames').children[0]; return { working: m.dataset.working ?? null, animation: getComputedStyle(f).animationName, transitions: m.getAnimations({ subtree: true }).filter((a) => a instanceof CSSTransition).length, title: m.title }; })()`);
+    s.evalJs(`(() => { const m = document.querySelector(${JSON.stringify(sel)}); if (!m) return null; return { working: m.dataset.working ?? null, stepping: (${MARK_STEPPING})(m), transitions: m.getAnimations({ subtree: true }).filter((a) => a instanceof CSSTransition).length, title: m.title }; })()`);
   const titleMarkSel = `[data-pane-id=${JSON.stringify(p2)}] .pane-mark`;
   await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(target)}, data: '1..150 | % { "line $_"; Start-Sleep -m 20 }' + String.fromCharCode(13) })`);
   await s.waitFor(`/output [1-9]/.test(document.querySelector(${JSON.stringify(targetRowSel + ' .session-mark')})?.title ?? '')`, "the row mark's tooltip gets a rate above zero", 10000);
@@ -814,7 +817,7 @@ try {
   }
   const liveTitle = await markRate(titleMarkSel);
   for (const [where, m] of [['row', first], ['row again', second], ['pane title', liveTitle]]) {
-    expect(m !== null && m.working === 'true' && m.animation === 'session-mark-frame' && m.transitions === 0 && /, output \d+(\.\d+)? [KB]B?\/s$/.test(m.title), `the ${where}'s mark steps with no transition and says the rate, got ${JSON.stringify(m)}`);
+    expect(m !== null && m.working === 'true' && m.stepping === true && m.transitions === 0 && /, output \d+(\.\d+)? [KB]B?\/s$/.test(m.title), `the ${where}'s mark steps with no transition and says the rate, got ${JSON.stringify(m)}`);
   }
   expect(first.title !== second.title, `the rate in the tooltip moved between two reads, got ${first.title} then ${second.title}`);
   await s.waitFor(`/output 0 B\\/s$/.test(document.querySelector(${JSON.stringify(targetRowSel + ' .session-mark')})?.title ?? '')`, 'the tooltip settles at 0 B/s once the stream ends', 30000);

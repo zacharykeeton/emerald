@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm63-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m63';
@@ -137,16 +138,19 @@ try {
   // under a file tab, its frame animation flipping visibility back on
   // and the shade's z-index climbing over the file view. Whether an
   // animation advances under the harness depends on where the window
-  // sits, so the steps read what is set, not what is painted: the frame
-  // spans' animations are there while the panes are on show, gone with
-  // every span hidden under the day opened as a tab, and back once the
-  // tab closes; and the file view is what a hit at the mark's centre
-  // finds.
+  // sits, so the steps read what is set, not what is painted: the mark
+  // steps on the root's frame while the panes are on show (fix 767: no
+  // animation of its own), every span is hidden under the day opened as
+  // a tab (the guard was written for an animation lifting a frame's
+  // visibility; nothing can now, and the read stays to say no rule
+  // does), and it steps again once the tab closes; and the file view is
+  // what a hit at the mark's centre finds.
   const frameSel = paneSel(p1) + ' .pane-shade .session-mark-frames > span';
   const frames = () =>
     s.evalJs(
-      `[...document.querySelectorAll(${JSON.stringify(frameSel)})].map((f) => ({ visibility: getComputedStyle(f).visibility, animations: f.getAnimations().filter((a) => a.animationName === 'session-mark-frame').length }))`,
+      `[...document.querySelectorAll(${JSON.stringify(frameSel)})].map((f) => ({ visibility: getComputedStyle(f).visibility }))`,
     );
+  const markSteps = () => s.evalJs(`(${MARK_STEPPING})(${q(paneSel(p1) + ' .pane-shade .session-mark')})`);
   const atMark = () =>
     s.evalJs(
       `(() => { const m = ${q(paneSel(p1) + ' .pane-shade .session-mark')}; const r = m.getBoundingClientRect(); const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); if (!el) return null; return el.closest('.file-view') ? 'file-view' : el.closest('.pane-shade') ? 'shade' : el.className; })()`,
@@ -156,7 +160,8 @@ try {
   expect(await click(paneSel(p1) + ' .pane-shade-toggle'), 'shade the working pane');
   await s.waitFor(`!!${q(paneSel(p1) + ' .pane-shade .session-mark[data-working]')}`, 'the shade shows the stepping mark');
   const onShow = await frames();
-  expect(onShow.length === 4 && onShow.every((f) => f.animations === 1), `four frames stepping on show, got ${JSON.stringify(onShow)}`);
+  const onShowSteps = await markSteps();
+  expect(onShow.length === 4 && onShowSteps === true, `four frames stepping on show, got ${JSON.stringify(onShow)} stepping ${onShowSteps}`);
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="timeline"]').click()`);
   await s.waitFor(`!!document.querySelector('.activity-card .activity-expand')`, "the rail's activity card");
   await s.evalJs(`document.querySelector('.activity-card .activity-expand').click()`);
@@ -165,17 +170,17 @@ try {
   // used to leak.
   const seen = new Set();
   for (let i = 0; i < 6; i++) {
-    for (const f of await frames()) seen.add(`${f.visibility}/${f.animations}`);
+    for (const f of await frames()) seen.add(f.visibility);
     await sleep(200);
   }
-  expect(seen.size === 1 && seen.has('hidden/0'), `under the tab every frame is hidden with no animation across a second, got ${[...seen].join(', ')}`);
+  expect(seen.size === 1 && seen.has('hidden'), `under the tab every frame is hidden across a second, got ${[...seen].join(', ')}`);
   const hit = await atMark();
   expect(hit === 'file-view', `the file view is what sits at the mark's centre, got ${hit}`);
   expect((await s.evalJs(`getComputedStyle(document.querySelector('.panes-view')).isolation`)) === 'isolate', 'the panes view is its own stacking context');
   await s.evalJs(`document.querySelector('.tab.tab-file[data-active] .tab-close').click()`);
   await s.waitFor(`!document.querySelector('.file-view') && document.querySelector('.panes-view').dataset.hidden === undefined`, 'the panes back on show');
-  const back = await frames();
-  expect(back.every((f) => f.animations === 1), `the frames step again once the tab is closed, got ${JSON.stringify(back)}`);
+  const back = await markSteps();
+  expect(back === true, `the frames step again once the tab is closed, got ${JSON.stringify(back)}`);
   const hitBack = await atMark();
   expect(hitBack === 'shade', `the shade is back under the pointer, got ${hitBack}`);
   step('fix 149: under a file tab the shade frames are hidden and still, the file view takes the hit; both back on close');
@@ -520,7 +525,7 @@ try {
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(paneSel(p1) + ' .pane-shade-member')}).length === 2`, 'the shade lists both members');
   const memberRead = () =>
     s.evalJs(
-      `[...document.querySelectorAll(${JSON.stringify(paneSel(p1) + ' .pane-shade-member')})].map((el) => ({ id: el.dataset.member, kind: el.dataset.kind, type: el.dataset.type ?? null, working: 'working' in el.dataset, name: el.querySelector('.pane-shade-member-name')?.textContent ?? null, state: el.querySelector('.pane-shade-member-state')?.textContent ?? null, model: el.querySelector('.pane-shade-member-model')?.textContent ?? null, kindWord: el.querySelector('.pane-shade-member-type')?.textContent ?? null, price: el.querySelector('.pane-shade-member-price')?.textContent ?? null, stepping: [...el.querySelectorAll('.session-mark-frames > span')].map((f) => getComputedStyle(f).animationName), box: (() => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })() }))`,
+      `[...document.querySelectorAll(${JSON.stringify(paneSel(p1) + ' .pane-shade-member')})].map((el) => ({ id: el.dataset.member, kind: el.dataset.kind, type: el.dataset.type ?? null, working: 'working' in el.dataset, name: el.querySelector('.pane-shade-member-name')?.textContent ?? null, state: el.querySelector('.pane-shade-member-state')?.textContent ?? null, model: el.querySelector('.pane-shade-member-model')?.textContent ?? null, kindWord: el.querySelector('.pane-shade-member-type')?.textContent ?? null, price: el.querySelector('.pane-shade-member-price')?.textContent ?? null, stepping: el.querySelector('.session-mark') ? (${MARK_STEPPING})(el.querySelector('.session-mark')) : null, box: (() => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })() }))`,
     );
   const teamMembers = await memberRead();
   expect(
@@ -531,7 +536,7 @@ try {
   // Fix 373: a member with no description is named by its type, and the
   // kind word is left off a box named by it already.
   expect(teamMembers[0].name === 'Explore' && teamMembers[0].type === 'Explore' && teamMembers[0].kindWord === null && teamMembers[1].name === 'fork' && teamMembers[1].type === 'fork' && teamMembers[1].kindWord === null, `each box named by its type with data-type and no second word, got ${JSON.stringify(teamMembers)}`);
-  expect(teamMembers[1].stepping.every((n) => n === 'session-mark-frame'), `the working member's mark steps, got ${JSON.stringify(teamMembers[1].stepping)}`);
+  expect(teamMembers[1].stepping === true, `the working member's mark steps, got ${JSON.stringify(teamMembers[1].stepping)}`);
   // The pane is a third of the row here (step 4's layout), under the
   // narrow break, so the grid is one column and both boxes show (two is
   // under the fold's four).
@@ -577,6 +582,74 @@ try {
   expect(await click(rowSel654 + ' .sidebar-row-team-fold'), "fold the row's team");
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 0`, 'the team folded away');
   step("M9 fix 654: the shade's face carries the row's activity line under the state word, and the fork's box and its team line carry its latest tool call");
+
+  // M9 fix 764: the team line's activity gives way before its task. A
+  // second running member with a long task and a long Bash phrase, the
+  // team unfolded, and its line read at three sidebar widths: at none may
+  // the task be clipped while the activity is still drawn. At 260 and 160
+  // the line is short enough that the old proportional shrink already took
+  // the activity to nothing; at 400 the old code left both clipped and both
+  // drawn. The harness has no Claude home, so no model word is drawn; the
+  // canvas reads what a real line's Sonnet word and six characters take.
+  await post(s1, { hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: 'Read the sidebar tree and list every member line', subagent_type: 'general-purpose' }, tool_response: { agentId: 'shade-a3', description: 'Read the sidebar tree and list every member line' } });
+  await post(s1, { hook_event_name: 'PreToolUse', agent_id: 'shade-a3', tool_name: 'Bash', tool_input: { command: 'npm run verify:all', description: 'Running the whole verify list on a private pair' } });
+  expect(await click(rowSel654 + ' .sidebar-row-team-fold'), "unfold the row's team for fix 764");
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 2`, 'two members listed under the row for fix 764', 5000);
+  await s.waitFor(
+    `[...document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')})].some((m) => m.querySelector('.sidebar-row-member-type')?.textContent === 'agent general-purpose' && m.querySelector('.sidebar-row-member-activity')?.textContent === 'Running the whole verify list on a private pair')`,
+    "the new member's line carries its Bash phrase",
+    5000,
+  );
+  const sidebarWidth764 = () => s.evalJs(`document.querySelector('.sidebar').getBoundingClientRect().width`);
+  const widths764 = async (W) => {
+    const read = await s.evalJs(`(() => {
+      const line = [...document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')})].find((m) => m.querySelector('.sidebar-row-member-type')?.textContent === 'agent general-purpose');
+      if (!line) return null;
+      const w = (el) => (el ? el.getBoundingClientRect().width : 0);
+      const parts = [line.querySelector('.roster-unit'), line.querySelector('.sidebar-row-member-type'), line.querySelector('.sidebar-row-member-model'), line.querySelector('.sidebar-row-member-elapsed')].filter((el) => el !== null);
+      const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+      const task = line.querySelector('.sidebar-row-member-task');
+      const activity = line.querySelector('.sidebar-row-member-activity');
+      const typeSpan = line.querySelector('.sidebar-row-member-type');
+      const c = document.createElement('canvas').getContext('2d');
+      c.font = getComputedStyle(typeSpan).font;
+      return {
+        line: Math.round(w(line)),
+        fixed: Math.round(parts.reduce((sum, el) => sum + w(el), 0) + gap * (line.children.length - 1)),
+        task: Math.round(w(task)),
+        taskNatural: task ? task.scrollWidth : 0,
+        activity: Math.round(w(activity)),
+        activityNatural: activity ? activity.scrollWidth : 0,
+        modelW: Math.round(c.measureText('Sonnet').width),
+        sixCh: Math.round(c.measureText('000000').width),
+        team: Math.round(w(line.closest('.sidebar-row-team'))),
+      };
+    })()`);
+    expect(read !== null, `fix 764: the general-purpose member's line is listed at ${W}px`);
+    console.log(`[verify] fix 764 at ${W}px: line ${read.line} fixed ${read.fixed} task ${read.task}/${read.taskNatural} activity ${read.activity}/${read.activityNatural} model word ${read.modelW} 6ch ${read.sixCh} team width ${read.team}`);
+    expect(!(read.task < read.taskNatural - 1 && read.activity >= 1), `fix 764: at ${W}px the task is clipped while the activity is still drawn, got ${JSON.stringify(read)}`);
+    return read;
+  };
+  const dragSidebar764 = async (target) => {
+    const current = await sidebarWidth764();
+    const r = await s.evalJs(`(() => { const r = document.querySelector('.sidebar-resizer').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.mouse('mousePressed', r.x, r.y);
+    await s.mouse('mouseReleased', r.x + (target - current), r.y);
+    await s.waitFor(`Math.abs(document.querySelector('.sidebar').getBoundingClientRect().width - ${target}) <= 1`, `sidebar at ${target}px for fix 764`);
+  };
+  const start764 = Math.round(await sidebarWidth764());
+  if (Math.abs(start764 - 260) > 1) await dragSidebar764(260);
+  await widths764(260);
+  await dragSidebar764(160);
+  await widths764(160);
+  await dragSidebar764(400);
+  await widths764(400);
+  await dragSidebar764(start764);
+  expect(await click(rowSel654 + ' .sidebar-row-team-fold'), "fold the row's team after fix 764");
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 0`, 'the team folded away after fix 764');
+  await post(s1, { hook_event_name: 'SubagentStop', agent_id: 'shade-a3', agent_type: 'general-purpose' });
+  await s.waitFor(`${q(paneSel(p1) + ' .pane-shade-member[data-member="shade-a3"] .pane-shade-member-state')}?.textContent === 'returned'`, 'the general-purpose member returned on the face', 5000);
+  step("M9 fix 764: the team line's activity gives way before its task at 260, 160 and 400 px, the widths logged");
 
   await post(s1, { hook_event_name: 'SubagentStop', agent_id: 'shade-a2', agent_type: 'fork' });
   await post(s1, { hook_event_name: 'Stop', last_assistant_message: 'lid built' });

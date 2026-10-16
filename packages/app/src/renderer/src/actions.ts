@@ -186,17 +186,23 @@ export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone,
 // pane of its tab becomes an empty pane, never a closed tab. A drop on
 // the tab on show, or on the tab the title already sits in, is nothing.
 // The window stays on its tab, so nothing is shown, zoomed or acked.
-export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null): Promise<void> {
+// It answers the pane the content landed on, or null when the drop changed nothing (M9 fix 765: a contents hit's line is revealed there once the tab is shown).
+export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null): Promise<string | null> {
   recordUse('drop-on-layout-tab');
+  let landed: string | null = null;
   await editTabs((l) => {
+    landed = null;
     const tab = findTab(l, tabId);
     if (tab === null || tabId === l.currentTabId) return l;
     if (fromPaneId !== null && tabHolding(l, fromPaneId)?.id === tabId) return l;
-    const dropped = replaceTab(l, dropAtRight(tab, content));
+    const placed = dropAtRight(tab, content);
+    landed = placed.focusedPaneId;
+    const dropped = replaceTab(l, placed);
     if (fromPaneId === null) return dropped;
     const from = tabHolding(dropped, fromPaneId);
     return from === null ? dropped : replaceTab(dropped, closePane(from, fromPaneId));
   });
+  return landed;
 }
 
 // The same dropped on the + (M9 fix 651): a tab of its own at the end of
@@ -204,28 +210,32 @@ export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromP
 // a session's and as the ghost names a view, and not shown, so the
 // strip's kept order is written with the made tab's id (newGroupTab uses
 // currentTabId, which here stays the source tab).
-export async function dropOnNewTab(content: PaneContent, fromPaneId: string | null = null): Promise<void> {
+// It answers the pane the content landed on, or null when the drop changed nothing (M9 fix 765: a contents hit's line is revealed there once the tab is shown).
+export async function dropOnNewTab(content: PaneContent, fromPaneId: string | null = null): Promise<string | null> {
   recordUse('drop-on-new-tab');
   let name: string;
   if (content.sessionId !== null) {
     const { sessions, folders } = getState();
     const session = sessions.get(content.sessionId);
-    if (session === undefined) return;
+    if (session === undefined) return null;
     name = newTabNameFor(session, folders);
   } else {
     name = viewName(content.view);
   }
   let oldLayoutTabIds: readonly string[] | null = null;
   let madeId: string | null = null;
+  let landed: string | null = null;
   await editTabs((l) => {
     oldLayoutTabIds = l.tabs.map((t) => t.id);
     const added = addTabHolding(l, name, content);
     madeId = added.tabs[added.tabs.length - 1]!.id;
+    landed = added.tabs[added.tabs.length - 1]!.focusedPaneId;
     if (fromPaneId === null) return added;
     const from = tabHolding(added, fromPaneId);
     return from === null ? added : replaceTab(added, closePane(from, fromPaneId));
   });
   if (madeId !== null && oldLayoutTabIds !== null) placeNewTab(layoutTabKey(madeId), oldLayoutTabIds);
+  return landed;
 }
 
 // Commits in a pane from a folder heading's + menu (M52): the view in a

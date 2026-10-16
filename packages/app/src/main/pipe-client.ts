@@ -388,6 +388,18 @@ export class PipeClient extends EventEmitter {
       env,
     });
     child.on('error', (err) => this.opts.log(`failed to start emmerd: ${String(err)}`));
+    // M9 fix 762: a lost daemon left no line in either log, and the exit
+    // code tells a kill (1, a TerminateProcess) from a crash (an NTSTATUS
+    // such as 0xC0000005). `>>> 0` keeps the hex right whether Node hands
+    // the status over signed or unsigned.
+    child.on('exit', (code, signal) => {
+      if (code === null) {
+        this.opts.log(`emmerd pid ${child.pid} exited: code null, signal ${signal}`);
+        return;
+      }
+      const hex = (code >>> 0).toString(16).toUpperCase().padStart(8, '0');
+      this.opts.log(`emmerd pid ${child.pid} exited: code ${code} (0x${hex}), signal ${signal}`);
+    });
     child.unref();
   }
 }

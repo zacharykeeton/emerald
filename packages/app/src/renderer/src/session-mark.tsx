@@ -24,7 +24,7 @@ import { useSkin } from './skin.ts';
 // shade over a pane (M63), the same mark read across a room; the CSS
 // sizes the glyphs to match.
 // Under the Emerald skin (M9 fix 570) the still is a ◆ and the frames ◇ ◈ ◆ ✦
-// in Segoe UI Symbol, on the same keyframe and clock, with data-glyphs="gem"
+// in Segoe UI Symbol, on the same clock, with data-glyphs="gem"
 // on the cell for the CSS. The four are drawn as SVG, not typeset (see GemFrame).
 export type MarkSize = 'row' | 'unit' | 'heading' | 'title' | 'face';
 
@@ -89,7 +89,7 @@ export function SessionMark({ kind, tone, working, failed, size, title, classNam
       </span>
       <span className="session-mark-frames">
         {glyphs.frames.map((glyph) => (
-          <span key={glyph} data-glyph={skin === 'emerald' ? glyph : undefined}>
+          <span key={glyph} className="mark-frame" data-glyph={skin === 'emerald' ? glyph : undefined}>
             {skin === 'emerald' ? <GemFrame glyph={glyph} px={gemPx} /> : glyph}
           </span>
         ))}

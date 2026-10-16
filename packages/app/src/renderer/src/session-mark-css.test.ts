@@ -4,13 +4,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // The session mark's rules (M46, fix 86) read back out of style.css: the
-// four frames are switched in place by one opacity keyframe (fix 535; it
-// was visibility, and an infinite animation is opacity or transform only) with a
-// delay a quarter cycle apart per frame, and nothing on the mark is
-// transformed or slid, since a composited move under the cell's clip is
+// four frames are switched in place by opacity (fix 535; it was
+// visibility), the one shown named by the root's data-mark-frame (M9 fix
+// 767; four delayed keyframes a mark until then), and nothing on the mark
+// is transformed or slid, since a composited move under the cell's clip is
 // what one GPU presented once and never redrew (fix 86). A stack that
 // slid or drifted would show in no screenshot, so the rules are read.
 const css = readFileSync(fileURLToPath(new URL('./style.css', import.meta.url)), 'utf8');
+// The sheet without its comments, for reads of selectors alone.
+const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 function block(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -39,17 +41,17 @@ for (const size of ['row', 'unit', 'heading', 'title', 'face']) {
   });
 }
 
-test('the frames switch in place: one keyframe, four delays a quarter apart, no transform', () => {
-  const kf = /@keyframes session-mark-frame\s*\{([\s\S]*?)\n\}/.exec(css);
-  assert.ok(kf, 'the frame keyframe');
-  assert.ok(/0%\s*\{\s*opacity:\s*1/.test(kf![1]!), 'visible at the start');
-  assert.ok(/25%\s*\{\s*opacity:\s*0/.test(kf![1]!), 'hidden from a quarter');
-  assert.ok(/\.session-mark\[data-working\] \.session-mark-frames > span\s*\{\s*animation:\s*session-mark-frame 1s step-end infinite/.test(css), 'each frame runs the keyframe for one second, stepped');
-  for (const [n, delay] of [[2, -750], [3, -500], [4, -250]] as const) {
-    const m = new RegExp(`\\.session-mark\\[data-working\\] \\.session-mark-frames > span:nth-child\\(${n}\\)\\s*\\{\\s*animation-delay:\\s*(-?\\d+)ms`).exec(css);
-    assert.ok(m, `frame ${n} has a delay`);
-    assert.equal(Number(m![1]), delay, `frame ${n} starts ${delay}ms in`);
-  }
+test('the frames switch in place: the root names the frame, no animation, no transform', () => {
+  // M9 fix 767: no keyframe and no animation on a frame; the root's
+  // data-mark-frame (mark-clock.ts) picks the one frame shown.
+  assert.ok(!/@keyframes session-mark-frame/.test(bare), 'no frame keyframe');
+  const frameRules = [...bare.matchAll(/([^{}]*)\{([^{}]*)\}/g)].filter((m) => /\.session-mark-frames|\.mark-frame/.test(m[1]!));
+  assert.ok(frameRules.length > 0, 'the frame rules are found');
+  for (const m of frameRules) assert.ok(!/animation/.test(m[2]!), `no animation on a frame rule: ${m[1]!.trim()}`);
+  const selectors = [0, 1, 2, 3].map((k) => `:root[data-mark-frame="${k}"] .session-mark[data-working] .mark-frame:nth-child(${k + 1})`);
+  const rule = frameRules.find((m) => selectors.every((sel) => m[1]!.includes(sel)));
+  assert.ok(rule, 'one rule names the four frames by the root frame');
+  assert.equal(rule![2]!.trim(), 'opacity: 1;', 'the named frame shows');
   // The still star hides only while the frames run, so reduced motion
   // keeps it.
   assert.ok(/\.session-mark\[data-working\] \.session-mark-still\s*\{\s*visibility:\s*hidden/.test(css), 'the still frame gives way while working');
@@ -73,9 +75,10 @@ test('a needs-input mark breathes on needs-pulse, never the step', () => {
   const m = /\.session-mark\[data-tone="needs-input"\]\s*\{([^}]*)\}/.exec(css);
   assert.ok(m, 'the needs-input rule');
   assert.ok(/animation:\s*needs-pulse/.test(m![1]!), 'needs-pulse');
-  assert.ok(!/session-mark-frame/.test(m![1]!), 'not the frame cycle');
+  assert.ok(!/data-mark-frame/.test(m![1]!), 'not the frame cycle');
   // The cycle is keyed on data-working alone, which a needs-input session never sets.
-  assert.ok(!/\[data-tone="needs-input"\][^{]*session-mark-frame/.test(css));
+  assert.ok(!/\[data-tone="needs-input"\][^{]*data-mark-frame/.test(bare));
+  assert.ok(!/data-mark-frame[^{]*\[data-tone="needs-input"\]/.test(bare));
 });
 
 // The Emerald skin's mark (M9 fix 570).
@@ -173,11 +176,12 @@ test('the frame cycle and the caret run only under prefers-reduced-motion: no-pr
     return css.slice(m.index! + m[0].length, i);
   });
   const inside = (re: RegExp) => blocks.some((b) => re.test(b));
-  assert.ok(inside(/animation:\s*session-mark-frame/), 'the frame cycle is inside the media query');
+  assert.ok(inside(/:root\[data-mark-frame="0"\] \.session-mark\[data-working\] \.mark-frame:nth-child\(1\),\s*:root\[data-mark-frame="1"\][^{]*:root\[data-mark-frame="3"\] \.session-mark\[data-working\] \.mark-frame:nth-child\(4\)\s*\{/), 'the frame cycle is inside the media query');
   assert.ok(inside(/\.session-mark\[data-working\] \.session-mark-still/), 'the still frame hides only inside it');
   assert.ok(inside(/animation:\s*shell-caret/), 'the caret');
   // And nowhere outside it.
   const outside = css.replace(/@media \(prefers-reduced-motion: no-preference\)\s*\{[\s\S]*?\n\}/g, '');
-  assert.ok(!/animation:\s*(session-mark-frame|shell-caret)/.test(outside), 'no frame or caret animation outside the media query');
+  assert.ok(!/animation:\s*shell-caret/.test(outside), 'no caret animation outside the media query');
+  assert.ok(!/data-mark-frame/.test(outside.replace(/\/\*[\s\S]*?\*\//g, '')), 'no frame rule outside the media query');
   assert.ok(!/\.session-mark\[data-working\] \.session-mark-still/.test(outside), 'the still frame stays under reduced motion');
 });

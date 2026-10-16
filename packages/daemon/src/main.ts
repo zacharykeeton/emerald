@@ -12,7 +12,7 @@ import { feedHostSettings, startFeedHost } from './feed-host.ts';
 import type { FeedHost } from './feed-host.ts';
 import { hideConsoleListAgent } from './hidden-console-agent.ts';
 import { HookSink } from './hook-sink.ts';
-import { guardSelfKill } from './kill-guard.ts';
+import { guardSelfKill, readProcessLine } from './kill-guard.ts';
 import { resolveClaudeModDir } from './launchers/claude.ts';
 import { createFileLogger, rotateLogAtStart } from './log.ts';
 import type { Logger } from './log.ts';
@@ -56,7 +56,11 @@ async function main(): Promise<void> {
   // Before the pipe and so before any pty (M9 fix 732): node-pty's console
   // list can name 0 or the daemon, and `process.kill(0)` on Windows ends
   // the process with no line.
-  guardSelfKill(process, log);
+  // EMERALD_KILL_TRACE=1 (M9 fix 762) logs every kill with its target, and
+  // the daemon's parent here, so a lost harness daemon can name its kill.
+  const killTrace = process.env['EMERALD_KILL_TRACE'] === '1';
+  if (killTrace) log.info('kill trace on (EMERALD_KILL_TRACE)', { pid: process.pid, ppid: process.ppid });
+  guardSelfKill(process, log, killTrace ? readProcessLine : null);
   // Registered first (M9 fix 453, M75's J8 (a)): a throw between the
   // stores and the pipe is logged too. The shutdown is kept once there is
   // something to shut down.

@@ -315,3 +315,65 @@ test('usageFold: two halves folded into one state list as usageOf of the whole',
   assert.deepEqual(usageList(state), usageOf(whole));
   assert.deepEqual(usageList(state).map((m) => m.output), [3, 140, 90, 5]);
 });
+
+// M9 fix 754: Claude Code's queue off its queue-operation lines, and a
+// message absorbed mid-turn as a step of the open turn.
+import { queueFold, queueList, queueState, queuedOf } from './transcript.ts';
+
+const qop = (operation: string, content?: string, extra: Record<string, unknown> = {}) =>
+  line({ type: 'queue-operation', operation, timestamp: '2026-10-15T14:00:00.000Z', sessionId: 's', ...(content === undefined ? {} : { content }), ...extra });
+const NOTE = '<task-notification>\n<task-id>x</task-id>\n</task-notification>';
+
+test('queuedOf: an enqueue shows, and its absorbed remove takes it', () => {
+  assert.deepEqual(queuedOf(qop('enqueue', 'fix the footer')), [{ text: 'fix the footer', at: Date.parse('2026-10-15T14:00:00.000Z') }]);
+  assert.deepEqual(queuedOf([qop('enqueue', 'fix the footer'), qop('remove', 'fix the footer', { reason: 'absorbed_mid_turn' })].join('\n')), []);
+});
+
+test('queuedOf: a dequeue takes the oldest, a notification included', () => {
+  assert.deepEqual(queuedOf([qop('enqueue', 'one'), qop('enqueue', 'two'), qop('dequeue')].join('\n')).map((m) => m.text), ['two']);
+  assert.deepEqual(queuedOf([qop('enqueue', NOTE), qop('enqueue', 'mine'), qop('dequeue')].join('\n')).map((m) => m.text), ['mine']);
+  assert.deepEqual(queuedOf([qop('enqueue', NOTE), qop('enqueue', '<agent-message from="x">hi')].join('\n')), []);
+});
+
+test('queuedOf: popOne takes its own message, popAll takes each', () => {
+  const three = [qop('enqueue', 'a'), qop('enqueue', 'b'), qop('enqueue', 'c')];
+  assert.deepEqual(queuedOf([...three, qop('popOne', 'b')].join('\n')).map((m) => m.text), ['a', 'c']);
+  assert.deepEqual(queuedOf([...three, qop('popAll', 'a'), qop('popAll', 'b'), qop('popAll', 'c')].join('\n')), []);
+});
+
+test('queuedOf: a prompt line equal to a held message takes it', () => {
+  const prompt = line({ type: 'user', isSidechain: false, message: { role: 'user', content: 'b' }, timestamp: '2026-10-15T14:01:00.000Z' });
+  assert.deepEqual(queuedOf([qop('enqueue', 'a'), qop('enqueue', 'b'), prompt].join('\n')).map((m) => m.text), ['a']);
+});
+
+test('queueFold: a fold over the text split at every line boundary equals the whole', () => {
+  const lines = [qop('enqueue', NOTE), qop('enqueue', 'a'), qop('enqueue', 'b'), qop('dequeue'), qop('popOne', 'b'), qop('enqueue', 'c')];
+  const whole = lines.join('\n') + '\n';
+  for (let cut = 0; cut <= lines.length; cut++) {
+    const state = queueState();
+    queueFold(state, lines.slice(0, cut).join('\n') + '\n');
+    queueFold(state, lines.slice(cut).join('\n') + '\n');
+    assert.deepEqual(queueList(state), queuedOf(whole), `cut at ${cut}`);
+  }
+  assert.deepEqual(queuedOf(whole).map((m) => m.text), ['a', 'c']);
+});
+
+test('parseSteps: a human queued_command attachment is a queued step of the open turn; a notification is not', () => {
+  const attach = (attachment: Record<string, unknown>) => line({ type: 'attachment', isSidechain: false, timestamp: '2026-10-15T14:05:00.000Z', attachment });
+  const text = [
+    line({ type: 'user', isSidechain: false, message: { role: 'user', content: 'go' }, timestamp: '2026-10-15T14:00:00.000Z' }),
+    assistant([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }]),
+    attach({ type: 'queued_command', prompt: 'also this', commandMode: 'prompt', origin: { kind: 'human' }, humanTurn: true, timestamp: '2026-10-15T14:02:00.000Z' }),
+    attach({ type: 'queued_command', prompt: [{ type: 'text', text: 'see' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA' } }, { type: 'text', text: 'this' }], commandMode: 'prompt', origin: { kind: 'human' }, timestamp: '2026-10-15T14:03:00.000Z' }),
+    attach({ type: 'queued_command', prompt: NOTE, commandMode: 'task-notification', origin: { kind: 'task-notification' } }),
+  ].join('\n');
+  const steps = parseSteps(text)[0]!.steps;
+  assert.deepEqual(
+    steps.filter((s) => s.kind === 'queued'),
+    [
+      { kind: 'queued', text: 'also this', at: Date.parse('2026-10-15T14:02:00.000Z') },
+      { kind: 'queued', text: 'see\nthis', at: Date.parse('2026-10-15T14:03:00.000Z') },
+    ],
+  );
+  assert.equal(steps.length, 3);
+});

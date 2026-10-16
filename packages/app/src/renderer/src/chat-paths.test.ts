@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PATH_MENU, insideFolder, pathCandidate, resolveIn } from './chat-paths.ts';
+import { PATH_MENU, folderPath, insideFolder, pathCandidate, resolveIn } from './chat-paths.ts';
 
 test('the path menu is the rail items in order, a rule before the mention and the copy (M9 fix 717)', () => {
   assert.deepEqual(PATH_MENU.map((i) => i.label), ['Open in a tab', 'Open in a pane', 'Open with Windows', 'Reveal in Explorer', 'Mention in the message', 'Copy path']);
@@ -26,4 +26,12 @@ test('resolveIn makes a path absolute in the folder, and insideFolder tells (M9 
   assert.equal(resolveIn('', 'a.md'), null);
   assert.equal(insideFolder('C:\\Repo', 'c:\\repo\\docs\\a.md'), true);
   assert.equal(insideFolder('C:\\repo', 'C:\\repository\\a.md'), false);
+});
+
+test('folderPath answers a path inside the folder and null outside it (M9 fix 756)', () => {
+  assert.equal(folderPath('C:\\repo', 'docs/a.md'), 'C:\\repo\\docs\\a.md');
+  assert.equal(folderPath('C:\\repo', '../x.md'), null);
+  assert.equal(folderPath('C:\\repo', 'C:/other/x.ts'), null);
+  assert.equal(folderPath('C:\\repo', 'C:/repo/x.ts'), 'C:\\repo\\x.ts');
+  assert.equal(folderPath('', 'a.md'), null);
 });

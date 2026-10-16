@@ -115,8 +115,9 @@ export function waitText(session: SessionInfo, wanting: ReadonlySet<string>, now
 // M9 fix 202: the palette's action mode, entered by typing > first or by
 // the open-actions key. Every binding by its label with its chords at
 // the right (Keys), then the focused pane's menu items no key reaches
-// (Pane), each naming the pane's session; the same fuzzy match as the
-// sessions, hits in bold, the earliest start first within each group.
+// (Pane), each naming the pane's session, then, once something is typed,
+// the empty pane's shells and the terminal colours (M9 fix 768); the same
+// fuzzy match as the sessions, hits in bold, the earliest start first within each group.
 export const ACTION_PREFIX = '>';
 
 export function isActionQuery(query: string): boolean {
@@ -125,7 +126,9 @@ export function isActionQuery(query: string): boolean {
 
 export type ActionRow =
   | { kind: 'key'; action: Action; label: string; detail: string; match: Match | null }
-  | { kind: 'pane'; run: PaneMenuRun; shell?: ShellId | undefined; label: string; detail: string; match: Match | null };
+  | { kind: 'pane'; run: PaneMenuRun; shell?: ShellId | undefined; label: string; detail: string; match: Match | null }
+  | { kind: 'shell'; shell: ShellId; checked: boolean; label: string; detail: string; match: Match | null }
+  | { kind: 'scheme'; scope: 'session' | 'window'; scheme: string | null; checked: boolean; label: string; detail: string; match: Match | null };
 
 export interface PaneForActions {
   // The focused pane's session name or view name, shown after the label.
@@ -142,22 +145,85 @@ export function chordsText(b: Binding, prefix: string): string {
   return parts.join(' · ');
 }
 
+function matchRows<T>(q: string, items: readonly T[], label: (t: T) => string, row: (t: T, match: Match | null) => ActionRow): ActionRow[] {
+  if (q === '') return items.map((t) => row(t, null));
+  const out: { row: ActionRow; start: number }[] = [];
+  for (const t of items) {
+    const text = label(t);
+    const indices = subsequence(q, text);
+    if (indices !== null) out.push({ row: row(t, { field: 'name', text, indices }), start: indices[0]! });
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out.map((o) => o.row);
+}
+
 export function actionRows(query: string, prefix: string, pane: PaneForActions | null, bindings: readonly Binding[] = BINDINGS): ActionRow[] {
   const q = (isActionQuery(query) ? query.slice(ACTION_PREFIX.length) : query).trim();
-  const matched = <T>(items: readonly T[], label: (t: T) => string, row: (t: T, match: Match | null) => ActionRow): ActionRow[] => {
-    if (q === '') return items.map((t) => row(t, null));
-    const out: { row: ActionRow; start: number }[] = [];
-    for (const t of items) {
-      const text = label(t);
-      const indices = subsequence(q, text);
-      if (indices !== null) out.push({ row: row(t, { field: 'name', text, indices }), start: indices[0]! });
-    }
-    out.sort((a, b) => a.start - b.start);
-    return out.map((o) => o.row);
-  };
+  const matched = <T>(items: readonly T[], label: (t: T) => string, row: (t: T, match: Match | null) => ActionRow): ActionRow[] => matchRows(q, items, label, row);
   const keys = matched(bindings, (b) => b.label, (b, match) => ({ kind: 'key', action: b.action, label: b.label, detail: chordsText(b, prefix), match }));
   const paneRows = pane === null ? [] : matched(paneOnlyItems(pane.items), (i) => i.label, (i, match) => ({ kind: 'pane', run: i.run, ...(i.shell === undefined ? {} : { shell: i.shell }), label: i.label, detail: pane.name, match }));
   return [...keys, ...paneRows];
+}
+
+// M9 fix 768: the keyboard's way to the Shell tile's caret and the pane
+// menu's Terminal colours, which no key reaches since a Menu closes on
+// any key (fix 299). Listed only once something is typed after the >,
+// so the bare > list stays the keys and the pane's items.
+export interface PalettePicks {
+  // The empty pane's installed shells, empty on the overlay or with one shell.
+  shells: readonly { id: ShellId; label: string }[];
+  // The shell the tile starts now, the pick or the first.
+  shell: ShellId | null;
+  schemes: readonly string[];
+  windowScheme: string;
+  // The pane's session's own scheme, or null with no session in the pane.
+  session: { own: string | null } | null;
+}
+
+export function pickRows(query: string, picks: PalettePicks): ActionRow[] {
+  const q = (isActionQuery(query) ? query.slice(ACTION_PREFIX.length) : query).trim();
+  if (q === '') return [];
+  const shellRows = matchRows(q, picks.shells, (o) => `Shell: ${o.label}`, (o, match): ActionRow => {
+    const checked = o.id === picks.shell;
+    const words = [o.id === picks.shells[0]?.id ? 'default' : '', checked ? 'in use' : ''].filter((w) => w !== '');
+    return { kind: 'shell', shell: o.id, checked, label: `Shell: ${o.label}`, detail: words.join(' · '), match };
+  });
+  const sessionRows: ActionRow[] = [];
+  if (picks.session !== null) {
+    const own = picks.session.own;
+    const items: { scheme: string | null; label: string }[] = [
+      { scheme: null, label: "This session: The window's" },
+      ...picks.schemes.map((name) => ({ scheme: name, label: `This session: ${name}` })),
+    ];
+    sessionRows.push(...matchRows(q, items, (c) => c.label, (c, match): ActionRow => {
+      const checked = c.scheme === own;
+      const detail = c.scheme === null ? [picks.windowScheme, checked ? 'in use' : ''].filter((w) => w !== '').join(' · ') : checked ? 'in use' : '';
+      return { kind: 'scheme', scope: 'session', scheme: c.scheme, checked, label: c.label, detail, match };
+    }));
+  }
+  const windowRows = matchRows(q, picks.schemes, (n) => `Terminal colours: ${n}`, (n, match): ActionRow => {
+    const checked = n === picks.windowScheme;
+    return { kind: 'scheme', scope: 'window', scheme: n, checked, label: `Terminal colours: ${n}`, detail: checked ? 'in use' : '', match };
+  });
+  return [...shellRows, ...sessionRows, ...windowRows];
+}
+
+export function actionGroup(row: ActionRow): string {
+  switch (row.kind) {
+    case 'key': return 'Keys';
+    case 'pane': return 'Pane';
+    case 'shell': return 'Shell';
+    case 'scheme': return 'Terminal colours';
+  }
+}
+
+export function actionKey(row: ActionRow): string {
+  switch (row.kind) {
+    case 'key': return `key:${row.action}`;
+    case 'pane': return `pane:${row.run}:${row.shell ?? ''}`;
+    case 'shell': return `shell:${row.shell}`;
+    case 'scheme': return `scheme:${row.scope}:${row.scheme ?? ''}`;
+  }
 }
 
 export interface Segment {

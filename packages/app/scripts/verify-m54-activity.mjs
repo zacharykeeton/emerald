@@ -1790,6 +1790,120 @@ try {
   await cycleCard('both');
   step("M9 fix 178: the tab and the pane open as a snapshot of the rail's section and keep their own scope, folder and layers, the tab's in its query across a reload");
 
+  // M9 fix 766: the usage windows row under the activity view's controls,
+  // on by default, read off the strip's reading (the endpoint stubbed for
+  // the run, two windows). The tab's row matches the strip's windows,
+  // opens the card on hover, hides on its toggle and keeps that in the
+  // tab's query across a reload, and stays on the five-hour unit beside
+  // the axis bar; the pane's keeps it on its record. Neither asks the
+  // endpoint: main.log's non-timer read lines are counted before and
+  // after.
+  await s.waitFor(`document.querySelector('.usage-strip')?.dataset.state === 'ok'`, 'fix 766: the strip has its reading', 10000);
+  const mainLog766 = path.join(process.env['EMERALD_HOME'], 'logs', 'main.log');
+  // The block's two reloads remount the strip, whose own mount ask is the
+  // strip's and not the row's, so mount lines are left out with the timer's.
+  const asks766 = () => fs.readFileSync(mainLog766, 'utf8').split(/\r?\n/).filter((l) => l.includes('usage read:') && !l.endsWith('asked on timer') && !l.endsWith('asked on mount')).length;
+  const asksBefore766 = await asks766();
+  const tabSel766 = '.activity-view[data-place="tab"]';
+  const row766 = (viewSel) =>
+    s.evalJs(`(() => {
+      const v = document.querySelector(${JSON.stringify(viewSel)});
+      if (!v) return null;
+      const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; };
+      const row = v.querySelector('.activity-view-usage');
+      const wins = row ? [...row.querySelectorAll('.activity-usage-window')] : [];
+      return {
+        usage: v.dataset.usage ?? null,
+        lit: !!v.querySelector('.activity-usage-toggle[data-active]'),
+        row: !!row,
+        windows: wins.length,
+        labels: wins.map((w) => w.querySelector('.usage-label')?.textContent ?? null),
+        keys: wins.map((w) => w.dataset.key ?? null),
+        stripBars: wins.filter((w) => !!w.querySelector('.usage-bar[data-form="strip"]')).length,
+        header: box(v.querySelector('.file-header')),
+        rowBox: box(row),
+        history: box(v.querySelector('.activity-view-history')),
+      };
+    })()`);
+  const strip766 = () => s.evalJs(`[...document.querySelectorAll('.usage-strip .usage-window')].map((w) => w.querySelector('.usage-label')?.textContent ?? null)`);
+  // (a) The tab.
+  await s.evalJs(`document.querySelector('.activity-card[data-place="rail"] .activity-expand').click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.state === 'ready'`, 'fix 766: the day as a tab');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(tabSel766 + ' .activity-view-usage')})`, "fix 766: the tab's usage row drawn", 5000);
+  const stripLabels766 = await strip766();
+  let tabRow766 = await row766(tabSel766);
+  expect(tabRow766.usage === 'shown' && tabRow766.lit, `fix 766: the tab opens with the row shown and its toggle lit (${JSON.stringify(tabRow766)})`);
+  expect(tabRow766.windows === stripLabels766.length && tabRow766.windows > 0 && JSON.stringify(tabRow766.labels) === JSON.stringify(stripLabels766), `fix 766: the row carries the strip's windows in order (${JSON.stringify({ row: tabRow766.labels, strip: stripLabels766 })})`);
+  expect(tabRow766.stripBars === tabRow766.windows, `fix 766: each window of the row has a strip bar (${JSON.stringify(tabRow766)})`);
+  expect(tabRow766.rowBox.top >= tabRow766.header.bottom - 0.5 && (tabRow766.history === null || tabRow766.history.top >= tabRow766.rowBox.bottom - 0.5), `fix 766: the row sits under the controls and above the history line (${JSON.stringify(tabRow766)})`);
+  const hover766 = await s.evalJs(`(() => { const w = document.querySelector(${JSON.stringify(tabSel766 + ' .activity-usage-window .usage-label')}); const r = w.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, key: w.closest('.activity-usage-window').dataset.key }; })()`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hover766.x, y: hover766.y });
+  await s.waitFor(`document.querySelector('.usage-popover')?.dataset.key === ${JSON.stringify(hover766.key)}`, `fix 766: the row's ${hover766.key} window opens its card on hover`, 8000);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 40 });
+  await s.waitFor(`!document.querySelector('.usage-popover')`, "fix 766: the row's card closes once the mouse leaves", 8000);
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766 + ' .activity-usage-toggle')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.usage === 'hidden'`, "fix 766: the tab's row hidden");
+  tabRow766 = await row766(tabSel766);
+  expect(!tabRow766.row && !tabRow766.lit, `fix 766: no row and the toggle unlit (${JSON.stringify(tabRow766)})`);
+  const tabPath766 = await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766)}).dataset.path`);
+  const tabQuery766 = () => s.evalJs(`JSON.parse(localStorage.getItem('emerald.tabs') ?? '{}').query?.[${JSON.stringify(tabPath766)}] ?? null`);
+  let q766 = await tabQuery766();
+  expect(q766 !== null && q766.includes('usage=off'), `fix 766: the hide rides the tab's query (${JSON.stringify(q766)})`);
+  await s.send('Page.reload');
+  await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.state === 'ready'`, 'fix 766: the tab back after a reload');
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766)}).dataset.usage`)) === 'hidden', 'fix 766: the row is still hidden after the reload');
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766 + ' .activity-usage-toggle')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.usage === 'shown'`, "fix 766: the tab's row shown again");
+  q766 = await tabQuery766();
+  expect(q766 === null || !q766.includes('usage='), `fix 766: the query carries no usage once shown (${JSON.stringify(q766)})`);
+  await s.waitFor(`document.querySelector('.usage-strip')?.dataset.state === 'ok'`, 'fix 766: the strip has its reading after the reload', 10000);
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766 + ' .activity-unit[data-unit="five-hour"]')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.unit === 'five-hour' && document.querySelector(${JSON.stringify(tabSel766)})?.dataset.state === 'ready'`, 'fix 766: the tab on the five-hour unit');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(tabSel766 + ' .activity-view-usage')})`, 'fix 766: the row drawn on the five-hour unit', 5000);
+  const fiveRow766 = await row766(tabSel766);
+  const stripCount766 = (await strip766()).length;
+  expect(fiveRow766.usage === 'shown' && fiveRow766.windows === stripCount766, `fix 766: the five-hour unit shows the row with every window (${JSON.stringify({ row: fiveRow766, strip: stripCount766 })})`);
+  expect(await s.evalJs(`!!document.querySelector(${JSON.stringify(tabSel766 + ' .activity-view-strip .usage-bar[data-form="axis"]')})`), 'fix 766: the axis bar is drawn beside the row on the five-hour unit');
+  await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(tabSel766 + ' .file-header .files-button')})].pop().click()`);
+  await s.waitFor(`!document.querySelector(${JSON.stringify(tabSel766)})`, 'fix 766: the tab closed');
+  step("M9 fix 766: the tab's usage row under the controls with the strip's windows, its card on hover, hidden and kept in the query across a reload, shown on the five-hour unit");
+
+  // (b) The pane. The reload left the rail where fix 178's own reload
+  // did, so the shell is focused to put it back on home first.
+  const shellBox766 = await s.evalJs(`(() => { const r = document.querySelector('.term-host').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.click(Math.round(shellBox766.x), Math.round(shellBox766.y));
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="timeline"]').click()`);
+  await s.waitFor(`!!document.querySelector('.activity-card[data-place="rail"] .activity-open-pane')`, 'fix 766: the rail with its pane button');
+  const panesBefore766 = leaves(await getLayout(s)).map((p) => p.id);
+  await s.evalJs(`document.querySelector('.activity-card[data-place="rail"] .activity-open-pane').click()`);
+  await s.waitFor(`document.querySelectorAll('.pane[data-view="activity"]').length === 2`, 'fix 766: a second activity pane');
+  const pane766 = leaves(await getLayout(s)).find((p) => !panesBefore766.includes(p.id));
+  expect(pane766 !== undefined && pane766.view.kind === 'activity' && !('usage' in pane766.view), `fix 766: the new pane's record carries no usage field (${JSON.stringify(pane766?.view)})`);
+  const paneSel766 = `[data-pane-id=${JSON.stringify(pane766.id)}] .activity-view`;
+  const record766 = async () => leaves(await getLayout(s)).find((p) => p.id === pane766.id)?.view ?? null;
+  await s.waitFor(`document.querySelector(${JSON.stringify(paneSel766)})?.dataset.state === 'ready'`, 'fix 766: the new pane ready');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(paneSel766 + ' .activity-view-usage')})`, "fix 766: the pane's usage row drawn", 5000);
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(paneSel766)}).dataset.usage`)) === 'shown', "fix 766: the pane's row shown");
+  await s.evalJs(`document.querySelector(${JSON.stringify(paneSel766 + ' .activity-usage-toggle')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(paneSel766)})?.dataset.usage === 'hidden'`, "fix 766: the pane's row hidden");
+  let rec766 = await record766();
+  expect(rec766?.usage === false, `fix 766: the pane's record keeps usage false (${JSON.stringify(rec766)})`);
+  await s.send('Page.reload');
+  await s.waitFor(`document.querySelector(${JSON.stringify(paneSel766)})?.dataset.state === 'ready'`, 'fix 766: the pane back after a reload');
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(paneSel766)}).dataset.usage`)) === 'hidden', "fix 766: the pane's row still hidden after the reload");
+  rec766 = await record766();
+  expect(rec766?.usage === false, `fix 766: the record still false after the reload (${JSON.stringify(rec766)})`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(paneSel766 + ' .activity-usage-toggle')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(paneSel766)})?.dataset.usage === 'shown'`, "fix 766: the pane's row shown again");
+  rec766 = await record766();
+  expect(rec766 !== null && !('usage' in rec766), `fix 766: the record drops the field once shown (${JSON.stringify(rec766)})`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(pane766.id)}] .pane-hide').click()`);
+  await s.waitFor(`document.querySelectorAll('.pane[data-view="activity"]').length === 1`, 'fix 766: the second pane closed again');
+  // (c) No ask from either.
+  const asksAfter766 = await asks766();
+  expect(asksAfter766 === asksBefore766, `the activity view's usage row asked the endpoint (${asksBefore766} non-timer read lines before, ${asksAfter766} after)`);
+  step("M9 fix 766: the pane's usage row hidden and kept on its record across a reload, and no ask from either");
+
   // M9 fix 215: the folder scope keeps a removed session's row. beta was
   // started in home, grouped under the repo by its SessionStart's cwd,
   // and removed at the M57 step; the rail's section is on home under

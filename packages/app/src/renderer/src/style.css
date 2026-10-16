@@ -855,17 +855,16 @@ img.sidebar-group-icon {
    a Claude session at rest is the history rows' eight-spoke star (M9 fix
    80), and while it works the cell cycles Claude Code's transcript
    asterisks, four text frames laid over one another and shown one at a
-   time for a quarter of a one second cycle, each frame's opacity
-   animation a quarter turn behind the last (fix 86). Nothing moves and
+   time for a quarter of a one second cycle, the root's data-mark-frame
+   picking which (fix 767). Nothing moves and
    nothing is transformed: the frames used to be a stack slid under the
    cell's overflow clip, and that composited move under a clip is what
    the user's GPU presented once and then never redrew, while a repaint
    in place (a flip in place, like the pulses' colours) is drawn every
-   time; session-mark-css.test.ts reads the four delays and that no
-   transform is left on the mark. Since fix 535 the frames switch by
-   opacity, not visibility: an infinite animation animates opacity or
-   transform only (CLAUDE.md, Style), and an opacity step in place is
-   still no composited move under a clip. The colour is the state's, from the
+   time; session-mark-css.test.ts reads the four frame selectors and that
+   no transform is left on the mark. Since fix 535 the frames switch by
+   opacity, not visibility, so an inherited hidden holds them, and an
+   opacity step in place is still no composited move under a clip. The colour is the state's, from the
    state-* class on the cell (the star's strokes and the glyphs take
    currentColor), or the parent's where the roster sets it. Three sizes,
    16, 12 and 13px cells with the star two pixels smaller and the glyphs
@@ -944,47 +943,26 @@ img.sidebar-group-icon {
   padding-top: 2px;
 }
 
-/* One frame shown for the first quarter of the cycle, hidden for the
-   rest; the four frames start a quarter apart. */
-@keyframes session-mark-frame {
-  0% {
-    opacity: 1;
-  }
-
-  25% {
-    opacity: 0;
-  }
-
-  100% {
-    opacity: 0;
-  }
-}
-
 /* The cycle, only while the session works (data-working): the still star
    gives way to the frames. Off for anyone who asked for less motion, when
-   the still star says the kind and the colour says the state. Every
-   stepping mark in the window is put on one clock by attention.ts (the
-   delays ride along, since they are part of each animation's timing), so
-   a team reads as a group. */
+   the still star says the kind and the colour says the state. The frame
+   shown is the one the root names: mark-clock.ts sets data-mark-frame 0
+   to 3 every quarter second (M9 fix 767), so every working mark in the
+   window steps together and no mark runs an animation of its own (four a
+   mark were a fifth of the renderer at twenty sessions, fix 663). The
+   frames still switch in place by opacity (fix 86), and the mark-frame
+   class as the rightmost compound keeps a tick's recalculation to the
+   frame spans rather than every span in the document. */
 @media (prefers-reduced-motion: no-preference) {
   .session-mark[data-working] .session-mark-still {
     visibility: hidden;
   }
 
-  .session-mark[data-working] .session-mark-frames > span {
-    animation: session-mark-frame 1s step-end infinite;
-  }
-
-  .session-mark[data-working] .session-mark-frames > span:nth-child(2) {
-    animation-delay: -750ms;
-  }
-
-  .session-mark[data-working] .session-mark-frames > span:nth-child(3) {
-    animation-delay: -500ms;
-  }
-
-  .session-mark[data-working] .session-mark-frames > span:nth-child(4) {
-    animation-delay: -250ms;
+  :root[data-mark-frame="0"] .session-mark[data-working] .mark-frame:nth-child(1),
+  :root[data-mark-frame="1"] .session-mark[data-working] .mark-frame:nth-child(2),
+  :root[data-mark-frame="2"] .session-mark[data-working] .mark-frame:nth-child(3),
+  :root[data-mark-frame="3"] .session-mark[data-working] .mark-frame:nth-child(4) {
+    opacity: 1;
   }
 }
 
@@ -3316,6 +3294,27 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* An item with a second line under its label (M9 fix 743, the chat
+   footer's mode and model menus): the line wraps below the label and
+   hint, starting under the label's first letter past the tick's 14 px. */
+.menu-item-lined {
+  flex-wrap: wrap;
+  row-gap: 1px;
+}
+
+.menu-line {
+  order: 3;
+  flex-basis: 100%;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.menu-item:hover:not(:disabled):not(.menu-heading) .menu-line {
+  color: var(--focus-ink);
+}
+
 .menu-sep {
   border-top: 1px solid var(--line-strong);
   margin-top: 4px;
@@ -3882,6 +3881,41 @@ button:disabled {
   box-shadow: 0 0 0 1px var(--title-bg) inset;
 }
 
+/* A labelled row of segment buttons (M9 fix 744, the chat footer's effort
+   row), laid out as the swatch row is; the buttons share their borders. */
+.menu-segments {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding: 4px 12px;
+  color: var(--fg);
+}
+
+.menu-segment-row {
+  display: flex;
+}
+
+.menu-segment {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  background: none;
+  color: var(--text-dim);
+  border: 1px solid var(--line-strong);
+  margin-left: -1px;
+}
+
+.menu-segment:hover {
+  background: var(--row-hover);
+}
+
+.menu-segment[data-active] {
+  background: var(--focus);
+  color: var(--focus-ink);
+  border-color: var(--focus);
+}
+
 
 /* The footer row itself is defined with the usage strip above; the strip
    takes the width and the speaker button sits after it. */
@@ -4300,10 +4334,13 @@ button:disabled {
   color: var(--text-mute);
 }
 
-/* M9 fix 654: the member's latest tool call beside its task, giving way
-   first when the row is short of room. */
+/* M9 fix 654: the member's latest tool call beside its task. M9 fix 764:
+   it gives way before the task does: its shrink weight of 1000 against
+   the task's 1 takes a short line's shortfall from it until it is gone,
+   and only then from the task; the 50% cap holds it to half the line on
+   a wide sidebar. */
 .sidebar-row-member-activity {
-  flex: 0 1 auto;
+  flex: 0 1000 auto;
   max-width: 50%;
   min-width: 0;
   color: var(--muted);
@@ -7085,23 +7122,17 @@ button:disabled {
   color: var(--fg);
 }
 
-/* M9 fix 149: a file tab hides the panes with visibility, and two things
-   climbed out from under it. The working mark's frame animation sets
-   visibility: visible on each frame span for a quarter of its cycle,
-   which an inherited hidden cannot hold down, so every stepping mark in
-   the hidden panes kept drawing; and the shade's z-index sat in the
-   same stacking context as the file view, which has none, so the
-   shade's 48px frames painted over the file rather than under its
-   ground. The panes view is its own stacking context now, so nothing
-   inside it can climb over a file tab (the file view comes after it in
-   the DOM and paints above in plain order), and a hidden pane's marks
-   stop stepping rather than escape. */
+/* M9 fix 149: a file tab hides the panes with visibility, and the
+   shade's z-index sat in the same stacking context as the file view,
+   which has none, so the shade's 48px frames painted over the file
+   rather than under its ground. The panes view is its own stacking
+   context now, so nothing inside it can climb over a file tab (the file
+   view comes after it in the DOM and paints above in plain order). The
+   working marks' frames switch by opacity alone since M9 fix 767 (one
+   clock on the root, no animation of their own), so the panes view's
+   inherited visibility: hidden holds them down. */
 .panes-view {
   isolation: isolate;
-}
-
-.panes-view[data-hidden] .session-mark-frames > span {
-  animation: none;
 }
 
 /* M9 fix 148: the checkout's folder name after the branch on the
@@ -12784,6 +12815,15 @@ body.dragging-session .browser-frame {
 
 .chat-chip-caret {
   color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The caret's drawn chevron (M9 fix 745): a block box, so the chip's flex
+   row centres the mark itself on the words. */
+.chat-footer-chevron {
+  display: block;
+  flex: none;
 }
 
 .chat-chip-dot {
@@ -12798,8 +12838,11 @@ body.dragging-session .browser-frame {
   background: var(--working);
 }
 
-/* The view chip while its menu is open (M9 fix 714). */
-.chat-chip[data-chip="view"][data-open] {
+/* The view chip while its menu is open (M9 fix 714), and the mode and
+   model chips' (fixes 743 and 744). */
+.chat-chip[data-chip="view"][data-open],
+.chat-chip[data-chip="mode"][data-open],
+.chat-chip[data-chip="model"][data-open] {
   background: var(--focus-header);
   border-color: var(--focus);
 }
@@ -13036,6 +13079,15 @@ body.dragging-session .browser-frame {
   color: var(--focus-ink);
 }
 
+/* M9 fix 750: the pointer moves the active row, so a hovered row that is
+   not the active one wears no fill and one row is lit, the one Enter and
+   Tab take. Five classes and pseudo-classes, so it outranks the window
+   menu's .menu-item:hover without leaning on file order. */
+.chat-menu .chat-menu-row:hover:not(:disabled):not([data-active="true"]) {
+  background: none;
+  color: var(--fg);
+}
+
 .chat-menu-name {
   flex: none;
   color: var(--fg);
@@ -13052,9 +13104,7 @@ body.dragging-session .browser-frame {
 }
 
 .chat-menu-row[data-active="true"] .chat-menu-name,
-.chat-menu-row[data-active="true"] .chat-menu-desc,
-.chat-menu-row:hover .chat-menu-name,
-.chat-menu-row:hover .chat-menu-desc {
+.chat-menu-row[data-active="true"] .chat-menu-desc {
   color: var(--focus-ink);
 }
 
@@ -13084,9 +13134,7 @@ body.dragging-session .browser-frame {
 }
 
 .chat-menu-row[data-active="true"] .chat-mention-name,
-.chat-menu-row[data-active="true"] .chat-mention-folder,
-.chat-menu-row:hover .chat-mention-name,
-.chat-menu-row:hover .chat-mention-folder {
+.chat-menu-row[data-active="true"] .chat-mention-folder {
   color: var(--focus-ink);
 }
 
@@ -13128,6 +13176,29 @@ body.dragging-session .browser-frame {
   background: var(--page-ground);
 }
 
+/* M9 fix 748: one × at the end of the chips, which takes every image out
+   of Claude Code's prompt with one Ctrl+C. */
+.chat-image-chips-clear {
+  flex: none;
+  margin-left: 2px;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-image-chips-clear:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.chat-image-chips-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .chat-attach {
   flex: none;
   display: inline-flex;
@@ -13146,4 +13217,141 @@ body.dragging-session .browser-frame {
 .chat-attach:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* M9 fix 752: the reply a fold toggle kept in place, tinted once. The
+   tint is a pseudo-element fading by opacity (the Style rule: a reply is
+   bigger than a glyph), under the text by its own stacking context, and
+   clear of the tick cell at the left. The class is removed by a timer. */
+.chat-reply.chat-fold-flash {
+  isolation: isolate;
+}
+
+.chat-reply.chat-fold-flash::before {
+  content: '';
+  position: absolute;
+  inset: -2px -6px;
+  z-index: -1;
+  border-radius: 3px;
+  background: var(--focus-header);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chat-reply.chat-fold-flash::before {
+    animation: chat-fold-flash 600ms ease-out;
+  }
+}
+
+@keyframes chat-fold-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* M9 fix 754: a message Claude read mid-turn, a small bubble in its turn
+   with the prompt's ground, and the person's messages still queued under
+   the live line, dashed and muted, each with Edit and Remove. */
+.chat-queued-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-queued-bubble {
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--title-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-queued-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-queued-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.chat-queued {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 85%;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.chat-queued-mark {
+  flex: none;
+  font-size: 11px;
+}
+
+.chat-queued-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-queued-edit,
+.chat-queued-remove {
+  flex: none;
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+/* M9 fix 766: the usage windows row in the activity view, under the controls, and its toggle. */
+.activity-view-usage {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 12px 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.activity-view-usage[data-stale] {
+  opacity: 0.6;
+}
+
+.activity-usage-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  white-space: nowrap;
+}
+
+.activity-usage-window[data-popover-open] {
+  color: var(--fg);
+}
+
+.activity-usage-toggle[data-active] {
+  background: var(--row-hover);
+  color: var(--fg);
 }

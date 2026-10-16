@@ -553,6 +553,12 @@ export interface SessionInfo {
   // with it; optional so a record from an older daemon reads the same.
   staleThresholdMs?: number | null;
   needsInputReason: NeedsInputReason | null;
+  // The permission ask the emerald mod posted at the decision (M9 fix
+  // 742, a ToolAsk): the tool and its subject in words, the call it is
+  // for, the asking agent. Cleared when the call ends or the turn does.
+  // Optional so an older record reads as none; not persisted, since
+  // toPersisted picks its fields.
+  askedFor?: { words: string; toolUseId: string | null; agentId: string | null; at: number } | null;
   // From the last StopFailure, for the badge tooltip. Cleared on the next turn.
   errorType: string | null;
   // What a waiting session waits on: the running entries of the Stop that

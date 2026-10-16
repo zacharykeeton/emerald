@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { installImageSrc } from './markdown-url.ts';
-import { insideFolder, pathCandidate, resolveIn } from './chat-paths.ts';
+import { folderPath, pathCandidate } from './chat-paths.ts';
 
 // M9 fix 716: Claude's replies in the chat view, rendered as Markdown.
 // The chat's own instance of the Markdown tab's setup (html off, so no
@@ -20,8 +20,10 @@ interface ReplyEnv {
 
 // A link to the web keeps its href; any other link loses it, so a click
 // on it navigates nowhere, and a relative one (no scheme, not an anchor)
-// carries the path it names in the session's folder as data-path, which
-// the view opens in a tab.
+// that resolves inside the session's folder carries that path as
+// data-path, which the view opens in a tab; one that climbs out with `..`
+// is a bare link, as a code span outside the folder is plain (M9 fix 756).
+// A link is not statted.
 md.renderer.rules['link_open'] = (tokens, idx, options, env, self) => {
   const token = tokens[idx]!;
   const raw = token.attrGet('href');
@@ -30,7 +32,7 @@ md.renderer.rules['link_open'] = (tokens, idx, options, env, self) => {
     token.attrs = (token.attrs ?? []).filter(([name]) => name !== 'href');
     const { cwd } = env as unknown as ReplyEnv;
     if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('#')) {
-      const abs = resolveIn(cwd, href);
+      const abs = folderPath(cwd, href);
       if (abs !== null) token.attrSet('data-path', abs);
     }
   }
@@ -45,8 +47,8 @@ md.renderer.rules['code_inline'] = (tokens, idx, _options, env) => {
   const text = md.utils.escapeHtml(token.content);
   const { cwd, known, ask } = env as unknown as ReplyEnv;
   const cand = pathCandidate(token.content);
-  const abs = cand === null ? null : resolveIn(cwd, cand.rel);
-  if (cand !== null && abs !== null && insideFolder(cwd, abs)) {
+  const abs = cand === null ? null : folderPath(cwd, cand.rel);
+  if (cand !== null && abs !== null) {
     const kind = known(abs);
     if (kind === 'file') {
       const line = cand.line === null ? '' : ` data-line="${cand.line}"`;

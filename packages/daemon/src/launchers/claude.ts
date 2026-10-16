@@ -45,12 +45,22 @@ export class ClaudeLauncher implements SessionLauncher {
     // Only the command line carries the flag; the record's own args (what
     // session.list and emmer resume show) stay the user's.
     const args = this.modDir === null ? [...extraArgs] : ['--plugin-dir', this.modDir, ...extraArgs];
+    const env = this.modChannelEnv();
     if (file.toLowerCase().endsWith('.cmd')) {
       const resolved = resolveNpmShim(file, this.env);
-      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args] };
-      return { file, args, note: SHIM_NOTE };
+      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args], ...env };
+      return { file, args, note: SHIM_NOTE, ...env };
     }
-    return { file, args };
+    return { file, args, ...env };
+  }
+
+  // How the mod starts its prompt channel (M9 fix 741): this daemon's own
+  // runner (node.exe, or Emerald.exe under ELECTRON_RUN_AS_NODE once
+  // installed) on the CLI's main.js, which sits beside cli/mod in the repo
+  // and the stage alike, so the pty's PATH needs no emmer.
+  private modChannelEnv(): { env?: Record<string, string> } {
+    if (this.modDir === null) return {};
+    return { env: { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve(this.modDir, '..', 'dist', 'main.js'), 'mod-channel']) } };
   }
 
   private resolveClaude(): string | null {
