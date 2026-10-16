@@ -536,6 +536,12 @@ try {
   // the CLI prints its refusal as any refusal.
   r = emerald('set', 'beta', '--comment', 'x'.repeat(2001));
   expect(r.code === 1 && /^emmer: comment must be at most 2000 characters \(bad-request\)$/m.test(r.err), 'set with a comment past 2000 characters: the daemon refuses it, exit 1');
+  // M9 fix 773: --keep-whole takes on or off, and the daemon refuses the
+  // mark on a shell, whose hand-typed claude never loads the mod.
+  r = emerald('set', 'beta', '--keep-whole', 'maybe');
+  expect(r.code === 64 && r.err.includes('--keep-whole must be on or off, got "maybe"'), `set --keep-whole maybe: usage, exit 64, got ${r.code} ${JSON.stringify(r.err)}`);
+  r = emerald('set', 'beta', '--keep-whole', 'on');
+  expect(r.code === 1 && /^emmer: keep whole is for a Claude session emerald started; beta is a shell \(bad-request\)$/m.test(r.err), `set --keep-whole on a shell: the daemon refuses it, exit 1, got ${r.code} ${JSON.stringify(r.err)}`);
 
   // M9 fix 351: set with no session is the session the command runs in,
   // off the EMERALD_SESSION_ID the daemon stamps on every pty (beta's id in

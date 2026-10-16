@@ -41,8 +41,9 @@ fs.writeFileSync(logFile, '');
 // M9 fix 392: the script costs two real Claude turns, and the second
 // session's exit and the plain `claude -p` each measured 37 to 41 s on a
 // quiet-ish box, so a 40 s wait and a 100 s watchdog barely fit two of
-// them; both waits are 90 s and the watchdog 300 s now.
-const WATCHDOG_S = 300;
+// them; both waits are 90 s and the watchdog 300 s now. M9 fix 776's
+// early session costs a third short turn.
+const WATCHDOG_S = 360;
 setTimeout(() => {
   log(`WATCHDOG: run exceeded ${WATCHDOG_S} s`);
   stopDaemonHard();
@@ -216,7 +217,28 @@ try {
   r = emerald('kill', 'safe');
   r = emerald('wait', 'safe', '--for', 'exited', '--timeout', '10000');
   expect(r.code === 0, 'safe exited');
-  log('M9 fix 741: a send --enter to a hosted Claude goes in through its mod; one under --safe-mode is typed');
+  // M9 fix 776: a send the moment a hosted Claude went idle, before its
+  // mod's channel is up, waits for the channel rather than being typed.
+  j = emeraldJson('new', repoRoot, '--name', 'early', '--json');
+  const early = j.json?.session;
+  expect(j.code === 0 && early?.kind === 'claude', 'new: the early session');
+  r = emerald('wait', 'early', '--for', 'idle', '--timeout', '15000');
+  expect(r.code === 0, `early went idle (${r.out.trim()})`);
+  sentAt = Date.now();
+  r = emerald('send', 'early', 'Reply with the single word early-776 and nothing else.', '--enter');
+  const elapsed776 = Date.now() - sentAt;
+  expect(r.code === 0 && /through the emerald mod$/m.test(r.out) && elapsed776 < 4500, `fix 776: a send the moment a hosted Claude went idle waited for its channel and went in through the mod (${elapsed776} ms: ${r.out.trim()})`);
+  r = emerald('wait', 'early', '--for', 'done', '--timeout', '90000');
+  expect(r.code === 0, `early answered the held prompt (${r.out.trim()})`);
+  j = emeraldJson('ls', '--json');
+  const earlyRow = j.json?.sessions.find((s) => s.id === early.id);
+  expect(earlyRow?.lastPrompt === 'Reply with the single word early-776 and nothing else.' && (earlyRow.lastReply ?? '').includes('early-776'), `the held prompt landed and was answered (${JSON.stringify({ lastPrompt: earlyRow?.lastPrompt, lastReply: earlyRow?.lastReply })})`);
+  const awaited = fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8').includes(`mod channel awaited for ${early.id.slice(0, 8)}`);
+  log(`note: the early send ${awaited ? 'waited for the channel' : 'found the channel up already (it can win the race)'}`);
+  r = emerald('kill', 'early');
+  r = emerald('wait', 'early', '--for', 'exited', '--timeout', '10000');
+  expect(r.code === 0, 'early exited');
+  log('M9 fix 741: a send --enter to a hosted Claude goes in through its mod; one under --safe-mode is typed; M9 fix 776: one sent the moment the session went idle waits for the channel');
 
   // M9 fix 233: a Claude emerald did not start. This checkout's hook
   // wrapper is rendered for this Node, as an install does; a settings

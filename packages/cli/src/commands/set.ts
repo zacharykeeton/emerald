@@ -15,6 +15,7 @@ const options = {
   color: { type: 'string' },
   scheme: { type: 'string' },
   'clear-scheme': { type: 'boolean', default: false },
+  'keep-whole': { type: 'string' },
   json: { type: 'boolean', default: false },
 } as const;
 
@@ -26,6 +27,8 @@ const options = {
 // title, one of the palette names or any hex. The colour scheme (M9 fix
 // 244) too: the terminal colours this one session wears, by the name the
 // pane menu lists, cleared back to the window's pick with --clear-scheme.
+// And the keep-whole mark (M9 fix 773): --keep-whole on has the emerald
+// mod skip Claude Code's idle compaction for a Claude session.
 //
 // With no <session> the command is the session it runs in: the daemon
 // stamps EMERALD_SESSION_ID on every pty it spawns, so a Claude writing its
@@ -43,12 +46,12 @@ export function sessionRefFor(ref: string | undefined, env: NodeJS.ProcessEnv): 
 const command: Command = {
   name: 'set',
   summary: "write a session's checkpoint, a comment and a phase, or set its colour (no <session>: the one this runs in)",
-  usage: `emmer set [<session>] [--comment <text> | --clear-comment] [--phase ${SESSION_PHASES.join('|')} | --clear-phase] [--color ${COLOR_NAMES}|#rrggbb] [--scheme <name> | --clear-scheme] [--json]`,
+  usage: `emmer set [<session>] [--comment <text> | --clear-comment] [--phase ${SESSION_PHASES.join('|')} | --clear-phase] [--color ${COLOR_NAMES}|#rrggbb] [--scheme <name> | --clear-scheme] [--keep-whole on|off] [--json]`,
   async run(argv) {
     const parsed = parse(argv, options);
     const ref = sessionRefFor(positionals(parsed, [], ['session']).session, process.env);
     const v = parsed.values;
-    const fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null } = {};
+    const fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean } = {};
     if (v.comment !== undefined && v['clear-comment']) throw usageError('--comment and --clear-comment together');
     if (v.comment !== undefined) fields.comment = v.comment;
     if (v['clear-comment']) fields.comment = null;
@@ -69,7 +72,12 @@ const command: Command = {
       fields.scheme = v.scheme.trim();
     }
     if (v['clear-scheme']) fields.scheme = null;
-    if (fields.comment === undefined && fields.phase === undefined && fields.color === undefined && fields.scheme === undefined) throw usageError('nothing to set: pass --comment, --clear-comment, --phase, --clear-phase, --color, --scheme or --clear-scheme');
+    if (v['keep-whole'] !== undefined) {
+      if (v['keep-whole'] === 'on') fields.keepWhole = true;
+      else if (v['keep-whole'] === 'off') fields.keepWhole = false;
+      else throw usageError(`--keep-whole must be on or off, got ${JSON.stringify(v['keep-whole'])}`);
+    }
+    if (fields.comment === undefined && fields.phase === undefined && fields.color === undefined && fields.scheme === undefined && fields.keepWhole === undefined) throw usageError('nothing to set: pass --comment, --clear-comment, --phase, --clear-phase, --color, --scheme, --clear-scheme or --keep-whole');
 
     await withDaemon(async (client) => {
       const found = await findSession(client, ref);
@@ -77,7 +85,7 @@ const command: Command = {
       // The reply carries nothing; the list is the truth after the write.
       const after = (await client.request('session.list', {})).sessions.find((s) => s.id === found.id) ?? found;
       if (v.json) {
-        printJson({ sessionId: after.id, name: after.name, comment: after.comment, phase: after.phase, color: after.color, scheme: after.scheme ?? null });
+        printJson({ sessionId: after.id, name: after.name, comment: after.comment, phase: after.phase, color: after.color, scheme: after.scheme ?? null, keepWhole: after.keepWhole === true });
         return;
       }
       const parts: string[] = [];
@@ -85,6 +93,7 @@ const command: Command = {
       if (fields.phase !== undefined) parts.push(after.phase === null ? 'phase cleared' : `phase ${after.phase}`);
       if (fields.color !== undefined) parts.push(`colour ${after.color ?? 'none'}`);
       if (fields.scheme !== undefined) parts.push(after.scheme === null || after.scheme === undefined ? "scheme cleared, the window's" : `scheme ${after.scheme}`);
+      if (fields.keepWhole !== undefined) parts.push(after.keepWhole === true ? 'kept whole while idle' : 'no longer kept whole');
       println(`set ${shortId(after.id)} ${after.name}: ${parts.join(', ')}`);
     });
   },

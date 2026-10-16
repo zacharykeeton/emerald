@@ -10,10 +10,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CTRL, SHIFT, clickNewShell, expect, freshPort, getLayout, killTree, launch, leaves, sleep, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
 
+// M9 fix 796: 90 s, since cdp.mjs's connect now waits up to 40 s after the
+// page-target poll's 20 s and the watchdog would fire before its message.
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 60 s');
+  console.error('[verify] WATCHDOG: run exceeded 90 s');
   process.exit(3);
-}, 60000);
+}, 90000);
 
 const titleOf = (s, paneId) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .pane-state')?.textContent ?? null`);
 // The row's state badge, dot and age: a plain shell has none (M22).

@@ -12,7 +12,7 @@ import { currentTab, replaceTab, splitPane } from '@emerald/shared';
 import { PipeClient } from '@emerald/shared/pipe-client';
 import { LayoutStore } from './layout-store.ts';
 import { silentLogger } from './log.ts';
-import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer, claimPipe } from './pipe-server.ts';
+import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer, ROW_PUSH_LEVEL, claimPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
 import type { LoadTick } from './session-manager.ts';
 
@@ -348,6 +348,20 @@ test('browser.run relays a command to a window at level 63 and holds the reply (
   }
 });
 
+// M9 fix 781: a channel answering each push as the mod does, posting its
+// word on the submit (the hook sink hands it to modSubmitAnswered); a drop
+// says the prompt did not enter. And a push read without its id.
+function answerPushes(channel: PipeClient, srv: PipeServer, drop: string | null = null): void {
+  channel.on('message', (m: ServerMessage) => {
+    if (m.type === 'mod.submit' && m.submitId !== undefined) srv.modSubmitAnswered(m.sessionId, m.submitId, drop === null, drop);
+  });
+}
+function withoutId(m: ServerMessage): unknown {
+  const { submitId, ...rest } = m as ServerMessage & { submitId?: string };
+  assert.equal(typeof submitId, 'string', 'the push carries a submitId');
+  return rest;
+}
+
 test('mod.channel takes a session\'s prompts and session.submit routes through it while it is open (M9 fix 741)', async () => {
   const cli = await PipeClient.connect(PIPE);
   const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
@@ -358,13 +372,15 @@ test('mod.channel takes a session\'s prompts and session.submit routes through i
 
     const first = await PipeClient.connect(PIPE);
     await first.request('mod.channel', { sessionId: session.id });
+    answerPushes(first, server);
     const pushed = waitFor(first, (m) => m.type === 'mod.submit');
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'mod' });
-    assert.deepEqual(await pushed, { type: 'mod.submit', sessionId: session.id, text: 'hi' });
+    assert.deepEqual(withoutId(await pushed), { type: 'mod.submit', sessionId: session.id, text: 'hi' });
 
     // A second registration takes the pushes from the first.
     const second = await PipeClient.connect(PIPE);
     await second.request('mod.channel', { sessionId: session.id });
+    answerPushes(second, server);
     const firstHeard: ServerMessage[] = [];
     first.on('message', (m: ServerMessage) => firstHeard.push(m));
     const toSecond = waitFor(second, (m) => m.type === 'mod.submit');
@@ -383,6 +399,88 @@ test('mod.channel takes a session\'s prompts and session.submit routes through i
   } finally {
     await cli.request('session.kill', { sessionId: session.id });
     cli.close();
+  }
+});
+
+test('a send to a session whose mod posted waits for its channel, and one never seen or whose channel went is typed at once (M9 fix 776)', async () => {
+  const pipe = `${PIPE}-776`;
+  const seen = new Set<string>();
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSeen: (id) => seen.has(id), modChannelWaitMs: 400 });
+  await own.listen();
+  const cli = await PipeClient.connect(pipe);
+  const { session: held } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  const { session: late } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  const { session: unseen } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  try {
+    seen.add(held.id);
+    seen.add(late.id);
+    // (1) Held, then the channel opens 150 ms later and takes the push.
+    const channel = await PipeClient.connect(pipe);
+    answerPushes(channel, own);
+    const pushed = waitFor(channel, (m) => m.type === 'mod.submit');
+    const t1 = Date.now();
+    const reply = cli.request('session.submit', { sessionId: held.id, text: 'early' });
+    await new Promise((r) => setTimeout(r, 150));
+    await channel.request('mod.channel', { sessionId: held.id });
+    assert.deepEqual(await reply, { via: 'mod' }, 'a held send goes through the channel once it opens');
+    assert.deepEqual(withoutId(await pushed), { type: 'mod.submit', sessionId: held.id, text: 'early' });
+    assert.ok(Date.now() - t1 >= 140, 'the reply waited for the channel');
+    // (2) Seen, no channel: typed at the deadline.
+    const t2 = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: late.id, text: 'x' }), { via: 'typed' });
+    assert.ok(Date.now() - t2 >= 390, `typed after the wait, took ${Date.now() - t2} ms`);
+    // (3) Never seen: typed at once.
+    const t3 = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: unseen.id, text: 'x' }), { via: 'typed' });
+    assert.ok(Date.now() - t3 < 100, `typed at once, took ${Date.now() - t3} ms`);
+    // (4) A channel that opened and closed: typed at once.
+    channel.close();
+    await once(channel, 'close');
+    await new Promise((r) => setTimeout(r, 100));
+    const t4 = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: held.id, text: 'x' }), { via: 'typed' });
+    assert.ok(Date.now() - t4 < 100, `typed at once after the channel went, took ${Date.now() - t4} ms`);
+  } finally {
+    for (const s of [held, late, unseen]) await cli.request('session.kill', { sessionId: s.id }).catch(() => undefined);
+    cli.close();
+    await own.close();
+  }
+});
+
+test('session.submit answers typed when the mod says its prompt did not enter, mod when it entered or no word came in time (M9 fix 781)', async () => {
+  const pipe = `${PIPE}-781`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSubmitAckMs: 300 });
+  await own.listen();
+  const cli = await PipeClient.connect(pipe);
+  const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  const channel = await PipeClient.connect(pipe);
+  try {
+    await channel.request('mod.channel', { sessionId: session.id });
+    const answer = (drop: string | null, otherSession = false) => {
+      const heard = waitFor(channel, (m) => m.type === 'mod.submit');
+      void heard.then((m) => {
+        const push = m as { sessionId: string; submitId: string };
+        own.modSubmitAnswered(otherSession ? 'another' : push.sessionId, push.submitId, drop === null, drop);
+      });
+    };
+    // A person's Stop stands: the engine dropped the prompt, so the caller types it.
+    answer('the session was stopped and nobody has sent input since');
+    let t = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'after the stop' }), { via: 'typed' });
+    assert.ok(Date.now() - t < 250, `answered on the word, took ${Date.now() - t} ms`);
+    // Entered.
+    answer(null);
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'next' }), { via: 'mod' });
+    // A word under another session's id is not this send's: no word, so mod at the bound.
+    answer('x', true);
+    t = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod' });
+    assert.ok(Date.now() - t >= 290, `mod after the bound, took ${Date.now() - t} ms`);
+  } finally {
+    channel.close();
+    await cli.request('session.kill', { sessionId: session.id }).catch(() => undefined);
+    cli.close();
+    await own.close();
   }
 });
 
@@ -853,6 +951,36 @@ test('a mod measure\'s rate limits go to a level 65 window subscribed to app, an
     await new Promise((r) => setTimeout(r, 200));
     assert.deepEqual(fresh.heard.filter((m) => m.type === 'usage.limits'), [{ type: 'usage.limits', at: 7001, limits }]);
     assert.deepEqual(older.heard.filter((m) => m.type === 'usage.limits'), []);
+  } finally {
+    for (const c of clients) c.close();
+    await own.close();
+  }
+});
+
+test('a row the mod kept goes to a level 66 window subscribed to sessions as transcript.row, and not to one at 65 (M9 fix 769)', async () => {
+  const pipe = `${PIPE}-rows`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  const clients: PipeClient[] = [];
+  try {
+    const join = async (hello: Record<string, unknown>) => {
+      const c = await PipeClient.connect(pipe);
+      clients.push(c);
+      await c.request('hello', { protocolVersion: PROTOCOL_VERSION, ...hello } as never);
+      await c.request('subscribe', { topics: ['sessions'] });
+      const heard: ServerMessage[] = [];
+      c.on('message', (m: ServerMessage) => heard.push(m));
+      return { c, heard };
+    };
+    const fresh = await join({ client: 'app', featureLevel: ROW_PUSH_LEVEL });
+    const older = await join({ client: 'app', featureLevel: 65 });
+    const row = { type: 'assistant' as const, role: 'assistant' as const, content: [{ type: 'text', text: 'From the mod.' }] };
+    const freshHeard = waitFor(fresh.c, (m) => m.type === 'transcript.row');
+    manager.emit('row', { sessionId: 's-769', at: 7002, uuid: 'u-769', row, cut: false });
+    await freshHeard;
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(fresh.heard.filter((m) => m.type === 'transcript.row'), [{ type: 'transcript.row', sessionId: 's-769', at: 7002, uuid: 'u-769', row }]);
+    assert.deepEqual(older.heard.filter((m) => m.type === 'transcript.row'), []);
   } finally {
     for (const c of clients) c.close();
     await own.close();

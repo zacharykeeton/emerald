@@ -186,6 +186,62 @@ test('set writes the checkpoint one field at a time, persists it, and a resume k
   }
 });
 
+test('compactAsk skips the engine\'s own compaction of a Claude session marked to keep whole while it is idle, waiting or done, and nothing else; a shell cannot be marked (M9 fix 773)', async () => {
+  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
+  const claude: SessionInfo = {
+    id: 'keep-1', kind: 'claude', name: 'proj', spawnCwd: process.cwd(), args: [], autoName: true, branch: null, lastPrompt: null, lastReply: null,
+    cwd: process.cwd(), groupCwd: process.cwd(), state: 'idle', stateSince: 1000, lastEventAt: 1000, stale: false, needsInputReason: null, errorType: null,
+    waitingOn: [], team: [], conversation: null, shellCwd: null, commits: [], model: null, contextPercent: null, contextWindow: null, tokens: null,
+    comment: null, phase: null, color: '#61afef', title: null, transcriptPath: null, liveReply: null, liveTool: null, claudeSessionId: 'c-1',
+    remoteSessionId: null, startHead: null, pid: 1, exitCode: null, createdAt: 1000,
+  };
+  store.save([claude]);
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
+  try {
+    manager.restore();
+    // A restored session is exited; the rule reads the state alone, so
+    // the record is put in each state by hand.
+    const at = (state: SessionInfo['state']) => {
+      const rec = manager.get('keep-1');
+      rec.info = { ...rec.info, state };
+    };
+    at('idle');
+    assert.equal(manager.compactAsk('keep-1', 'auto'), null, 'not marked: let through');
+    manager.set('keep-1', { keepWhole: true });
+    assert.equal(manager.get('keep-1').info.keepWhole, true);
+    assert.equal(store.load().find((p) => p.id === 'keep-1')!.keepWhole, true, 'the mark is written to the file');
+    for (const state of ['idle', 'waiting', 'done'] as const) {
+      at(state);
+      assert.equal(manager.compactAsk('keep-1', 'auto'), 'kept whole while idle by emerald', `auto at ${state}`);
+      assert.equal(manager.compactAsk('keep-1', 'precompute'), 'kept whole while idle by emerald', `precompute at ${state}`);
+      assert.equal(manager.compactAsk('keep-1', 'manual'), null, `manual at ${state}`);
+      assert.equal(manager.compactAsk('keep-1', 'plugin'), null, `plugin at ${state}`);
+    }
+    for (const state of ['working', 'needs-input'] as const) {
+      at(state);
+      assert.equal(manager.compactAsk('keep-1', 'auto'), null, `a full window's mid-turn at ${state}`);
+    }
+    at('idle');
+    const marked = manager.get('keep-1').info;
+    manager.set('keep-1', { keepWhole: true });
+    assert.equal(manager.get('keep-1').info, marked, 'the same mark again changes nothing');
+    manager.set('keep-1', { keepWhole: false });
+    assert.equal(manager.compactAsk('keep-1', 'auto'), null, 'unmarked: let through');
+    assert.equal(store.load().find((p) => p.id === 'keep-1')!.keepWhole, false);
+    assert.equal(manager.compactAsk('nope', 'auto'), null, 'an unknown session: let through');
+
+    const { id } = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: exitArgs(0), cols: 80, rows: 24 });
+    const shell = manager.get(id).info;
+    assert.throws(() => manager.set(id, { keepWhole: true, comment: 'x' }), (err: Error & { code?: string }) => err.code === 'bad-request' && /keep whole is for a Claude session emerald started; .* is a shell/.test(err.message));
+    assert.equal(manager.get(id).info, shell, 'refused before any field is applied');
+    manager.set(id, { keepWhole: false });
+    assert.equal(manager.get(id).info, shell, 'false on a shell changes nothing');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
 test('the commit a session started on is read in its start folder at spawn, persisted, restored and kept through a resume (M9 fix 117)', async () => {
   const dir = tempDir();
   const log = recordingLogger();
@@ -958,6 +1014,34 @@ test('a spinner line on the stream puts the word on the session, the latest one,
     assert.equal(manager.get(s.id).info.liveVerb, null, 'the exit clears the word with the turn');
     const back = manager.resume(s.id, 120, 30);
     assert.equal(back.liveVerb, null, 'the new process starts with none');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
+test('a spinner word on a row at a permission ask puts it back at working with the ask gone (M9 fix 775)', async () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 120, rows: 30 });
+    const at = Date.now();
+    manager.applyHook(s.id, { hook_event_name: 'UserPromptSubmit', session_id: 'conv-775', prompt: 'ping it' }, at);
+    manager.applyHook(s.id, { hook_event_name: 'ToolAsk', session_id: 'conv-775', tool_name: 'Bash', tool_input: { command: 'ping -n 11 127.0.0.1' }, tool_use_id: 'u1' }, at + 1);
+    manager.applyHook(s.id, { hook_event_name: 'PermissionRequest', session_id: 'conv-775', tool_name: 'Bash' }, at + 2);
+    assert.equal(manager.get(s.id).info.state, 'needs-input');
+    assert.equal(manager.get(s.id).info.askedFor?.toolUseId, 'u1');
+    const working = Promise.race([
+      new Promise<void>((resolve) => {
+        const seen = () => manager.get(s.id).info.state === 'working';
+        if (seen()) resolve();
+        else manager.on('changed', () => { if (seen()) resolve(); });
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the row did not go back to working within 20 s')), 20_000)),
+    ]);
+    manager.get(s.id).pty!.write(`Write-Host "$([char]10)$([char]0x2736) Roosting$([char]0x2026) (esc to interrupt)"\r`);
+    await working;
+    assert.equal(manager.get(s.id).info.askedFor, null, 'the ask goes with the dialog');
+    assert.equal(manager.get(s.id).info.needsInputReason, null);
   } finally {
     manager.killAll();
     manager.close();
@@ -2393,6 +2477,33 @@ test('a SessionStart under another conversation is told in the log once per new 
     const told = log.lines.filter((l) => l.startsWith('info hook SessionStart under another conversation ignored'));
     assert.equal(told.length, 2, log.lines.join(' | '));
     assert.equal(manager.get(s.id).info.claudeSessionId, 'conv-1');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
+test('an Append from the bound conversation emits row once and leaves the record alone; a foreign one or one with no uuid emits none (M9 fix 769)', () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 120, rows: 30 });
+    const rows: Array<{ sessionId: string; uuid: string; row: unknown; cut: boolean }> = [];
+    manager.on('row', (r: { sessionId: string; uuid: string; row: unknown; cut: boolean }) => rows.push(r));
+    const row = { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'From the mod.' }] };
+    manager.applyHook(s.id, { hook_event_name: 'SessionStart', session_id: 'conv-769', source: 'startup' }, Date.now());
+    const info = manager.get(s.id).info;
+    const result = manager.applyHook(s.id, { hook_event_name: 'Append', session_id: 'conv-769', uuid: 'u-769', door: 'response', row }, Date.now());
+    assert.equal(result.outcome, 'applied');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.sessionId, s.id);
+    assert.equal(rows[0]!.uuid, 'u-769');
+    assert.deepEqual(rows[0]!.row, row);
+    assert.equal(rows[0]!.cut, false);
+    assert.equal(manager.get(s.id).info, info, 'the record is the same object');
+    manager.applyHook(s.id, { hook_event_name: 'Append', session_id: 'conv-other', uuid: 'u-other', door: 'response', row }, Date.now());
+    assert.equal(rows.length, 1, 'a foreign row emits nothing');
+    manager.applyHook(s.id, { hook_event_name: 'Append', session_id: 'conv-769', door: 'response', row }, Date.now());
+    assert.equal(rows.length, 1, 'a row with no uuid emits nothing');
   } finally {
     manager.killAll();
     manager.close();

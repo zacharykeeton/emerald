@@ -260,13 +260,18 @@ try {
   // (g) The tray: two picks with a comment each, a third deleted, sent as
   // one numbered block.
   // Fix 757: the page's size before the tray is read once the hint bar
-  // has left and the page has taken its room back, so the drop below is
-  // the tray's alone.
+  // has left and the page has taken its room back. M9 fix 794: the room
+  // is the pane's .browser-body, which the page and its frame both lag;
+  // polling the page against the frame settled on the pair 27 px short
+  // (the hint bar's height) on one run in four.
   await s.waitFor(`!document.querySelector(${q(inPane('.design-hint'))})`, 'the hint bar gone');
   const frameTall = () => s.evalJs(`(() => { const r = document.querySelector('.browser-frame[data-browser-pane="${webPaneId}"]')?.getBoundingClientRect(); return r ? r.height : null; })()`);
+  const bodyTall = () => s.evalJs(`(() => { const r = document.querySelector(${q(inPane('.browser-body'))})?.getBoundingClientRect(); return r ? r.height : null; })()`);
+  // The body reads 3 px more than the page and its frame on this box at
+  // rest (663 against 660, on every run), so the settled pair is within 4.
   until = Date.now() + 3000;
-  while (Math.abs((await ev('innerHeight')) - ((await frameTall()) ?? 0)) > 1 && Date.now() < until) await sleep(100);
-  console.log(`[757] before the tray: innerHeight ${await ev('innerHeight')}, frame ${await frameTall()} px`);
+  while (Math.abs((await ev('innerHeight')) - ((await bodyTall()) ?? 0)) > 4 && Date.now() < until) await sleep(100);
+  console.log(`[757] before the tray: innerHeight ${await ev('innerHeight')}, body ${await bodyTall()} px, frame ${await frameTall()} px`);
   const wideBefore = await ev('innerWidth');
   const tallBefore = await ev('innerHeight');
   // The page's innerWidth against its frame's width, read before the tray
@@ -285,14 +290,15 @@ try {
   // its new width went to the page under the picker on one run in three
   // (fix 675's send-back), so the picks wait for the page's new size. A
   // tray docked under the page (fix 698, a pane under 600 px) changes the
-  // height instead: tallBefore is read once the hint bar has left and the
-  // page has its room back (fix 757), so the drop is the empty tray's 46 px
-  // floor and its 1 px border; 44 leaves 2 px for rounding.
+  // height instead: the mode turned back on above brings the hint bar back
+  // (27 px) and the empty tray takes its 46 px floor and its 1 px border,
+  // so the drop from tallBefore, read with the page at its full room
+  // (fixes 757 and 794), is 74 px; 72 leaves 2 px for rounding.
   until = Date.now() + 5000;
   if (paneWide < 600) {
-    while ((await ev('innerHeight')) > tallBefore - 44 && Date.now() < until) await sleep(100);
+    while ((await ev('innerHeight')) > tallBefore - 72 && Date.now() < until) await sleep(100);
     console.log(`[698] with the tray open: innerWidth ${await ev('innerWidth')}, innerHeight ${tallBefore} then ${await ev('innerHeight')}, frame ${await frameWide()} px`);
-    expect((await ev('innerHeight')) <= tallBefore - 44, `the page shortens over the docked tray (${tallBefore} then ${await ev('innerHeight')})`);
+    expect((await ev('innerHeight')) <= tallBefore - 72, `the page shortens over the docked tray (${tallBefore} then ${await ev('innerHeight')})`);
     expect(Math.abs((await ev('innerWidth')) - wideBefore) <= 4, `the page keeps its width over the docked tray (${wideBefore} then ${await ev('innerWidth')})`);
     const tray = await boxOf('.design-tray');
     const body = await boxOf('.browser-body');

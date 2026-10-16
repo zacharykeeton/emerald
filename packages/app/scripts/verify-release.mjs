@@ -29,10 +29,12 @@ const t0 = Date.now();
 fs.mkdirSync(verifyDir, { recursive: true });
 fs.writeFileSync(logFile, '');
 
+// M9 fix 796: 90 s, since cdp.mjs's connect now waits up to 40 s after the
+// page-target poll's 20 s and the watchdog would fire before its message.
 setTimeout(() => {
-  log('WATCHDOG: run exceeded 60 s');
+  log('WATCHDOG: run exceeded 90 s');
   process.exit(3);
-}, 60000).unref();
+}, 90000).unref();
 
 function log(msg) {
   const line = `[verify +${((Date.now() - t0) / 1000).toFixed(2)}s] ${msg}`;

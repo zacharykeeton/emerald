@@ -67,6 +67,8 @@ export interface PersistedSession {
   color: string;
   // The session's own colour scheme (M9 fix 244), null for the window's.
   scheme: string | null;
+  // The keep-whole mark (M9 fix 773), so it outlives a restart and a resume.
+  keepWhole: boolean;
   createdAt: number;
   // Both null while the session is live. A session that was still live when
   // the daemon died loads with both null: nobody saw it exit.
@@ -126,6 +128,7 @@ export function toPersisted(info: SessionInfo, lastScreen: KeptScreen | null = n
     // renderer's benefit and never reaches this file.
     color: info.color ?? pickSessionColor([]),
     scheme: info.scheme ?? null,
+    keepWhole: info.keepWhole === true,
     createdAt: info.createdAt,
     exitCode: exited ? info.exitCode : null,
     // stateSince is when the state became exited.
@@ -287,13 +290,16 @@ function validateEntry(value: unknown, taken: string[]): PersistedSession | null
   // Files written before M9 fix 244 have no scheme; a value of the wrong
   // shape reads as none, the window's pick.
   const scheme = typeof value['scheme'] === 'string' && value['scheme'] !== '' ? value['scheme'] : null;
+  // Files written before M9 fix 773 have no mark; anything but true reads
+  // as not marked.
+  const keepWhole = value['keepWhole'] === true;
   if (typeof createdAt !== 'number') return null;
   if (exitCode !== null && typeof exitCode !== 'number') return null;
   if (exitedAt !== null && typeof exitedAt !== 'number') return null;
   // Files written before M57 have no removed records.
   const removedAt = value['removedAt'] ?? null;
   if (removedAt !== null && typeof removedAt !== 'number') return null;
-  return { id, kind, name, autoName, spawnCwd, args, shell, cwd, groupCwd, claudeSessionId, remoteSessionId, startHead, conversation, spans, commits, touched, lastPrompt, lastReply, lastPromptAt, lastReplyAt, model, contextPercent, contextWindow, tokens, costUsd, tasks, lastScreen, comment, phase, color, scheme, createdAt, exitCode, exitedAt, removedAt };
+  return { id, kind, name, autoName, spawnCwd, args, shell, cwd, groupCwd, claudeSessionId, remoteSessionId, startHead, conversation, spans, commits, touched, lastPrompt, lastReply, lastPromptAt, lastReplyAt, model, contextPercent, contextWindow, tokens, costUsd, tasks, lastScreen, comment, phase, color, scheme, keepWhole, createdAt, exitCode, exitedAt, removedAt };
 }
 
 function textOrNull(v: unknown): string | null {

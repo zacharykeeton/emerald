@@ -864,6 +864,29 @@ test('StatusLine reads the cost Claude Code reports (M9 fix 154), keeps it over 
   assert.equal(reduce(more, hook('SessionEnd', { reason: 'exit' })).costUsd, 6.797);
 });
 
+test('StatusLine keeps the prompt cache\'s TTL, expiry and warmth (M9 fix 772), keeps it over a line without the block and over a Measure, and a line with no expiry clears it', () => {
+  const start = session({ state: 'done', lastEventAt: T0 });
+  const line = hook('StatusLine', { context_window: { used_percentage: 6 }, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3 } });
+  assert.equal(start.cache ?? null, null);
+  const warm = reduce(start, line);
+  assert.deepEqual(warm.cache, { ttl: '1h', expiresAt: 1792090000000, warm: true });
+  assert.equal(warm.state, 'done');
+  assert.equal(warm.lastEventAt, T0, 'a status line moves no state');
+  assert.equal(reduce(warm, line), warm, 'the same line again returns the same record');
+  const without = reduce(warm, hook('StatusLine', { context_window: { used_percentage: 7 } }));
+  assert.equal(without.cache, warm.cache, 'a line without the block keeps the last');
+  const measured = reduce(warm, hook('Measure', { measure: { context: { percent: 10 } } }));
+  assert.equal(measured.cache, warm.cache, 'a measure keeps it');
+  assert.equal(measured.state, 'done');
+  assert.equal(reduce(warm, hook('StatusLine', { prompt_cache: { warm: false, ttl: '1h', expires_at: null } })).cache, null, 'no expiry: no cache tokens on the last response');
+  assert.equal(reduce(warm, hook('StatusLine', { prompt_cache: { warm: true, ttl: '10m', expires_at: 1792090000 } })).cache, null, 'a TTL Claude Code does not write');
+  assert.deepEqual(reduce(warm, hook('StatusLine', { prompt_cache: { warm: false, ttl: '1h', expires_at: 1792090000 } })).cache, { ttl: '1h', expiresAt: 1792090000000, warm: false });
+  // A shell whose Claude leaves takes the cache with it.
+  const shell = reduce(reduce(session({ kind: 'shell', claudeSessionId: null }), hook('SessionStart', { source: 'startup' })), line);
+  assert.equal(shell.cache?.ttl, '1h');
+  assert.equal(reduce(shell, hook('SessionEnd', { reason: 'exit' })).cache, null);
+});
+
 test('runningKind: a shell says claude while a Claude session id is bound, and SessionEnd unbinds a shell only', () => {
   const shell = session({ kind: 'shell', claudeSessionId: null });
   assert.equal(runningKind(shell), 'shell');
@@ -1417,7 +1440,71 @@ test('an aborted TurnComplete puts a running turn at idle with the live fields c
   }
   assert.equal(reduce(session({ state: 'done' }), hook('TurnComplete', { turn_id: 't-1', is_aborted: true })).state, 'done', 'a done session stays done');
   assert.equal(reduce(session({ state: 'working' }), hook('TurnComplete', { turn_id: 't-2', is_aborted: true, turn_agent_id: 'a1' })).state, 'working', 'a subagent\'s aborted turn moves nothing');
-  assert.equal(reduce(session({ state: 'working' }), hook('TurnComplete', { turn_id: 't-3', is_aborted: false, reason: 'answer' })).state, 'working', 'an answered turn waits for its Stop');
+  assert.equal(reduce(session({ state: 'working' }), hook('TurnComplete', { turn_id: 't-3', is_aborted: false, reason: 'answer' })).state, 'idle', 'a turn that ended with no Stop is idle whatever is_aborted says (fix 774)');
+});
+
+test('an Escape at a permission dialog (TurnComplete reason answer, no Stop) puts the row at idle with the ask gone (M9 fix 774)', () => {
+  let s = reduce(session({ state: 'working' }), hook('PermissionRequest', { tool_name: 'Bash' }));
+  s = reduce(s, hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'ping -n 1 127.0.0.1' }, tool_use_id: 'u1' }));
+  assert.equal(s.state, 'needs-input');
+  const after = reduce(s, hook('TurnComplete', { turn_id: 't-1', reason: 'answer', is_aborted: false }));
+  assert.equal(after.state, 'idle');
+  assert.equal(after.needsInputReason, null);
+  assert.equal(after.askedFor, null);
+});
+
+test('a finished turn replayed in its recorded order (Stop before TurnComplete) ends done, not idle (M9 fix 774)', () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'ping it' }, T0 + 10));
+  s = reduce(s, hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'u1' }, T0 + 20));
+  s = reduce(s, hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'ping -n 1 127.0.0.1' }, tool_use_id: 'u1' }, T0 + 21));
+  s = reduce(s, hook('PermissionRequest', { tool_name: 'Bash' }, T0 + 22));
+  s = reduce(s, hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'u1' }, T0 + 30));
+  s = reduce(s, hook('Stop', {}, T0 + 40));
+  assert.equal(s.state, 'done');
+  s = reduce(s, hook('TurnComplete', { turn_id: 't-1', is_aborted: false }, T0 + 41));
+  assert.equal(s.state, 'done', 'the TurnComplete after a Stop moves nothing');
+});
+
+test('a top-level TurnComplete leaves a paused turn waiting on an asking member alone (M9 fix 774)', () => {
+  const working = reduce(session({ state: 'working' }), hook('SubagentStart', { agent_id: 'a1', agent_type: 'fork' }, T0 + 10));
+  const askedMidTurn = reduce(working, hook('PermissionRequest', { agent_id: 'a1', tool_name: 'Bash' }, T0 + 30));
+  const pausedAsking = reduce(askedMidTurn, hook('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }] }, T0 + 31));
+  assert.equal(pausedAsking.needsInputReason, 'agent-permission');
+  const after = reduce(pausedAsking, hook('TurnComplete', { turn_id: 't-1', is_aborted: false }, T0 + 32));
+  assert.equal(after.state, 'needs-input');
+  assert.equal(after.needsInputReason, 'agent-permission');
+});
+
+test("a member's TurnComplete keeps the parent's ask (M9 fix 774)", () => {
+  const asked = reduce(session({ state: 'working' }), hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_use_id: 'u1' }));
+  const after = reduce(asked, hook('TurnComplete', { turn_id: 't-2', is_aborted: false, turn_agent_id: 'a1' }));
+  assert.equal(after.askedFor?.words, 'Bash: npm publish');
+});
+
+test("the mod's ToolRunning for the asked call puts an answered permission back at working (M9 fix 775)", () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'ping it' }, T0 + 10));
+  s = reduce(s, hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'u1' }, T0 + 20));
+  s = reduce(s, hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'ping -n 11 127.0.0.1' }, tool_use_id: 'u1' }, T0 + 21));
+  s = reduce(s, hook('PermissionRequest', { tool_name: 'Bash' }, T0 + 22));
+  assert.equal(s.state, 'needs-input');
+  const running = reduce(s, hook('ToolRunning', { tool_use_id: 'u1' }, T0 + 30));
+  assert.equal(running.state, 'working');
+  assert.equal(running.needsInputReason, null);
+  assert.equal(running.askedFor, null);
+  // (2) Another call's progress answers nothing.
+  const other = reduce(s, hook('ToolRunning', { tool_use_id: 'u2' }, T0 + 30));
+  assert.equal(other.state, 'needs-input');
+  assert.equal(other.askedFor?.words, 'Bash: ping -n 11 127.0.0.1');
+});
+
+test("ToolRunning moves neither an agent's ask nor an idle row (M9 fix 775)", () => {
+  const working = reduce(session({ state: 'working' }), hook('SubagentStart', { agent_id: 'a1', agent_type: 'fork' }, T0 + 10));
+  const agentAsk = reduce(working, hook('PermissionRequest', { agent_id: 'a1', tool_name: 'Bash' }, T0 + 30));
+  assert.equal(agentAsk.needsInputReason, 'agent-permission');
+  const after = reduce(agentAsk, hook('ToolRunning', { tool_use_id: 'u9' }, T0 + 31));
+  assert.equal(after.state, 'needs-input');
+  assert.equal(after.needsInputReason, 'agent-permission');
+  assert.equal(reduce(session({ state: 'idle' }), hook('ToolRunning', { tool_use_id: 'u1' })).state, 'idle');
 });
 
 test('a Measure sets the context percent and the cost and leaves the model, the state and the clock (M9 fix 739)', () => {

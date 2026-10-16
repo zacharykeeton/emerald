@@ -33,7 +33,7 @@ test('a session pane lists the menu in order, the key items naming their binding
     ['new-claude', 'rename', 'close-session'],
   );
   assert.equal(items.find((i) => i.run === 'new-shell')?.separator, true);
-  assert.equal(items.find((i) => i.run === 'close-session')?.title, 'Close: kill emerald and close the pane; it stays under exited, where it can be resumed');
+  assert.equal(items.find((i) => i.run === 'close-session')?.title, 'Close: kill emerald and close the pane; it waits under exited for 10 seconds, where Resume brings it back, then leaves the list');
   // The default's Claude, so the title changes though the label does not.
   const claudeDefault = sessionPaneMenu({ session: session(), sessionId: 's1', zoomed: false, onlyPane: false, splitKind: 'claude', atDefaultFontSize: true });
   assert.equal(claudeDefault.find((i) => i.run === 'split-right')?.title, 'A Claude in this folder, beside');

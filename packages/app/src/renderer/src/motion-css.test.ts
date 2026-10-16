@@ -69,3 +69,14 @@ test('each band host clips its band', () => {
     assert.ok(new RegExp(`${escaped}::after\\s*\\{[^}]*animation:\\s*turn-band 2\\.6s linear infinite`).test(css), `${host}::after runs the band`);
   }
 });
+
+// M9 fix 789: band-visibility.ts marks a line out of view and the sheet
+// stops its band.
+test('the bands stop off screen (fix 789)', () => {
+  for (const host of ['.sidebar-row[data-working] .sidebar-row-agent[data-offscreen]', '.commits-agent-activity[data-working][data-offscreen]']) {
+    const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`${escaped}::after\\s*\\{([^}]*)\\}`).exec(css);
+    assert.ok(m, `${host}::after has a rule`);
+    assert.equal(m[1]!.trim(), 'animation: none;', `${host}::after stops the band`);
+  }
+});

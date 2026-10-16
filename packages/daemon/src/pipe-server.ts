@@ -2,7 +2,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
-import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
+import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -75,6 +75,16 @@ export interface PipeServerOptions {
   // The hook sink's memory of Test events (M9 fix 606); a server without
   // one (the tests) answers false.
   hookTestArrived?: (testId: string) => boolean;
+  // Whether the sink has had a post from this session's emerald mod (M9
+  // fix 776), so a send can wait for its channel; a server without one
+  // (the tests) never waits.
+  modSeen?: (sessionId: string) => boolean;
+  // How long a send waits for that channel; defaults to
+  // MOD_CHANNEL_WAIT_MS, the tests shorten it.
+  modChannelWaitMs?: number;
+  // How long a send waits for the mod's word on its submit; defaults to
+  // MOD_SUBMIT_ACK_MS, the tests shorten it.
+  modSubmitAckMs?: number;
   // How much unread a client may hold before it is dropped (M9 fix 497);
   // defaults to Limits.clientDropBytes, the tests shorten it.
   dropUnreadBytes?: number;
@@ -114,7 +124,7 @@ interface ServerHooks {
   // The emerald mod's prompt channel (M9 fix 741): this connection takes
   // the session's mod.submit pushes, and a session.submit is pushed to it.
   openModChannel: (sessionId: string, client: ClientConnection) => void;
-  submitToMod: (req: Requests['session.submit']['req']) => Requests['session.submit']['res'];
+  submitToMod: (req: Requests['session.submit']['req']) => Promise<Requests['session.submit']['res']>;
 }
 
 type FileOpenAsk = Requests['file.open']['req'];
@@ -149,6 +159,10 @@ export const LOAD_PUSH_LEVEL = 64;
 // The first app level that takes usage.limits (M9 fix 739), the rate
 // limits a hosted session's mod measured; an older window gets none.
 export const LIMITS_PUSH_LEVEL = 65;
+
+// The first app level that takes transcript.row (M9 fix 769), each row a
+// hosted session's mod kept; an older window reads the transcript alone.
+export const ROW_PUSH_LEVEL = 66;
 
 // Grey, on its own line, like the renderer's own exit note.
 const SCROLLBACK_LOST_NOTE = '\x1b[90m[scrollback lost: this session ended before emmerd restarted]\x1b[0m\r\n';
@@ -197,6 +211,20 @@ export function claimPipe(pipePath: string): Promise<ClaimedPipe> {
   });
 }
 
+// How long a send waits for a hosted Claude's mod to open its prompt
+// channel (M9 fix 776): the channel opened about a second after the row
+// first read idle in fix 741's run, so three seconds holds it with room.
+export const MOD_CHANNEL_WAIT_MS = 3000;
+
+// How long a send waits for the mod's word on a submit (M9 fix 781). The
+// engine refuses a plugin's prompt with no turn while a person's Stop
+// stands ("the session was stopped and nobody has sent input since", read
+// on 2.1.301), and the mod posts what its submit answered, so the caller
+// types such a prompt instead of losing it. A submit to an idle session
+// answered in about 250 ms; with no word in this long the send counts as
+// the mod's, since typing a prompt that did enter would send it twice.
+export const MOD_SUBMIT_ACK_MS = 3000;
+
 export class PipeServer {
   // Built by listen() (the tests) or handed over by attach() (the daemon,
   // M9 fix 454); null until one of them runs, so a daemon never builds a
@@ -221,6 +249,15 @@ export class PipeServer {
   // Each Claude session's emerald mod channel (M9 fix 741), by session id:
   // the connection of the `emmer mod-channel` its mod started.
   private readonly modChannels = new Map<string, ClientConnection>();
+  // The sessions whose channel has been up once (M9 fix 776), so one whose
+  // channel died goes straight to typed; emptied of a session on its exit,
+  // so a resumed one waits again. And the sends waiting for a channel.
+  private readonly modEverUp = new Set<string>();
+  private readonly modWaits = new Map<string, Array<(channel: ClientConnection | null) => void>>();
+  // The sends waiting for the mod's word on their submit (M9 fix 781), by
+  // the submitId their mod.submit push carried.
+  private readonly submitWaits = new Map<string, { sessionId: string; wake: (entered: boolean, drop: string | null) => void }>();
+  private nextSubmitId = 0;
   private closing = false;
   private readonly manager: SessionManager;
   private readonly layouts: LayoutStore;
@@ -239,12 +276,14 @@ export class PipeServer {
     manager.on('changed', (info: SessionInfo) => this.broadcast('sessions', { type: 'session.changed', session: info }));
     manager.on('load', (tick: LoadTick) => this.broadcastLoad(tick));
     manager.on('limits', (reading: { at: number; limits: UsageLimit[] }) => this.broadcastLimits(reading));
+    manager.on('row', (row: { sessionId: string; at: number; uuid: string; row: ModRow; cut: boolean }) => this.broadcastRow(row));
     // The client that made the change hears it too, so a renderer can treat
     // the push as the single source of truth and ignore the reply body.
     layouts.on('changed', (layout: Layout) => this.broadcast('layout', { type: 'layout.changed', layout }));
     manager.on('exit', (info: SessionInfo) => {
       for (const client of this.clients) client.onSessionExit(info);
       this.dropModChannel(info.id, null);
+      this.modEverUp.delete(info.id);
     });
     manager.on('activity', ({ id, at }: { id: string; at: number }) => this.broadcast('activity', { type: 'pty.activity', sessionId: id, at }));
     manager.on('rate', ({ id, samples, at }: { id: string; samples: number[]; at: number }) => this.broadcast('rate', { type: 'pty.rate', sessionId: id, samples, at }));
@@ -427,12 +466,24 @@ export class PipeServer {
   private openModChannel(sessionId: string, channel: ClientConnection): void {
     const held = this.modChannels.get(sessionId);
     this.modChannels.set(sessionId, channel);
+    this.modEverUp.add(sessionId);
     this.opts.log.info(`mod channel ${held !== undefined && held !== channel ? 'replaced' : 'up'} for ${sessionId.slice(0, 8)}`);
+    this.resolveModWaits(sessionId, channel);
+  }
+
+  // The sends held for this session's channel, in the order they came.
+  private resolveModWaits(sessionId: string, channel: ClientConnection | null): void {
+    const waits = this.modWaits.get(sessionId);
+    if (waits === undefined) return;
+    this.modWaits.delete(sessionId);
+    for (const wake of waits) wake(channel);
   }
 
   // Drops a session's channel when that connection closed (channel set)
   // or the session exited (null).
   private dropModChannel(sessionId: string, channel: ClientConnection | null): void {
+    // An exit answers every send still waiting: typed.
+    if (channel === null) this.resolveModWaits(sessionId, null);
     const held = this.modChannels.get(sessionId);
     if (held === undefined || (channel !== null && held !== channel)) return;
     this.modChannels.delete(sessionId);
@@ -440,12 +491,79 @@ export class PipeServer {
   }
 
   // No text is logged, as browser.run logs no argument.
-  private submitToMod(req: Requests['session.submit']['req']): Requests['session.submit']['res'] {
-    const channel = this.modChannels.get(req.sessionId);
-    if (channel === undefined) return { via: 'typed' };
-    channel.send({ type: 'mod.submit', sessionId: req.sessionId, text: req.text });
-    this.opts.log.info(`mod submit for ${req.sessionId.slice(0, 8)}: ${req.text.length} characters`);
+  // A hosted Claude whose mod has posted but whose channel is not up yet
+  // (the first second after it went idle) is held for the channel, up to
+  // MOD_CHANNEL_WAIT_MS (M9 fix 776); one whose channel was up and went,
+  // or whose mod never posted (--safe-mode), is typed at once.
+  private async submitToMod(req: Requests['session.submit']['req']): Promise<Requests['session.submit']['res']> {
+    const id8 = req.sessionId.slice(0, 8);
+    let channel: ClientConnection | null = this.modChannels.get(req.sessionId) ?? null;
+    if (channel === null) {
+      if (this.modEverUp.has(req.sessionId) || this.opts.modSeen?.(req.sessionId) !== true) return { via: 'typed' };
+      const waitMs = this.opts.modChannelWaitMs ?? MOD_CHANNEL_WAIT_MS;
+      this.opts.log.info(`mod channel awaited for ${id8}`);
+      channel = await new Promise<ClientConnection | null>((resolve) => {
+        const wake = (c: ClientConnection | null): void => {
+          clearTimeout(timer);
+          resolve(c);
+        };
+        const timer = setTimeout(() => {
+          const waits = this.modWaits.get(req.sessionId);
+          const i = waits?.indexOf(wake) ?? -1;
+          if (waits !== undefined && i !== -1) waits.splice(i, 1);
+          if (waits !== undefined && waits.length === 0) this.modWaits.delete(req.sessionId);
+          resolve(null);
+        }, waitMs);
+        const waits = this.modWaits.get(req.sessionId) ?? [];
+        waits.push(wake);
+        this.modWaits.set(req.sessionId, waits);
+      });
+      if (channel === null) {
+        this.opts.log.info(`mod channel not up for ${id8} after ${waitMs} ms: typed`);
+        return { via: 'typed' };
+      }
+    }
+    // M9 fix 781: the mod posts what its submit answered (ModSubmit on the
+    // hook sink, modSubmitAnswered below); a prompt the engine did not
+    // enter is the caller's to type.
+    this.nextSubmitId += 1;
+    const submitId = `${id8}-${this.nextSubmitId}`;
+    const ackMs = this.opts.modSubmitAckMs ?? MOD_SUBMIT_ACK_MS;
+    const word = new Promise<{ entered: boolean; drop: string | null } | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.submitWaits.delete(submitId);
+        resolve(null);
+      }, ackMs);
+      this.submitWaits.set(submitId, {
+        sessionId: req.sessionId,
+        wake: (entered, drop) => {
+          clearTimeout(timer);
+          this.submitWaits.delete(submitId);
+          resolve({ entered, drop });
+        },
+      });
+    });
+    channel.send({ type: 'mod.submit', sessionId: req.sessionId, text: req.text, submitId });
+    this.opts.log.info(`mod submit for ${id8}: ${req.text.length} characters`);
+    const got = await word;
+    if (got === null) {
+      this.opts.log.info(`mod submit for ${id8}: no word from the mod in ${ackMs} ms, taken as entered`);
+      return { via: 'mod' };
+    }
+    if (!got.entered) {
+      this.opts.log.info(`mod submit for ${id8} not entered (${got.drop ?? 'no reason'}): typed`);
+      return { via: 'typed' };
+    }
     return { via: 'mod' };
+  }
+
+  // The mod's word on one submit (M9 fix 781), from the hook sink's
+  // ModSubmit post; a word for another session's submit, or one that came
+  // after its send stopped waiting, is ignored.
+  modSubmitAnswered(sessionId: string, submitId: string, entered: boolean, drop: string | null): void {
+    const held = this.submitWaits.get(submitId);
+    if (held === undefined || held.sessionId !== sessionId) return;
+    held.wake(entered, drop);
   }
 
   // The relay of a browser.run (M9 fix 672), shaped as the file relay:
@@ -494,6 +612,13 @@ export class PipeServer {
     const push: ServerMessage = { type: 'usage.limits', at: reading.at, limits: reading.limits };
     for (const client of this.clients) {
       if (client.isApp && client.subscribed('app') && client.appLevel >= LIMITS_PUSH_LEVEL) client.send(push);
+    }
+  }
+
+  private broadcastRow(given: { sessionId: string; at: number; uuid: string; row: ModRow; cut: boolean }): void {
+    const push: ServerMessage = { type: 'transcript.row', sessionId: given.sessionId, at: given.at, uuid: given.uuid, row: given.row, ...(given.cut ? { cut: true as const } : {}) };
+    for (const client of this.clients) {
+      if (client.isApp && client.subscribed('sessions') && client.appLevel >= ROW_PUSH_LEVEL) client.send(push);
     }
   }
 
@@ -777,7 +902,7 @@ class ClientConnection {
         this.manager.rename(expectString(req, 'sessionId'), expectName(req));
         return {};
       case 'session.set': {
-        const fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null } = {};
+        const fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean } = {};
         if (req.comment !== undefined) fields.comment = req.comment === null ? null : expectComment(req);
         if (req.color !== undefined) {
           // The shape the store keeps, so a stored colour and a set one agree.
@@ -795,6 +920,11 @@ class ClientConnection {
             throw new SessionError('bad-request', `phase must be one of ${SESSION_PHASES.join(', ')}`);
           }
           fields.phase = req.phase;
+        }
+        // The keep-whole mark (M9 fix 773).
+        if (req.keepWhole !== undefined) {
+          if (typeof req.keepWhole !== 'boolean') throw new SessionError('bad-request', 'keepWhole must be true or false');
+          fields.keepWhole = req.keepWhole;
         }
         this.manager.set(expectString(req, 'sessionId'), fields);
         return {};

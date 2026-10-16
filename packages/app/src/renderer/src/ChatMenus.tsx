@@ -74,13 +74,17 @@ export function SlashMenu({ box, rows, active, onPick, onHover, onClose }: { box
         data-name={row.name}
         data-skill={row.skill ? '' : undefined}
         data-active={i === active ? 'true' : undefined}
+        data-hint={row.hint === '' ? undefined : row.hint}
         title={row.description === '' ? undefined : row.description}
         onMouseDown={(ev) => ev.preventDefault()}
         onMouseMove={(ev) => moved(ev, i, onHover)}
         onClick={() => onPick(row)}
       >
         <span className="chat-menu-name">{row.name}</span>
-        {row.section === 'terminal' ? <TerminalIcon /> : <span className="chat-menu-desc">{row.description}</span>}
+        {/* M9 fix 780: the argument hint after the name, as Claude Code's own menu shows it; every row its description, a terminal row the icon after. */}
+        {row.hint !== '' && <span className="chat-menu-hint">{row.hint}</span>}
+        <span className="chat-menu-desc">{row.description}</span>
+        {row.section === 'terminal' && <TerminalIcon />}
       </button>,
     );
   });

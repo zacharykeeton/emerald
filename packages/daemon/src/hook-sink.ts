@@ -2,7 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { MOD_HOOK_NAME } from '@emerald/shared';
+import { MOD_APPEND, MOD_HOOK_NAME, MOD_SUBMIT } from '@emerald/shared';
+import { promptCacheKept } from '@emerald/shared/hook-log';
 import type { HookOutcome, HookPayload, SessionState } from '@emerald/shared';
 import { rotateHookLog, trimGenerations } from './activity.ts';
 import type { Logger } from './log.ts';
@@ -114,17 +115,31 @@ function firstString(text: string, key: string, from: number): string | undefine
 // `truncated: true` when anything was cut; and a StatusLine keeps the
 // fields the activity line reads (the model, the cost, the context
 // window) and the session's own, since the rest (the rate limits, the
-// prompt cache, the workspace) is the moment's and read live. Set
-// EMERALD_HOOKS_FULL=1 to keep whole payloads.
+// workspace) is the moment's and read live; of the prompt cache it keeps
+// the warmth, the TTL and the expiry (M9 fix 772), for `emmer explain` and
+// the idle countdown's afterwards. Set EMERALD_HOOKS_FULL=1 to keep whole
+// payloads.
 export const TRIM_BYTES = 1024;
-const STATUS_LINE_KEPT = ['session_id', 'hook_event_name', 'cwd', 'agent_id', 'agent_type', 'transcript_path', 'model', 'cost', 'context_window'] as const;
+const STATUS_LINE_KEPT = ['session_id', 'hook_event_name', 'cwd', 'agent_id', 'agent_type', 'transcript_path', 'model', 'cost', 'context_window', 'prompt_cache'] as const;
 
 export function trimPayload(payload: HookPayload): HookPayload {
   const fields = payload as Record<string, unknown>;
   if (payload.hook_event_name === 'StatusLine') {
     const kept: Record<string, unknown> = {};
     for (const key of STATUS_LINE_KEPT) if (fields[key] !== undefined) kept[key] = fields[key];
+    if (kept['prompt_cache'] !== undefined) {
+      const cache = promptCacheKept(kept['prompt_cache']);
+      if (cache === null) delete kept['prompt_cache'];
+      else kept['prompt_cache'] = cache;
+    }
     return kept as HookPayload;
+  }
+  // A kept row (M9 fix 769) is the conversation's own text, which the
+  // transcript already holds: the log keeps its kind and block count.
+  if (payload.hook_event_name === MOD_APPEND) {
+    const row = fields['row'] as { type?: unknown; content?: unknown } | null | undefined;
+    const blocks = Array.isArray(row?.content) ? row.content.length : 0;
+    return { ...fields, row: { type: row?.type, blocks } } as HookPayload;
   }
   if (payload.tool_input === undefined && payload.tool_response === undefined) return payload;
   const state = { cut: false };
@@ -219,7 +234,17 @@ export interface HookSinkOptions {
   // 725), so a Stop that came from the hook file alone says the mod did
   // not load; the default expects it nowhere.
   expectsMod?: (sessionId: string) => boolean;
+  // The emerald mod's question before a compaction (M9 fix 773, POST
+  // /compact): the skip reason, or null to let it through; a sink without
+  // one lets every compaction through.
+  compactAsk?: (sessionId: string, trigger: string) => string | null;
+  // The emerald mod's word on a submit the daemon pushed (M9 fix 781, its
+  // ModSubmit post): handed on, and no hooks.jsonl line is written.
+  onModSubmit?: (sessionId: string, submitId: string, entered: boolean, drop: string | null) => void;
 }
+
+// The body of a /compact ask is `{ trigger }` and no more (M9 fix 773).
+const COMPACT_MAX_BODY_BYTES = 4096;
 
 export class HookSink {
   readonly port: number;
@@ -233,6 +258,8 @@ export class HookSink {
   private readonly tests: Array<{ id: string; at: number }> = [];
   private readonly fullPayloads: boolean;
   private expectsMod: (sessionId: string) => boolean = () => false;
+  private compactAsk: (sessionId: string, trigger: string) => string | null = () => null;
+  private onModSubmit: (sessionId: string, submitId: string, entered: boolean, drop: string | null) => void = () => undefined;
   private readonly modSeen = new Set<string>();
   private readonly modWarned = new Set<string>();
   // The lines that arrive while a rotation has the file closed, written
@@ -276,6 +303,8 @@ export class HookSink {
     }
     sink = new HookSink(server, port, token, events, opts.eventLogPath, opts.log, opts.fullPayloads ?? process.env['EMERALD_HOOKS_FULL'] === '1');
     if (opts.expectsMod) sink.expectsMod = opts.expectsMod;
+    if (opts.compactAsk) sink.compactAsk = opts.compactAsk;
+    if (opts.onModSubmit) sink.onModSubmit = opts.onModSubmit;
     return sink;
   }
 
@@ -345,6 +374,13 @@ export class HookSink {
     return this.tests.some((t) => t.id === testId && now - t.at <= TEST_KEEP_MS);
   }
 
+  // Whether this session's emerald mod has posted (M9 fix 776), so the
+  // pipe holds an early send for its channel: never true for a session
+  // launched with the mod that never loaded it (--safe-mode).
+  modSeenFor(sessionId: string): boolean {
+    return this.modSeen.has(sessionId);
+  }
+
   close(): Promise<void> {
     this.closed = true;
     return new Promise((resolve) => {
@@ -362,6 +398,10 @@ export class HookSink {
   }
 
   private onRequest(req: http.IncomingMessage, res: http.ServerResponse, handler: HookHandler, maxBody: number): void {
+    if (req.method === 'POST' && req.url === '/compact') {
+      this.onCompact(req, res);
+      return;
+    }
     if (req.method !== 'POST' || req.url !== '/hook') {
       res.writeHead(404).end();
       req.resume();
@@ -460,6 +500,13 @@ export class HookSink {
       // The hook is released here. Whatever happens next is our problem, not Claude's.
       res.writeHead(204).end();
       if (hook === MOD_HOOK_NAME) remember(this.modSeen, sessionId);
+      // M9 fix 781: the mod's word on a submit goes to the waiting send and
+      // nowhere else; it is no hook of the session's and moves no state.
+      if ((payload as HookPayload).hook_event_name === MOD_SUBMIT) {
+        const word = payload as { submit_id?: unknown; entered?: unknown; drop?: unknown };
+        if (hook === MOD_HOOK_NAME && typeof word.submit_id === 'string') this.onModSubmit(sessionId, word.submit_id, word.entered === true, typeof word.drop === 'string' ? word.drop : null);
+        return;
+      }
       if (this.isDuplicate(sessionId, foldKey(payload as HookPayload, overLimit, body), at, hook)) {
         this.log.info(`hook duplicate ${(payload as HookPayload).hook_event_name ?? '?'} ${sessionId}`, { hook, at });
         return;
@@ -467,6 +514,57 @@ export class HookSink {
       setImmediate(() => this.accept(sessionId, payload as HookPayload, at, unhosted, handler, hook));
     });
     req.on('error', (err) => this.log.warn('hook request error', err));
+  }
+
+  // The emerald mod's question before a compaction (M9 fix 773): the
+  // token and session checks of /hook, a small JSON body naming the
+  // trigger, and an answer the mod waits for, unlike a hook's 204 sent
+  // before the handler runs. Nothing goes to hooks.jsonl, since an ask is
+  // not a hook and the activity load reads that file. Any failure on our
+  // side answers null, so a compaction is never held by a fault here.
+  private onCompact(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!this.tokenMatches(header(req, 'x-emerald-token'))) {
+      this.log.warn('compact ask rejected: bad token', { from: req.socket.remoteAddress });
+      res.writeHead(401).end();
+      req.resume();
+      return;
+    }
+    const sessionId = header(req, 'x-emerald-session');
+    if (sessionId === '') {
+      res.writeHead(400).end('missing X-Emerald-Session');
+      req.resume();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= COMPACT_MAX_BODY_BYTES) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (size > COMPACT_MAX_BODY_BYTES) {
+        res.writeHead(413).end();
+        return;
+      }
+      let trigger = '';
+      try {
+        const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^﻿/, ''));
+        const t = typeof body === 'object' && body !== null ? (body as { trigger?: unknown }).trigger : undefined;
+        if (typeof t === 'string') trigger = t;
+      } catch {
+        res.writeHead(400).end('body is not JSON');
+        return;
+      }
+      let skip: string | null = null;
+      try {
+        skip = this.compactAsk(sessionId, trigger);
+      } catch (err) {
+        this.log.error('compact ask failed', err);
+        skip = null;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ skip }));
+    });
+    req.on('error', (err) => this.log.warn('compact ask request error', err));
   }
 
   private accept(sessionId: string, payload: HookPayload, at: number, unhosted: boolean, handler: HookHandler, hook: string): void {

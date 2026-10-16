@@ -175,7 +175,7 @@ export function closeTitle(session: SessionInfo | undefined, onlyPane: boolean):
   if (session === undefined) return onlyPane ? 'Nothing to close' : 'Close this pane';
   if (session.state === 'exited') return `Close: forget ${session.name} and ${pane}`;
   if (session.kind === 'shell') return `Close: kill ${session.name} and ${pane}`;
-  return `Close: kill ${session.name} and ${pane}; it stays under exited, where it can be resumed`;
+  return `Close: kill ${session.name} and ${pane}; it waits under exited for 10 seconds, where Resume brings it back, then leaves the list`;
 }
 
 // M9 fix 126: a view pane has no session to keep running, so its hide

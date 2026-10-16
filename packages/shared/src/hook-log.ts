@@ -117,6 +117,8 @@ export function slimHookLine(raw: string): string {
       slim['context_window'] = { current_usage: kept };
     }
     if (obj(payload.cost) && num(payload.cost['total_cost_usd'])) slim['cost'] = { total_cost_usd: payload.cost['total_cost_usd'] };
+    const cache = promptCacheKept(payload.prompt_cache);
+    if (cache !== null) slim['prompt_cache'] = cache;
     if (obj(payload.model)) {
       const model: Record<string, string> = {};
       if (str(payload.model['display_name'])) model['display_name'] = payload.model['display_name'];
@@ -166,4 +168,17 @@ export function isFullPayloadLine(raw: string): boolean {
   if (typeof line['sessionId'] !== 'string') return false;
   const payload = line['payload'];
   return typeof payload === 'object' && payload !== null && 'hook_event_name' in payload;
+}
+
+// The three fields of a status line's prompt_cache block that the log keeps
+// (M9 fix 772): its warmth, its TTL and its expiry, which the idle countdown
+// reads and `emmer explain` can show afterwards; the rest of the block (the
+// request counts, the hit ratio) is the moment's. Null when the payload
+// carries no block.
+export function promptCacheKept(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const pc = value as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const k of ['warm', 'ttl', 'expires_at']) if (pc[k] !== undefined) kept[k] = pc[k];
+  return kept;
 }

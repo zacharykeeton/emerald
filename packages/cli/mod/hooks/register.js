@@ -56,8 +56,10 @@ export function register(on) {
   // its usage, posted as emerald's own events. validate refuses one event
   // hooked twice in a module, so each hook's body is a named function a
   // merged block can call beside another's.
-  on('ui.render', { component: 'Spinner' }, ($, e, next) => {
-    postSpinnerWord($, e);
+  // M9 fix 775 widens the matcher to a running call's progress row.
+  on('ui.render', { component: ['Spinner', 'ToolProgress'] }, ($, e, next) => {
+    if (e.component === 'ToolProgress') postToolRunning($, e);
+    else postSpinnerWord($, e);
     return next(e);
   }).catch(($, e, next) => next(e));
   on('turn.start', async ($, e, next) => {
@@ -92,6 +94,20 @@ export function register(on) {
     await postToolAsk($, e, result).catch(() => undefined);
     return result;
   }).catch(($, e, next) => next(e));
+
+  // M9 fix 769: each row the conversation keeps, posted once it is kept, so the chat view draws it before the transcript file has it.
+  on('session.append', { door: APPEND_DOORS }, async ($, e, next) => {
+    const stored = await next(e);
+    postRow($, e, stored);
+    return stored;
+  }).catch(($, e, next) => next(e));
+
+  // M9 fix 773: keep an idle session whole. The daemon decides from the session's mark and state; a manual or plugin compaction and a subagent's own always go on.
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e);
+    const skip = await askKeepWhole($, e.trigger).catch(() => null);
+    return skip ? { skip } : next(e);
+  }).catch(($, e, next) => next(e));
 }
 
 // The word last posted, so a redraw of the same word posts nothing: the
@@ -120,6 +136,20 @@ function postSpinnerWord($, e) {
   if (typeof word !== 'string' || word === '' || word === lastSpinnerWord) return;
   lastSpinnerWord = word;
   void postTurnEvent($, { hook_event_name: 'Spinner', word, ...(typeof e.requestId === 'string' ? { spinner_id: e.requestId } : {}) }).catch(() => undefined);
+}
+
+// M9 fix 775: a running call's progress row, drawn only once the call
+// runs, so after an ask it says the dialog was answered. Posted once per
+// call: the ids posted are kept, the last 64, since the row redraws many
+// times a call.
+const runningPosted = new Set();
+
+function postToolRunning($, e) {
+  const id = e.props?.tool_use_id;
+  if (typeof id !== 'string' || id === '' || runningPosted.has(id)) return;
+  runningPosted.add(id);
+  if (runningPosted.size > 64) runningPosted.delete(runningPosted.values().next().value);
+  void postTurnEvent($, { hook_event_name: 'ToolRunning', tool_use_id: id }).catch(() => undefined);
 }
 
 // A subagent's turns start too; only the main loop's is the row's.
@@ -239,16 +269,132 @@ async function streamPrompts($, argv) {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         let text;
+        let submitId;
         try {
-          text = JSON.parse(line).text;
+          ({ text, submitId } = JSON.parse(line));
         } catch {
           continue;
         }
         if (typeof text !== 'string' || text === '') continue;
-        chain = chain.then(() => $.prompt.submit({ text, asUser: true })).catch(() => undefined);
+        chain = chain.then(() => submitAndSay($, text, submitId)).catch(() => undefined);
       }
     }
   } catch {
     // The channel could not start or died; the typed path stays.
   }
+}
+
+// M9 fix 781: one submit, and the daemon told what it answered, under the
+// id its push carried. The engine refuses a plugin's prompt with no turn
+// while a person's Stop stands ({ drop: 'the session was stopped and
+// nobody has sent input since' } on 2.1.301), and the send waiting on the
+// daemon types such a prompt instead, as a person's input that clears the
+// Stop. A submit that throws did not enter either. The word is posted,
+// never awaited, so the chain moves on at once.
+async function submitAndSay($, text, submitId) {
+  let entered = false;
+  let drop = null;
+  try {
+    const result = await $.prompt.submit({ text, asUser: true });
+    if (result && typeof result.drop === 'string') drop = result.drop;
+    else entered = true;
+  } catch (err) {
+    drop = err instanceof Error ? err.message : String(err);
+  }
+  if (typeof submitId !== 'string') return;
+  void postTurnEvent($, { hook_event_name: 'ModSubmit', submit_id: submitId, entered, ...(drop === null ? {} : { drop }) }).catch(() => undefined);
+}
+
+// M9 fix 769: the rows the chat view draws ahead of the transcript file.
+// Every door but `queue`, which is a queue record's text and no row of
+// the conversation. A row travels in one POST to the hook sink, whose
+// body limit is 1 MB, so long strings are capped: a reply or thought past
+// ROW_STRING_CAP, or a tool input holding one, marks the row cut, and the
+// view never draws a cut row (a cut hunk or reply would draw wrong until
+// the file's line came), and a cut row goes with no blocks, its uuid and
+// door still saying a row came. A tool result keeps only its text, sliced
+// to ROW_RESULT_CAP, since the view reads only the exit code at its start;
+// that cut is not marked. A row still past ROW_POST_CAP is cut too.
+const APPEND_DOORS = ['prompt', 'command', 'response', 'tool-result', 'tool-message', 'delivery', 'attachment', 'hook-context', 'note', 'compaction', 'notice'];
+const ROW_STRING_CAP = 32768;
+const ROW_RESULT_CAP = 4096;
+const ROW_POST_CAP = 524288;
+
+// A subagent's row is skipped (the view draws no side chain), as is any
+// row that is neither a user's nor an assistant's. Never awaited, so a
+// row is never held on the daemon.
+function postRow($, e, stored) {
+  if (e.agentId !== undefined) return;
+  const message = stored?.message;
+  if (!message || (message.type !== 'user' && message.type !== 'assistant')) return;
+  const { row, cut } = rowForPost(message);
+  void postTurnEvent($, { hook_event_name: 'Append', uuid: stored.uuid ?? e.uuid, door: e.door, row, ...(cut ? { cut: true } : {}) }).catch(() => undefined);
+}
+
+function rowForPost(message) {
+  let cut = false;
+  const content = [];
+  for (const block of Array.isArray(message.content) ? message.content : []) {
+    if (block === null || typeof block !== 'object') continue;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      if (block.text.length > ROW_STRING_CAP) cut = true;
+      content.push(block);
+    } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+      if (block.thinking.length > ROW_STRING_CAP) cut = true;
+      content.push(block);
+    } else if (block.type === 'tool_use') {
+      if (holdsLongString(block.input)) cut = true;
+      content.push(block);
+    } else if (block.type === 'tool_result') {
+      content.push(resultForPost(block));
+    } else if (block.type === 'image' && message.type === 'user') {
+      // A pasted image: the transcript's line draws it.
+      continue;
+    } else {
+      content.push(block);
+    }
+  }
+  const row = { type: message.type, ...(message.role ? { role: message.role } : {}), ...(message.isMeta ? { isMeta: true } : {}), content };
+  // A cut row is never drawn, so its blocks would only cost the post.
+  if (cut || JSON.stringify(row).length > ROW_POST_CAP) return { row: { ...row, content: [] }, cut: true };
+  return { row, cut };
+}
+
+// A tool result's text alone, sliced, and its image as an empty one,
+// which draws no thumbnail until the file's line brings the picture.
+function resultForPost(block) {
+  const parts = typeof block.content === 'string' ? [{ type: 'text', text: block.content }] : Array.isArray(block.content) ? block.content : [];
+  const text = parts.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join('\n').slice(0, ROW_RESULT_CAP);
+  const image = parts.find((p) => p && p.type === 'image');
+  const content = [{ type: 'text', text }];
+  if (image) content.push({ type: 'image', source: { type: 'base64', media_type: image.source?.media_type ?? 'image/png', data: '' } });
+  return { type: 'tool_result', tool_use_id: block.tool_use_id, ...(block.is_error !== undefined ? { is_error: block.is_error } : {}), content };
+}
+
+function holdsLongString(value) {
+  if (typeof value === 'string') return value.length > ROW_STRING_CAP;
+  if (Array.isArray(value)) return value.some(holdsLongString);
+  if (value !== null && typeof value === 'object') return Object.values(value).some(holdsLongString);
+  return false;
+}
+
+// Asks the daemon whether to skip a compaction (M9 fix 773): the skip
+// reason when the session is marked to keep whole and sits idle, else null.
+// Off a hosted session, on a dead or slow daemon (the classic post's 1.5 s
+// bound) or on any answer but a reason, null, and the compaction goes on.
+async function askKeepWhole($, trigger) {
+  const sessionId = await $.env.get('EMERALD_SESSION_ID');
+  const port = await $.env.get('EMERALD_HOOK_PORT');
+  const token = await $.env.get('EMERALD_HOOK_TOKEN');
+  if (!sessionId || !port || !token) return null;
+  const ask = $.http.fetch(`http://127.0.0.1:${port}/compact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': token, 'X-Emerald-Session': sessionId, 'X-Emerald-Hook': 'emerald-mod' },
+    body: JSON.stringify({ trigger }),
+  });
+  // The sleep resolves with nothing, which reads as no answer.
+  const reply = await Promise.race([ask, $.clock.sleep(1500)]);
+  if (!reply || !reply.ok) return null;
+  const skip = JSON.parse(reply.text).skip;
+  return typeof skip === 'string' && skip !== '' ? skip : null;
 }

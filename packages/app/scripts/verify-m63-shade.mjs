@@ -623,11 +623,19 @@ try {
         modelW: Math.round(c.measureText('Sonnet').width),
         sixCh: Math.round(c.measureText('000000').width),
         team: Math.round(w(line.closest('.sidebar-row-team'))),
+        elapsedRight: Math.round(line.querySelector('.sidebar-row-member-elapsed').getBoundingClientRect().right),
+        lineRight: Math.round(line.getBoundingClientRect().right),
+        kindShown: (() => {
+          const k = line.querySelector('.sidebar-row-member-kind');
+          return k ? getComputedStyle(k).display !== 'none' : null;
+        })(),
       };
     })()`);
     expect(read !== null, `fix 764: the general-purpose member's line is listed at ${W}px`);
-    console.log(`[verify] fix 764 at ${W}px: line ${read.line} fixed ${read.fixed} task ${read.task}/${read.taskNatural} activity ${read.activity}/${read.activityNatural} model word ${read.modelW} 6ch ${read.sixCh} team width ${read.team}`);
+    console.log(`[verify] fix 764 at ${W}px: line ${read.line} fixed ${read.fixed} task ${read.task}/${read.taskNatural} activity ${read.activity}/${read.activityNatural} model word ${read.modelW} 6ch ${read.sixCh} team width ${read.team} elapsed edge ${read.elapsedRight}/${read.lineRight} kind ${read.kindShown}`);
     expect(!(read.task < read.taskNatural - 1 && read.activity >= 1), `fix 764: at ${W}px the task is clipped while the activity is still drawn, got ${JSON.stringify(read)}`);
+    expect(read.elapsedRight <= read.lineRight + 1, `fix 788: at ${W}px the elapsed runs past the line's edge, got ${JSON.stringify(read)}`);
+    expect(read.kindShown === (read.team > 200), `fix 788: at ${W}px with a team ${read.team}px wide the word agent should be ${read.team > 200 ? 'shown' : 'hidden'}, got ${read.kindShown}`);
     return read;
   };
   const dragSidebar764 = async (target) => {
@@ -649,7 +657,7 @@ try {
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 0`, 'the team folded away after fix 764');
   await post(s1, { hook_event_name: 'SubagentStop', agent_id: 'shade-a3', agent_type: 'general-purpose' });
   await s.waitFor(`${q(paneSel(p1) + ' .pane-shade-member[data-member="shade-a3"] .pane-shade-member-state')}?.textContent === 'returned'`, 'the general-purpose member returned on the face', 5000);
-  step("M9 fix 764: the team line's activity gives way before its task at 260, 160 and 400 px, the widths logged");
+  step("M9 fix 764: the team line's activity gives way before its task at 260, 160 and 400 px, the widths logged; fix 788: the elapsed whole at each width and the word agent gone under a 200px team");
 
   await post(s1, { hook_event_name: 'SubagentStop', agent_id: 'shade-a2', agent_type: 'fork' });
   await post(s1, { hook_event_name: 'Stop', last_assistant_message: 'lid built' });

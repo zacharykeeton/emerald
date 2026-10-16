@@ -126,7 +126,16 @@ async function main(): Promise<void> {
       activity.recordHook(sessionId, payload, at, result, isUnhosted);
       return result;
     },
-    { eventLogPath: hookLogPath, log, expectsMod: (id) => manager?.launchedWithMod(id) ?? false },
+    {
+      eventLogPath: hookLogPath,
+      log,
+      expectsMod: (id) => manager?.launchedWithMod(id) ?? false,
+      // The mod's question before a compaction (M9 fix 773).
+      compactAsk: (id, trigger) => manager?.compactAsk(id, trigger) ?? null,
+      // The mod's word on a submit, to the send waiting for it (M9 fix 781);
+      // the server is built below, before any session can have a mod.
+      onModSubmit: (id, submitId, entered, drop) => server.modSubmitAnswered(id, submitId, entered, drop),
+    },
   );
   // The live rotation (M9 fix 429): the load rotates only at the start,
   // so an hourly stat keeps a daemon left up for weeks under the same
@@ -255,6 +264,7 @@ async function main(): Promise<void> {
     onPresence: presence,
     onUsage: usage,
     hookTestArrived: (testId) => hooks.testArrived(testId),
+    modSeen: (id) => hooks.modSeenFor(id),
     // daemon.stop has kept the screens already (M9 fix 159).
     onStop: () => shutdown('daemon.stop', true),
     ...(Number.isInteger(levelOverride) && levelOverride > 0 ? { featureLevel: levelOverride } : {}),

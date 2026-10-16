@@ -37,6 +37,7 @@ const api: EmeraldApi = {
   files: {
     list: (dir, keep) => ipcRenderer.invoke('emerald:files-list', dir, keep),
     read: (path) => ipcRenderer.invoke('emerald:files-read', path),
+    readTail: (path, from) => ipcRenderer.invoke('emerald:files-read-tail', path, from),
     write: (path, text, format, stamp) => ipcRenderer.invoke('emerald:files-write', path, text, format, stamp),
     mkdir: (path) => ipcRenderer.invoke('emerald:files-mkdir', path),
     create: (path) => ipcRenderer.invoke('emerald:files-create', path),

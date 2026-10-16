@@ -10,6 +10,8 @@ import { BINARY_PROBE } from './search-files.ts';
 export { LIST_CAP, listFolder } from './list-folder.ts';
 // The watchers moved to folder-watchers.ts (M9 fix 722) so a test can import them.
 export { FolderWatchers, WATCH_CAP } from './folder-watchers.ts';
+// The chat view's tail read (M9 fix 770), apart for the same reason.
+export { readTail } from './read-tail.ts';
 
 // The file service behind the files rail and the file tabs. The sandboxed
 // renderer cannot read a directory or a file, so it asks here for one

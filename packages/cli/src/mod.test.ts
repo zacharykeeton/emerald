@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MOD_HOOK_NAME, MOD_TOOL_ASK } from '@emerald/shared';
+import { MOD_APPEND, MOD_HOOK_NAME, MOD_SUBMIT, MOD_TOOL_ASK, MOD_TOOL_RUNNING } from '@emerald/shared';
 import { HOOK_EVENTS } from './hooks-install.ts';
 
 // The emerald mod (M9 fix 725) is three files with no build step; these
@@ -28,6 +28,12 @@ test('the mod names one module, carries an author, and posts with the daemon\'s 
   assert.ok(register.includes("'X-Emerald-Session'"));
   // M9 fix 742: the ask's event name is the daemon's constant.
   assert.ok(register.includes(`hook_event_name: '${MOD_TOOL_ASK}'`), 'register.js posts MOD_TOOL_ASK');
+  // M9 fix 769: the row's event name too.
+  assert.ok(register.includes(`hook_event_name: '${MOD_APPEND}'`), 'register.js posts MOD_APPEND');
+  // M9 fix 775: and the running call's event.
+  assert.ok(register.includes(`hook_event_name: '${MOD_TOOL_RUNNING}'`), 'register.js posts MOD_TOOL_RUNNING');
+  // M9 fix 781: and the word on a submit.
+  assert.ok(register.includes(`hook_event_name: '${MOD_SUBMIT}'`), 'register.js posts MOD_SUBMIT');
   // The mod posts what the hook file posts, less PreToolUse.
   const listed = /const POSTED = new Set\(\[([^\]]*)\]\)/.exec(register)?.[1] ?? '';
   const posted = [...listed.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]);

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { SavedPrompt, SessionInfo } from '@emerald/shared';
-import { ackIfDone, clearExited, killSession, newGroupTab, openViewBeside, removeSession, renameSession, resumeAll, resumeSession, roomBesideFocused, sendPrompt, setSessionComment, showSession, showSessionBeside, showSessionInNewTab, setFolderLabel, startShellBeside, startShellBesideFocused, sweepSessions } from './actions.ts';
-import { NEEDS_INPUT_WORD, activityText, agentLineText, compactPercent, contextPercentText, contextText, contextWords, describeState, formatUsd, hasState, needsInputWords, resumeTitle, shellCommand, stateMarker, tasksText, tokensRowText, workingMotion } from '@emerald/shared';
+import { ackIfDone, clearExited, killSession, newGroupTab, openViewBeside, pauseRemoval, removeSession, renameSession, resumeAll, resumeSession, roomBesideFocused, sendPrompt, setKeepWhole, setSessionComment, showSession, showSessionBeside, showSessionInNewTab, setFolderLabel, startShellBeside, startShellBesideFocused, sweepSessions, unpauseRemoval } from './actions.ts';
+import { observeBand } from './band-visibility.ts';
+import { removalWords, secondsLeft } from './close-countdown-model.ts';
+import { NEEDS_INPUT_WORD, activityText, agentLineText, compactPercent, contextPercentText, contextText, contextWords, describeState, formatUsd, hasState, idleClock, idleClockTitle, needsInputWords, resumeTitle, shellCommand, stateMarker, tasksText, tokensRowText, workingMotion } from '@emerald/shared';
 import { EXITED_GROUP, SIDEBAR_ORDERS, currentTab, folderRollup, folderTitle, formatDuration, groupSessions, markKind, memberLine, memberParts, modelWord, paneShowingIn, rollup, sessionsOnPanes, teamCounts } from '@emerald/shared';
 import type { SessionGroup, SidebarOrder } from '@emerald/shared';
 import { AnswerBadge } from './AnswerPopover.tsx';
@@ -56,6 +58,9 @@ import { LoadMark } from './LoadMark.tsx';
 import { ConflictMark } from './ConflictMark.tsx';
 import { conflictLines } from './conflict-model.ts';
 
+// M9 fix 787: the badge's tooltip while an Exited row counts down.
+const REMOVAL_TITLE = 'Closed: removed from the list when the count ends. Hover the row to hold it, Resume to keep it';
+
 // Every session the daemon knows, grouped by the folder it is in, in the
 // order they were made (or most urgent first, from the heading's menu).
 // The badge text and colour come from describeState so a row and the pane
@@ -70,7 +75,7 @@ export function Sidebar() {
   const runningShells = useRunningShells(sessions);
   // The forks' spend behind the rows' dollars (M9 fix 277), on its beat.
   useAgentsRunningBeat(sessions.values());
-  const { sidebarCollapsed, sidebarWidth, sidebarOrder, sidebarFilter, showOffscreen, tabs, zoomedPaneId } = useUi();
+  const { sidebarCollapsed, sidebarWidth, sidebarOrder, sidebarFilter, showOffscreen, tabs, zoomedPaneId, removing } = useUi();
   const now = useNow();
   // The scale every row's load sparkline shares (M9 fix 302): off each
   // listed session's five-minute peak, once a second at most with the
@@ -138,7 +143,9 @@ export function Sidebar() {
   // read.
   const allGroups = groupSessions(sessions.values(), sidebarOrder, folders);
   const onPanes: ReadonlySet<string> = layout === null ? new Set() : sessionsOnPanes(layout);
-  const groups = filterGroups(allGroups, sidebarFilter, onPanes);
+  // M9 fix 787: an Exited row counting down shows under any chip.
+  const countingIds: ReadonlySet<string> = new Set([...removing].filter(([, c]) => c.started).map(([id]) => id));
+  const groups = filterGroups(allGroups, sidebarFilter, onPanes, countingIds);
   const counts = filterCounts(sessions.values(), onPanes);
   // With a file or view tab in front (M9 fix 269) no pane is on screen,
   // so every row on the current tab reads on that tab, as one a tab away.
@@ -629,7 +636,7 @@ interface GroupProps {
 }
 
 function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, onGroupTab, labelling, canLabel, onLabel, onLabelled, ...rowProps }: GroupProps) {
-  const { attention, sidebarFolded } = useUi();
+  const { attention, sidebarFolded, removing } = useUi();
   // Folded (M9 fix 64): the rows are not rendered, so the shown marker and
   // the row menus go with them; the heading stays, units and all.
   const folded = sidebarFolded.has(group.key);
@@ -782,7 +789,8 @@ function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, o
           </button>
         )}
       </div>
-      {!folded && group.sessions.map((s) => (
+      {/* M9 fix 787: a folded group still shows the rows counting down to their removal. */}
+      {(folded ? group.sessions.filter((s) => removing.get(s.id)?.started === true) : group.sessions).map((s) => (
         <Row key={s.id} session={s} {...rowProps} />
       ))}
     </div>
@@ -842,6 +850,9 @@ function useFolderIcon(folder: string): [string | null, (url: string | null) => 
 
 // The watcher names a folder the way the rail sent it and the group key
 // is the session's cwd; the same place either way, whatever the slashes.
+// The idle countdown's clock time in its tooltip (M9 fix 772).
+const clockTime = (at: number): string => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
 function sameFolder(a: string, b: string): boolean {
   const norm = (p: string) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   return norm(a) === norm(b);
@@ -854,6 +865,9 @@ function sameFolder(a: string, b: string): boolean {
 // turn, "prompt - reply", on one line with the whole text in the tooltip.
 function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting, promptHistory, onSavePrompt, onShow, onResume, onMenu, onRenamed, onCommented, onPrompted }: Omit<GroupProps, 'group' | 'onAdd' | 'onAddMenu' | 'onGroupMenu' | 'onGroupTab' | 'runningShells' | 'onPanes' | 'labelling' | 'canLabel' | 'onLabel' | 'onLabelled'> & { session: SessionInfo }) {
   const label = describeState(session, now);
+  // The idle countdown (M9 fix 772), after the badge in the age's place:
+  // the CSS takes the age out of the line while the clock is drawn.
+  const clock = idleClock(session, now);
   // A plain shell has no state to show (hasState); the row keeps data-state
   // so a script can still read what the machine says. Its last command
   // (M9 fix 196) is on the record when the prompt reports one: the mark
@@ -873,7 +887,11 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   const onScreen = where?.place === 'focused' || where?.place === 'shown' ? where.place : undefined;
   const place = shownData(where, session.state === 'exited');
   const placeWords = shownWords(where, session.state === 'exited');
-  const { sessionDrag, attention, attentionSound, sidebarWidth, teamUnfolded, stalled } = useUi();
+  const { sessionDrag, attention, attentionSound, sidebarWidth, teamUnfolded, stalled, removing } = useUi();
+  // M9 fix 787: an Exited row after a close counts down to its removal.
+  const removal = session.state === 'exited' ? removing.get(session.id) : undefined;
+  const counting = removal !== undefined && removal.started;
+  const removalSeconds = counting ? secondsLeft(removal, now) : 0;
   // The meter's live samples (M41), when the daemon sends them.
   const { daemon, sessions, conflicts } = useStore('daemon', 'sessions', 'conflicts');
   const rate = useRates(session.id);
@@ -960,7 +978,9 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   // parts that can ellipsise, since the line itself never overflows.
   const mainRef = useRef<HTMLDivElement>(null);
   const reason = session.state === 'needs-input' ? needsInputWords(session.needsInputReason) : null;
-  useSqueeze(mainRef, reason === null ? 1 : 2, '.sidebar-row-name, .sidebar-row-state', [sidebarWidth, session.name, label.text, session.stale, stated, isRenaming]);
+  // The idle countdown (M9 fix 772) gives the same step, before the name or
+  // the badge is cut; a needs-input row never has one.
+  useSqueeze(mainRef, reason === null && clock === null ? 1 : 2, '.sidebar-row-name, .sidebar-row-state', [sidebarWidth, session.name, label.text, session.stale, stated, isRenaming, clock?.rowWords ?? null]);
   const badgeText = reason === null ? label.text : (
     <>
       {NEEDS_INPUT_WORD}
@@ -980,6 +1000,10 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
       data-hushed={hushed}
       data-color={session.color ?? undefined}
       data-flash={stalled.has(session.id) ? 'stalled' : undefined}
+      data-removing={counting ? removalSeconds : undefined}
+      data-removing-paused={counting && removal.runningSince === null ? '' : undefined}
+      onMouseEnter={counting ? () => pauseRemoval(session.id) : undefined}
+      onMouseLeave={counting ? () => unpauseRemoval(session.id) : undefined}
       title={stalled.has(session.id) ? STALLED_TITLE : undefined}
       style={colorStyle(session)}
       onClick={(ev) => {
@@ -1030,10 +1054,16 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
           </AnswerBadge>
         ) : (
           stated && (
-            <span className={`sidebar-row-state state-${label.tone}`} title={label.detail ?? undefined}>
-              {label.text}
+            <span className={`sidebar-row-state state-${label.tone}`} title={counting ? REMOVAL_TITLE : (label.detail ?? undefined)}>
+              {counting ? removalWords(removalSeconds) : label.text}
             </span>
           )
+        )}
+        {stated && clock !== null && (
+          // The row's short form (the kept kind's) leaves the full words to the tooltip.
+          <span className="sidebar-row-clock" data-clock={clock.kind} title={clock.rowWords === clock.words ? idleClockTitle(clock, clockTime(clock.at)) : `${clock.words}. ${idleClockTitle(clock, clockTime(clock.at))}`}>
+            {clock.rowWords}
+          </span>
         )}
         {/* M9 fix 247: while the row pulses (data-attention on the row) the age takes the pulse's tone and a size up; under the big figure (fix 267) it is hidden, since the figure is the age. */}
         {stated && (
@@ -1170,7 +1200,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
         agentLine !== null && (
           <TurnLineAnchor session={session} line="turn" className={agentIsTitle ? 'sidebar-row-line sidebar-row-turn sidebar-row-activity' : 'sidebar-row-line sidebar-row-turn'}>
             <StateMarkerGlyph marker={marker} />
-            <span className="sidebar-row-agent">{agentLine}</span>
+            <span className="sidebar-row-agent" ref={observeBand}>{agentLine}</span>
             {/* The load sparkline and figure (M9 fix 302), on the agent line alone: it exists while the session works, which is when there is load, so an idle row gains nothing. */}
             <LoadMark session={session} now={now} ceiling={loadCeiling} />
             {/* The conflict forecast's mark and pair count (M9 fix 320), after the load figure, on the agent line alone for the same reason. */}
@@ -1217,7 +1247,17 @@ function TeamList({ members, now, models }: { members: SessionInfo['team']; now:
             <span className="roster-unit" data-unit={p.kind === 'shell' ? 'shells' : p.working ? 'out' : 'returned'}>
               <SessionMark kind={p.kind === 'shell' ? 'shell' : 'claude'} working={p.working} size="unit" family={model} />
             </span>
-            <span className="sidebar-row-member-type">{p.type}</span>
+            {/* M9 fix 788: an agent's word agent is its own span so a narrow team can hide it; the text content stays "agent <type>". */}
+            <span className="sidebar-row-member-type">
+              {p.kind === 'agent' && m.type !== null ? (
+                <>
+                  <span className="sidebar-row-member-kind">agent </span>
+                  {m.type}
+                </>
+              ) : (
+                p.type
+              )}
+            </span>
             {model !== null && <span className="sidebar-row-member-model">{model}</span>}
             <span className="sidebar-row-member-task">{p.task ?? ''}</span>
             {/* M9 fix 654: the member's latest tool call, beside its task. */}
@@ -1287,12 +1327,22 @@ interface RowMenuProps {
 
 function RowMenu({ menu, session, onScreen, showOffscreen, onShowHere, onShowBeside, onShowInTab, onAskAgain, onClose, onRename, onComment, onPrompt, onKill, onResume, onRemove, onMarkUnread, onHush }: RowMenuProps) {
   const { attention, attentionSound } = useUi();
+  const { daemon } = useStore('daemon');
   // Review changes (M64): the count of changed files in the session's
   // folder as the item's hint, read when the menu opens; off on a clean
   // tree.
   const changed = useChangedCount(session);
   if (session === undefined) return null;
   const exited = session.state === 'exited';
+  // Keep whole while idle (M9 fix 773): a Claude session emerald started
+  // carries the mod that asks the daemon before a compaction; a level 66
+  // daemon answers.
+  const keepable = session.kind === 'claude' && (daemon?.featureLevel ?? 0) >= 66;
+  const keepTitle = keepable
+    ? `Skip Claude Code's idle compaction for ${session.name}, so its conversation stays whole when its cache is about to go cold (emmer set --keep-whole)`
+    : session.kind !== 'claude'
+      ? 'Only a Claude session emerald started carries the mod that keeps it whole'
+      : 'The daemon is older than this window; restart it to keep a session whole';
   // Mark unread (M14): back to pulsing, for a row to come back to later.
   const pulsing = attention.wanting.has(session.id);
   const markable = canMarkUnread(session.state) && !pulsing;
@@ -1319,6 +1369,16 @@ function RowMenu({ menu, session, onScreen, showOffscreen, onShowHere, onShowBes
         // M56: a prompt typed into the session from here, without focusing
         // its pane, with emmer prompt's gates.
         { label: 'Send a prompt…', onClick: onPrompt, disabled: exited, title: exited ? 'Resume it first' : `Type a line into ${session.name} and press Enter for it (emmer prompt)` },
+        {
+          label: 'Keep whole while idle',
+          checked: session.keepWhole === true,
+          disabled: !keepable,
+          title: keepTitle,
+          onClick: () => {
+            onClose();
+            void setKeepWhole(session.id, session.keepWhole !== true).catch((err: unknown) => console.warn('[emerald] keep whole failed', err));
+          },
+        },
         colorSwatches(session, onClose),
         { label: 'Kill', onClick: onKill, disabled: exited, title: exited ? 'Already exited' : `Kill ${session.name}` },
         {

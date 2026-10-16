@@ -96,10 +96,12 @@ try {
   const tabText = await s.evalJs(`document.querySelector('.tab-file[data-review] .tab-name')?.textContent ?? null`);
   expect(tabText !== null && tabText.startsWith(`Review · ${shell.name}`), `the strip's tab is Review · ${shell.name}, got ${tabText}`);
   expect(await s.evalJs(`!!document.querySelector('.tab-file[data-review] .tab-mark')`), 'the tab wears the session mark');
+  // M9 fix 790: the start commit lands a moment after the spawn.
+  await s.waitFor(`!document.querySelector('.review-chip[data-base="session"]').disabled`, 'Since session start offered');
   const h = await header();
   expect(h.name === shell.name && h.branch === '⑂ main · 1 file, +2 −1', `the header names the session and the branch line, got ${JSON.stringify(h)}`);
   expect(h.count === '0 comments' && !h.send, 'no comments yet and Send off');
-  expect(h.chips.join('|') === 'HEAD*|Since main (disabled)', `HEAD on and Since main off on main, got ${h.chips.join('|')}`);
+  expect(h.chips.join('|') === 'HEAD*|Since main (disabled)|Since session start', `HEAD on and Since main off on main, got ${h.chips.join('|')}`);
   expect((await files()).join(',') === 'M notes.txt', `the file list, got ${(await files()).join(',')}`);
   await s.waitFor(`document.querySelector('.review-diff')?.dataset.state === 'ready'`, 'the diff read');
   await s.waitFor(`!!document.querySelector('.review-editor')?.emeraldDiff?.getModel()`, 'the diff models');
@@ -129,6 +131,16 @@ try {
   await s.evalJs(`document.querySelector('.review-chip[data-base="head"]').click()`);
   await s.waitFor(`document.querySelectorAll('.review-file').length === 1`, 'back to HEAD, one file');
   step('Since main on a branch lists the committed file against the branch point; HEAD lists the work tree change');
+
+  // M9 fix 790: Since session start is the commit the shell started on
+  // (the shell has no spans, so the record's own startHead).
+  await s.evalJs(`document.querySelector('.review-chip[data-base="session"]').click()`);
+  await s.waitFor(`document.querySelector('.review-tab')?.dataset.base === 'session' && document.querySelectorAll('.review-file').length === 2`, 'Since session start lists two files');
+  expect((await files()).join(',') === 'M keep.txt,M notes.txt', `Since session start lists the committed file too, got ${(await files()).join(',')}`);
+  expect((await tab()).baseHash === (await sessionOf(p1)).startHead, `the base is the commit the shell started on, got ${(await tab()).baseHash}`);
+  await s.evalJs(`document.querySelector('.review-chip[data-base="head"]').click()`);
+  await s.waitFor(`document.querySelectorAll('.review-file').length === 1`, 'back to HEAD, one file');
+  step('M9 fix 790: Since session start on the branch lists the committed file against the commit the shell started on');
 
   // The comments: a hover on a work tree row shows the + in its margin
   // and a press there opens the box under the line. The line's place

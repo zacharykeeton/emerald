@@ -20,8 +20,10 @@ import {
   paneShowing,
   paneShowingIn,
   parentSplit,
+  randomId,
   renameTab,
   replaceTab,
+  sessionsOnPanes,
   setPaneSession,
   setPaneView,
   splitPane,
@@ -36,14 +38,16 @@ import { zoneToSplit } from './drop-zone-model.ts';
 import type { DropZone } from './drop-zone-model.ts';
 import { markFresh } from './fresh-panes.ts';
 import { lastFolder, rememberFolderUsed } from './recent-folders.ts';
-import { tabsSupported } from './daemon-model.ts';
+import { daemonLevel, tabsSupported } from './daemon-model.ts';
 import { CLOSE_GRACE_MS, closeTyping } from './group-sweep-model.ts';
 import type { SweepMode } from './group-sweep-model.ts';
-import { CLAUDE_ENTER_DELAY_MS, STALL_MS, isBusy, promptRefusal } from './prompt-model.ts';
+import { CLAUDE_ENTER_DELAY_MS, STALL_MS, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
 import { editLayout, editTab, getState, subscribe } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
-import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.ts';
+import type { ClosedSpot } from './close-countdown-model.ts';
 import { normalizePath } from './files-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
@@ -387,28 +391,78 @@ export function typeInto(sessionId: string, data: string): void {
   window.emerald.send({ type: 'pty.input', sessionId, data });
 }
 
-export type PromptOutcome = { kind: 'sent' } | { kind: 'refused'; reason: string };
+// M9 fix 783: the one way the renderer sends a session Ctrl+C, so no two
+// senders put two inside CTRL_C_GAP_MS and end the session by Claude Code's
+// press-again exit. It runs on a chain of its own per session (never
+// behind a prompt's Enter pause), waits out the gap since the last one,
+// then asks `ready` (a caller's last read of the screen and the state) and
+// sends only on true; it resolves whether it sent. The terminal face's own
+// keys go from xterm straight to the pty and are never limited, and
+// neither is the daemon's pty.input.
+const lastCtrlC = new Map<string, number>();
+const ctrlCChains = new Map<string, Promise<unknown>>();
 
-// A prompt from the sidebar's box (M56), with emmer prompt's two gates.
-// Gate one refuses before anything is typed (prompt-model.ts). Then the
-// text and, after the pause a Claude session needs, the Enter; gate two
-// is a watch on the store: a Claude session (or a shell Claude runs in)
-// that was not busy and has not gone working STALL_MS after the Enter is
-// marked stalled, so the row says the text may be sitting in its input
-// box; a plain shell posts no hooks, so nothing is expected of it.
-// Resolves once the send is done, not once the session moves, so the box
-// can close at once.
-export async function sendPrompt(sessionId: string, text: string): Promise<PromptOutcome> {
+export function sendCtrlC(sessionId: string, ready: () => Promise<boolean> = async () => true): Promise<boolean> {
+  return chainOn(ctrlCChains, sessionId, async () => {
+    const wait = ctrlCWaitMs(lastCtrlC.get(sessionId), Date.now());
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    if (!(await ready())) return false;
+    lastCtrlC.set(sessionId, Date.now());
+    typeInto(sessionId, '\x03');
+    return true;
+  });
+}
+
+export type PromptOutcome = { kind: 'sent'; via: 'mod' | 'typed' } | { kind: 'refused'; reason: string };
+
+// One chain of sends per session (M9 fix 781), so a second send waits for
+// the first's Enter rather than typing inside its pause.
+const promptChains = new Map<string, Promise<unknown>>();
+
+// A prompt from the sidebar's box (M56), the chat box, the review tab or a
+// card, with emmer prompt's two gates. Gate one refuses before anything is
+// typed (prompt-model.ts). Then the text goes in through the session's
+// emerald mod when sendRoute says so (M9 fix 781), else it is typed with,
+// after the pause a Claude session needs, the Enter; gate two is a watch
+// on the store: a Claude session (or a shell Claude runs in) that was not
+// busy and has not gone working STALL_MS after the send is marked stalled,
+// so the row says the text may be sitting in its input box; a plain shell
+// posts no hooks, so nothing is expected of it. Resolves once this send is
+// done, not once the session moves, so the box can close at once; a send
+// queued behind another resolves after both.
+export function sendPrompt(sessionId: string, text: string, opts: { typed?: boolean } = {}): Promise<PromptOutcome> {
+  return chainOn(promptChains, sessionId, () => sendNow(sessionId, text, opts.typed === true));
+}
+
+async function sendNow(sessionId: string, text: string, typed: boolean): Promise<PromptOutcome> {
+  // Read again here: the chain may have waited, and the state with it.
   const session = getState().sessions.get(sessionId);
   if (session === undefined) return { kind: 'refused', reason: 'No such session' };
   const reason = promptRefusal(session);
   if (reason !== null) return { kind: 'refused', reason };
-  typeInto(sessionId, text);
+  const busy = isBusy(session.state);
   const claude = markKind(session) === 'claude';
-  if (claude) await new Promise((resolve) => setTimeout(resolve, CLAUDE_ENTER_DELAY_MS));
-  typeInto(sessionId, '\r');
-  if (claude && !isBusy(session.state)) watchForStall(sessionId);
-  return { kind: 'sent' };
+  const daemon = getState().daemon;
+  let via: 'mod' | 'typed' = sendRoute(session, text, daemon === null ? 1 : daemonLevel(daemon), typed);
+  if (via === 'mod') {
+    // An older daemon or a closed pipe rejects; the text is typed then. No
+    // timeout of our own: the daemon may hold the reply while a just-started
+    // session's channel comes up (fix 776), and the chat's pending bubble
+    // covers the wait.
+    via = await window.emerald.request('session.submit', { sessionId, text }).then(
+      (reply) => (reply.via === 'mod' ? 'mod' : 'typed'),
+      () => 'typed' as const,
+    );
+  }
+  if (via === 'typed') {
+    typeInto(sessionId, text);
+    if (claude) await new Promise((resolve) => setTimeout(resolve, CLAUDE_ENTER_DELAY_MS));
+    typeInto(sessionId, '\r');
+  }
+  // On the mod path too: a channel that died after it came up leaves the
+  // prompt unsubmitted, and the stall mark is the only thing that says so.
+  if (claude && !busy) watchForStall(sessionId);
+  return { kind: 'sent', via };
 }
 
 function watchForStall(sessionId: string): void {
@@ -466,6 +520,14 @@ export function setSessionScheme(sessionId: string, scheme: string | null): Prom
   return window.emerald.request('session.set', { sessionId, scheme }).then(() => undefined);
 }
 
+// The keep-whole mark (M9 fix 773): the emerald mod skips Claude Code's
+// idle compaction for a session so marked. The daemon keeps it on the
+// record, so it holds across a restart and a resume.
+export function setKeepWhole(sessionId: string, on: boolean): Promise<void> {
+  recordUse('set-keep-whole');
+  return window.emerald.request('session.set', { sessionId, keepWhole: on }).then(() => undefined);
+}
+
 // The person's own label on a folder group (M9 fix 194), from the
 // heading's box or its menu; an empty string clears it, which the daemon
 // takes as null, and the heading goes back to the folder's name.
@@ -489,8 +551,96 @@ function killSessionUnrecorded(sessionId: string, remove = false): Promise<void>
 // resuming something you cannot see would leave you guessing whether it
 // worked. The pane sizes the PTY as soon as it attaches, so any sane
 // starting size will do.
-export function resumeSession(sessionId: string): Promise<void> {
-  return window.emerald.request('session.resume', { sessionId, cols: 120, rows: 30 }).then(() => showSession(sessionId)).then(() => undefined);
+//
+// M9 fix 787: a Resume during the count after a close (the row is
+// counting down to its removal) ends the count and puts the session back
+// where the closed pane was, beside the focused pane when that spot is
+// gone; any other Resume shows it as before.
+export async function resumeSession(sessionId: string): Promise<void> {
+  const count = getUiState().removing.get(sessionId);
+  if (count !== undefined) clearRemoval(sessionId);
+  await window.emerald.request('session.resume', { sessionId, cols: 120, rows: 30 });
+  const spot = count?.spot ?? null;
+  if (spot === null) {
+    await showSession(sessionId);
+    return;
+  }
+  showTab(PANES);
+  const reopened = await editLayout((l) => reopenAt(l, spot, sessionId, randomId) ?? l);
+  if (sessionsOnPanes(reopened).has(sessionId)) return;
+  const paneId = await roomBesideFocused();
+  await editTab((t) => setPaneSession(t, paneId, sessionId));
+}
+
+// M9 fix 787: the clock behind the Exited rows' count after a close. The
+// state is ui.ts's (the rows read it); the timers are here, since the end
+// of a count removes the session. One store subscription, installed with
+// the first count, moves each entry along: it starts when its session
+// reads exited, and it goes when the session is gone, resumed by any
+// path, or the daemon is.
+const removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let watchingRemovals = false;
+
+function clearRemoval(sessionId: string): void {
+  const timer = removalTimers.get(sessionId);
+  if (timer !== undefined) clearTimeout(timer);
+  removalTimers.delete(sessionId);
+  setRemoval(sessionId, null);
+}
+
+function runRemoval(sessionId: string, leftMs: number): void {
+  const timer = removalTimers.get(sessionId);
+  if (timer !== undefined) clearTimeout(timer);
+  removalTimers.set(
+    sessionId,
+    setTimeout(() => {
+      clearRemoval(sessionId);
+      removeSession(sessionId).catch(warn('removal after close'));
+    }, leftMs),
+  );
+}
+
+function watchRemovals(): void {
+  if (watchingRemovals) return;
+  watchingRemovals = true;
+  subscribe(() => {
+    const { connected, sessions } = getState();
+    for (const [id, count] of getUiState().removing) {
+      const session = sessions.get(id);
+      if (!connected || session === undefined) {
+        clearRemoval(id);
+      } else if (!count.started) {
+        if (session.state !== 'exited') continue;
+        setRemoval(id, { ...count, started: true, runningSince: Date.now() });
+        runRemoval(id, count.leftMs);
+      } else if (session.state !== 'exited') {
+        clearRemoval(id);
+      }
+    }
+  });
+}
+
+function armRemoval(sessionId: string, spot: ClosedSpot | null): void {
+  watchRemovals();
+  setRemoval(sessionId, { spot, started: false, leftMs: REMOVE_AFTER_MS, runningSince: null });
+}
+
+// The row's hover holds the count and the leave lets it run on from where
+// it was.
+export function pauseRemoval(sessionId: string): void {
+  const count = getUiState().removing.get(sessionId);
+  if (count === undefined || !count.started || count.runningSince === null) return;
+  const timer = removalTimers.get(sessionId);
+  if (timer !== undefined) clearTimeout(timer);
+  removalTimers.delete(sessionId);
+  setRemoval(sessionId, { ...count, leftMs: Math.max(0, count.leftMs - (Date.now() - count.runningSince)), runningSince: null });
+}
+
+export function unpauseRemoval(sessionId: string): void {
+  const count = getUiState().removing.get(sessionId);
+  if (count === undefined || !count.started || count.runningSince !== null) return;
+  setRemoval(sessionId, { ...count, runningSince: Date.now() });
+  runRemoval(sessionId, count.leftMs);
 }
 
 // The lane card's Resume in a new pane (M60): the same resume, shown in
@@ -583,7 +733,16 @@ export async function closeSessionGently(sessionId: string): Promise<void> {
 // kill is the row's Kill; remove kills and forgets each as it exits.
 export async function sweepSessions(sessionIds: readonly string[], mode: SweepMode): Promise<void> {
   recordUse('sweep-sessions');
-  const one = (id: string) => (mode === 'close' ? closeSessionGently(id) : killSessionUnrecorded(id, mode === 'remove'));
+  // M9 fix 787: Close all counts the Claude sessions down on their Exited
+  // rows as a close of their panes does; Kill and Remove are not closes.
+  if (mode === 'close') {
+    const { sessions } = getState();
+    for (const id of sessionIds) {
+      const s = sessions.get(id);
+      if (s !== undefined && s.kind !== 'shell' && s.state !== 'exited') armRemoval(id, null);
+    }
+  }
+  const one =(id: string) => (mode === 'close' ? closeSessionGently(id) : killSessionUnrecorded(id, mode === 'remove'));
   const results = await Promise.allSettled(sessionIds.map(one));
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed !== undefined) throw failed.reason;
@@ -611,10 +770,22 @@ export async function closeSession(paneId: string): Promise<void> {
   const { layout, sessions } = getState();
   const pane = layout === null ? null : findPane(currentTab(layout), paneId);
   const session = pane?.sessionId === null || pane === null ? undefined : sessions.get(pane.sessionId);
+  // M9 fix 787: a Claude session closed live counts down on its Exited row
+  // and is removed when the count ends; the spot the pane leaves is read
+  // before the close so Resume can put the session back in it.
+  const counting = session !== undefined && session.state !== 'exited' && session.kind !== 'shell';
+  if (counting) armRemoval(session.id, layout === null ? null : closedSpot(layout, paneId));
   await editTab((t) => closePane(t, paneId), paneId);
   if (session === undefined) return;
   if (session.state === 'exited') await removeSession(session.id);
-  else await killSessionUnrecorded(session.id, session.kind === 'shell');
+  else {
+    try {
+      await killSessionUnrecorded(session.id, session.kind === 'shell');
+    } catch (err) {
+      if (counting) clearRemoval(session.id);
+      throw err;
+    }
+  }
 }
 
 export function closeSessionHere(paneId: string): void {

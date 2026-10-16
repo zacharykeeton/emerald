@@ -150,6 +150,36 @@ try {
 
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'the card closed again');
+
+  // M9 fix 777: an AskUserQuestion, which comes as a permission_prompt,
+  // drawn as the terminal draws it: the heading, the question, the tabs
+  // and each option's description (verify:chat's question block's draw).
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask me about the button' });
+  await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'working'`, 'working on the question');
+  const ch = (code) => `[char]0x${code}`;
+  const tabRow = `('' + ${ch('2190')} + ' ' + ${ch('2612')} + ' Colour ' + ${ch('2610')} + ' Size ' + ${ch('2610')} + ' Shape ' + ${ch('2713')} + ' Submit ' + ${ch('2192')})`;
+  const footer = `('Enter to select ' + ${ch('00B7')} + ' Tab/Arrow keys to navigate ' + ${ch('00B7')} + ' Esc to cancel')`;
+  const rows = ['', 'Which size should the sample button be?', '', '  1. Small', '     Fits a dense toolbar', '> 2. Medium (Recommended)', '     Matches the other buttons', '  3. Large', '     Easy to hit on a touch screen', '  4. Type something.', '', '  5. Chat about this', ''];
+  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRow}; ${rows.map((r) => `Write-Host '${r}'`).join('; ')}; Write-Host -NoNewline ${footer}; Read-Host | Out-Null`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('cancel'), 'the question drawn, the cursor on its footer');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'the row needs input for the AskUserQuestion');
+  const badge3 = await centerOf(`${rowSel} .sidebar-row-state`);
+  await s.click(badge3.x, badge3.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-option[data-key="5"]')`, 'the card with its five options');
+  const qc = await s.evalJs(`(() => { const c = document.querySelector('.answer-popover'); const two = c.querySelector('.answer-popover-option[data-key="2"]'); return { heading: c.querySelector('.answer-popover-heading')?.textContent ?? null, question: c.querySelector('.answer-popover-question')?.textContent ?? null, tabs: [...c.querySelectorAll('.answer-popover-tab')].map((t) => t.textContent.replace(/^✓/, '') + ':' + t.dataset.state + ':' + (t.dataset.current ?? '')), desc: two?.querySelector('.answer-popover-desc')?.textContent ?? null, screen: !!c.querySelector('.answer-popover-screen'), box: !!c.querySelector('.answer-popover-input') }; })()`);
+  expect(qc.heading === 'Claude has a question', `the question's heading, got ${qc.heading}`);
+  expect(qc.question === 'Which size should the sample button be?', `the question, got ${JSON.stringify(qc.question)}`);
+  expect(qc.tabs.join(',') === 'Colour:answered:,Size:open:true,Shape:open:', `the tabs, got ${JSON.stringify(qc.tabs)}`);
+  expect(qc.desc === 'Matches the other buttons', `option 2's description, got ${JSON.stringify(qc.desc)}`);
+  expect(!qc.screen && !qc.box, `no excerpt and no box, got ${JSON.stringify(qc)}`);
+  await s.screenshot('m55-answer-question.png');
+  await type(sessionId, '');
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'the question card closed');
+  step('fix 777: the badge card draws an AskUserQuestion, its tabs, its question and the descriptions');
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

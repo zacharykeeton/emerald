@@ -1,9 +1,9 @@
+import { MOD_CHANNEL_LEVEL } from '@emerald/shared';
 import type { ServerMessage } from '@emerald/shared';
 import { parse } from '../args.ts';
 import { CliError, EXIT, usageError } from '../cli-error.ts';
 import type { Command } from '../command.ts';
 import { connectHello, findSession } from '../connect.ts';
-import { MOD_CHANNEL_LEVEL } from '../mod-route.ts';
 
 // The emerald mod's prompt channel (M9 fix 741). The mod starts this
 // inside a hosted Claude at its session.start and reads stdout: one line
@@ -28,7 +28,9 @@ const command: Command = {
     const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
     client.on('message', (msg: ServerMessage) => {
       if (msg.type !== 'mod.submit' || msg.sessionId !== found.id) return;
-      process.stdout.write(JSON.stringify({ text: msg.text }) + '\n');
+      // The submitId goes with it (M9 fix 781): the mod posts its word on
+      // the submit under that id.
+      process.stdout.write(JSON.stringify({ text: msg.text, ...(msg.submitId === undefined ? {} : { submitId: msg.submitId }) }) + '\n');
     });
     await client.request('mod.channel', { sessionId: found.id });
     await closed;

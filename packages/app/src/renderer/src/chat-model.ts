@@ -1,5 +1,6 @@
-import { effortOf } from '@emerald/shared';
-import type { NeedsInputReason, SessionState, Step, StepTurn, TeamCounts } from '@emerald/shared';
+import type { EffortState, NeedsInputReason, SessionState, Step, StepTurn, TeamCounts } from '@emerald/shared';
+import { normalizePath, relativePath } from './files-model.ts';
+import { isQuestionDialog } from './screen-prompt-model.ts';
 
 // The chat view's pure parts (M9 fix 689), kept out of the components so
 // node:test can cover them: the face's stored set, the spinner read off
@@ -14,6 +15,14 @@ export const CHAT_MODE_WORDS: Readonly<Record<ChatMode, string>> = { normal: 'No
 
 export function nextChatMode(mode: ChatMode): ChatMode {
   return CHAT_MODES[(CHAT_MODES.indexOf(mode) + 1) % CHAT_MODES.length]!;
+}
+
+// M9 fix 785: the view chip shows only once the mode has something to
+// change: a tool call (Normal folds it) or a thinking step (Normal hides
+// it). A session with prompts and replies alone draws the same in all
+// three modes.
+export function viewChipShown(turns: readonly StepTurn[]): boolean {
+  return turns.some((t) => t.steps.some((s) => s.kind === 'tool' || s.kind === 'thinking'));
 }
 
 // The panes on the chat face, stored as [paneId, sessionId] pairs, with
@@ -83,9 +92,12 @@ export function spinnerOf(rows: readonly string[]): { word: string; down: string
 // re-reads at most this often, with a trailing read.
 export const CHAT_REREAD_MS = 500;
 
-// M9 fix 690: the ask card's heading, the same four strings as the
-// sidebar's answer card (AnswerPopover.tsx), which stays its own.
-export function askHeading(reason: NeedsInputReason | null | undefined): string {
+// M9 fix 690: the ask card's heading. Since fix 777 the sidebar's answer
+// card (AnswerPopover.tsx) calls it too, and an AskUserQuestion, which
+// reaches the daemon as a permission_prompt, is told apart by its dialog
+// on the screen rows.
+export function askHeading(reason: NeedsInputReason | null | undefined, rows?: readonly string[]): string {
+  if (rows !== undefined && isQuestionDialog(rows)) return 'Claude has a question';
   if (reason === 'permission') return 'Claude is asking permission';
   if (reason === 'agent-permission') return 'A subagent is asking permission';
   if (reason === 'question') return 'Claude has a question';
@@ -99,18 +111,71 @@ export const SCREEN_READ_MS = 1000;
 
 // The slash commands that open a picker or a dialog of their own in the
 // TUI, which the chat view cannot draw: a send of one shows the fallback
-// bar over the box. Read off Claude Code 2.1.301's command table (M9 fix
-// 749).
-export const TERMINAL_COMMANDS: readonly string[] = ['/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw'];
+// bar over the box. Read off Claude Code 2.1.301's command table (M9
+// fixes 749 and 780): fix 749's thirteen first, then the rest of the
+// table's terminal forms (`local-jsx`, and /rewind's message picker) in
+// name order, each with its argument hint and description verbatim. A
+// command whose gate reads the account, a flag or the platform is left
+// out, since the view cannot see it.
+export const TERMINAL_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
+  { name: '/model', hint: '[model]', description: 'Set the AI model for Claude Code' },
+  { name: '/permissions', hint: '', description: 'Manage allow and deny tool permission rules' },
+  { name: '/mcp', hint: '[reconnect (<server>|all)|enable|disable [<server>|all]]', description: 'Manage MCP servers' },
+  { name: '/config', hint: '[key=value]', description: 'Open settings' },
+  { name: '/usage', hint: '', description: 'Show session cost, plan usage, and activity stats' },
+  { name: '/hooks', hint: '', description: 'View hook configurations for tool events' },
+  { name: '/memory', hint: '', description: 'Edit CLAUDE.md files and memory settings' },
+  { name: '/resume', hint: '[conversation id or search term]', description: 'Resume a previous conversation' },
+  { name: '/theme', hint: '', description: 'Change the theme' },
+  { name: '/login', hint: '', description: 'Sign in with your Anthropic account' },
+  { name: '/status', hint: '', description: 'Show Claude Code status including version, model, account, API connectivity, and tool statuses' },
+  { name: '/doctor', hint: '', description: 'Health-check your setup and fix issues: installation, unused extensions, duplicated or bloated memory files, slow hooks, updates, permissions' },
+  { name: '/btw', hint: '[question]', description: 'Ask a quick side question without interrupting the main conversation' },
+  { name: '/autocompact', hint: '[auto|<tokens>]', description: 'Set how full the context gets before auto-summarizing' },
+  { name: '/background', hint: '[prompt]', description: 'Send this session to the background and free the terminal' },
+  { name: '/branch', hint: '[name]', description: 'Create a branch of the current conversation at this point' },
+  { name: '/bug', hint: '[report]', description: 'Report a bug or share your conversation' },
+  { name: '/context', hint: '[all]', description: 'Visualize current context usage as a colored grid' },
+  { name: '/copy', hint: '', description: "Copy Claude's last response to clipboard (or /copy N for the Nth-latest)" },
+  { name: '/daemon', hint: '', description: 'Manage background services and routines' },
+  { name: '/effort', hint: '[low|medium|high|xhigh|max|auto]', description: 'Set effort level for model usage' },
+  { name: '/exit', hint: '', description: 'Exit the CLI' },
+  { name: '/export', hint: '[filename]', description: 'Export the current conversation to a file or clipboard' },
+  { name: '/feedback', hint: '[report]', description: 'Send feedback to Anthropic or report a bug' },
+  { name: '/focus', hint: '', description: 'Toggle focus view: just your prompt, summary, and response' },
+  { name: '/goal', hint: '[<condition> | clear]', description: 'Set a goal Claude checks before stopping' },
+  { name: '/help', hint: '', description: 'Show help and available commands' },
+  { name: '/ide', hint: '[open]', description: 'Manage IDE integrations and show status' },
+  { name: '/install-github-app', hint: '', description: 'Set up Claude GitHub Actions for a repository' },
+  { name: '/logout', hint: '', description: 'Sign out from your Anthropic account' },
+  { name: '/mobile', hint: '', description: 'Show QR code to download the Claude mobile app' },
+  { name: '/plan', hint: '[open|<description>]', description: 'Enable plan mode or view the current session plan' },
+  { name: '/plugin', hint: '', description: 'Manage Claude Code plugins' },
+  { name: '/powerup', hint: '', description: 'Discover Claude Code features through quick interactive lessons' },
+  { name: '/release-notes', hint: '', description: 'View release notes' },
+  { name: '/rewind', hint: '', description: 'Restore the code and/or conversation to a previous point' },
+  { name: '/skill-doctor', hint: '', description: 'Show which loaded skills are unused and costing context' },
+  { name: '/skills', hint: '', description: 'List available skills' },
+  { name: '/tasks', hint: '', description: 'View and manage everything running in the background' },
+  { name: '/terminal-setup', hint: '', description: 'Install Shift+Enter key binding for newlines' },
+  { name: '/tui', hint: '[default|fullscreen]', description: 'Set the terminal UI renderer (default | fullscreen)' },
+];
 
-// Claude Code 2.1.301's aliases of /usage: a typed one opens the same
-// dialog, so it brings the bar, but the menu lists /usage alone (M9 fix
-// 749).
-export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats'];
+// Claude Code 2.1.301's aliases of the terminal commands: a typed one
+// opens its command's dialog, so it brings the bar, but the menu lists
+// the command alone (M9 fixes 749 and 780). The aliases of a sent command
+// (/reset and /new for /clear, /name for /rename) need nothing.
+export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats', '/settings', '/allowed-tools', '/continue', '/plugins', '/marketplace', '/bashes', '/quit', '/share', '/bg', '/ios', '/android', '/checkpoint', '/undo', '/checkup'];
+
+// M9 fix 780: the two commands whose argument skips their dialog (a model
+// or an effort level picked by name); every other one keeps the bar.
+export const ARGUMENT_SKIPS_DIALOG: readonly string[] = ['/model', '/effort'];
 
 export function opensMenu(text: string): boolean {
-  const first = text.trim().split(/\s+/)[0] ?? '';
-  return TERMINAL_COMMANDS.includes(first) || TERMINAL_ALIASES.includes(first);
+  const words = text.trim().split(/\s+/);
+  const first = words[0] ?? '';
+  if (ARGUMENT_SKIPS_DIALOG.includes(first) && words.length > 1) return false;
+  return TERMINAL_COMMANDS.some((c) => c.name === first) || TERMINAL_ALIASES.includes(first) || ARGUMENT_COMMANDS.some((c) => c.name === first);
 }
 
 // Whether the fallback bar goes when the transcript grows: claim 6 of M9
@@ -192,7 +257,10 @@ export async function stepModeTo(
 // M9 fix 744: the model chip's menu, read from Claude Code 2.1.301 (the
 // aliases `/model` takes, the catalog's names and the `/model` picker's
 // own lines) and kept by hand at each update. `best` is left out: it
-// resolves to the account tier's default and has no name of its own.
+// resolves to the account tier's default and has no name of its own. A
+// model this list does not name gets a ticked row of its own (M9 fix 786,
+// modelItems below), so the list going stale costs a missing pick, never
+// a wrong tick.
 export const MODEL_CHOICES: readonly { alias: string; name: string; line: string }[] = [
   { alias: 'default', name: 'Default', line: 'Use the default model' },
   { alias: 'opus', name: 'Opus 5.5', line: 'Best for everyday, complex tasks' },
@@ -204,6 +272,22 @@ export const MODEL_CHOICES: readonly { alias: string; name: string; line: string
   { alias: 'fable[1m]', name: 'Fable 5.1 (1M context)', line: 'Fable 5.1 with 1M context' },
   { alias: 'opusplan', name: 'Opus Plan', line: 'Opus in plan mode, else Sonnet' },
 ];
+
+// M9 fix 786: the model menu's rows. The session's model ticks its row;
+// a model the list does not name comes first as `Current model`, ticked,
+// with no alias since nothing picks it. No row is ticked by family.
+export const CURRENT_MODEL_LINE = 'Current model';
+export interface ModelRow {
+  alias: string | null;
+  name: string;
+  line: string;
+  checked: boolean;
+}
+export function modelItems(model: string | null, choices: readonly { alias: string; name: string; line: string }[]): ModelRow[] {
+  const rows: ModelRow[] = choices.map((c) => ({ alias: c.alias, name: c.name, line: c.line, checked: c.name === model }));
+  if (model === null || rows.some((r) => r.checked)) return rows;
+  return [{ alias: null, name: model, line: CURRENT_MODEL_LINE, checked: true }, ...rows];
+}
 
 // The levels `/effort` takes, with the bundle's own line for each. `auto`
 // hands the choice back to Claude Code and is not a level in the row.
@@ -219,10 +303,12 @@ export const EFFORT_LINES: Readonly<Record<EffortLevel, string>> = {
 
 // The effort the chip shows. Claude Code writes `effort` only on an
 // assistant line, so after a pick the picked level shows until a line
-// written after the pick (the transcript past its length then) says one.
-export function effortShown(text: string, effort: string | null, pick: { level: string; length: number } | null): string | null {
-  if (pick === null) return effort;
-  return effortOf(text.slice(pick.length)) ?? pick.level;
+// written after the pick (one past the assistant count then, M9 fix 770)
+// says one.
+export function effortShown(state: EffortState, pick: { level: string; assistants: number } | null): string | null {
+  if (pick === null) return state.effort;
+  if (state.assistants > pick.assistants) return state.effort ?? pick.level;
+  return pick.level;
 }
 
 // The model chip's words: the title's short model, with the effort when
@@ -245,8 +331,24 @@ export function agentChipText(counts: TeamCounts): string | null {
 // The session's lines added and removed: the sums over every edit step
 // that came back with counts. A rejected edit is an error result and a
 // pending one has none, so neither counts.
-export function sessionDiff(turns: readonly StepTurn[]): { added: number; removed: number } {
-  return stepsDiff(turns.flatMap((t) => t.steps));
+//
+// M9 fix 790: with a folder only the edits under it count, since the chip
+// opens a review of that folder and a count for a file the review cannot
+// show would not match it. A step with no path, or one that is not
+// absolute, counts, since it cannot be placed. A fold row keeps the
+// unfiltered sum (stepsDiff): a fold says what Claude did.
+export function sessionDiff(turns: readonly StepTurn[], folder: string | null = null): { added: number; removed: number } {
+  const steps = turns.flatMap((t) => t.steps);
+  return stepsDiff(folder === null ? steps : steps.filter((s) => underFolder(s, folder)));
+}
+
+const ABSOLUTE = /^([A-Za-z]:|\\\\|\/\/)/;
+
+function underFolder(step: Step, folder: string): boolean {
+  if (step.kind !== 'tool') return true;
+  const p = step.input['file_path'] ?? step.input['notebook_path'];
+  if (typeof p !== 'string' || !ABSOLUTE.test(p)) return true;
+  return relativePath(folder, p) !== normalizePath(p);
 }
 
 function stepsDiff(steps: readonly Step[]): { added: number; removed: number } {
@@ -324,18 +426,38 @@ export function foldText(fold: Pick<FoldItem, 'count' | 'names'>): string {
 }
 
 // M9 fix 719: the `/` menu over the box. The built-ins that run and leave
-// nothing to answer, their descriptions verbatim from Claude Code
-// 2.1.300's own command table (the bundle under
+// nothing to answer, their hints and descriptions verbatim from Claude
+// Code's own command table (the bundle under
 // ~/.local/share/claude/versions; `claude --help` lists no slash
-// commands). /review, /cost and /btw stay out: 2.1.300 has no /review,
-// /cost is /usage's alias and opens a dialog, and /btw answers in an
-// overlay of its own.
-export const SENT_COMMANDS: readonly { name: string; description: string }[] = [
-  { name: '/compact', description: 'Free up context by summarizing the conversation so far' },
-  { name: '/clear', description: 'Start a new session with empty context; previous session stays on disk (resumable with /resume)' },
-  { name: '/init', description: 'Initialize a new CLAUDE.md file with codebase documentation' },
-  { name: '/recap', description: 'Generate a one-line session recap now' },
-  { name: '/reload-skills', description: 'Pick up skills added or changed on disk during this session' },
+// commands). Read off Claude Code 2.1.301's command table (M9 fix 780):
+// fix 719's five first, then the rest of the table's `local` and `prompt`
+// commands, and /rename, which prints a line and opens nothing (bare, it
+// names the session itself), in name order. /review is not in the table,
+// /cost is /usage's alias and /btw a terminal row, since it answers in a
+// panel of its own.
+export const SENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
+  { name: '/compact', hint: '<optional custom summarization instructions>', description: 'Free up context by summarizing the conversation so far' },
+  { name: '/clear', hint: '[name]', description: 'Start a new session with empty context; previous session stays on disk (resumable with /resume)' },
+  { name: '/init', hint: '', description: 'Initialize a new CLAUDE.md file with codebase documentation' },
+  { name: '/recap', hint: '', description: 'Generate a one-line session recap now' },
+  { name: '/reload-skills', hint: '', description: 'Pick up skills added or changed on disk during this session' },
+  { name: '/insights', hint: '', description: 'Generate a report analyzing your Claude Code sessions' },
+  { name: '/install-slack-app', hint: '', description: 'Install the Claude Slack app' },
+  { name: '/radio', hint: '', description: 'Listen to Claude FM lo-fi radio' },
+  { name: '/reload-plugins', hint: '[--force]', description: 'Activate pending plugin changes in the current session' },
+  { name: '/rename', hint: '[name]', description: 'Rename the current conversation' },
+  { name: '/statusline', hint: '', description: "Set up Claude Code's status line UI" },
+  { name: '/stickers', hint: '', description: 'Order Claude Code stickers' },
+  { name: '/team-onboarding', hint: '', description: 'Help teammates ramp on Claude Code with a guide from your usage' },
+];
+
+// M9 fix 780: the commands whose hint is a required argument. A pick
+// completes the name with a space and sends nothing, and the send of the
+// completed box brings the bar, since both draw a dialog of their own
+// (/add-dir's `Add directory to workspace`).
+export const ARGUMENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
+  { name: '/add-dir', hint: '<path>', description: 'Add a new working directory' },
+  { name: '/cd', hint: '<path>', description: 'Move this session to a new working directory' },
 ];
 
 export interface SlashRow {
@@ -343,6 +465,10 @@ export interface SlashRow {
   description: string;
   section: 'sent' | 'terminal';
   skill: boolean;
+  // M9 fix 780: the argument hint after the name, '' for none, and
+  // whether a pick completes rather than sends.
+  hint: string;
+  argument: boolean;
 }
 
 // The menu's query: the whole box a `/` and no space yet, else none.
@@ -351,19 +477,25 @@ export function slashQuery(text: string): string | null {
   return m === null ? null : m[1]!;
 }
 
-// Every row the menu can show, in order: the built-ins, the skills as
-// main lists them (the project's first, each scope in name order) with a
-// name already listed skipped, then the commands only the terminal draws.
+// Every row the menu can show, in order: fix 719's five built-ins, the
+// other sent and argument built-ins in name order (M9 fix 780), the
+// skills as main lists them (the project's first, each scope in name
+// order) with a name already listed skipped, then the commands only the
+// terminal draws.
 export function slashRows(skills: readonly { name: string; description: string }[]): SlashRow[] {
-  const rows: SlashRow[] = SENT_COMMANDS.map((c) => ({ ...c, section: 'sent', skill: false }));
+  const rest = [
+    ...SENT_COMMANDS.slice(5).map((c) => ({ ...c, argument: false })),
+    ...ARGUMENT_COMMANDS.map((c) => ({ ...c, argument: true })),
+  ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const rows: SlashRow[] = [...SENT_COMMANDS.slice(0, 5).map((c) => ({ ...c, argument: false })), ...rest].map((c) => ({ ...c, section: 'sent', skill: false }));
   const seen = new Set(rows.map((r) => r.name));
   for (const s of skills) {
     const name = `/${s.name}`;
     if (seen.has(name)) continue;
     seen.add(name);
-    rows.push({ name, description: s.description, section: 'sent', skill: true });
+    rows.push({ name, description: s.description, section: 'sent', skill: true, hint: '', argument: false });
   }
-  for (const name of TERMINAL_COMMANDS) rows.push({ name, description: '', section: 'terminal', skill: false });
+  for (const c of TERMINAL_COMMANDS) rows.push({ ...c, section: 'terminal', skill: false, argument: false });
   return rows;
 }
 
@@ -527,6 +659,78 @@ export function inputHolds(rows: readonly string[], text: string): boolean {
   return head !== '' && now !== null && now.startsWith(head);
 }
 
+// M9 fix 778: what Claude Code's input holds that the chat box could take
+// over, read off a pty.screen reply whole. 'none' for no prompt row, an
+// empty input or a placeholder; 'blocked' for a marker a Backspace cannot
+// be trusted to clear as text, or an input running past one row, which a
+// count of Backspaces would not empty; 'text' otherwise. The reply's ghost
+// (fix 779, a level 66 daemon) is the dim run on the prompt row, a
+// suggestion or a stock placeholder, and the row is cut where it starts;
+// it is typed here so this compiles before the field reaches the protocol
+// type. A reply without it has the four stock placeholders stripped by
+// text instead. With `expect` (Stop's case, the interrupted turn's prompt)
+// the text is known whole, so the answer is that text when the input
+// starts with it, whatever its row count, and 'none' otherwise, which
+// keeps a placeholder or a suggestion from ever being taken for it. Fix
+// 784 calls this as is.
+export type CarryRead = { kind: 'none' } | { kind: 'text'; text: string } | { kind: 'blocked' };
+export const CARRY_MS = 2000;
+export const CARRY_POLL_MS = 250;
+const PLACEHOLDERS = [/Try ".*"$/, /Press up to .*$/, /Press Enter to edit .*$/, /Message @.*$/];
+const CARRY_FRAME = /[─-╿▀-▟]/g;
+const CARRY_MARKER = /\[Image #|\[Pasted text #/;
+export function carryRead(
+  screen: { rows: readonly string[]; cursor: { x: number; y: number }; ghost?: { y: number; x: number; text: string } | null },
+  expect: string | null = null,
+): CarryRead {
+  const { rows, ghost } = screen;
+  let y = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i]!.trimStart().startsWith('❯')) {
+      y = i;
+      break;
+    }
+  }
+  if (y < 0) return { kind: 'none' };
+  let row = rows[y]!;
+  if (ghost !== undefined && ghost !== null && ghost.y === y) row = row.slice(0, ghost.x);
+  let text = row.trimStart().slice(1).trim();
+  if (ghost === undefined) {
+    for (const p of PLACEHOLDERS) {
+      const m = p.exec(text);
+      if (m !== null) {
+        text = text.slice(0, m.index).trim();
+        break;
+      }
+    }
+  }
+  const marker = CARRY_MARKER.test(text);
+  if (expect !== null) {
+    const head = (expect.split('\n')[0] ?? '').trim().slice(0, 20);
+    return head !== '' && !marker && text.startsWith(head) ? { kind: 'text', text: expect } : { kind: 'none' };
+  }
+  if (text === '') return { kind: 'none' };
+  if (marker) return { kind: 'blocked' };
+  const under = rows[y + 1];
+  if (under !== undefined && under.replace(CARRY_FRAME, ' ').trim() !== '') return { kind: 'blocked' };
+  return { kind: 'text', text };
+}
+
+// M9 fix 778: what Stop moves into the box, from carryRead's answer once
+// its wait is over and the turn Stop stopped. 'input' is the prompt Claude
+// Code gave back to its input, carried out of it. 'prompt' is the turn's
+// prompt with nothing in the input to clear: a prompt the mod submitted
+// (fix 781's route for a plain prompt to an idle Claude) never sat in the
+// input, so an interrupt has nothing to give back (read on 2.1.301), and
+// the box takes the prompt off the turn instead, but only for a turn that
+// drew no step, which is when Claude Code gives a typed prompt back too.
+export type StopCarry = 'input' | 'prompt' | 'none';
+export function stopCarry(read: CarryRead, turn: { steps: readonly unknown[] } | null): StopCarry {
+  if (read.kind === 'text') return 'input';
+  if (read.kind === 'none' && turn !== null && turn.steps.length === 0) return 'prompt';
+  return 'none';
+}
+
 // Which way Claude Code takes a queued message back: 'one' when Up
 // selects a message and Enter pulls that one alone (popEditableAt, a
 // `popOne` line), 'all' when Up pulls the whole queue into the input
@@ -534,3 +738,85 @@ export function inputHolds(rows: readonly string[], text: string): boolean {
 // session on 2026-10-15 (verify:chat's real block): one Up wrote `popAll`
 // for both queued messages, and an Enter after it sent them back as one.
 export const QUEUE_PICK: 'one' | 'all' = 'all';
+
+// M9 fix 782: a message sent from the box, drawn at the conversation's end
+// until its prompt line or queued card takes its place. `key` is the text
+// as the transcript will show it (pendingKey); `seen` is how many landed
+// messages already had that key when it was sent, plus the items pending
+// with it then, so a repeated message is matched once per item, in order,
+// with no clock.
+export interface PendingItem {
+  id: number;
+  text: string;
+  key: string;
+  at: number;
+  seen: number;
+  refusal: string | null;
+}
+
+// M9 fix 782: a sent message with no prompt line this long after the session last went quiet reads Not seen yet.
+export const PENDING_UNSEEN_MS = 15000;
+
+// M9 fix 782: whether a send draws a pending bubble. A slash command, bash
+// mode and the memory key write no prompt line of the same text (the texts
+// modRoutable keeps typed), so none draws one; the fallback bar is a
+// picker's feedback. Chips with no words draw none either.
+export function drawsPending(prompt: string): boolean {
+  if (prompt.trim() === '') return false;
+  const first = prompt.trimStart()[0];
+  return first !== '/' && first !== '!' && first !== '#';
+}
+
+// The text a pending message and its landed line are matched on: Claude
+// Code writes an image sent with words as the words with its [Image #N]
+// marker before them, and trims the prompt.
+export function pendingKey(text: string): string {
+  return text.replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// How many landed messages carry each key: every turn's prompt, every
+// queued step read mid-turn, and every message still queued. A message
+// moves from the queue to a prompt or a queued step, so its count holds
+// across the move. Read off the turns and the whole queue, never the
+// state-gated list the view draws, so a count does not drop while the
+// session idles between a dequeue and its prompt line.
+export function landedCounts(turns: readonly StepTurn[], queued: readonly { text: string }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  const add = (text: string) => {
+    const key = pendingKey(text);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  for (const turn of turns) {
+    add(turn.prompt);
+    for (const step of turn.steps) if (step.kind === 'queued') add(step.text);
+  }
+  for (const m of queued) add(m.text);
+  return counts;
+}
+
+// The items still pending: one is matched, and goes, once its key's count
+// has grown past its `seen`.
+export function pendingAfter(items: readonly PendingItem[], counts: ReadonlyMap<string, number>): PendingItem[] {
+  return items.filter((item) => (counts.get(item.key) ?? 0) <= item.seen);
+}
+
+// A new pending item for a send: its `seen` counts the landed messages and
+// the items already pending with the same key.
+export function pendingItem(id: number, text: string, at: number, items: readonly PendingItem[], counts: ReadonlyMap<string, number>): PendingItem {
+  const key = pendingKey(text);
+  const seen = (counts.get(key) ?? 0) + items.filter((p) => p.key === key).length;
+  return { id, text, key, at, seen, refusal: null };
+}
+
+// The bubble's mark: the refusal's own words; Not seen yet once the session
+// has been quiet PENDING_UNSEEN_MS since the later of the send and the
+// moment it went quiet (`quietSince` is null while it works or asks, when a
+// message may only be waiting its turn); else Sending.
+export function pendingWords(item: PendingItem, now: number, quietSince: number | null): { state: 'sending' | 'unseen' | 'refused'; words: string } {
+  if (item.refusal !== null) return { state: 'refused', words: item.refusal };
+  if (quietSince !== null && now - Math.max(item.at, quietSince) >= PENDING_UNSEEN_MS) return { state: 'unseen', words: 'Not seen yet' };
+  return { state: 'sending', words: 'Sending' };
+}
+
+// M9 fix 783: a Ctrl+C within about a second of a turn's Stop left the [Image #N] marker in Claude Code's prompt (fix 748's runs), so the × waits this long after the session leaves working or needs-input.
+export const CHIP_SETTLE_MS = 1500;

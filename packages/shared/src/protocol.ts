@@ -96,7 +96,13 @@ export const PROTOCOL_VERSION = 1;
 //  65: M9 fix 738, the mod's Spinner, TurnStart and TurnComplete events on the hook sink, an aborted turn putting the row at idle
 //  65: M9 fix 741, session.submit and mod.channel with its mod.submit push, a prompt to a Claude session whose emerald mod opened its channel submitted by the mod rather than typed
 //  65: M9 fix 742, askedFor on SessionInfo, the tool and its input from the mod's ToolAsk post at a permission ask
-export const DAEMON_FEATURE_LEVEL = 65;
+//  66: M9 fix 769, transcript.row on the sessions topic, each row of the conversation a hosted session's emerald mod kept (its Append post on the hook sink), to app windows at level 66
+//  66: M9 fix 779, ghost on the pty.screen reply, the dim run on Claude Code's prompt row (a suggested prompt, a placeholder or an inline completion), null when there is none
+//  66: M9 fix 772, cache on SessionInfo, the prompt cache's TTL, expiry and warmth off the status line's prompt_cache, for the idle compaction's countdown
+//  66: M9 fix 773, keepWhole on SessionInfo and session.set, and the hook sink's POST /compact, which the emerald mod asks before a compaction and which skips an idle one of a session marked to keep whole
+//  66: M9 fixes 774 to 776, a top-level TurnComplete ending a turn that had no Stop, the mod's ToolRunning moving an answered permission ask back to working, and session.submit held up to 3 s for a hosted Claude's mod channel
+//  66: M9 fix 781, submitId on the mod.submit push and the mod's ModSubmit post on the hook sink, session.submit answering typed for a prompt the engine did not enter (a person's Stop standing)
+export const DAEMON_FEATURE_LEVEL = 66;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -116,6 +122,32 @@ export const MOD_HOOK_NAME = 'emerald-mod';
 // hook_event_name: the tool and a short form of its input, at the
 // decision rather than at the dialog. register.js carries the literal.
 export const MOD_TOOL_ASK = 'ToolAsk';
+
+// The event the emerald mod posts for each row the conversation keeps (M9
+// fix 769), as its hook_event_name: the daemon pushes the row on as
+// transcript.row and moves no state. register.js carries the literal.
+export const MOD_APPEND = 'Append';
+
+// The event the emerald mod posts once a submit the daemon pushed has an
+// answer (M9 fix 781), as its hook_event_name: the push's submitId, whether
+// the prompt entered and, when not, the engine's reason. The hook sink hands
+// it to the waiting session.submit and writes no hooks.jsonl line.
+// register.js carries the literal.
+export const MOD_SUBMIT = 'ModSubmit';
+
+// One row as the mod posts it (M9 fix 769): the transcript line's type and
+// message, its long strings capped; a row the mod cut has no blocks.
+export interface ModRow {
+  type: 'user' | 'assistant';
+  role?: 'user' | 'assistant';
+  isMeta?: true;
+  content: unknown[];
+}
+
+// The event the emerald mod posts when a call's progress row first draws
+// (M9 fix 775), and the daemon raises when the spinner draws again on a
+// row at a permission ask: the call is running, so its ask was answered.
+export const MOD_TOOL_RUNNING = 'ToolRunning';
 
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
@@ -158,8 +190,9 @@ export interface Requests {
   // blank comment counts as null. color (M29) is one of SESSION_COLORS or
   // any lower-case hex; it cannot be cleared, every session has one.
   // scheme (M9 fix 244) is a colour scheme's name for this session alone,
-  // null clears it back to the window's pick.
-  'session.set':    { req: { sessionId: string; comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null }; res: {} };
+  // null clears it back to the window's pick. keepWhole (M9 fix 773) marks
+  // a Claude session whose idle compaction the emerald mod skips.
+  'session.set':    { req: { sessionId: string; comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean }; res: {} };
   'session.ack':    { req: { sessionId: string };                                          res: {} };   // done -> idle when you look at it
   // since: only the bytes after that sequence number; next is the number to
   // pass back for the bytes after these, and oldest is set when the ring had
@@ -170,7 +203,8 @@ export interface Requests {
   // is on it now, not what was emitted over time. For a session whose PTY
   // is gone (M9 fix 159) the frame kept at its exit or at the daemon's
   // stop, marked kept; empty when none was kept.
-  'pty.screen':     { req: { sessionId: string };                                          res: { rows: string[]; cursor: { x: number; y: number }; seq: number; kept?: boolean } };
+  // ghost (M9 fix 779): the dim run on Claude Code's prompt row, the last row starting with ❯, as Claude Code draws a suggested prompt, a placeholder or an inline completion; y indexes rows, x is the index in rows[y] where the run's text begins; null when the row has none or there is no such row; absent on a kept frame and from a daemon below level 66.
+  'pty.screen':     { req: { sessionId: string };                                          res: { rows: string[]; cursor: { x: number; y: number }; seq: number; kept?: boolean; ghost?: { y: number; x: number; text: string } | null } };
   'pty.attach':     { req: { sessionId: string };                                          res: {} };   // replay push arrives before this reply
   'pty.detach':     { req: { sessionId: string };                                          res: {} };
   'layout.get':     { req: {};                                                             res: { layout: Layout } };
@@ -339,6 +373,11 @@ export type ServerMessage =
   // 739), on the app topic to windows at level 65; the account's, so one
   // push whichever session measured them, and only when they moved.
   | { type: 'usage.limits';    at: number; limits: UsageLimit[] }
+  // A row of the conversation a hosted session's mod kept (M9 fix 769), on
+  // the sessions topic to app windows at level 66, so the chat view draws
+  // it before the transcript file has it; cut, present only when true,
+  // marks a row the mod cut, which the view never draws.
+  | { type: 'transcript.row';  sessionId: string; at: number; uuid: string; row: ModRow; cut?: true }
   | { type: 'session.removed'; sessionId: string }
   | { type: 'layout.changed';  layout: Layout }
   // The whole list after a folders.set (M9 fix 194), on the sessions topic.
@@ -359,5 +398,6 @@ export type ServerMessage =
   // with browser.done and the runId.
   | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number }
   // A prompt for the emerald mod to submit (M9 fix 741), to the session's
-  // mod.channel connection alone.
-  | { type: 'mod.submit'; sessionId: string; text: string };
+  // mod.channel connection alone. The mod posts ModSubmit with the
+  // submitId and whether the prompt entered (M9 fix 781).
+  | { type: 'mod.submit'; sessionId: string; text: string; submitId?: string };

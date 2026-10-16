@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { effortFold, effortState } from '@emerald/shared';
 import type { Step, StepResult, StepTurn } from '@emerald/shared';
-import { EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, effortShown, faceOf, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems } from './chat-model.ts';
+import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 
@@ -49,9 +50,28 @@ test('askHeading: the four reasons and none', () => {
   assert.equal(askHeading(null), 'Waiting on you');
 });
 
+// M9 fix 777: an AskUserQuestion comes as a permission_prompt; its dialog
+// on the rows makes it a question (fails before 777, where the reason
+// alone decided), and a tool permission's rows keep the permission
+// heading (passes before and after).
+test('askHeading: the rows tell a question from a permission', () => {
+  const question = ['Which colour?', '❯ 1. A', '  2. Type something.', '', 'Enter to select · ↑/↓ to navigate · Esc to cancel'];
+  assert.equal(askHeading('permission', question), 'Claude has a question');
+  const permission = ['Bash command', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', '', 'Esc to cancel · Tab to amend'];
+  assert.equal(askHeading('permission', permission), 'Claude is asking permission');
+});
+
 test('opensMenu: a picker command first in the box, case-sensitive', () => {
   assert.equal(opensMenu('/model'), true);
-  assert.equal(opensMenu(' /model opus'), true);
+  // M9 fix 780: a model or an effort level named skips the dialog.
+  assert.equal(opensMenu(' /model opus'), false);
+  assert.equal(opensMenu('/effort low'), false);
+  assert.equal(opensMenu('/effort'), true);
+  assert.equal(opensMenu('/rename'), false);
+  assert.equal(opensMenu('/rename x'), false);
+  assert.equal(opensMenu('/add-dir C:/x'), true);
+  assert.equal(opensMenu('/quit'), true);
+  assert.equal(opensMenu('/rewind'), true);
   assert.equal(opensMenu('/compact'), false);
   assert.equal(opensMenu('model'), false);
   assert.equal(opensMenu('/Model'), false);
@@ -109,6 +129,20 @@ test('sessionDiff: the edits that came back, summed over the turns', () => {
   assert.deepEqual(sessionDiff([turnOf([tool('Edit', res({ error: true, added: 4, removed: 1 })), tool('Edit', null)])]), { added: 0, removed: 0 });
   assert.deepEqual(sessionDiff([turnOf([tool('Bash', res({ exitCode: 1 }))])]), { added: 0, removed: 0 });
   assert.deepEqual(sessionDiff([]), { added: 0, removed: 0 });
+});
+
+// M9 fix 790: the chip counts the edits the review can show.
+test('sessionDiff with a folder: only the edits under it, case-blind, and a step with no path still counts', () => {
+  const editAt = (p: string | null, added: number) => ({ ...tool('Edit', res({ added, removed: 0 })), input: p === null ? {} : { file_path: p } }) as Step;
+  const steps = [
+    editAt('C:/repo/a.ts', 2),
+    editAt('c:\\REPO\\sub\\b.ts', 1),
+    editAt('C:\\Users\\x\\.claude\\skills\\s.md', 5),
+    editAt('C:/repository/c.ts', 7),
+    editAt(null, 3),
+  ];
+  assert.deepEqual(sessionDiff([turnOf(steps)], 'C:\\repo'), { added: 6, removed: 0 });
+  assert.deepEqual(sessionDiff([turnOf(steps)], null), { added: 18, removed: 0 });
 });
 
 // M9 fix 714: the view modes.
@@ -178,8 +212,8 @@ test('slashQuery: a `/` first and no space yet', () => {
 });
 
 test('filterSlash: contains, exact then starts-with then the rest, sections in order', () => {
-  const sent = (name: string, skill = false): SlashRow => ({ name, description: '', section: 'sent', skill });
-  const term = (name: string): SlashRow => ({ name, description: '', section: 'terminal', skill: false });
+  const sent = (name: string, skill = false): SlashRow => ({ name, description: '', section: 'sent', skill, hint: '', argument: false });
+  const term = (name: string): SlashRow => ({ name, description: '', section: 'terminal', skill: false, hint: '', argument: false });
   const rows = [sent('/recap'), sent('/compact'), sent('/clear'), sent('/code-review', true), term('/config'), term('/model')];
   const names = (q: string) => filterSlash(rows, q).map((r) => `${r.section}:${r.name}`);
   assert.deepEqual(names(''), rows.map((r) => `${r.section}:${r.name}`));
@@ -189,27 +223,45 @@ test('filterSlash: contains, exact then starts-with then the rest, sections in o
   assert.deepEqual(names('clear'), ['sent:/clear']);
 });
 
-test('SENT_COMMANDS: the five built-ins in order, and slashRows puts the skills after them', () => {
+test('SENT_COMMANDS: the five built-ins first, and slashRows puts the skills after them', () => {
   assert.deepEqual(
-    SENT_COMMANDS.map((c) => c.name),
+    SENT_COMMANDS.slice(0, 5).map((c) => c.name),
     ['/compact', '/clear', '/init', '/recap', '/reload-skills'],
   );
   const rows = slashRows([
     { name: 'alpha', description: 'a' },
     { name: 'compact', description: 'shadowed by the built-in' },
   ]);
+  const builtIn = ['/compact', '/clear', '/init', '/recap', '/reload-skills', '/add-dir', '/cd', '/insights', '/install-slack-app', '/radio', '/reload-plugins', '/rename', '/statusline', '/stickers', '/team-onboarding'];
   assert.deepEqual(
     rows.filter((r) => r.section === 'sent').map((r) => [r.name, r.skill]),
-    [['/compact', false], ['/clear', false], ['/init', false], ['/recap', false], ['/reload-skills', false], ['/alpha', true]],
+    [...builtIn.map((n) => [n, false]), ['/alpha', true]],
   );
   assert.deepEqual(
     rows.filter((r) => r.section === 'terminal').map((r) => r.name),
-    [...TERMINAL_COMMANDS],
+    TERMINAL_COMMANDS.map((c) => c.name),
   );
   const terminal = rows.filter((r) => r.section === 'terminal').map((r) => r.name);
   assert.ok(terminal.includes('/usage'));
   assert.ok(!terminal.includes('/cost'));
   assert.ok(!terminal.includes('/agents'));
+});
+
+test('the built-ins carry their hints and kinds, and no name is listed twice (M9 fix 780)', () => {
+  const rows = slashRows([]);
+  const row = (name: string) => rows.find((r) => r.name === name);
+  assert.equal(row('/rename')?.hint, '[name]');
+  assert.equal(row('/rename')?.argument, false);
+  assert.equal(row('/rename')?.section, 'sent');
+  assert.equal(row('/add-dir')?.argument, true);
+  assert.equal(row('/add-dir')?.hint, '<path>');
+  assert.equal(row('/compact')?.hint, '<optional custom summarization instructions>');
+  assert.equal(row('/compact')?.argument, false);
+  assert.equal(row('/model')?.hint, '[model]');
+  assert.equal(row('/init')?.hint, '');
+  const names = [...SENT_COMMANDS, ...ARGUMENT_COMMANDS, ...TERMINAL_COMMANDS].map((c) => c.name);
+  assert.equal(new Set(names).size, names.length);
+  assert.equal(TERMINAL_COMMANDS.length, 41);
 });
 
 test('mentionQuery: the @ token before the caret, split at its last slash', () => {
@@ -359,14 +411,48 @@ test('MODEL_CHOICES: the aliases in order, each one /model takes on Claude Code 
   assert.deepEqual([...EFFORT_LEVELS], ['low', 'medium', 'high', 'xhigh', 'max']);
 });
 
-test('effortShown: the transcript effort, or a pick until a later assistant line says one', () => {
+// M9 fix 786: the model menu ticks the session's model, or shows it first.
+test('modelItems: a listed name ticks its row; an unlisted one comes first, ticked, as Current model', () => {
+  const listed = modelItems('Sonnet 5.5', MODEL_CHOICES);
+  assert.equal(listed.length, 9);
+  assert.deepEqual(listed.filter((r) => r.checked).map((r) => r.name), ['Sonnet 5.5']);
+  assert.ok(listed.every((r) => typeof r.alias === 'string'));
+  const unlisted = modelItems('Opus 9.9', MODEL_CHOICES);
+  assert.equal(unlisted.length, 10);
+  assert.deepEqual(unlisted[0], { alias: null, name: 'Opus 9.9', line: 'Current model', checked: true });
+  assert.ok(unlisted.slice(1).every((r) => !r.checked));
+  assert.deepEqual(unlisted.slice(1).map((r) => r.name), MODEL_CHOICES.map((c) => c.name));
+  // No family tick: a newer Opus is not Opus 5.5.
+  const newer = modelItems('Opus 5.6', MODEL_CHOICES);
+  assert.equal(newer[0]!.name, 'Opus 5.6');
+  assert.equal(newer.find((r) => r.name === 'Opus 5.5')!.checked, false);
+  const none = modelItems(null, MODEL_CHOICES);
+  assert.equal(none.length, 9);
+  assert.ok(none.every((r) => !r.checked));
+});
+
+// M9 fix 785: the view chip waits for a step the mode changes.
+test('viewChipShown: a tool call or a thinking step, never prompts and replies alone', () => {
+  assert.equal(viewChipShown([]), false);
+  assert.equal(viewChipShown([turnOf([{ kind: 'text', text: 'Hello.', at: null }])]), false);
+  assert.equal(viewChipShown([turnOf([{ kind: 'queued', text: 'x', at: null }, { kind: 'note', text: 'Interrupted', at: null }])]), false);
+  assert.equal(viewChipShown([turnOf([{ kind: 'text', text: 'Hello.', at: null }]), turnOf([{ kind: 'thinking', text: '', ms: 6000, at: null }])]), true);
+  assert.equal(viewChipShown([turnOf([tool('Bash', null)])]), true);
+});
+
+test('effortShown: the transcript effort, or a pick until a later assistant line says one (M9 fix 770: read against the fold)', () => {
   const asst = (extra: Record<string, unknown>) => JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [] }, ...extra });
+  const folded = (text: string) => {
+    const state = effortState();
+    effortFold(state, text);
+    return state;
+  };
   const before = `${asst({ effort: 'high' })}\n`;
-  const pick = { level: 'low', length: before.length };
-  assert.equal(effortShown(before, 'high', null), 'high');
-  assert.equal(effortShown(before, 'high', pick), 'low');
-  assert.equal(effortShown(`${before}${asst({ effort: 'medium' })}\n`, 'medium', pick), 'medium');
-  assert.equal(effortShown(`${before}${asst({})}\n`, 'high', pick), 'low');
+  const pick = { level: 'low', assistants: folded(before).assistants };
+  assert.equal(effortShown(folded(before), null), 'high');
+  assert.equal(effortShown(folded(before), pick), 'low');
+  assert.equal(effortShown(folded(`${before}${asst({ effort: 'medium' })}\n`), pick), 'medium');
+  assert.equal(effortShown(folded(`${before}${asst({})}\n`), pick), 'low');
 });
 
 test('promptRowImages: the markers on the prompt row alone (M9 fix 748)', () => {
@@ -387,4 +473,130 @@ test('promptRowImages: the markers on the prompt row alone (M9 fix 748)', () => 
   assert.deepEqual(promptRowImages(freshBelow), [5]);
   assert.deepEqual(promptRowImages(['', 'no prompt']), []);
   assert.equal(promptRow(['', 'no prompt']), null);
+});
+
+// M9 fix 782: the pending bubble's match and words.
+const promptTurn = (prompt: string, steps: Step[] = []): StepTurn => ({ prompt, at: null, endAt: null, steps, images: [] });
+
+test('pendingKey strips the image markers and collapses whitespace (M9 fix 782)', () => {
+  assert.equal(pendingKey('[Image #2]  fix\n  it '), 'fix it');
+  assert.equal(pendingKey('fix it'), 'fix it');
+});
+
+test('pendingAfter matches a message by its landed prompt, an image marker and all (M9 fix 782)', () => {
+  const item = pendingItem(1, 'fix it', 0, [], new Map());
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('[Image #1] fix it')], [])), []);
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('something else')], [])), [item]);
+});
+
+test('two identical messages with one landed prompt: the first goes, the second stays (M9 fix 782)', () => {
+  const first = pendingItem(1, 'again', 0, [], new Map());
+  const second = pendingItem(2, 'again', 0, [first], new Map());
+  assert.equal(second.seen, 1);
+  assert.deepEqual(pendingAfter([first, second], landedCounts([promptTurn('again')], [])), [second]);
+});
+
+test('an item whose seen already counts an earlier identical prompt stays (M9 fix 782)', () => {
+  const counts = landedCounts([promptTurn('again')], []);
+  const item = pendingItem(1, 'again', 0, [], counts);
+  assert.equal(item.seen, 1);
+  assert.deepEqual(pendingAfter([item], counts), [item]);
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('again'), promptTurn('again')], [])), []);
+});
+
+test('a queued message, and later a queued step, each match (M9 fix 782)', () => {
+  const item = pendingItem(1, 'also this', 0, [], landedCounts([promptTurn('go')], []));
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('go')], [{ text: 'also this' }])), []);
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('go', [{ kind: 'queued', text: 'also this', at: null }])], [])), []);
+});
+
+test('drawsPending is false for a command, bash mode, the memory key and an empty text (M9 fix 782)', () => {
+  for (const text of ['/compact', '!ls', '# note', '   ', '']) assert.equal(drawsPending(text), false, JSON.stringify(text));
+  assert.equal(drawsPending('fix the bug'), true);
+});
+
+test('pendingWords: refused, Not seen yet at 15 s after the later of the send and the quiet, else Sending (M9 fix 782)', () => {
+  const item = pendingItem(1, 'fix it', 1000, [], new Map());
+  assert.deepEqual(pendingWords({ ...item, refusal: 'Resume it first' }, 1000, 0), { state: 'refused', words: 'Resume it first' });
+  assert.equal(pendingWords(item, 1000 + PENDING_UNSEEN_MS - 1, 0).state, 'sending');
+  assert.deepEqual(pendingWords(item, 1000 + PENDING_UNSEEN_MS, 0), { state: 'unseen', words: 'Not seen yet' });
+  // Quiet since after the send: counted from the quiet.
+  assert.equal(pendingWords(item, 5000 + PENDING_UNSEEN_MS - 1, 5000).state, 'sending');
+  assert.equal(pendingWords(item, 5000 + PENDING_UNSEEN_MS, 5000).state, 'unseen');
+  // While the session works or asks, never unseen.
+  assert.equal(pendingWords(item, 1000 + 10 * PENDING_UNSEEN_MS, null).state, 'sending');
+});
+
+// M9 fix 778: the carry helper's read of Claude Code's input.
+import { carryRead } from './chat-model.ts';
+
+test('carryRead: none for no prompt row, an empty input and the four stock placeholders', () => {
+  const rule = '─'.repeat(40);
+  const at = (row: string) => ({ rows: ['● done', rule, row, rule, '  ⏵⏵ accept edits on'], cursor: { x: 2, y: 2 } });
+  assert.deepEqual(carryRead({ rows: ['no prompt here'], cursor: { x: 0, y: 0 } }), { kind: 'none' });
+  assert.deepEqual(carryRead(at('❯')), { kind: 'none' });
+  assert.deepEqual(carryRead(at('❯ Try "how does session.ts work?"')), { kind: 'none' });
+  assert.deepEqual(carryRead(at('❯ Press up to edit queued messages')), { kind: 'none' });
+  assert.deepEqual(carryRead(at('❯ Press Enter to edit the selected message')), { kind: 'none' });
+  assert.deepEqual(carryRead(at('❯ Message @agent…')), { kind: 'none' });
+  const tryRow = '❯ Try "x"';
+  assert.deepEqual(carryRead({ ...at(tryRow), ghost: { y: 2, x: tryRow.indexOf('Try'), text: 'Try "x"' } }), { kind: 'none' });
+});
+
+test('carryRead: text, blocked, and the ghost cut', () => {
+  const rule = '─'.repeat(40);
+  const at = (row: string, under = rule) => ({ rows: ['● done', rule, row, under, '  ⏵⏵ accept edits on'], cursor: { x: 2, y: 2 } });
+  assert.deepEqual(carryRead(at('❯ fix the login')), { kind: 'text', text: 'fix the login' });
+  assert.deepEqual(carryRead(at('❯ look at [Image #1]')), { kind: 'blocked' });
+  assert.deepEqual(carryRead(at('❯ [Pasted text #1 +40 lines]')), { kind: 'blocked' });
+  assert.deepEqual(carryRead(at('❯ fix the login and then', '  the logout too')), { kind: 'blocked' });
+  const row = '❯ fix the login';
+  assert.deepEqual(carryRead({ ...at(row), ghost: { y: 2, x: row.indexOf(' the login'), text: ' the login' } }), { kind: 'text', text: 'fix' });
+  // A ghost on another row cuts nothing, and a present null strips nothing.
+  assert.deepEqual(carryRead({ ...at(row), ghost: { y: 0, x: 1, text: 'x' } }), { kind: 'text', text: 'fix the login' });
+  assert.deepEqual(carryRead({ ...at('❯ Try "x"'), ghost: null }), { kind: 'text', text: 'Try "x"' });
+});
+
+test('carryRead: with expect, the whole prompt over two rows, and never a placeholder', () => {
+  const rule = '─'.repeat(40);
+  const prompt = 'Count from 1 to 300, one number per line, slowly.';
+  const held = { rows: ['● 1', rule, `❯ ${prompt.slice(0, 40)}`, prompt.slice(40), rule], cursor: { x: 2, y: 3 } };
+  assert.deepEqual(carryRead(held, prompt), { kind: 'text', text: prompt });
+  // Without the expect the same input runs past one row.
+  assert.deepEqual(carryRead(held), { kind: 'blocked' });
+  assert.deepEqual(carryRead({ rows: ['● 1', rule, '❯ Try "refactor x"', rule], cursor: { x: 2, y: 2 } }, prompt), { kind: 'none' });
+  assert.deepEqual(carryRead({ rows: ['● 1', rule, '❯', rule], cursor: { x: 2, y: 2 } }, prompt), { kind: 'none' });
+});
+
+test('carryRead with no expect, the CLI face carry: text, the 2.1.301 placeholders, the ghost, the markers and two rows (M9 fix 784)', () => {
+  const rule = '─'.repeat(60);
+  const cliAt = (row: string, under = rule) => ({ rows: ['● Ready.', '', rule, row, under, '  ⏵⏵ accept edits on'], cursor: { x: 2, y: 3 } });
+  assert.deepEqual(carryRead(cliAt('❯ hello from the cli')), { kind: 'text', text: 'hello from the cli' });
+  assert.deepEqual(carryRead(cliAt('❯')), { kind: 'none' });
+  for (const row of ['❯ Try "fix lint errors"', '❯ Try "how does <filepath> work?"', '❯ Press up to edit queued messages', '❯ Message @agent…']) assert.deepEqual(carryRead(cliAt(row)), { kind: 'none' }, row);
+  assert.deepEqual(carryRead({ ...cliAt('❯ Try "fix lint errors"'), ghost: { y: 3, x: 2, text: 'Try "fix lint errors"' } }), { kind: 'none' });
+  assert.deepEqual(carryRead(cliAt('❯ [Image #1] look')), { kind: 'blocked' });
+  assert.deepEqual(carryRead(cliAt('❯ [Pasted text #1 +12 lines]')), { kind: 'blocked' });
+  // Contract 2's x is the index where rows[y].slice(x) starts with the ghost's text (6 here; the plan's 7 would cut inside it).
+  const suggested = '❯ fix run the tests';
+  assert.deepEqual(carryRead({ ...cliAt(suggested), ghost: { y: 3, x: suggested.indexOf('run the tests'), text: 'run the tests' } }), { kind: 'text', text: 'fix' });
+  // Decision 4 (b): an input past one row stays in the terminal.
+  assert.deepEqual(carryRead(cliAt('❯ line one', '  line two')), { kind: 'blocked' });
+});
+
+// M9 fix 778: Stop's carry on both routes. A typed prompt comes back to
+// the input and is carried out of it; a prompt the mod submitted never sat
+// in the input, so an empty input after a turn that drew nothing takes the
+// turn's prompt (fails before the close-out's fix: nothing moved).
+import { stopCarry } from './chat-model.ts';
+
+test('stopCarry: the input when it holds the prompt, the turn\'s prompt when it is empty and nothing came, else nothing', () => {
+  const quiet = { steps: [] };
+  const answered = { steps: [{ kind: 'text', text: '1\n2\n3', at: null }] };
+  assert.equal(stopCarry({ kind: 'text', text: 'count to 300' }, quiet), 'input');
+  assert.equal(stopCarry({ kind: 'text', text: 'count to 300' }, answered), 'input');
+  assert.equal(stopCarry({ kind: 'none' }, quiet), 'prompt');
+  assert.equal(stopCarry({ kind: 'none' }, answered), 'none');
+  assert.equal(stopCarry({ kind: 'none' }, null), 'none');
+  assert.equal(stopCarry({ kind: 'blocked' }, quiet), 'none');
 });

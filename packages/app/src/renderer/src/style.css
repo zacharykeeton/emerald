@@ -1787,7 +1787,7 @@ img.sidebar-group-icon {
    badges keep fix 27's wider floors, which win on specificity). It was
    flex: none, and in a 330px pane an exited Claude title with a context
    reading pushed the hide and close buttons past the edge. */
-/* The chat face's Preview chip (M9 fix 737), between the name and the state word. */
+/* A half-built feature's chip in a pane title (M9 fix 737), between the name and the state word; no title wears it since fix 771, and the next half-built feature reuses it. */
 .pane-preview {
   color: var(--muted);
   font-size: 11px;
@@ -8000,12 +8000,6 @@ body.dragging-tab .tab {
    title keeps (the levels past the fourth are at the tail); hide and
    close give at the seventh there. Fix 77's fold and fix 146's tokens
    stay given at these levels through their own rules. */
-.pane-title[data-squeeze="3"] .pane-preview,
-.pane-title[data-squeeze="4"] .pane-preview,
-.pane-title[data-squeeze="5"] .pane-preview,
-.pane-title[data-squeeze="6"] .pane-preview,
-.pane-title[data-squeeze="7"] .pane-preview,
-.pane-title[data-squeeze="8"] .pane-preview,
 .pane-title[data-squeeze="3"] .pane-face-toggle,
 .pane-title[data-squeeze="4"] .pane-face-toggle,
 .pane-title[data-squeeze="5"] .pane-face-toggle,
@@ -11171,7 +11165,8 @@ button.files-root {
   overflow: hidden;
 }
 
-.empty-x {
+.empty-x,
+.picker-x {
   position: absolute;
   top: 6px;
   right: 20px;
@@ -11183,7 +11178,8 @@ button.files-root {
   line-height: 16px;
 }
 
-.empty-x:hover {
+.empty-x:hover,
+.picker-x:hover {
   background: none;
   color: var(--fg);
 }
@@ -11274,9 +11270,9 @@ button.files-root {
 
 .empty-kind-key {
   flex: none;
-  margin-left: auto;
   font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
   font-size: 11px;
+  line-height: 16px;
   color: var(--muted);
 }
 
@@ -11563,7 +11559,7 @@ button.files-root {
     gap: 16px;
   }
   .empty-kind-sub,
-  .empty-kind-key {
+  .empty-kind-hint {
     display: none;
   }
   .empty-kind {
@@ -12490,7 +12486,8 @@ body.dragging-session .browser-frame {
   color: var(--muted);
 }
 
-.chat-error {
+/* The note over the first turn of a transcript read from its tail (M9 fix 770). */
+.chat-earlier {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -13104,7 +13101,8 @@ body.dragging-session .browser-frame {
 }
 
 .chat-menu-row[data-active="true"] .chat-menu-name,
-.chat-menu-row[data-active="true"] .chat-menu-desc {
+.chat-menu-row[data-active="true"] .chat-menu-desc,
+.chat-menu-row[data-active="true"] .chat-menu-hint {
   color: var(--focus-ink);
 }
 
@@ -13354,4 +13352,263 @@ body.dragging-session .browser-frame {
 .activity-usage-toggle[data-active] {
   background: var(--row-hover);
   color: var(--fg);
+}
+
+/* M9 fix 777: an AskUserQuestion drawn as the terminal draws it. */
+.chat-ask-tabs,
+.answer-popover-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chat-ask-tab,
+.answer-popover-tab {
+  font-size: 10px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.chat-ask-tab[data-current="true"],
+.answer-popover-tab[data-current="true"] {
+  color: var(--blocked);
+  border-color: var(--blocked);
+}
+
+.chat-ask-tab-mark,
+.answer-popover-tab-mark {
+  margin-right: 3px;
+}
+
+.chat-ask-question,
+.answer-popover-question {
+  font-size: 12px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.answer-popover-question {
+  font-size: 11px;
+}
+
+.chat-ask-text,
+.answer-popover-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-ask-desc,
+.answer-popover-desc {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: normal;
+}
+
+.answer-popover-desc {
+  font-size: 10px;
+}
+
+.chat-ask-option[data-pointer="true"],
+.answer-popover-option[data-pointer="true"] {
+  border-color: var(--blocked);
+}
+
+/* M9 fix 780: a command's argument hint after its name, as Claude Code's own menu shows it. */
+.chat-menu-hint {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* M9 fix 782: a message sent from the chat box, at the conversation's end
+   until its prompt line or queued card lands; never a .chat-prompt, so no
+   read of the conversation's prompts meets it. */
+.chat-pending-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.chat-prompt-pending {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  max-width: 85%;
+  padding: 8px 10px;
+  background: var(--title-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.chat-prompt-pending-text {
+  min-width: 0;
+  opacity: 0.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-prompt-pending-mark {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-prompt-pending[data-pending="refused"] .chat-prompt-pending-mark {
+  color: var(--error);
+}
+
+/* M9 fix 783: the image chips' × while it waits for Claude Code (the
+   settle time, the Ctrl+C gap, the screen read): its glyph hidden under a
+   small ring that turns by transform alone, one compositor layer. */
+.chat-image-chips-clear {
+  position: relative;
+}
+
+.chat-image-chips-clear[data-busy] {
+  color: transparent;
+}
+
+.chat-image-chips-clear[data-busy]::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid var(--muted);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: usage-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-image-chips-clear[data-busy]::after {
+    animation: none;
+  }
+}
+
+/* M9 fix 791: the hint gives way whole before the name gives up a letter.
+   The box takes only what the name leaves (a basis of 0, so the name is
+   sized first) and wraps: its zero-width ::before holds the one line it
+   shows, so a hint wider than the room breaks onto a second line, which
+   the box's one-line height clips away. The name shrinks only when it
+   does not fit on its own, and by then the hint is gone. */
+.empty-kind-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-start;
+  height: 16px;
+  overflow: hidden;
+}
+
+.empty-kind-hint::before {
+  content: '';
+  width: 0;
+  /* A line of the box's own height, else the empty item makes a line of no
+     height and the hint wrapped under it sits at the top. */
+  height: 16px;
+}
+
+/* The 360 px rule above hides the box, but this block comes after it and
+   would win on order; so the hiding is repeated here. */
+@container empty-pane (max-width: 360px) {
+  .empty-kind-hint {
+    display: none;
+  }
+}
+
+/* M9 fix 772: the idle countdown, to Claude Code's idle compaction or to
+   the prompt cache going cold, after the pane title's state word and
+   between the row's badge and its age. Muted, no mark and no motion: it
+   is a figure to glance at, not an alert. The title's is the first part to
+   give with the tokens (levels 2 to 7); the row's gives the first line's
+   one step, before the name or the badge is cut. */
+.pane-idle-clock {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pane-idle-clock::before {
+  content: '· ';
+}
+
+.pane-title[data-squeeze="2"] .pane-idle-clock,
+.pane-title[data-squeeze="3"] .pane-idle-clock,
+.pane-title[data-squeeze="4"] .pane-idle-clock,
+.pane-title[data-squeeze="5"] .pane-idle-clock,
+.pane-title[data-squeeze="6"] .pane-idle-clock,
+.pane-title[data-squeeze="7"] .pane-idle-clock {
+  display: none;
+}
+
+.sidebar-row-clock {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sidebar-row-main[data-squeeze="1"] .sidebar-row-clock {
+  display: none;
+}
+
+/* On the row the clock takes the age's place while it is drawn (the tech
+   lead's call at fixes 769 to 796): a row at 262 px holds the mark, a
+   five-letter name, the badge, the clock and the menu, but not the age
+   too. The age is out of the layout rather than hidden over, so the
+   squeeze measures the line as drawn; at level 1, where the clock gives
+   way to a long name, the age comes back. */
+.sidebar-row-main:not([data-squeeze="1"]) .sidebar-row-clock ~ .sidebar-row-age {
+  display: none;
+}
+
+/* M9 fix 788: a team line at a narrow sidebar keeps its elapsed whole. Under a team 200px wide (a sidebar of about 220) the word agent goes from an agent's type, its text kept in the DOM, and the type itself can then shrink to an ellipsis, after the activity and the task: the weights 1000000, 1000 and 1 take the shortfall from the activity until it is gone, then from the task, and only then from the type. Wider, the line is fix 764's. */
+.sidebar-row-team {
+  container: sidebar-team / inline-size;
+}
+
+@container sidebar-team (max-width: 200px) {
+  .sidebar-row-member-kind {
+    display: none;
+  }
+
+  .sidebar-row-member-type {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sidebar-row-member-task {
+    flex-shrink: 1000;
+  }
+
+  .sidebar-row-member-activity {
+    flex-shrink: 1000000;
+  }
+}
+
+/* M9 fix 789: a band whose line is out of view stops; band-visibility.ts sets data-offscreen while the line is outside the window or clipped by its list. Coming back in it starts again, and attention.ts puts its start on time zero (fix 729), so it stays in phase. */
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-row[data-working] .sidebar-row-agent[data-offscreen]::after {
+    animation: none;
+  }
+
+  .commits-agent-activity[data-working][data-offscreen]::after {
+    animation: none;
+  }
 }

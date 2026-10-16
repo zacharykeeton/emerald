@@ -74,6 +74,7 @@ const BLOCKS = [
   { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575', 'fix-705'], needs: [] },
   { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
   { name: 'fix-738', fixes: ['fix-738'], needs: [] },
+  { name: 'fix-787', fixes: ['fix-787'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -1722,6 +1723,38 @@ try {
     for (let i = 0; i < 9 && !bandMoved; i++) { await sleep(300); bandMoved = (await bandPaint()) !== bandA; }
     expect(bandMoved, 'the band moves: a capture of the working line within one cycle differs from the first (fix 535, after fix 86)');
     step("M39: the working row's line has the turn-band on its ::after over plain ink and the name none, and what is painted moves");
+
+    // M9 fix 789: the band stops while its line is scrolled out of the
+    // sidebar's list and runs again when it is back. An IntersectionObserver
+    // (band-visibility.ts) reports nothing in a covered window, so when the
+    // attribute never appears the reads are skipped with a note, never failed,
+    // and no wait here depends on it changing.
+    const agent789 = `${rowSel} .sidebar-row-agent`;
+    const offscreen789 = () => s.evalJs(`document.querySelector(${JSON.stringify(agent789)}).hasAttribute('data-offscreen')`);
+    const bandName789 = () => s.evalJs(`getComputedStyle(document.querySelector(${JSON.stringify(agent789)}), '::after').animationName`);
+    const restoreList789 = () => s.evalJs(`(() => { const l = document.querySelector('.sidebar-list'); l.scrollTop = 0; l.style.paddingBottom = ''; })()`);
+    expect(!(await offscreen789()), 'fix 789: the working row\'s line starts in view, with no data-offscreen');
+    await s.evalJs(`(() => { const l = document.querySelector('.sidebar-list'); l.style.paddingBottom = '4000px'; l.scrollTop = l.scrollHeight; return l.scrollTop; })()`);
+    let gone789 = false;
+    for (const end = Date.now() + 3000; !gone789 && Date.now() < end; await sleep(100)) gone789 = await offscreen789();
+    if (!gone789) {
+      console.log('[verify] note: fix 789: data-offscreen never set within 3 s of scrolling the row out (the window reports no intersections, likely covered); the band reads skipped');
+      await restoreList789();
+    } else {
+      const stopped789 = await bandName789();
+      expect(stopped789 === 'none', `fix 789: the band stops while its line is scrolled out, got ${stopped789}`);
+      await restoreList789();
+      let back789 = true;
+      for (const end = Date.now() + 3000; back789 && Date.now() < end; await sleep(100)) back789 = await offscreen789();
+      if (back789) {
+        console.log('[verify] note: fix 789: data-offscreen still set 3 s after the row came back (a covered window); cleared by hand');
+        await s.evalJs(`document.querySelector(${JSON.stringify(agent789)}).removeAttribute('data-offscreen')`);
+      } else {
+        const running789 = await bandName789();
+        expect(running789 === 'turn-band', `fix 789: the band runs again once the line is back in view, got ${running789}`);
+      }
+    }
+    step("M9 fix 789: the working row's band stops with its line scrolled out of the sidebar and runs again when it is back");
 
     // M40, the turn lines. Under the sub line the row has two lines sharing
     // one 6px marker column: the prompt behind › and the agent line behind a
@@ -3823,6 +3856,129 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     const after738 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === dropped.id);
     expect(after738.state === 'idle' && after738.liveVerb === null, `an aborted turn puts the row at idle and clears the word (fix 738), got ${JSON.stringify({ state: after738.state, liveVerb: after738.liveVerb })}`);
     step("M9 fix 738: the mod's spinner word is the row's and the screen's yields to it; an aborted turn puts the row at idle with the word cleared");
+  });
+  await block('fix-787', async () => {
+    // M9 fix 787: a Claude pane closed with the x leaves its Exited row
+    // counting down from 10 s to its removal; a hover on the row holds the
+    // count, Resume during it puts the session back into the split it left,
+    // and a close left alone is removed. The block spawns and removes
+    // everything it uses and works on the current tab's focused pane. Its
+    // stub Claude is a real claude at the trust dialog of a fresh folder,
+    // which makes no request.
+    const dir787 = fs.mkdtempSync(path.join(os.tmpdir(), 'm9-787-'));
+    const spawn787 = async () => (await zreq(s, 'session.spawn', { kind: 'claude', cwd: dir787, cols: 80, rows: 24 })).session;
+    const row787 = (id) => '.sidebar-row[data-session-id=' + JSON.stringify(id) + ']';
+    const pane787 = (id) => '[data-pane-id=' + JSON.stringify(id) + ']';
+    const exited787 = '.sidebar-group[data-group="exited"]';
+    const listed787 = async () => (await zreq(s, 'session.list', {})).sessions;
+    // The session in a new pane split right of the focused pane.
+    const place787 = async (id) => {
+      const layout = await getLayout(s);
+      const F = layout.focusedPaneId;
+      const P = crypto.randomUUID();
+      const split = (node) =>
+        node.kind === 'pane'
+          ? node.id === F
+            ? { kind: 'split', id: crypto.randomUUID(), direction: 'row', ratio: 0.5, first: node, second: { kind: 'pane', id: P, sessionId: id, view: null } }
+            : node
+          : { ...node, first: split(node.first), second: split(node.second) };
+      await zreq(s, 'layout.set', { layout: { ...layout, root: split(layout.root), focusedPaneId: P } });
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(pane787(P) + ' .term-host')})`, 'the placed pane', 10_000);
+      return { F, P };
+    };
+    // A CDP mouseMoved takes five seconds to land in this Electron build
+    // (cdp.mjs), so the hover is the two page events React turns into the
+    // row's enter and leave.
+    const enter787 = (id) => s.evalJs(`document.querySelector(${JSON.stringify(row787(id))}).dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: null }))`);
+    const leave787 = (id) => s.evalJs(`document.querySelector(${JSON.stringify(row787(id))}).dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))`);
+    const closePane787 = async (paneId) => {
+      await s.evalJs(`document.querySelector(${JSON.stringify(pane787(paneId) + ' .pane-close')}).click()`);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(pane787(paneId))})`, 'the closed pane gone', 8000);
+    };
+    const badge787 = (id) => s.evalJs(`document.querySelector(${JSON.stringify(row787(id) + ' .sidebar-row-state')})?.textContent ?? null`);
+    const counting787 = (id) =>
+      s.waitFor(`(() => { const r = document.querySelector(${JSON.stringify(exited787 + ' ' + row787(id))}); return !!r && r.dataset.state === 'exited' && r.dataset.removing !== undefined; })()`, 'the Exited row counting down', 8000);
+
+    // A: the close leaves the row counting where its badge sits.
+    const a = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(a.id))})`, 'the stub Claude row', 8000);
+    const at = await place787(a.id);
+    await closePane787(at.P);
+    await counting787(a.id);
+    const first787 = await badge787(a.id);
+    expect(/^removing in \d+s$/.test(first787), `fix 787: the closed Claude's Exited row counts down where its badge sits, got ${first787}`);
+
+    // Hover: the count holds past its deadline.
+    await enter787(a.id);
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(a.id))})?.dataset.removingPaused !== undefined`, 'the count held by the hover', 2000);
+    const held787 = await badge787(a.id);
+    await sleep(12_000);
+    const heldAfter787 = await badge787(a.id);
+    const stillListed787 = (await listed787()).find((x) => x.id === a.id);
+    expect(heldAfter787 === held787 && stillListed787?.state === 'exited', `fix 787: a hover holds the count past its deadline, got ${held787} then ${heldAfter787} (${stillListed787?.state})`);
+
+    // Resume during the count puts the session back in its split.
+    await s.evalJs(`document.querySelector(${JSON.stringify(row787(a.id) + ' .sidebar-row-resume')}).click()`);
+    const backIn787 = async () => {
+      const layout = await getLayout(s);
+      const find = (n) => (n.kind === 'pane' ? false : (n.direction === 'row' && n.first.id === at.F && n.second.kind === 'pane' && n.second.sessionId === a.id) || find(n.first) || find(n.second));
+      return find(layout.root);
+    };
+    let back787 = false;
+    for (const end = Date.now() + 10_000; !back787 && Date.now() < end; await sleep(200)) back787 = await backIn787();
+    const noCount787 = await s.evalJs(`document.querySelector(${JSON.stringify(row787(a.id))})?.dataset.removing === undefined`);
+    expect(back787 && noCount787, `fix 787: Resume during the count puts the session back in its split beside the pane it left, got back ${back787} and count gone ${noCount787}`);
+    await leave787(a.id);
+
+    // Left alone: closed again, the row goes after the count.
+    const restored787 = leaves(await getLayout(s)).find((p) => p.sessionId === a.id).id;
+    await closePane787(restored787);
+    await counting787(a.id);
+    const noted787 = Date.now();
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(a.id))})`, 'the closed row removed after the count', 16_000);
+    const took787 = Date.now() - noted787;
+    const gone787 = !(await listed787()).some((x) => x.id === a.id);
+    expect(took787 >= 8000 && took787 <= 13_000 && gone787, `fix 787: a close left alone is removed after the count, got ${took787} ms (gone from the list ${gone787})`);
+
+    // A folded Exited group shows the counting row alone.
+    const b = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(b.id))})`, 'the second stub row', 8000);
+    await zreq(s, 'session.kill', { sessionId: b.id });
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(b.id))})?.dataset.state === 'exited'`, 'the killed row exited', 8000);
+    const killedCounts787 = await s.evalJs(`document.querySelector(${JSON.stringify(row787(b.id))}).dataset.removing !== undefined`);
+    expect(!killedCounts787, 'fix 787: a kill is not a close and does not count');
+    const foldExited787 = () => s.evalJs(`document.querySelector(${JSON.stringify(exited787 + ' .sidebar-group-fold')}).click()`);
+    await foldExited787();
+    await s.waitFor(`document.querySelector(${JSON.stringify(exited787)})?.dataset.folded !== undefined`, 'the Exited group folded', 3000);
+    const c = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(c.id))})`, 'the third stub row', 8000);
+    const atC = await place787(c.id);
+    await closePane787(atC.P);
+    await s.waitFor(`document.querySelector(${JSON.stringify(exited787 + ' ' + row787(c.id))})?.dataset.removing !== undefined`, 'the counting row under the folded group', 8000);
+    const bShownFolded787 = await s.evalJs(`!!document.querySelector(${JSON.stringify(row787(b.id))})`);
+    expect(!bShownFolded787, 'fix 787: a folded Exited group shows the counting row alone');
+    await foldExited787();
+    await s.waitFor(`document.querySelector(${JSON.stringify(exited787)})?.dataset.folded === undefined`, 'the Exited group unfolded', 3000);
+
+    // A chip on: the counting row shows, the rest of Exited stays hidden.
+    const d = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(d.id))})`, 'the fourth stub row', 8000);
+    const atD = await place787(d.id);
+    await s.evalJs(`document.querySelector('.sidebar-filter[data-filter="needs"]').click()`);
+    await closePane787(atD.P);
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(d.id))})?.dataset.removing !== undefined`, 'the counting row under the Needs you chip', 8000);
+    const bShownChip787 = await s.evalJs(`!!document.querySelector(${JSON.stringify(row787(b.id))})`);
+    await s.evalJs(`document.querySelector('.sidebar-filter[data-filter="all"]').click()`);
+    expect(!bShownChip787, 'fix 787: under Needs you the counting row shows and the rest of Exited stays hidden');
+
+    // Clean up what the block spawned.
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(c.id))}) && !document.querySelector(${JSON.stringify(row787(d.id))})`, 'the counted rows removed', 16_000);
+    await zreq(s, 'session.remove', { sessionId: b.id });
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(b.id))})`, 'the killed row removed', 5000);
+    try {
+      fs.rmSync(dir787, { recursive: true, force: true });
+    } catch {}
+    step("M9 fix 787: a closed Claude's Exited row counts down from 10s, a hover holds it, Resume restores its split, a close left alone is removed, and a counting row shows in a folded group and under a chip");
   });
   step(blocksRun());
   step('PASS');

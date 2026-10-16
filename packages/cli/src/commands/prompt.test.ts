@@ -4,7 +4,7 @@ import net from 'node:net';
 import type { SessionInfo } from '@emerald/shared';
 import { CliError, EXIT } from '../cli-error.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
-import { runPrompt } from './prompt.ts';
+import { heldPrompt, runPrompt } from './prompt.ts';
 
 // A fake emmerd on a private pipe: answers hello, subscribe and
 // session.list, records pty.input, and runs a per-test script when the
@@ -19,6 +19,9 @@ let sessions: SessionInfo[] = [];
 const inputs: string[] = [];
 const submits: { sessionId: string; text: string }[] = [];
 let modVia: 'mod' | 'typed' = 'mod';
+// M9 fix 778: the screen the fake answers, and how often it was asked.
+let screenRows: string[] = [];
+let screens = 0;
 const sockets = new Set<net.Socket>();
 let server: net.Server;
 
@@ -85,6 +88,9 @@ before(async () => {
           submits.push(raw as { sessionId: string; text: string });
           reply({ via: modVia });
           if (modVia === 'mod') onEnter(push);
+        } else if (msg.type === 'pty.screen') {
+          screens += 1;
+          reply({ rows: screenRows, cursor: { x: 0, y: 0 }, seq: 1 });
         } else sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: false, error: { code: 'bad-request', message: `fake daemon does not do ${msg.type}` } }));
       }
     });
@@ -104,6 +110,8 @@ function scenario(state: SessionInfo['state'], script: (push: Push) => void, ove
   inputs.length = 0;
   submits.length = 0;
   modVia = 'mod';
+  screenRows = [];
+  screens = 0;
   onEnter = script;
 }
 
@@ -235,6 +243,49 @@ test('a channel that is not up types as before (M9 fix 741)', async () => {
   const out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
   assert.deepEqual(inputs, ['fix it', '\r']);
   assert.equal(out.via, 'typed');
+});
+
+// M9 fix 778: the prompt Claude Code gives back after an interrupt.
+const COUNT = 'Count from 1 to 300, one number per line, slowly.';
+const RULE = '─'.repeat(40);
+
+test('heldPrompt: the held prompt, never a placeholder, an empty row or a session with no last prompt', () => {
+  assert.equal(heldPrompt(['● 1', RULE, `❯ ${COUNT}`, RULE], COUNT), COUNT);
+  assert.equal(heldPrompt(['● 1', RULE, '❯ Try "refactor x"', RULE], COUNT), null);
+  assert.equal(heldPrompt(['● 1', RULE, '❯', RULE], COUNT), null);
+  assert.equal(heldPrompt(['● 1', RULE, `❯ ${COUNT}`, RULE], null), null);
+});
+
+test('a prompt Claude Code gave back refuses with exit 1 and types nothing', async () => {
+  scenario('idle', turns, { kind: 'claude', lastPrompt: COUNT });
+  modVia = 'typed';
+  screenRows = ['● 1', '● 2', RULE, `❯ ${COUNT}`, RULE];
+  const err = await failure(runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 1000 }));
+  assert.equal(err.exitCode, EXIT.failure);
+  assert.match(err.message, /input holds the prompt Claude Code gave back after an interrupt/);
+  assert.deepEqual(inputs, []);
+});
+
+test('--force types onto a held prompt, and a placeholder types as before', async () => {
+  scenario('idle', turns, { kind: 'claude', lastPrompt: COUNT });
+  modVia = 'typed';
+  screenRows = [RULE, `❯ ${COUNT}`, RULE];
+  await runPrompt({ ref: 'fix-login', text: 'fix it', force: true, timeoutMs: 5000 });
+  assert.deepEqual(inputs, ['fix it', '\r']);
+  scenario('idle', turns, { kind: 'claude', lastPrompt: COUNT });
+  modVia = 'typed';
+  screenRows = [RULE, '❯ Try "how does session.ts work?"', RULE];
+  await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.deepEqual(inputs, ['fix it', '\r']);
+  assert.equal(screens, 1);
+});
+
+test('the mod route asks no screen', async () => {
+  scenario('idle', turns, { kind: 'claude', lastPrompt: COUNT });
+  screenRows = [RULE, `❯ ${COUNT}`, RULE];
+  await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.deepEqual(submits.map((s) => s.text), ['fix it']);
+  assert.equal(screens, 0);
 });
 
 test('--force to a session that needs input is typed, never submitted (M9 fix 741)', async () => {

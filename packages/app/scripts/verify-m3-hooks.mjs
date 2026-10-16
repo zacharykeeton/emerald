@@ -174,6 +174,21 @@ try {
     let turnDone = eventsFor(claudeId).filter((e) => e.event === 'TurnComplete' && e.mod === true);
     for (const end = Date.now() + 5000; turnDone.length === 0 && Date.now() < end; await sleep(200)) turnDone = eventsFor(claudeId).filter((e) => e.event === 'TurnComplete' && e.mod === true);
     expect(turnStart.length >= 1 && turnDone.length >= 1 && turnDone[0].payload?.is_aborted === false, `turn 1's TurnStart and TurnComplete came from the mod, the turn not aborted (${turnStart.length} TurnStart, ${turnDone.length} TurnComplete, ${JSON.stringify(turnDone[0]?.payload ?? null)})`);
+    // M9 fix 769: the mod posts each kept row as an Append, and its uuid is
+    // the transcript line's; the file can trail the post, so it is polled.
+    const appended = eventsFor(claudeId).filter((e) => e.event === 'Append' && e.mod === true);
+    const transcriptPath = start.payload.transcript_path;
+    const missing = () => {
+      const text = typeof transcriptPath === 'string' && fs.existsSync(transcriptPath) ? fs.readFileSync(transcriptPath, 'utf8') : '';
+      return appended.filter((e) => !text.includes(`"uuid":"${e.payload?.uuid}"`)).map((e) => e.payload?.uuid);
+    };
+    let lost = missing();
+    for (const end = Date.now() + 5000; lost.length > 0 && Date.now() < end; await sleep(200)) lost = missing();
+    expect(appended.length >= 2 && lost.length === 0, `fix 769: turn 1's rows came from the mod as Append lines, each uuid a transcript line's (${appended.length} Append, ${lost.length} not in the transcript: ${lost.join(', ')})`);
+    // M9 fix 774: a top-level TurnComplete idles a row still busy, which
+    // leans on a finished turn's Stop landing first.
+    const names = eventsFor(claudeId).filter((e) => e.mod === true).map((e) => e.event);
+    expect(names.indexOf('Stop') !== -1 && names.indexOf('Stop') < names.indexOf('TurnComplete'), `turn 1's Stop landed before its TurnComplete, the order fix 774 leans on (${names.join(', ')})`);
   }
   step(`ack on focus: idle. hooks.jsonl so far: ${names.join(', ')}`);
 

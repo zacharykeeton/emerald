@@ -40,6 +40,7 @@ import type { MenuItem } from './Menu.tsx';
 import { useStore } from './store.ts';
 import { GRAPH_KEY, VIEW_KEY, cleanGraph } from './view-state.ts';
 import type { CommitsSnapshot } from './view-state.ts';
+import { observeBand } from './band-visibility.ts';
 import { writeGraphInput } from './write-graph-model.ts';
 import type { GraphWrite } from './write-graph-model.ts';
 
@@ -983,7 +984,7 @@ function AgentRow({ item, session, color, model, now, card }: { item: AgentItem;
           <span className="commits-agent-name" title={session.name}>
             {session.name}
           </span>
-          <span className="commits-agent-activity" data-working={working ? '' : undefined}>
+          <span className="commits-agent-activity" data-working={working ? '' : undefined} ref={observeBand}>
             {agentLineText(session)}
           </span>
           <span className="commits-age" title={`${label.text} for ${formatDuration(session.stateSince, now)}`}>
@@ -1005,7 +1006,7 @@ function AgentRow({ item, session, color, model, now, card }: { item: AgentItem;
         <span className="commits-agent-role" data-role="subagent" data-type={member.type ?? undefined} title={`${agentLabel(member)}, a subagent of this session${member.type === null ? '' : ` of type ${member.type}`}`}>
           {agentRole(member)}
         </span>
-        <span className="commits-agent-activity" data-working={working ? '' : undefined}>
+        <span className="commits-agent-activity" data-working={working ? '' : undefined} ref={observeBand}>
           {member.activity ?? agentLabel(member)}
         </span>
         {item.pending && member.branch !== null && (

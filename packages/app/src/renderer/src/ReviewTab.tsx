@@ -6,7 +6,7 @@ import { sendPrompt } from './actions.ts';
 import { folderName } from './files-model.ts';
 import { countsText } from './git-changes-model.ts';
 import { ReviewDiff } from './ReviewDiff.tsx';
-import { branchLine, commentCount, commentsOn, countText, keepDraft, reviewFile, reviewFolder, reviewFolderKey, reviewPrompt, reviewSessionId, sendGate } from './review-model.ts';
+import { branchLine, commentCount, commentsOn, countText, keepDraft, reviewFile, reviewFolder, reviewFolderKey, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
 import type { ReviewBase } from './review-model.ts';
 import { getReview, updateReview, useReview } from './review-state.ts';
 import { colorStyle } from './session-color.ts';
@@ -34,6 +34,10 @@ import { useUi } from './ui.ts';
 // folder's name in place of the mark and the name, there is no state
 // word and no Send, and the comments live under the folder's key so a
 // later open finds them.
+//
+// M9 fix 790: a third base, the commit the session's current conversation
+// started on, which the chat view's diff chip opens on, so the chip's
+// lines and the tab's agree for everything inside the folder.
 
 // The same rhythm as the rail's git poll: the list and the shown file
 // follow the session's writes without a watch of their own.
@@ -51,6 +55,7 @@ export function ReviewTab({ path }: { path: string }) {
   const reviewKey = sessionId ?? (ownFolder === null ? '' : reviewFolderKey(ownFolder));
   const review = useReview(reviewKey);
   const folder = session?.cwd ?? ownFolder;
+  const startHead = session === undefined ? null : sessionStartHead(session);
   const [git, setGit] = useState<GitReview | null>(null);
   // The file the opener asked for, off the tab's state; it wins whenever
   // it changes, and the list's first file stands in until it is known.
@@ -73,7 +78,7 @@ export function ReviewTab({ path }: { path: string }) {
   const fetch = (repin: boolean) => {
     if (folder === null) return;
     if (repin) pinned.current = null;
-    const base = pinned.current ?? (review.base === 'default' ? 'default' : 'HEAD');
+    const base = pinned.current ?? reviewBaseArg(review.base, startHead);
     const seq = ++asked.current;
     void window.emerald.files
       .gitReview(folder, base)
@@ -109,12 +114,22 @@ export function ReviewTab({ path }: { path: string }) {
 
   const count = commentCount(review);
   const gate = session === undefined ? { enabled: false, note: sessionId === null ? 'No session in this folder' : 'No such session' } : sendGate(session, count);
-  const baseName = review.base === 'default' && git?.defaultBranch != null ? git.defaultBranch : 'HEAD';
+  const baseName =
+    review.base === 'default' && git?.defaultBranch != null
+      ? git.defaultBranch
+      : review.base === 'session' && git?.baseHash != null
+        ? `session start ${git.baseHash.slice(0, 7)}`
+        : 'HEAD';
   const onDefault = git !== null && git.defaultBranch !== null && git.head === git.defaultBranch;
   const chooseBase = (base: ReviewBase) => {
     if (base === review.base) return;
     updateReview(reviewKey, (s) => ({ ...s, base }));
   };
+  // A session base with no start commit opens the review on HEAD, as before.
+  useEffect(() => {
+    if (review.base === 'session' && session !== undefined && startHead === null) updateReview(reviewKey, (s) => ({ ...s, base: 'head' }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review.base, session === undefined, startHead, reviewKey]);
   const send = () => {
     if (session === undefined || !gate.enabled) return;
     // The draft is kept first, so nothing typed is lost.
@@ -191,6 +206,18 @@ export function ReviewTab({ path }: { path: string }) {
           >
             Since {git?.defaultBranch ?? 'main'}
           </button>
+          {sessionId !== null && (
+            <button
+              className="review-chip"
+              data-base="session"
+              data-on={review.base === 'session' || undefined}
+              disabled={startHead === null}
+              title={startHead === null ? 'No start commit kept for this session' : `Everything since the commit the session started on, ${startHead.slice(0, 7)}`}
+              onClick={() => chooseBase('session')}
+            >
+              Since session start
+            </button>
+          )}
         </span>
         <button className="files-button review-refresh" title="Read the changes again, against the commit HEAD is at now" onClick={() => fetch(true)}>
           ↻

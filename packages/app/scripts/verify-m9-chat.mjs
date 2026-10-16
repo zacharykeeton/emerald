@@ -26,8 +26,22 @@
 // the calls in place with a short tint, and the fold dots wear their
 // calls' tones. Block `queued` (fix 754, needs turns) reads a message
 // queued while the stub works, shown and then absorbed into its turn;
-// the real block takes two queued messages back with Edit.
+// the real block takes two queued messages back with Edit. Block
+// `mod-feed` (fix 769) posts a spinner word and four rows to the sink as
+// the mod does and reads them drawn before the fixture has them, then
+// once each from the fixture's own lines. Block `tail` (fix 770) opens a
+// stub over a transcript past the 8 MB read cap on its last 2 MB.
+// Block `send` (fixes 781 to 784) plays Claude with a shell of its own:
+// two quick sends, the pending bubble, the chips' ×, and the CLI input
+// carried into the box and back. Block `review-base` (fix 790) plays
+// Claude with a shell in a fixture repository whose edit is committed:
+// the diff chip counts only the edit under the folder and opens the
+// review on the session's start commit. Block
+// `mod-ask` (fixes 774 and 775) starts a real Claude in default mode,
+// Escapes a real permission dialog and answers a second one, a short
+// real turn of its own.
 // Run: npm run verify:chat -w @emerald/app [-- --only stub,ask]
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,13 +59,21 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
   { name: 'thumbs', fixes: ['717', '718'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
-  { name: 'real', fixes: ['690'], needs: [] },
+  { name: 'real', fixes: ['690', '778'], needs: [] },
   { name: 'fresh', fixes: ['722'], needs: [] },
   { name: 'menus', fixes: ['719', '720', '746', '749', '750', '751', '755'], needs: [] },
-  { name: 'image', fixes: ['721', '747', '748'], needs: [] },
+  { name: 'image', fixes: ['721', '747', '748', '784'], needs: [] },
   { name: 'more', fixes: ['723'], needs: [] },
   { name: 'turns', fixes: ['752', '753'], needs: [] },
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
+  { name: 'mod-feed', fixes: ['769'], needs: [] },
+  { name: 'tail', fixes: ['770'], needs: [] },
+  { name: 'question', fixes: ['777'], needs: ['stub'] },
+  { name: 'box', fixes: ['779', '780'], needs: [] },
+  { name: 'send', fixes: ['781', '782', '783', '784'], needs: [] },
+  { name: 'chips', fixes: ['785', '786'], needs: [] },
+  { name: 'review-base', fixes: ['790'], needs: [] },
+  { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
 ]);
 
 let app = null;
@@ -125,12 +147,8 @@ const timeline = (paneId) =>
       replies: [...p.querySelectorAll('.chat-reply')].map((e) => e.textContent),
     };
   })()`);
-// The chat opens on Normal from fix 714 on, which folds tool rows and
-// hides thinking; a block of fixes 716 to 718 that reads those picks
-// Verbose first, Ctrl+O from the box until the footer's view chip (below)
-// says so, and does nothing on a tree with no view chip.
+// The chat opens on Normal from fix 714 on, which folds tool rows and hides thinking; a block that reads those picks Verbose first, Ctrl+O from the box until the view root's data-chat-view (fix 785) says so.
 const toVerbose = async (paneId) => {
-  if ((await viewWord(paneId)) === null) return;
   for (let i = 0; i < 3 && (await viewWord(paneId)) !== 'Verbose'; i++) {
     await s.evalJs(`${q(paneSel(paneId) + ' .chat-box')}.focus()`);
     await s.key('o', 'KeyO', 79, CTRL);
@@ -145,17 +163,23 @@ const toChat = async (paneId) => {
 };
 
 // M9 fix 714: a chat opens on Normal, its tool calls folded, so a read
-// of tool rows or thinking picks Verbose first through the view chip.
+// of tool rows or thinking picks Verbose first. M9 fix 785: the view chip
+// shows only once the turns hold a tool call or a thinking step, so the
+// mode is read off the view root's data-chat-view, there from the first
+// paint; the chip is clicked only to test its menu.
+const VIEW_WORDS = { normal: 'Normal', thinking: 'Thinking', verbose: 'Verbose' };
 const viewChip = (paneId) => paneSel(paneId) + ' .chat-chip[data-chip="view"]';
-const viewWord = (paneId) => s.evalJs(`${q(viewChip(paneId) + ' .chat-chip-word')}?.textContent ?? null`);
+const viewRoot = (paneId) => paneSel(paneId) + ' .chat-view';
+const viewWord = (paneId) => s.evalJs(`(() => { const v = ${q(viewRoot(paneId))}?.dataset.chatView; return v === undefined ? null : (${JSON.stringify(VIEW_WORDS)}[v] ?? v); })()`);
 const waitView = async (paneId, word) => {
   try {
-    await s.waitFor(`${q(viewChip(paneId) + ' .chat-chip-word')}?.textContent === ${JSON.stringify(word)}`, `the view chip reading ${word}`, 3000);
+    await s.waitFor(`${q(viewRoot(paneId))}?.dataset.chatView === ${JSON.stringify(word.toLowerCase())}`, `the view reading ${word}`, 3000);
   } catch (err) {
     throw new Error(`${err.message}: got ${JSON.stringify(await viewWord(paneId))}`);
   }
 };
 const pickView = async (paneId, word) => {
+  await s.waitFor(`!!${q(viewChip(paneId))}`, 'the view chip (fix 785: it shows once the turns hold a tool call or a thinking step)', 5000);
   await s.evalJs(`${q(viewChip(paneId))}.click()`);
   await s.waitFor(`!!document.querySelector('.menu.chat-view-menu')`, 'the view menu', 3000);
   await s.evalJs(`[...document.querySelectorAll('.menu.chat-view-menu .menu-item')].find((b) => b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') === ${JSON.stringify(word)}).click()`);
@@ -197,11 +221,25 @@ let freshId = null;
 let freshDir = null;
 let freshProject = null;
 let menusId = null;
+// M9 fixes 779 and 780: the box block's own stub.
+let boxId = null;
 let imageId = null;
 // M9 fixes 752 to 754: the turns stub, which `queued` reuses.
 let turnsId = null;
 let turnsPane = null;
 let postTurns = null;
+// M9 fix 769: the feed stub, and fix 770's tail stub.
+let feedId = null;
+let tailId = null;
+// M9 fixes 781 to 784: the send stub.
+let sendId = null;
+let sendPane = null;
+// M9 fixes 785 and 786: the footer chips stub.
+let chipsId = null;
+// M9 fix 790: the review-base stub.
+let reviewId790 = null;
+// M9 fixes 774 and 775: the real Claude the mod-ask block asks with.
+let askId = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -252,8 +290,7 @@ try {
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === 'chat'`, 'the pane on the chat face');
     expect(await s.evalJs(`!!${q(paneSel(stubPane) + ' .term-host')}?.emeraldTerm`), 'the terminal is still mounted with its xterm');
     expect((await s.evalJs(`getComputedStyle(${q(paneSel(stubPane) + ' .term-host')}).visibility`)) === 'hidden', 'and hidden');
-    const chip = await s.evalJs(`(() => { const c = ${q(paneSel(stubPane) + ' .pane-preview')}; return c === null ? null : { text: c.textContent, title: c.title }; })()`);
-    expect(chip !== null && chip.text === 'Preview' && chip.title === 'The chat view is in progress; the terminal has everything', `fix 737: the Preview chip on the chat face, got ${JSON.stringify(chip)}`);
+    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .pane-preview')}`)) === false, 'fix 771: no Preview chip on the chat face');
     const stored = await s.evalJs(`localStorage.getItem('emerald.chatPanes')`);
     expect(stored === JSON.stringify([[stubPane, stubId]]), `the face is stored against the session, got ${stored}`);
     step('fix 689 (c): the title button turns the pane to its chat face, the terminal kept hidden under it');
@@ -299,8 +336,8 @@ try {
     // (h) The chord flips the face both ways, the keyboard following.
     await s.key('M', 'KeyM', 77, CTRL | SHIFT);
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === undefined`, 'the chord back to the terminal');
-    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .pane-preview')}`)) === false, 'fix 737: the Preview chip is gone on the terminal face');
-    step('fix 737: the chat face carries the Preview chip with its tooltip, the terminal face none');
+    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .pane-preview')}`)) === false, 'fix 771: no Preview chip on the terminal face');
+    step('fix 771: the pane title carries no Preview chip on either face');
     await s.waitFor(`document.activeElement?.classList.contains('xterm-helper-textarea') && ${q(paneSel(stubPane))}.contains(document.activeElement)`, 'the keyboard in the terminal');
     await s.key('M', 'KeyM', 77, CTRL | SHIFT);
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === 'chat'`, 'the chord to the chat');
@@ -439,7 +476,20 @@ try {
     };
 
     // (a) Only the diff reads: no mode row on the screen, no status line,
-    // no team; the fixture's one edit is +6 −2.
+    // no team; the fixture's one edit is +6 −2. M9 fix 790: the chip counts
+    // only edits under the session's folder. Alone, the stub's hooks keep
+    // its folder at C:/sim, where the fixture's edit is; after the ask
+    // block the daemon reads Claude as gone and the shell's own prompt
+    // names the folder, so the shell goes to C:\ (the edit is under it)
+    // when its folder is not an ancestor of the edit.
+    const under790 = (cwd) => {
+      const dir = (cwd ?? '').replace(/\//g, '\\').toLowerCase();
+      return 'c:\\sim\\session.ts'.startsWith(dir.endsWith('\\') ? dir : `${dir}\\`);
+    };
+    if (!under790((await record(stubId)).cwd)) {
+      await typeRaw(stubId, "Set-Location -LiteralPath 'C:\\'\r");
+      await waitRecord(stubId, (r) => under790(r.cwd), 'the shell at C:\\ for the diff read', 5000);
+    }
     await s.evalJs(`${q(paneSel(stubPane) + ' .pane-face-toggle')}.click()`);
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === 'chat'`, 'the stub on the chat face');
     await boxHasKeys();
@@ -1008,7 +1058,15 @@ try {
       await sleep(250);
     }
     expect(eventsFor(realId).some((e) => e.event === 'Stop'), 'Stop logged for the real turn');
-    const drawn = `(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => (t.querySelector('.chat-tool-arg')?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.querySelector('.chat-dot')?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
+    {
+      // M9 fix 781: the box's first prompt goes to an idle Claude whose mod
+      // is loaded, so it goes in through session.submit, which logs it.
+      const daemonLog = path.join(emeraldHome, 'logs', 'emmerd.log');
+      const log = fs.existsSync(daemonLog) ? fs.readFileSync(daemonLog, 'utf8') : '';
+      expect(log.includes(`mod submit for ${realId.slice(0, 8)}`), `the box's first prompt went in through the mod (fix 781); emmerd.log has mod channel up: ${log.includes(`mod channel up for ${realId.slice(0, 8)}`)}`);
+      step('fix 781: a prompt from the box to the idle real Claude went in through the mod');
+    }
+    const drawn =`(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => (t.querySelector('.chat-tool-arg')?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.querySelector('.chat-dot')?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
     const okDrawn = `(() => { const d = ${drawn}; return d.prompt && d.tone === 'done' && (d.result ?? '').startsWith('exit 0') && d.reply === ${JSON.stringify(marker)}; })()`;
     try {
       await s.waitFor(okDrawn, 'the real turn drawn', 5000);
@@ -1051,13 +1109,16 @@ try {
     await s.evalJs(`${q(paneSel(pane.id) + ' .chat-chip[data-chip="model"]')}.click()`);
     await s.waitFor(`!!document.querySelector('.menu.chat-model-menu')`, 'the real model menu', 3000);
     {
-      const labels = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu .menu-item .menu-label')].map((e) => e.textContent.replace(/^✓/, ''))`);
+      // M9 fix 786: an account whose display name the list does not name
+      // gets a Current model row first; it is dropped before the compare.
+      const rows = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', line: b.querySelector('.menu-line')?.textContent ?? null }))`);
+      const labels = rows.filter((r) => r.line !== 'Current model').map((r) => r.label);
       const want = ['Model', 'Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
       expect(JSON.stringify(labels) === JSON.stringify(want), `the real model menu's rows, got ${JSON.stringify(labels)}`);
       const segs = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu [data-segments="Effort"] .menu-segment')].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
       expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the real effort row, got ${JSON.stringify(segs)}`);
       const checked = await realMenuChecked('.menu.chat-model-menu');
-      console.log(`[verify] note: fix 744's real model menu ticks ${JSON.stringify(checked)} with ${JSON.stringify(segs.filter((x) => x.active).map((x) => x.word))} active (the account's display name may name no row; logged, not judged)`);
+      console.log(`[verify] note: fix 744's real model menu ticks ${JSON.stringify(checked)} with ${JSON.stringify(segs.filter((x) => x.active).map((x) => x.word))} active, a Current model row ${JSON.stringify(rows.find((r) => r.line === 'Current model')?.label ?? null)} (the account's display name may name no row; logged, not judged)`);
     }
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!document.querySelector('.menu.chat-model-menu')`, 'Escape closed the real model menu', 2000);
@@ -1117,9 +1178,7 @@ try {
         const r = await record(realId);
         throw new Error(`the sleep never drawn pending: state ${r.state}, rows ${JSON.stringify(await toolRows())}, input ${JSON.stringify((await screen(realId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
       }
-      // The second waits for the first's bubble: a send types the text and
-      // its Enter a moment apart, so two sends inside that moment run into
-      // one message in the TUI.
+      // The second send waits for the first's Enter (M9 fix 781's chain in sendPrompt); the wait for each bubble keeps the step's reads in order.
       const bubbleTexts = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-queued .chat-queued-text')})].map((e) => e.textContent)`);
       for (const [k, name] of ['a', 'b'].entries()) {
         await s.evalJs(`${q(boxSel)}.focus()`);
@@ -1160,7 +1219,10 @@ try {
       expect(editRead.bubbles.length === 0, `no bubble left, got ${JSON.stringify(editRead.bubbles)}`);
       expect(!(editRead.input ?? '').startsWith('queued-'), `the TUI's input cleared, got ${JSON.stringify(editRead.input)}`);
       expect(editRead.ops.includes(`popAll:queued-a-${marker}`) && editRead.ops.includes(`popAll:queued-b-${marker}`), `the transcript's popAll for both, got ${JSON.stringify(editRead.ops)}`);
-      expect(editRead.ops.filter((o) => o.startsWith('enqueue:')).length === 2, `nothing sent back into the queue, got ${JSON.stringify(editRead.ops)}`);
+      // M9 fix 781: a prompt the mod submits to an idle session writes its
+      // own enqueue and dequeue pair (read on 2.1.301), so only the queued
+      // messages' enqueues are counted.
+      expect(editRead.ops.filter((o) => o.startsWith('enqueue:queued-')).length === 2, `nothing sent back into the queue, got ${JSON.stringify(editRead.ops)}`);
       step('fix 754: Edit on a real queued message takes the queue back from Claude Code into the box, as one Up does in the terminal');
 
       await s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, ''); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -1171,7 +1233,83 @@ try {
       step(`fix 754: the turn ended on the prompt alone, the reply ${marker}q`);
     }
 
+    // M9 fix 778: Stop on a working turn moves the interrupted prompt into
+    // the box, the input empty, so the next message goes alone. Since fix
+    // 781 this send goes in through the mod, so the prompt was never in
+    // Claude Code's input and nothing comes back to it: the box takes the
+    // turn's prompt once the carry's wait (CARRY_MS) finds the input empty.
+    // A typed send's prompt comes back to the input and is carried out.
+    {
+      await sleep(1500);
+      const P = paneSel(pane.id);
+      const boxSel = P + ' .chat-box';
+      // No tools, so no permission card can stand where Stop is clicked.
+      const stopPrompt = `Count from 1 to 300, one number per line, slowly, without using any tools. Marker ${marker}s.`;
+      await s.evalJs(`${q(boxSel)}.focus()`);
+      await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'the box holds the keyboard');
+      await s.type(stopPrompt);
+      await s.key('Enter', 'Enter', 13);
+      await waitRecord(realId, (r) => r.state === 'working', 'the counting turn working', 15000);
+      await s.waitFor(`!!${q(P + ' .chat-stop')}`, 'Stop while counting', 5000);
+      // Claude Code 2.1.301 gives the prompt back only to a turn stopped
+      // before any of its reply came (read here: a Stop four seconds in,
+      // 194 numbers drawn, left the input empty), so Stop goes the moment
+      // the view has the turn's prompt, which is what the carry expects.
+      const promptShownAt = Date.now();
+      await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-prompt')})].at(-1)?.textContent === ${JSON.stringify(stopPrompt)}`, 'the counting prompt in the view', 10000);
+      console.log(`[verify] fix 778: the prompt drawn ${Date.now() - promptShownAt} ms after Stop showed`);
+      const stoppedAt = Date.now();
+      await s.evalJs(`${q(P + ' .chat-stop')}.click()`);
+      // The input as carryRead reads it: the last ❯ row's text, a stock
+      // placeholder or nothing reading as empty.
+      const inputText = async () => {
+        const rows = (await screen(realId)).rows;
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const r = rows[i].trimStart();
+          if (!r.startsWith('❯')) continue;
+          const t = r.slice(1).trim();
+          return /^(Try ".*"|Press up to .*|Press Enter to edit .*|Message @.*)$/.test(t) ? '' : t;
+        }
+        return null;
+      };
+      // CARRY_MS (2 s) of waiting for the input first, then the box.
+      let read = null;
+      while (Date.now() - stoppedAt < 5000) {
+        read = { box: await s.evalJs(`${q(boxSel)}.value`), input: await inputText() };
+        if (read.box === stopPrompt && read.input === '') break;
+        await sleep(200);
+      }
+      console.log(`[verify] fix 778: ${Date.now() - stoppedAt} ms after Stop, ${JSON.stringify(read)}`);
+      if (read.box !== stopPrompt || read.input !== '') {
+        const rows = (await screen(realId)).rows.filter((r) => r.trim() !== '').slice(-6);
+        console.log(`[verify] fix 778: the screen's last rows ${JSON.stringify(rows)}`);
+      }
+      expect(read.box === stopPrompt, `the interrupted prompt in the box, got ${JSON.stringify(read)}`);
+      expect(read.input === '', `the terminal's input emptied, got ${JSON.stringify(read)}`);
+      step('fix 778: Stop on a working turn moves the interrupted prompt into the box and empties the terminal\'s input');
+      const leftBy = Date.now() + 15000;
+      while (Date.now() < leftBy && (await record(realId)).state === 'working') await sleep(250);
+      console.log(`[verify] fix 778: the record after the Stop reads ${(await record(realId)).state}`);
+      await s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, ''); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      const stopsBefore = eventsFor(realId).filter((e) => e.event === 'Stop').length;
+      const next = `Reply with exactly the word ${marker}t and nothing else.`;
+      await s.evalJs(`${q(boxSel)}.focus()`);
+      await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'the box holds the keyboard');
+      await s.type(next);
+      await s.key('Enter', 'Enter', 13);
+      const replyBy = Date.now() + 90000;
+      while (Date.now() < replyBy && eventsFor(realId).filter((e) => e.event === 'Stop').length <= stopsBefore) await sleep(250);
+      expect(eventsFor(realId).filter((e) => e.event === 'Stop').length > stopsBefore, 'Stop logged for the next turn');
+      const last = (await record(realId)).lastPrompt;
+      expect(last === next, `the next message went alone, lastPrompt ${JSON.stringify(last)}`);
+      step(`fix 778: the next message after the Stop went alone, the record's last prompt is it`);
+    }
+
     await sleep(1500);
+    // M9 fix 779: the real screen's ghost, logged and never judged; a
+    // suggestion here is a real fixture for the parser's test.
+    const realScreen = await screen(realId);
+    console.log(`[verify] note: fix 779: the real screen's ghost ${JSON.stringify(realScreen.ghost === undefined ? 'absent' : realScreen.ghost)} on prompt row ${JSON.stringify(realScreen.rows.filter((r) => r.trimStart().startsWith('❯')).at(-1) ?? null)}`);
     await s.waitFor(`document.activeElement === ${q(paneSel(pane.id) + ' .chat-box')}`, 'the box holds the keyboard');
     await s.type('/exit');
     await s.key('Enter', 'Enter', 13);
@@ -1326,8 +1464,9 @@ try {
     const menuRows = () => s.evalJs(`[...document.querySelectorAll('.chat-menu .chat-menu-row')].map((r) => ({ section: r.dataset.section ?? null, name: r.dataset.name ?? null, skill: r.hasAttribute('data-skill'), kind: r.dataset.kind ?? null, path: r.dataset.path ?? null, desc: r.querySelector('.chat-menu-desc')?.textContent ?? null, icon: !!r.querySelector('.chat-menu-terminal') }))`);
     await toChat();
 
-    // (a) A `/` in the empty box: the two sections, the five built-ins, the
-    // seeded skill once the reply lands, and the terminal's commands.
+    // (a) A `/` in the empty box: the two sections, the five built-ins
+    // first, then the rest of the table's (M9 fix 780), the seeded skill
+    // once the reply lands, and the terminal's commands.
     await s.type('/');
     await s.waitFor(`!!document.querySelector('.chat-menu')`, 'the / menu');
     const headings = await s.evalJs(`[...document.querySelectorAll('.chat-menu .menu-heading')].map((e) => e.textContent)`);
@@ -1339,7 +1478,13 @@ try {
     const seeded = sentA.find((r) => r.name === '/verify-skill-719');
     expect(seeded?.desc === 'Seeded by verify:chat for fix 719.', `the seeded skill's description, got ${JSON.stringify(seeded)}`);
     const terminalA = rowsA.filter((r) => r.section === 'terminal');
-    const TERMINAL = ['/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw'];
+    // M9 fix 780: fix 749's thirteen, then the rest of Claude Code 2.1.301's
+    // terminal forms in name order.
+    const TERMINAL = [
+      '/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw',
+      '/autocompact', '/background', '/branch', '/bug', '/context', '/copy', '/daemon', '/effort', '/exit', '/export', '/feedback', '/focus', '/goal', '/help', '/ide',
+      '/install-github-app', '/logout', '/mobile', '/plan', '/plugin', '/powerup', '/release-notes', '/rewind', '/skill-doctor', '/skills', '/tasks', '/terminal-setup', '/tui',
+    ];
     expect(JSON.stringify(terminalA.map((r) => r.name)) === JSON.stringify(TERMINAL) && terminalA.every((r) => r.icon), `the terminal rows with their icons, got ${JSON.stringify(terminalA)}`);
     expect((await s.evalJs(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name ?? null`)) === '/compact', 'the first row highlighted');
     await s.screenshot('m9-chat-slash.png');
@@ -1565,6 +1710,9 @@ try {
     // without a marker.
     const clearSel = paneSel(imagePane) + ' .chat-image-chips-clear';
     const clearByX = async (what) => {
+      // M9 fix 783: the × waits a settle time after a turn ends, so a click
+      // never lands on a disabled button after a slow Stop.
+      await s.waitFor(`${q(clearSel)}.disabled === false`, `the × enabled (${what})`, 5000).catch(() => {});
       const state = (await record(imageId)).state;
       const disabled = await s.evalJs(`${q(clearSel)}.disabled`);
       await s.evalJs(`${q(clearSel)}.click()`);
@@ -1700,9 +1848,53 @@ try {
     await sleep(2000);
     await typeRaw(imageId, '\x03');
     await waitPrompt((row) => !row.includes('[Image #'), 'Ctrl+C cleared the terminal drop');
+
+    // M9 fix 784, decision 4: what a wrapped input and a Ctrl+J input look
+    // like on the real 2.1.301 screen, from the prompt row to the composer's
+    // lower rule, and what the carry makes of each on the flip to chat. The
+    // carry (fix 778's carryRead) takes an input past one row as blocked.
+    const composerRows = async () => {
+      const rows = (await screen(imageId)).rows;
+      let from = -1;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (/^\s*❯/.test(rows[i])) {
+          from = i;
+          break;
+        }
+      }
+      if (from < 0) return [];
+      const out = [];
+      for (let i = from; i < rows.length; i++) {
+        if (i > from && /^─+$/.test(rows[i].trim())) break;
+        out.push(rows[i]);
+      }
+      return out;
+    };
+    const hintNow = () => s.evalJs(`${q(paneSel(imagePane) + ' .chat-hint')}?.textContent ?? null`);
+    for (const [name, typed, mark] of [
+      ['a 200-character input', 'x'.repeat(200), 'xxxxxxxxxx'],
+      ['line one, Ctrl+J, line two', 'line one\nline two', 'line one'],
+    ]) {
+      await typeRaw(imageId, typed);
+      await waitPrompt((row) => row.includes(mark) || row.includes('[Pasted text'), `Claude's input holds ${name}`);
+      console.log(`[verify] fix 784: the rows of ${name}: ${JSON.stringify(await composerRows())}`);
+      await toChat();
+      await sleep(1500);
+      const carried = { box: await s.evalJs(`${q(boxSel)}.value`), hint: await hintNow(), input: await promptRow() };
+      console.log(`[verify] fix 784: ${name} on the flip to chat: ${JSON.stringify(carried)}`);
+      expect(carried.box === '' && carried.hint === "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it", `${name} stays in the terminal with the hint (decision 4 (b)), got ${JSON.stringify(carried)}`);
+      // Back to the terminal (the box is empty, so nothing is typed) and
+      // clear the input with one Ctrl+C, two seconds past the last.
+      await toggle();
+      await s.waitFor(`${q(paneSel(imagePane))}.dataset.face === undefined`, 'the terminal face to clear the input');
+      await sleep(2000);
+      await typeRaw(imageId, '\x03');
+      await waitPrompt((row) => !row.includes(mark) && !row.includes('[Pasted text'), `Ctrl+C cleared ${name}`);
+    }
+    step('fix 784: an input past one row on a real Claude stays in the terminal on the flip, with the hint');
     await toChat();
 
-    // (h) /exit, which no row of the / menu holds, ends the session.
+    // (h) /exit, which the / menu's row sends, ends the session.
     await s.type('/exit');
     await s.key('Enter', 'Enter', 13);
     await waitRecord(imageId, (r) => r.state === 'exited' && r.exitCode === 0, 'the image Claude exited (0)', 30000);
@@ -1903,6 +2095,911 @@ try {
     step('fix 754: a message Claude read mid-turn leaves the queue and shows in its turn, marked sent mid-turn');
   });
 
+  await block('mod-feed', async () => {
+    // M9 fix 769: a shell playing Claude whose "mod" posts Spinner and
+    // Append to the sink: the live line takes the posted word, the posted
+    // rows draw before the fixture has them, and once the fixture's own
+    // lines land each row is drawn once, from the file.
+    const feedDir = path.join(emeraldHome, 'chat-769');
+    fs.mkdirSync(feedDir, { recursive: true });
+    const feedFixture = path.join(feedDir, 'fixture.jsonl');
+    fs.writeFileSync(feedFixture, [userLine('feed me', 0), asstLine([{ type: 'text', text: 'From the file.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: feedDir, cols: 120, rows: 30 });
+    feedId = spawned.session.id;
+    const lay = await getLayout(s);
+    const feedPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === feedPane ? { ...n, sessionId: feedId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: feedPane } });
+    await s.waitFor(`!!${q(paneSel(feedPane) + ' .term-host')}`, 'the feed stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postFeed = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': feedId },
+        body: JSON.stringify({ session_id: 'sim-chat-769', cwd: feedDir, transcript_path: feedFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postFeed({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postFeed({ hook_event_name: 'UserPromptSubmit', prompt: 'feed me' });
+    await postFeed({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(feedId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the feed stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(feedPane) + ' .pane-face-toggle')}`, 'the face button on the feed stub', 10000);
+    await toChat(feedPane);
+    // Ctrl+O, not the view chip: the fixture holds no tool call or thinking
+    // step yet, so fix 785 shows no chip.
+    await toVerbose(feedPane);
+    const FP = paneSel(feedPane);
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(FP + ' .chat-reply')})].some((r) => r.textContent.trim() === 'From the file.')`, 'the fixture turn drawn', 10000);
+
+    // (b) The live line's word is the one the mod posted.
+    await postFeed({ hook_event_name: 'UserPromptSubmit', prompt: 'read the notes' });
+    await postFeed({ hook_event_name: 'Spinner', word: 'Feeding' });
+    try {
+      await s.waitFor(`${q(FP + ' .chat-live-word')}?.textContent === 'Feeding'`, 'the live word Feeding', 3000);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await s.evalJs(`${q(FP + ' .chat-live-word')}?.textContent ?? null`))}`);
+    }
+    step("fix 769: the chat view's live line takes the word the mod posted");
+
+    // (c) Four rows posted, the fixture untouched: drawn within 2 s.
+    const rows = [
+      { uuid: 'u769-p', row: { type: 'user', role: 'user', content: [{ type: 'text', text: 'read the notes' }] } },
+      { uuid: 'u769-t', row: { type: 'assistant', role: 'assistant', content: [useOf('r769', 'Read', { file_path: 'C:/sim/notes.md' })] } },
+      { uuid: 'u769-r', row: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r769', content: 'one\ntwo' }] } },
+      { uuid: 'u769-a', row: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Read them from the mod.' }] } },
+    ];
+    for (const r of rows) await postFeed({ hook_event_name: 'Append', door: 'response', ...r });
+    const fedRead = (t) => t !== null && t.prompts.length === 2 && t.prompts[1].trim() === 'read the notes' && t.tools.filter((x) => x.tool === 'Read').length === 1 && t.replies.some((x) => x.trim() === 'Read them from the mod.');
+    const until = Date.now() + 2000;
+    let fed = await timeline(feedPane);
+    while (!fedRead(fed) && Date.now() < until) {
+      await sleep(100);
+      fed = await timeline(feedPane);
+    }
+    expect(fedRead(fed), `the posted rows drawn within 2 s with the fixture untouched, got ${JSON.stringify(fed)}`);
+    const liveResult = fed.tools.find((x) => x.tool === 'Read').result;
+    expect(liveResult !== '2 lines', `the posted result carries no line count yet, got ${JSON.stringify(liveResult)}`);
+    step('fix 769: the rows the mod posts draw before the transcript has them');
+
+    // (d) The fixture's own lines land: each row drawn once, from the file.
+    fs.appendFileSync(
+      feedFixture,
+      [
+        userLine('read the notes', 10, { uuid: 'u769-p' }),
+        asstLine([useOf('r769', 'Read', { file_path: 'C:/sim/notes.md' })], 11, { uuid: 'u769-t' }),
+        resultOf('r769', 'one\ntwo', 12, { uuid: 'u769-r', toolUseResult: { file: { numLines: 2 } } }),
+        asstLine([{ type: 'text', text: 'Read them from the mod.' }], 13, { uuid: 'u769-a' }),
+      ].join('\n') + '\n',
+    );
+    const filedRead = (t) => t !== null && t.prompts.length === 2 && t.tools.filter((x) => x.tool === 'Read').length === 1 && t.tools.find((x) => x.tool === 'Read').result.startsWith('2 lines') && t.replies.filter((x) => x.trim() === 'Read them from the mod.').length === 1;
+    const until2 = Date.now() + 5000;
+    let filed = await timeline(feedPane);
+    while (!filedRead(filed) && Date.now() < until2) {
+      await sleep(150);
+      filed = await timeline(feedPane);
+    }
+    expect(filedRead(filed), `the transcript's lines took the rows' places, one of each, got ${JSON.stringify(filed)}`);
+    await postFeed({ hook_event_name: 'Stop', stop_hook_active: false });
+    step("fix 769: once the transcript's lines land each row is drawn once, from the file");
+  });
+
+  await block('tail', async () => {
+    // M9 fix 770: a stub over a transcript past the 8 MB read cap opens on
+    // its last 2 MB under the note, takes what the file grows by, and the
+    // note's button turns the pane to its terminal.
+    const tailDir = path.join(emeraldHome, 'chat-770');
+    fs.mkdirSync(tailDir, { recursive: true });
+    const tailFixture = path.join(tailDir, 'fixture.jsonl');
+    const lines = [];
+    for (let k = 0; k < 450; k++) {
+      lines.push(userLine(`big turn ${k}`, k * 10), asstLine([useOf(`t${k}`, 'Bash', { command: `echo ${k}` })], k * 10 + 1), resultOf(`t${k}`, 'y'.repeat(20000), k * 10 + 2), asstLine([{ type: 'text', text: `Big reply ${k}.` }], k * 10 + 3));
+    }
+    fs.writeFileSync(tailFixture, lines.join('\n') + '\n');
+    const bytes = fs.statSync(tailFixture).size;
+    expect(bytes > 8 * 1024 * 1024, `the fixture is past the 8 MB read cap, got ${bytes} bytes`);
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: tailDir, cols: 120, rows: 30 });
+    tailId = spawned.session.id;
+    const lay = await getLayout(s);
+    const tailPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === tailPane ? { ...n, sessionId: tailId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: tailPane } });
+    await s.waitFor(`!!${q(paneSel(tailPane) + ' .term-host')}`, 'the tail stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postTail = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': tailId },
+        body: JSON.stringify({ session_id: 'sim-chat-770', cwd: tailDir, transcript_path: tailFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postTail({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postTail({ hook_event_name: 'UserPromptSubmit', prompt: 'big turn 449' });
+    await postTail({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(tailId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the tail stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(tailPane) + ' .pane-face-toggle')}`, 'the face button on the tail stub', 10000);
+    await toChat(tailPane);
+    const TP = paneSel(tailPane);
+    const read = () =>
+      s.evalJs(`(() => {
+        const p = ${q(TP)};
+        const prompts = [...p.querySelectorAll('.chat-prompt')].map((e) => e.textContent.trim());
+        const note = p.querySelector('.chat-earlier');
+        return { note: note?.textContent ?? null, button: !!note?.querySelector('button'), prompts: prompts.length, first: prompts[0] ?? null, last: prompts[prompts.length - 1] ?? null, replies: [...p.querySelectorAll('.chat-reply')].map((e) => e.textContent.trim()).slice(-2) };
+      })()`);
+    // (b) The last 2 MB under the note, about a hundred turns of 20 KB.
+    try {
+      await s.waitFor(`!!${q(TP + ' .chat-earlier')} && [...document.querySelectorAll(${JSON.stringify(TP + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Big reply 449.')`, 'the tail drawn under the note', 10000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await read())}`);
+    }
+    const opened = await read();
+    console.log(`[verify] fix 770 first read: ${JSON.stringify(opened)}`);
+    expect(opened.note !== null && opened.note.startsWith('Earlier turns are in the terminal') && opened.button, `the note with its button, got ${JSON.stringify(opened)}`);
+    expect(opened.first !== 'big turn 0' && opened.prompts > 50 && opened.prompts < 150, `the tail's turns alone, between 50 and 150 prompts and not the first, got ${JSON.stringify(opened)}`);
+    step(`fix 770: a transcript of ${(bytes / 1024 / 1024).toFixed(1)} MB opens on its last ${opened.prompts} turns under the note Earlier turns are in the terminal`);
+
+    // (c) What the file grows by is drawn; the head stays where it was.
+    fs.appendFileSync(tailFixture, [userLine('tail grew', 5000), asstLine([{ type: 'text', text: 'Tail grew.' }], 5001)].join('\n') + '\n');
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Tail grew.')`, 'the grown turn drawn', 5000);
+    const grown = await read();
+    expect(grown.note !== null && grown.first === opened.first && grown.last === 'tail grew', `the grown turn drawn under the same note and first turn, got ${JSON.stringify(grown)}`);
+    step('fix 770: a turn appended to the long transcript is drawn, the note and the first drawn turn kept');
+
+    // (d) The note's button shows the terminal.
+    await s.evalJs(`${q(TP + ' .chat-earlier button')}.click()`);
+    await s.waitFor(`${q(TP)}.dataset.face === undefined`, 'the pane on its terminal face', 5000);
+    step("fix 770: the note's Show the terminal turns the pane to its terminal");
+  });
+
+  await block('question', async () => {
+    // M9 fix 777: an AskUserQuestion drawn as the terminal draws it. The
+    // blocks before leave the first pane on another session when run
+    // whole, so the stub is put back in it first.
+    const lay = await getLayout(s);
+    const rec = (n) => (n.kind === 'pane' ? (n.id === stubPane ? { ...n, sessionId: stubId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: stubPane } });
+    await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the stub back in the first pane', 10000);
+    await toChat(stubPane);
+    fs.appendFileSync(fixture, [userLine('ask me about the button', 2000), asstLine([useOf('q777', 'AskUserQuestion', { questions: [] })], 2001)].join('\n') + '\n');
+    // The posts a real AskUserQuestion makes, in the order the capture's
+    // hook log has them (ToolAsk is the mod's alone and the stub has none).
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask me about the button' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'the stub working', 5000);
+    // Capture 3's shape, each glyph built from its code so the console's
+    // code page never meets it.
+    const c = (code) => `[char]0x${code}`;
+    const tabRow = `('' + ${c('2190')} + ' ' + ${c('2612')} + ' Colour ' + ${c('2610')} + ' Size ' + ${c('2610')} + ' Shape ' + ${c('2713')} + ' Submit ' + ${c('2192')})`;
+    const footer = `('Enter to select ' + ${c('00B7')} + ' Tab/Arrow keys to navigate ' + ${c('00B7')} + ' Esc to cancel')`;
+    const rows = ['', 'Which size should the sample button be?', '', '  1. Small', '     Fits a dense toolbar', '> 2. Medium (Recommended)', '     Matches the other buttons', '  3. Large', '     Easy to hit on a touch screen', '  4. Type something.', '', '  5. Chat about this', ''];
+    await typeRaw(stubId, `cls; Write-Host ''; Write-Host ${tabRow}; ${rows.map((r) => `Write-Host '${r}'`).join('; ')}; Write-Host -NoNewline ${footer}; Read-Host | Out-Null\r`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'the question drawn, the cursor on its footer');
+    const drawn = (await screen(stubId)).rows.find((r) => r.includes('Colour')) ?? null;
+    console.log(`[verify] the tab row reads ${JSON.stringify(drawn)}`);
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+    const cardSel = paneSel(stubPane) + ' .chat-step[data-kind="ask"]';
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-option[data-key="5"]')}`, 'the ask card with its five options', 10000);
+    const card = await s.evalJs(`(() => { const c = ${q(cardSel)}; const two = c.querySelector('.chat-ask-option[data-key="2"]'); return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, question: c.querySelector('.chat-ask-question')?.textContent ?? null, tabs: [...c.querySelectorAll('.chat-ask-tab')].map((t) => ({ name: t.textContent.replace(/^✓/, ''), state: t.dataset.state, current: t.dataset.current ?? null })), screen: !!c.querySelector('.chat-ask-screen'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), label: two?.querySelector('.chat-ask-label')?.textContent ?? null, desc: two?.querySelector('.chat-ask-desc')?.textContent ?? null, pointer: two?.dataset.pointer ?? null, input: !!c.querySelector('.chat-ask-input') }; })()`);
+    expect(card.heading === 'Claude has a question', `the heading, got ${card.heading}`);
+    expect(card.question === 'Which size should the sample button be?', `the question, got ${JSON.stringify(card.question)}`);
+    expect(card.tabs.map((t) => t.name).join(',') === 'Colour,Size,Shape', `the tabs' names, got ${JSON.stringify(card.tabs)}`);
+    expect(card.tabs.map((t) => t.state).join(',') === 'answered,open,open', `the tabs' states, got ${JSON.stringify(card.tabs)}`);
+    expect(card.tabs.map((t) => t.current).join(',') === ',true,', `Size alone current, got ${JSON.stringify(card.tabs)}`);
+    expect(!card.screen, 'no screen excerpt for a question the card draws');
+    expect(card.keys.join(',') === '1,2,3,4,5,esc', `five options and Esc, got ${JSON.stringify(card.keys)}`);
+    expect(card.label === 'Medium (Recommended)' && card.desc === 'Matches the other buttons' && card.pointer === 'true', `option 2 with its description and the pointer, got ${JSON.stringify(card)}`);
+    expect(!card.input, 'no answer box for a question the card draws');
+    await s.screenshot('m9-chat-question.png');
+    step('fix 777: the ask card draws an AskUserQuestion, its tabs, its question and each option\'s description');
+    await s.waitFor(`document.activeElement === ${q(cardSel)}`, 'the card holds the keyboard');
+    await s.key('2', 'Digit2', 50);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel2'), 'the 2 key reached the session');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
+    step('fix 777: the 2 key answers the question card, and the turn ending takes it away');
+  });
+
+  await block('box', async () => {
+    // M9 fix 779: a shell playing Claude draws Claude Code's suggested
+    // prompt row with Write-Host (the first character inverse, the rest
+    // dim, as Claude Code's placeholder renderer draws it) and waits at a
+    // Read-Host; the box shows the suggestion ghosted and Tab takes it.
+    // Its own stub, put in the first leaf of whatever the blocks before
+    // left, as menus does.
+    const boxDir = path.join(emeraldHome, 'chat-779');
+    fs.mkdirSync(boxDir, { recursive: true });
+    const boxFixture = path.join(boxDir, 'fixture.jsonl');
+    fs.writeFileSync(boxFixture, [userLine('suggest', 0), asstLine([{ type: 'text', text: 'Suggested.' }], 2)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: boxDir, cols: 120, rows: 30 });
+    boxId = spawned.session.id;
+    const lay = await getLayout(s);
+    const boxPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === boxPane ? { ...n, sessionId: boxId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: boxPane } });
+    await s.waitFor(`!!${q(paneSel(boxPane) + ' .term-host')}`, 'the box stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postBox = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': boxId },
+        body: JSON.stringify({ session_id: 'sim-chat-779', cwd: boxDir, transcript_path: boxFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postBox({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postBox({ hook_event_name: 'UserPromptSubmit', prompt: 'suggest' });
+    await postBox({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(boxId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the box stub bound with its transcript', 10000);
+    const boxSel = paneSel(boxPane) + ' .chat-box';
+    const toBox = async () => {
+      await s.waitFor(`!!${q(paneSel(boxPane) + ' .pane-face-toggle')}`, 'the face button on the box stub', 10000);
+      await toChat(boxPane);
+      await s.waitFor(`!!${q(boxSel)}`, 'the box on the chat face');
+      await s.evalJs(`${q(boxSel)}.focus()`);
+      await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'the box holds the keyboard');
+    };
+    const setBoxText = (text) =>
+      s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, ${JSON.stringify(text)}); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    const boxState = () => s.evalJs(`(() => { const b = ${q(boxSel)}; return { value: b.value, placeholder: b.placeholder, ghost: b.hasAttribute('data-ghost') }; })()`);
+    const rowsWith = async (text) => (await screen(boxId)).rows.filter((r) => r.includes(text));
+    const waitRows = async (pred, what, ms) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until && !pred((await screen(boxId)).rows)) await sleep(200);
+      const rows = (await screen(boxId)).rows;
+      expect(pred(rows), `${what}, got ${JSON.stringify(rows)}`);
+    };
+    // The command ending at the shell's prompt reads as Claude leaving
+    // (the ask block's note); a Stop binds the stub again.
+    const rebind = async (what) => {
+      await waitRecord(boxId, (r) => r.command?.state !== 'running', what, 10000);
+      await postBox({ hook_event_name: 'Stop', stop_hook_active: false });
+      await sleep(300);
+      await toBox();
+    };
+    const DRAW = "cls; Write-Host ([char]0x276F + ' ' + [char]27 + '[7mR' + [char]27 + '[27m' + [char]27 + '[2mun the tests' + [char]27 + '[22m'); $a = Read-Host; cls; Write-Host ('got ' + $a)\r";
+    await toBox();
+
+    // (a) The suggestion drawn on the prompt row shows in the empty box.
+    await typeRaw(boxId, DRAW);
+    try {
+      await s.waitFor(`${q(boxSel)}.hasAttribute('data-ghost') && ${q(boxSel)}.placeholder === 'Run the tests'`, 'the suggestion ghosted in the box', 5000);
+    } catch (err) {
+      const r = await record(boxId);
+      throw new Error(`${err.message}: box ${JSON.stringify(await boxState())}, state ${r?.state}, command ${JSON.stringify(r?.command)}, face ${await s.evalJs(`${q(paneSel(boxPane))}.dataset.face ?? null`)}, shaded ${await s.evalJs(`${q(paneSel(boxPane))}.dataset.shaded ?? null`)}, renderer's read ${await s.evalJs(`window.emerald.request('pty.screen', { sessionId: ${JSON.stringify(boxId)} }).then((r) => JSON.stringify(r.ghost ?? 'absent'))`)}, screen ${JSON.stringify(await screen(boxId))}`);
+    }
+    step('fix 779 (a): the suggested prompt on Claude\'s prompt row shows ghosted in the empty chat box');
+
+    // (b) Tab takes it into the box and types nothing into the session.
+    await s.key('Tab', 'Tab', 9);
+    await s.waitFor(`${q(boxSel)}.value === 'Run the tests' && !${q(boxSel)}.hasAttribute('data-ghost')`, 'Tab took the suggestion', 3000);
+    await sleep(300);
+    expect((await rowsWith('Run the tests')).length === 1, `nothing typed at the Read-Host, got ${JSON.stringify((await screen(boxId)).rows)}`);
+    step('fix 779 (b): Tab puts the suggestion in the box, the ghost goes, and nothing reaches the session');
+
+    // (c) The taken suggestion is edited and sent; the placeholder is back.
+    await s.type(' now');
+    await s.key('Enter', 'Enter', 13);
+    await waitRows((rows) => rows.some((r) => r.includes('got Run the tests now')), 'the stub got the edited suggestion', 10000);
+    await s.waitFor(`${q(boxSel)}.placeholder.startsWith('Message ') && !${q(boxSel)}.hasAttribute('data-ghost')`, 'the placeholder back', 3000);
+    step('fix 779 (c): the suggestion, edited, is sent as a prompt, and the placeholder comes back');
+    await rebind('the Read-Host ended at the prompt');
+
+    // (d) The ghost shows only while the box is empty, and Enter on the
+    // empty box sends nothing, as Claude Code's own Enter.
+    await typeRaw(boxId, DRAW);
+    await s.waitFor(`${q(boxSel)}.hasAttribute('data-ghost')`, 'the suggestion ghosted again', 5000);
+    await setBoxText('x');
+    await s.waitFor(`!${q(boxSel)}.hasAttribute('data-ghost')`, 'no ghost while the box holds text', 3000);
+    await setBoxText('');
+    await s.waitFor(`${q(boxSel)}.hasAttribute('data-ghost') && ${q(boxSel)}.placeholder === 'Run the tests'`, 'the ghost back in the emptied box', 3000);
+    await s.key('Enter', 'Enter', 13);
+    await sleep(1500);
+    expect((await rowsWith('got')).length === 0, `Enter on the empty box sent nothing, got ${JSON.stringify((await screen(boxId)).rows)}`);
+    step('fix 779 (d): no ghost while the box holds text, back when emptied, and Enter on the empty box sends nothing');
+    await typeRaw(boxId, '\r');
+    await waitRows((rows) => rows.some((r) => r.startsWith('got')), 'the Read-Host ended', 10000);
+    await rebind('the second Read-Host ended at the prompt');
+
+    // M9 fix 780: the / menu lists every built-in that runs at the prompt.
+    // (e) /rename is a sent row with its hint, and Enter sends it bare
+    // with no bar, since it opens nothing.
+    const activeRow = () => s.evalJs(`(() => { const r = document.querySelector('.chat-menu .chat-menu-row[data-active="true"]'); return r === null ? null : { name: r.dataset.name ?? null, hint: r.dataset.hint ?? null, section: r.dataset.section ?? null, shownHint: r.querySelector('.chat-menu-hint')?.textContent ?? null }; })()`);
+    const fallbackShown = () => s.evalJs(`!!${q(paneSel(boxPane) + ' .chat-fallback')}`);
+    await s.type('/ren');
+    try {
+      await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/rename'`, 'the menu on /rename', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await activeRow())}`);
+    }
+    const ren = await activeRow();
+    expect(ren.hint === '[name]' && ren.shownHint === '[name]' && ren.section === 'sent', `the /rename row with its hint, got ${JSON.stringify(ren)}`);
+    await s.key('Enter', 'Enter', 13);
+    await waitRows((rows) => rows.some((r) => r.includes('/rename')), 'the stub got /rename', 10000);
+    await sleep(1500);
+    expect(!(await fallbackShown()), 'no fallback bar after /rename');
+    step('fix 780 (e): /ren lists /rename with its [name] hint, and Enter sends it with no bar');
+    await rebind('the stub back at its prompt after /rename');
+
+    // (f) /add-dir needs its path: Enter completes it and sends nothing;
+    // the completed box, a path typed, sends and brings the bar.
+    await s.type('/add');
+    try {
+      await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/add-dir'`, 'the menu on /add-dir', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await activeRow())}`);
+    }
+    expect((await activeRow()).hint === '<path>', `the /add-dir row's hint, got ${JSON.stringify(await activeRow())}`);
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`${q(boxSel)}.value === '/add-dir ' && !document.querySelector('.chat-menu')`, 'Enter completed /add-dir and closed the menu', 3000);
+    await sleep(500);
+    expect((await rowsWith('/add-dir')).length === 0, `nothing sent on the completion, got ${JSON.stringify((await screen(boxId)).rows)}`);
+    await s.type('src');
+    await s.key('Enter', 'Enter', 13);
+    await waitRows((rows) => rows.some((r) => r.includes('/add-dir src')), 'the stub got /add-dir src', 10000);
+    await s.waitFor(`!!${q(paneSel(boxPane) + ' .chat-fallback')}`, 'the fallback bar after /add-dir src', 5000);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!${q(paneSel(boxPane) + ' .chat-fallback')}`, 'the fallback bar gone on Escape', 2000);
+    step('fix 780 (f): /add-dir completes on Enter with its <path> hint, and the completed send brings the bar');
+    await rebind('the stub back at its prompt after /add-dir');
+
+    // (g) A model named after /model skips its dialog: no bar.
+    await s.type('/model sonnet');
+    await s.key('Enter', 'Enter', 13);
+    await waitRows((rows) => rows.some((r) => r.includes('/model sonnet')), 'the stub got /model sonnet', 10000);
+    await sleep(1500);
+    expect(!(await fallbackShown()), 'no fallback bar after /model sonnet');
+    step('fix 780 (g): /model with a model named sends with no fallback bar');
+    await rebind('the stub back at its prompt after /model sonnet');
+  });
+
+  await block('send', async () => {
+    // M9 fixes 781 to 784: a shell playing Claude in a folder of its own,
+    // in the first pane on the chat face, for the box's sends.
+    const sendDir = path.join(emeraldHome, 'chat-781');
+    fs.mkdirSync(sendDir, { recursive: true });
+    const sendFixture = path.join(sendDir, 'fixture.jsonl');
+    fs.writeFileSync(sendFixture, [userLine('send me', 0), asstLine([{ type: 'text', text: 'Ready to send.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: sendDir, cols: 120, rows: 30 });
+    sendId = spawned.session.id;
+    const lay = await getLayout(s);
+    sendPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === sendPane ? { ...n, sessionId: sendId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: sendPane } });
+    await s.waitFor(`!!${q(paneSel(sendPane) + ' .term-host')}`, 'the send stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postSend = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sendId },
+        body: JSON.stringify({ session_id: 'sim-chat-781', cwd: sendDir, transcript_path: sendFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postSend({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postSend({ hook_event_name: 'UserPromptSubmit', prompt: 'send me' });
+    await postSend({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(sendId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the send stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(sendPane) + ' .pane-face-toggle')}`, 'the face button on the send stub', 10000);
+    await toChat(sendPane);
+    const SP = paneSel(sendPane);
+    const boxSel = SP + ' .chat-box';
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(SP + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Ready to send.')`, 'the send stub drawn', 10000);
+    const typeInBox = async (text) => {
+      await s.evalJs(`${q(boxSel)}.focus()`);
+      await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'the box holds the keyboard', 3000);
+      await s.type(text);
+    };
+    const rowsNow = async () => (await screen(sendId)).rows.map((r) => r.trim());
+
+    // Fix 781: two sends 200 ms apart. Typed with no chain, the second's
+    // text landed inside the first's Enter pause and PowerShell ran one
+    // line, `echo one781echo two781`.
+    await typeInBox('echo one781');
+    await s.key('Enter', 'Enter', 13);
+    await sleep(200);
+    await typeInBox('echo two781');
+    await s.key('Enter', 'Enter', 13);
+    const twoBy = Date.now() + 10000;
+    let rows = await rowsNow();
+    while (Date.now() < twoBy && !(rows.includes('one781') && rows.includes('two781'))) {
+      await sleep(250);
+      rows = await rowsNow();
+    }
+    expect(rows.includes('one781') && rows.includes('two781') && !rows.some((r) => r.includes('one781echo')), `two lines, one781 and two781, got ${JSON.stringify(rows.filter((r) => r !== '').slice(-8))}`);
+    step('fix 781: two sends 200 ms apart from the box reach the session as two lines');
+    // Their prompt lines, so fix 782's bubbles for them give way.
+    fs.appendFileSync(sendFixture, [userLine('echo one781', 10), userLine('echo two781', 11)].join('\n') + '\n');
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(SP + ' .chat-prompt-pending')}).length === 0`, 'no pending bubble after the 781 lines', 5000);
+
+    // Fix 782 (a): a send shows at once as Sending and gives way to its
+    // prompt line with no frame holding both.
+    const pendingOf = (text) => `[...document.querySelectorAll(${JSON.stringify(SP + ' .chat-prompt-pending')})].find((e) => e.querySelector('.chat-prompt-pending-text')?.textContent === ${JSON.stringify(text)})`;
+    const promptsOf = (text) => `[...document.querySelectorAll(${JSON.stringify(SP + ' .chat-prompt')})].filter((e) => e.textContent === ${JSON.stringify(text)}).length`;
+    await s.evalJs(`(() => {
+      const col = ${q(SP + ' .chat-column')};
+      window.__both782 = false;
+      const check = () => { if (!!(${pendingOf('echo pend782')}) && ${promptsOf('echo pend782')} > 0) window.__both782 = true; };
+      window.__obs782 = new MutationObserver(check);
+      window.__obs782.observe(col, { subtree: true, childList: true, characterData: true });
+    })()`);
+    await typeInBox('echo pend782');
+    await s.key('Enter', 'Enter', 13);
+    const sentAt = Date.now();
+    await s.waitFor(`${pendingOf('echo pend782')}?.dataset.pending === 'sending'`, 'the pend782 bubble marked sending', 1000);
+    console.log(`[verify] fix 782: the bubble drew ${Date.now() - sentAt} ms after the Enter`);
+    await sleep(2000);
+    fs.appendFileSync(sendFixture, userLine('echo pend782', 30) + '\n');
+    await s.waitFor(`!(${pendingOf('echo pend782')}) && ${promptsOf('echo pend782')} === 1`, 'the bubble gone and one pend782 prompt', 5000);
+    const both = await s.evalJs(`(() => { window.__obs782.disconnect(); return window.__both782; })()`);
+    expect(both !== true, 'no frame held the bubble and the prompt line together');
+    step('fix 782 (a): a sent message shows at once as Sending and gives way to its prompt line with no double');
+
+    // Fix 782 (b): no prompt line, so Not seen yet 15 s on; the next send
+    // clears it.
+    const markOf = (text) => s.evalJs(`(() => { const e = ${pendingOf(text)}; return e ? { state: e.dataset.pending, words: e.querySelector('.chat-prompt-pending-mark')?.textContent ?? null } : null; })()`);
+    await typeInBox('echo unseen782');
+    await s.key('Enter', 'Enter', 13);
+    const unseenFrom = Date.now();
+    await s.waitFor(`!!(${pendingOf('echo unseen782')})`, 'the unseen782 bubble', 2000);
+    await sleep(Math.max(0, unseenFrom + 10000 - Date.now()));
+    const atTen = await markOf('echo unseen782');
+    expect(atTen?.state === 'sending', `still Sending at 10 s, got ${JSON.stringify(atTen)}`);
+    await s.waitFor(`${pendingOf('echo unseen782')}?.dataset.pending === 'unseen'`, 'the unseen782 bubble marked unseen', 12000);
+    const unseen = await markOf('echo unseen782');
+    expect(unseen?.words === 'Not seen yet', `the mark reads Not seen yet, got ${JSON.stringify(unseen)}`);
+    console.log(`[verify] fix 782: Not seen yet ${Date.now() - unseenFrom} ms after the send`);
+    await typeInBox('echo next782');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`!(${pendingOf('echo unseen782')})`, 'the unseen782 bubble gone on the next send', 1000);
+    step('fix 782 (b): a message with no prompt line reads Not seen yet after 15 s, and the next send clears it');
+    fs.appendFileSync(sendFixture, userLine('echo next782', 40) + '\n');
+    await s.waitFor(`!(${pendingOf('echo next782')})`, 'the next782 bubble gone with its line', 5000);
+
+    // Fix 782 (c): the second of two quick sends waits behind the first's
+    // Enter pause (fix 781's chain), finds the stub asking, and is refused:
+    // its bubble keeps the refusal and its text goes back in the box.
+    await typeInBox('echo first782');
+    await s.key('Enter', 'Enter', 13);
+    await sleep(200);
+    await typeInBox('echo second782');
+    await s.key('Enter', 'Enter', 13);
+    await postSend({ hook_event_name: 'UserPromptSubmit', prompt: 'echo first782' });
+    await postSend({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'x' } });
+    try {
+      await s.waitFor(`${pendingOf('echo second782')}?.dataset.pending === 'refused' && ${q(boxSel)}.value === 'echo second782'`, 'the second782 bubble refused and its text back in the box', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify({ mark: await markOf('echo second782'), box: await s.evalJs(`${q(boxSel)}.value`), state: (await record(sendId))?.state })}`);
+    }
+    const refused = await markOf('echo second782');
+    expect(refused?.words === 'Answer what it is waiting on first', `the refusal's words on the bubble, got ${JSON.stringify(refused)}`);
+    // The Stop waits for the stub's `echo first782` to end: a hook that
+    // lands while a shell's command runs makes the prompt's return read as
+    // Claude leaving the shell (fix 360's rule), which drops the stub's
+    // Claude mark and its chat face (seen once under the merged tree).
+    try {
+      const firstBy = Date.now() + 8000;
+      while (Date.now() < firstBy && !(await rowsNow()).includes('first782')) await sleep(200);
+      await waitRecord(sendId, (r) => r.command == null || r.command.state !== 'running', 'the stub back at its prompt after echo first782', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: rows ${JSON.stringify((await rowsNow()).filter((r) => r !== '').slice(-4))}`);
+    }
+    await postSend({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(sendId, (r) => r.state !== 'needs-input', 'the send stub past its ask', 5000);
+    step('fix 782 (c): a send refused behind an ask keeps its bubble with the refusal and puts its text back in the box');
+    // The box empty again, so no later flip carries the refused text.
+    await s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, ''); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+
+    // Fix 783 (a): a chip by the view's own image event (nothing pasted
+    // into the shell; attachPng exists only under the image block, so its
+    // thumbnail may be broken, which no read here looks at). The × stays
+    // disabled for the settle time after the turn ends.
+    const chipSel = SP + ' .chat-image-chip';
+    const xSel = SP + ' .chat-image-chips-clear';
+    // The view drops an image event while it reads the session as asking,
+    // and the window's store can trail the daemon's record after 782 (c)'s
+    // Stop, so the box enabled again is the view's own word that it is not.
+    await s.waitFor(`${q(boxSel)}?.disabled === false`, 'the box enabled after the ask', 5000);
+    // What the pane did from here, for a miss: the chips row and the box
+    // coming and going, with the time.
+    await s.evalJs(`(() => {
+      const p = ${q(SP)};
+      const t0 = Date.now();
+      window.__log783 = [];
+      let last = '';
+      window.__obs783a = new MutationObserver(() => {
+        const box = p.querySelector('.chat-box');
+        const now = (p.dataset.face ?? 'terminal') + ' chips ' + p.querySelectorAll('.chat-image-chip').length + ' x ' + !!p.querySelector('.chat-image-chips-clear') + ' box ' + (box === null ? 'none' : box === window.__box783a ? 'same' : 'new');
+        window.__box783a = box;
+        if (now !== last) window.__log783.push((Date.now() - t0) + ' ms ' + now);
+        last = now;
+      });
+      window.__box783a = p.querySelector('.chat-box');
+      window.__obs783a.observe(p, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-face'] });
+      return true;
+    })()`);
+    const log783 = async () => {
+      const r = await record(sendId);
+      return { pane: await s.evalJs(`window.__log783 ?? null`), bound: r?.claudeSessionId ?? null, lastEventAt: r?.lastEventAt ?? null, command: r?.command ?? null };
+    };
+    await s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:chat-image', { detail: { paneId: ${JSON.stringify(sendPane)}, path: ${JSON.stringify(attachPng)} } }))`);
+    try {
+      await s.waitFor(`document.querySelectorAll(${JSON.stringify(chipSel)}).length === 1`, 'one chip on the send stub', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await log783())}, state ${(await record(sendId))?.state}`);
+    }
+    await postSend({ hook_event_name: 'UserPromptSubmit', prompt: 'chip turn' });
+    await waitRecord(sendId, (r) => r.state === 'working', 'the send stub working', 5000);
+    try {
+      await s.waitFor(`${q(xSel)}?.disabled === true`, 'the × disabled while working', 3000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await log783())}, state ${(await record(sendId))?.state}`);
+    }
+    await postSend({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(sendId, (r) => r.state !== 'working', 'the send stub past its turn', 5000);
+    const leftAt = Date.now();
+    const stillDisabled = await s.evalJs(`${q(xSel)}?.disabled ?? null`);
+    const readIn = Date.now() - leftAt;
+    if (stillDisabled === null) {
+      await sleep(500);
+      throw new Error(`no × after the Stop: ${JSON.stringify(await log783())}, state ${(await record(sendId))?.state}`);
+    }
+    try {
+      await s.waitFor(`${q(xSel)}?.disabled === false`, 'the × enabled after the settle time', 3000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await log783())}, state ${(await record(sendId))?.state}, rows ${JSON.stringify((await rowsNow()).filter((r) => r !== '').slice(-4))}`);
+    }
+    const settled = Date.now() - leftAt;
+    console.log(`[verify] fix 783: the × enabled ${settled} ms after the record left working (disabled read ${readIn} ms after: ${stillDisabled})`);
+    expect(stillDisabled === true, `the × disabled within 300 ms of the turn's end, got ${stillDisabled} at ${readIn} ms`);
+    expect(settled >= 1300, `the × waited the settle time, enabled after ${settled} ms`);
+    step('fix 783 (a): the × stays disabled for the settle time after the turn ends');
+
+    // Fix 783 (b): a click shows the busy look while it reads; the stub's
+    // prompt holds no marker, so the chips go with no Ctrl+C.
+    await s.evalJs(`(() => {
+      const x = ${q(xSel)};
+      window.__busy783 = [];
+      window.__obs783 = new MutationObserver(() => window.__busy783.push({ busy: x.dataset.busy ?? null, title: x.title }));
+      window.__obs783.observe(x, { attributes: true });
+    })()`);
+    await s.evalJs(`${q(xSel)}.click()`);
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(chipSel)}).length === 0`, 'no chip after the ×', 5000);
+    const seen783 = await s.evalJs(`(() => { window.__obs783.disconnect(); return { marks: window.__busy783, x: !!${q(xSel)} }; })()`);
+    expect(seen783.marks.some((m) => m.busy === 'true' && m.title === 'Waiting for Claude Code'), `the × carried data-busy and Waiting for Claude Code, got ${JSON.stringify(seen783.marks)}`);
+    expect(seen783.x === false, 'the × gone with the chips row');
+    step('fix 783 (b): the × carries data-busy and Waiting for Claude Code while it reads, until the chips go');
+
+    // Fix 784 (a): text typed on the terminal face moves into the box on
+    // the flip to chat. The stub's PowerShell is given a `❯ ` prompt and
+    // no grey history prediction, so its input row reads as Claude Code's.
+    const face = () => s.evalJs(`${q(SP)}.dataset.face ?? null`);
+    const flip = async (want) => {
+      await s.evalJs(`${q(SP + ' .pane-face-toggle')}.click()`);
+      await s.waitFor(`(${q(SP)}.dataset.face ?? null) === ${JSON.stringify(want)}`, `the send stub on the ${want ?? 'terminal'} face`, 5000);
+    };
+    const lastRows = async () => (await rowsNow()).filter((r) => r !== '').slice(-6);
+    const promptText = async () => {
+      const r = (await screen(sendId)).rows;
+      for (let i = r.length - 1; i >= 0; i--) if (r[i].trimStart().startsWith('❯')) return r[i].trimStart().slice(1).trim();
+      return null;
+    };
+    if ((await face()) === 'chat') await flip(null);
+    await typeRaw(sendId, "try { Set-PSReadLineOption -PredictionSource None } catch {}; function prompt { [string][char]0x276F + ' ' }\r");
+    try {
+      const promptBy = Date.now() + 10000;
+      while (Date.now() < promptBy && (await lastRows()).at(-1) !== '❯') await sleep(200);
+      expect((await lastRows()).at(-1) === '❯', 'the stub shows a bare ❯ prompt');
+    } catch (err) {
+      throw new Error(`${err.message}: the last rows ${JSON.stringify(await lastRows())} (the stub shell's code page is the suspect, not the fix)`);
+    }
+    await typeRaw(sendId, 'hello from the cli');
+    const typedBy = Date.now() + 5000;
+    while (Date.now() < typedBy && (await promptText()) !== 'hello from the cli') await sleep(200);
+    expect((await promptText()) === 'hello from the cli', `the stub's input holds the text, got ${JSON.stringify(await lastRows())}`);
+    await flip('chat');
+    try {
+      await s.waitFor(`${q(boxSel)}.value === 'hello from the cli'`, 'the box holds the terminal input', 4000);
+    } catch (err) {
+      throw new Error(`${err.message}: box ${JSON.stringify(await s.evalJs(`${q(boxSel)}.value`))}, hint ${JSON.stringify(await s.evalJs(`${q(SP + ' .chat-hint')}?.textContent ?? null`))}, rows ${JSON.stringify(await lastRows())}`);
+    }
+    const emptyBy = Date.now() + 3000;
+    while (Date.now() < emptyBy && (await promptText()) !== '') await sleep(200);
+    expect((await promptText()) === '', `the stub's input emptied, got ${JSON.stringify(await lastRows())}`);
+    step('fix 784 (a): text typed in the terminal face moves into the chat box and leaves Claude\'s input');
+
+    // Fix 784 (b): the box's text goes back into the input on the flip to
+    // the terminal, with no Enter.
+    await s.evalJs(`(() => { const b = ${q(boxSel)}; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(b, 'back to the cli'); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await flip(null);
+    const backBy = Date.now() + 3000;
+    while (Date.now() < backBy && (await promptText()) !== 'back to the cli') await sleep(200);
+    expect((await promptText()) === 'back to the cli', `the input holds the box's text, got ${JSON.stringify(await lastRows())}`);
+    await sleep(1000);
+    const after = await lastRows();
+    expect(after.at(-1) === '❯ back to the cli', `no Enter: the input row is still the last, got ${JSON.stringify(after)}`);
+    // PSReadLine's Escape clears the line.
+    await typeRaw(sendId, '\x1b');
+    await flip('chat');
+    step('fix 784 (b): the box\'s text goes back into Claude\'s input with no Enter on the flip to the terminal');
+  });
+
+  await block('chips', async () => {
+    // M9 fixes 785 and 786: a shell playing Claude whose transcript holds a
+    // prompt and a reply alone, so the view chip is absent; Ctrl+O cycles
+    // the mode with the chip hidden, and a thinking step brings the chip.
+    const lay = await getLayout(s);
+    const chipsPane = leaves(lay)[0].id;
+    const before = leaves(lay)[0].sessionId;
+    const chipsDir = path.join(emeraldHome, 'chat-785');
+    fs.mkdirSync(chipsDir, { recursive: true });
+    const chipsFixture = path.join(chipsDir, 'fixture.jsonl');
+    fs.writeFileSync(chipsFixture, [userLine('say hello', 0), asstLine([{ type: 'text', text: 'Hello.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: chipsDir, cols: 120, rows: 30 });
+    chipsId = spawned.session.id;
+    const bind = async (sessionId) => {
+      const cur = await getLayout(s);
+      const rec = (n) => (n.kind === 'pane' ? (n.id === chipsPane ? { ...n, sessionId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+      await zreq(s, 'layout.set', { layout: { ...cur, root: rec(cur.root), focusedPaneId: chipsPane } });
+    };
+    await bind(chipsId);
+    await s.waitFor(`!!${q(paneSel(chipsPane) + ' .term-host')}`, 'the chips stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postChips = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': chipsId },
+        body: JSON.stringify({ session_id: 'sim-chat-785', cwd: chipsDir, transcript_path: chipsFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postChips({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postChips({ hook_event_name: 'UserPromptSubmit', prompt: 'say hello' });
+    await postChips({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(chipsId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the chips stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(chipsPane) + ' .pane-face-toggle')}`, 'the face button on the chips stub', 10000);
+    await toChat(chipsPane);
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(paneSel(chipsPane) + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Hello.')`, 'the reply drawn', 5000);
+    await sleep(1000);
+    expect((await s.evalJs(`!!${q(viewChip(chipsPane))}`)) === false, 'fix 785: no view chip on a transcript of a prompt and a reply');
+    expect(['Normal', 'Thinking', 'Verbose'].includes(await viewWord(chipsPane)), `the view root names a mode, got ${JSON.stringify(await viewWord(chipsPane))}`);
+    for (let i = 0; i < 3 && (await viewWord(chipsPane)) !== 'Thinking'; i++) {
+      await s.evalJs(`${q(paneSel(chipsPane) + ' .chat-box')}.focus()`);
+      await s.key('o', 'KeyO', 79, CTRL);
+      await sleep(150);
+    }
+    await waitView(chipsPane, 'Thinking');
+    expect((await s.evalJs(`!!${q(viewChip(chipsPane))}`)) === false, 'Ctrl+O cycles the mode with the chip hidden');
+    fs.appendFileSync(chipsFixture, asstLine([{ type: 'thinking', thinking: '', signature: 'x' }], 2, { thinkingDurationMs: 2000 }) + '\n');
+    await s.waitFor(`${q(viewChip(chipsPane) + ' .chat-chip-word')}?.textContent === 'Thinking'`, 'the view chip, reading the mode picked while it was hidden', 5000);
+    await pickView(chipsPane, 'Normal');
+    step('fix 785: the view chip is absent on a prompt and a reply, Ctrl+O still cycles the mode, and a thinking step brings the chip reading the mode picked while it was hidden');
+
+    // M9 fix 786: a model the list does not name is the menu's first row,
+    // ticked and not pickable; a listed one ticks its own row.
+    const modelChip = paneSel(chipsPane) + ' .chat-chip[data-chip="model"]';
+    const chipsMenu = '.menu.chat-model-menu';
+    const modelRows = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(chipsMenu + ' .menu-item')})].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', checked: b.dataset.checked ?? null, line: b.querySelector('.menu-line')?.textContent ?? null, disabled: b.disabled === true }))`);
+    const openModel = async () => {
+      await s.evalJs(`${q(modelChip)}.click()`);
+      await s.waitFor(`!!${q(chipsMenu)}`, 'the model menu', 3000);
+    };
+    const closeModel = async () => {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`!${q(chipsMenu)}`, 'the model menu gone', 2000);
+    };
+    const ticks = (rows) => rows.filter((r) => r.checked === 'true').map((r) => r.label);
+    const listed = ['Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
+    await postChips({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-9-9', display_name: 'Opus 9.9' } });
+    await s.waitFor(`${q(modelChip + ' .chat-chip-word')}?.textContent === 'Opus 9.9'`, 'the model chip reading Opus 9.9', 5000);
+    await openModel();
+    {
+      const rows = await modelRows();
+      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', 'Opus 9.9', ...listed]), `the heading, Opus 9.9 and the nine models, got ${JSON.stringify(rows.map((r) => r.label))}`);
+      expect(JSON.stringify(ticks(rows)) === '["Opus 9.9"]', `Opus 9.9 ticked alone, got ${JSON.stringify(ticks(rows))}`);
+      expect(rows[1].line === 'Current model' && rows[1].disabled === true, `row 1 reads Current model and is disabled, got ${JSON.stringify(rows[1])}`);
+      await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(chipsMenu + ' .menu-item')})][1].click()`);
+      await sleep(500);
+      expect((await s.evalJs(`!!${q(chipsMenu)}`)) === true, 'a click on the disabled Current model row leaves the menu open');
+    }
+    await closeModel();
+    await postChips({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
+    await s.waitFor(`${q(modelChip + ' .chat-chip-word')}?.textContent === 'Opus 5.5'`, 'the model chip reading Opus 5.5', 5000);
+    await openModel();
+    {
+      const rows = await modelRows();
+      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', ...listed]), `the heading and the nine models alone, got ${JSON.stringify(rows.map((r) => r.label))}`);
+      expect(JSON.stringify(ticks(rows)) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(ticks(rows))}`);
+    }
+    await closeModel();
+    step('fix 786: a session on Opus 9.9 reads a ticked Current model row first, not pickable, above the nine models; on Opus 5.5 the list alone, its row ticked');
+
+    // The layout as the block found it: the first pane on its earlier
+    // session, which opens on its terminal face.
+    if (before !== null) await bind(before);
+  });
+
+  await block('review-base', async () => {
+    // M9 fix 790: a shell playing Claude in a fixture repository. Its
+    // session committed an edit and another to a file outside the folder;
+    // the diff chip counts the first alone and opens the review on the
+    // commit the session started on, where the committed file shows.
+    const dir790 = path.join(emeraldHome, 'chat-790');
+    fs.rmSync(dir790, { recursive: true, force: true });
+    fs.mkdirSync(dir790, { recursive: true });
+    const repo790 = fs.realpathSync.native(dir790);
+    const git790 = (...args) => execFileSync('git', args, { cwd: repo790, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    git790('init', '-q', '-b', 'main');
+    git790('config', 'user.name', 'emerald verify');
+    git790('config', 'user.email', 'verify@example.com');
+    git790('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(repo790, 'notes.txt'), 'one\n');
+    git790('add', '.');
+    git790('commit', '-q', '-m', 'seed');
+    const fixture790 = path.join(fs.realpathSync.native(emeraldHome), 'chat-790.jsonl');
+    fs.writeFileSync(fixture790, '');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: repo790, cols: 120, rows: 30 });
+    reviewId790 = spawned.session.id;
+    const lay = await getLayout(s);
+    const pane790 = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === pane790 ? { ...n, sessionId: reviewId790 } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: pane790 } });
+    await s.waitFor(`!!${q(paneSel(pane790) + ' .term-host')}`, 'the 790 stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const post790 = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': reviewId790 },
+        body: JSON.stringify({ session_id: 'sim-chat-790', cwd: repo790, transcript_path: fixture790, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await post790({ hook_event_name: 'SessionStart', source: 'startup' });
+    const start790 = (await waitRecord(reviewId790, (r) => (r.spans?.at(-1)?.startHead ?? null) !== null, 'the span read its start commit', 10000)).spans.at(-1).startHead;
+    expect(start790 === git790('rev-parse', 'HEAD'), `the span's start commit is the seed, got ${start790}`);
+    // The session's work, committed.
+    fs.writeFileSync(path.join(repo790, 'notes.txt'), 'one\ntwo\nthree\n');
+    git790('commit', '-q', '-am', 'session work');
+    const outside790 = path.join(os.tmpdir(), 'outside-790.md');
+    fs.writeFileSync(
+      fixture790,
+      [
+        userLine('add two lines', 0),
+        asstLine([useOf('e790', 'Edit', { file_path: path.join(repo790, 'notes.txt'), old_string: 'one', new_string: 'one\ntwo\nthree' })], 1),
+        resultOf('e790', 'ok', 2, { toolUseResult: { filePath: path.join(repo790, 'notes.txt'), structuredPatch: [{ lines: [' one', '+two', '+three'] }] } }),
+        asstLine([useOf('e790b', 'Edit', { file_path: outside790, old_string: 'x', new_string: 'y' })], 3),
+        resultOf('e790b', 'ok', 4, { toolUseResult: { filePath: outside790, structuredPatch: [{ lines: ['+a', '+b', '+c', '+d', '+e'] }] } }),
+        asstLine([{ type: 'text', text: 'Committed.' }], 5),
+      ].join('\n') + '\n',
+    );
+    await post790({ hook_event_name: 'UserPromptSubmit', prompt: 'add two lines' });
+    await post790({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(reviewId790, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the 790 stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(pane790) + ' .pane-face-toggle')}`, 'the face button on the 790 stub', 10000);
+    await toChat(pane790);
+    const chipSel = paneSel(pane790) + ' .chat-chip[data-chip="diff"]';
+    try {
+      await s.waitFor(`${q(chipSel + ' .chat-chip-word')}?.textContent === '+2 −0'`, 'the diff chip counts the edit under the folder alone', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await s.evalJs(`${q(chipSel + ' .chat-chip-word')}?.textContent ?? null`))}`);
+    }
+    await s.evalJs(`${q(chipSel)}.click()`);
+    await s.waitFor(`document.querySelector('.review-tab')?.dataset.state === 'ready' && document.querySelector('.review-tab').dataset.base === 'session'`, 'the review tab on the session base', 10000);
+    const read = await s.evalJs(`(() => { const t = document.querySelector('.review-tab'); return { baseHash: t.dataset.baseHash, files: t.dataset.files, list: [...document.querySelectorAll('.review-file')].map((f) => f.dataset.rel), on: document.querySelector('.review-chip[data-base="session"]').dataset.on }; })()`);
+    expect(read.baseHash === start790 && read.files === '1' && JSON.stringify(read.list) === '["notes.txt"]' && read.on === 'true', `the review is on the start commit with the committed file, got ${JSON.stringify(read)}`);
+    await s.evalJs(`document.querySelector('.review-chip[data-base="head"]').click()`);
+    await s.waitFor(`document.querySelector('.review-tab')?.dataset.base === 'head' && document.querySelector('.review-tab').dataset.files === '0'`, 'HEAD shows no file, the commit took the change off it', 10000);
+    await s.key('w', 'KeyW', 87, CTRL);
+    await s.waitFor(`!document.querySelector('.review-tab')`, 'the review tab closed');
+    // The strip fronts the tab beside the closed one, which in a whole run
+    // is the paths block's notes-716.md file tab, not Panes; put Panes back
+    // in front, so the next block's pane is on screen and its box can take
+    // the keyboard.
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab after the review', 5000);
+    step('M9 fix 790: the diff chip counts only the edit under the folder, +2 −0, and opens the review on the start commit with the committed file; HEAD shows none');
+  });
+
+  await block('mod-ask', async () => {
+    // M9 fix 774: a real permission dialog, then an Escape at it. 2.1.301
+    // ends the turn with a TurnComplete (reason answer, is_aborted false)
+    // and no Stop, so the row stayed needs-input and the box disabled
+    // until the TurnComplete idled it. One real Claude in the first pane.
+    const spawned = await zreq(s, 'session.spawn', { kind: 'claude', cwd: repoRoot, args: ['--permission-mode', 'default'], cols: 120, rows: 30 });
+    askId = spawned.session.id;
+    const lay = await getLayout(s);
+    const askPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === askPane ? { ...n, sessionId: askId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await waitRecord(askId, (r) => r.state === 'idle' && r.claudeSessionId !== null, 'the real Claude idle', 30000);
+    await s.waitFor(`!!${q(paneSel(askPane) + ' .pane-face-toggle')}`, 'the face button on the real Claude', 10000);
+    await toChat(askPane);
+    await sleep(2000);
+    const AP = paneSel(askPane);
+    const hooksLog = path.join(emeraldHome, 'logs', 'hooks.jsonl');
+    const eventsFor = (id) =>
+      (fs.existsSync(hooksLog) ? fs.readFileSync(hooksLog, 'utf8') : '')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.sessionId === id);
+    const countOf = (name) => eventsFor(askId).filter((e) => e.event === name).length;
+    const sendBox = async (text) => {
+      await s.evalJs(`${q(AP + ' .chat-box')}.focus()`);
+      try {
+        await s.waitFor(`document.activeElement === ${q(AP + ' .chat-box')}`, 'the box holds the keyboard');
+      } catch (err) {
+        throw new Error(`${err.message}: ${JSON.stringify(await s.evalJs(`(() => { const p = ${q(AP)}; const b = p?.querySelector('.chat-box'); const a = document.activeElement; const r = p?.getBoundingClientRect(); return { pane: !!p, face: p?.dataset.face ?? null, box: !!b, disabled: b?.disabled ?? null, active: a ? a.tagName + '.' + a.className : null, rect: r ? { w: r.width, h: r.height } : null, panes: document.querySelectorAll('.pane').length, tabs: [...document.querySelectorAll('.tab-strip .tab, [role=tab]')].map((t) => t.textContent.slice(0, 30)) }; })()`))}, record ${JSON.stringify((({ state, kind, claudeSessionId }) => ({ state, kind, claudeSessionId }))(await record(askId)))}`);
+      }
+      await s.type(text);
+      await s.key('Enter', 'Enter', 13);
+    };
+    // No ask in 90 s fails with the record and the screen: a ping that
+    // stops asking is a change on the box to look at, not a pass.
+    const waitAsk = async (words, what) => {
+      const until = Date.now() + 90000;
+      while (Date.now() < until) {
+        const r = await record(askId);
+        if (r.state === 'needs-input' && (words === null || r.askedFor?.words === words)) return r;
+        await sleep(250);
+      }
+      const r = await record(askId);
+      expect(false, `${what}: no ask in 90 s, record ${JSON.stringify({ state: r.state, reason: r.needsInputReason, askedFor: r.askedFor ?? null })}, last rows ${JSON.stringify((await screen(askId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+    };
+    const stopsBefore = countOf('Stop');
+    await sendBox('Use the Bash tool to run exactly this command and nothing else: ping -n 1 127.0.0.1');
+    await waitAsk('Bash: ping -n 1 127.0.0.1', 'fix 774: the ping asks under default mode');
+    await sleep(1000);
+    await typeRaw(askId, '\x1b');
+    const readAsk = async () => {
+      const r = await record(askId);
+      return { state: r.state, askedFor: r.askedFor ?? null, card: await s.evalJs(`!!${q(AP + ' .chat-step[data-kind="ask"]')}`), disabled: await s.evalJs(`${q(AP + ' .chat-box')}?.disabled ?? null`) };
+    };
+    const freed = (g) => g.state === 'idle' && g.askedFor === null && !g.card && g.disabled === false;
+    let got = await readAsk();
+    for (const end = Date.now() + 5000; Date.now() < end && !freed(got); await sleep(200)) got = await readAsk();
+    expect(freed(got), `fix 774: an Escape at the real dialog leaves the row idle, the ask gone and the box enabled, got ${JSON.stringify(got)}`);
+    console.log(`[verify] note: Stop lines for the session ${stopsBefore} before the ask, ${countOf('Stop')} after the Escape`);
+    step('fix 774: an Escape at a real permission dialog puts the row at idle, the card gone and the box enabled');
+
+    // M9 fix 775: an answered ask goes back to working once the call runs.
+    // The run-in-background pill draws on the first output a Bash run
+    // gives past 2000 ms and the mod posts ToolRunning off it. A bare
+    // ping's output reaches Claude Code only at its end (the probe of fix
+    // 775: the pill at 11 s of ping -n 11), so the loop echoes a line a
+    // second, and its ping makes it ask; it is working within four
+    // seconds of the answer, before its PostToolUse.
+    await sendBox('Use the Bash tool to run this exact command in the foreground, not in the background: for i in 1 2 3 4 5 6 7 8 9 10; do ping -n 2 127.0.0.1 > /dev/null; echo tick$i; done. Then reply with exactly the word ran775 and nothing else.');
+    await waitAsk(null, 'fix 775: the long ping asks');
+    await sleep(1000);
+    const postsBefore = countOf('PostToolUse');
+    const stops775 = countOf('Stop');
+    await typeRaw(askId, '1');
+    const answeredAt = Date.now();
+    let state = (await record(askId)).state;
+    let posts = postsBefore;
+    while (Date.now() - answeredAt < 4000 && state !== 'working') {
+      await sleep(200);
+      state = (await record(askId)).state;
+      posts = countOf('PostToolUse');
+    }
+    const ms = Date.now() - answeredAt;
+    expect(state === 'working' && posts === postsBefore, `fix 775: working ${ms} ms after the answer and before the ping's PostToolUse, got ${JSON.stringify({ state, posts: posts - postsBefore })}`);
+    const turnBy = Date.now() + 90000;
+    while (Date.now() < turnBy && countOf('Stop') === stops775) await sleep(250);
+    expect(countOf('Stop') > stops775, 'fix 775: the ping turn ended with its Stop');
+    // The mod's ToolRunning draws off the call's progress row, which on
+    // Windows comes near the run's end, so it is read once the turn is
+    // over; the move itself came off the daemon's spinner read.
+    expect(eventsFor(askId).some((e) => e.event === 'ToolRunning' && e.mod === true), "fix 775: the mod's ToolRunning is in the log");
+    const bySpinner = fs.readFileSync(path.join(emeraldHome, 'logs', 'emmerd.log'), 'utf8').includes('permission answered: the spinner drew again');
+    step(`fix 775: the answered ask read working ${ms} ms after the answer, before the call's PostToolUse (${bySpinner ? "off the daemon's spinner read" : "off the mod's ToolRunning"})`);
+  });
+
   step(`PASS (${blocksRun()})`);
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -1914,8 +3011,15 @@ try {
   if (realId !== null) await zreq(s, 'session.kill', { sessionId: realId }).catch(() => {});
   if (freshId !== null) await zreq(s, 'session.kill', { sessionId: freshId }).catch(() => {});
   if (menusId !== null) await zreq(s, 'session.kill', { sessionId: menusId }).catch(() => {});
+  if (boxId !== null) await zreq(s, 'session.kill', { sessionId: boxId }).catch(() => {});
   if (imageId !== null) await zreq(s, 'session.kill', { sessionId: imageId }).catch(() => {});
   if (turnsId !== null) await zreq(s, 'session.kill', { sessionId: turnsId }).catch(() => {});
+  if (feedId !== null) await zreq(s, 'session.kill', { sessionId: feedId }).catch(() => {});
+  if (tailId !== null) await zreq(s, 'session.kill', { sessionId: tailId }).catch(() => {});
+  if (sendId !== null) await zreq(s, 'session.kill', { sessionId: sendId }).catch(() => {});
+  if (chipsId !== null) await zreq(s, 'session.kill', { sessionId: chipsId }).catch(() => {});
+  if (reviewId790 !== null) await zreq(s, 'session.kill', { sessionId: reviewId790 }).catch(() => {});
+  if (askId !== null) await zreq(s, 'session.kill', { sessionId: askId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();

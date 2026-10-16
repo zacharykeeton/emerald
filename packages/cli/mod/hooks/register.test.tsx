@@ -105,6 +105,52 @@ test('a -p session.start opens no channel (M9 fix 741)', async ($, on) => {
   expect(seen.submitted).toEqual([]);
 });
 
+// M9 fix 781: the mod's word on each submit. The engine refuses a plugin's
+// prompt while a person's Stop stands, answering a drop; the mod posts
+// ModSubmit with the push's submitId so the daemon has the sender type it.
+const STOP_STANDS = 'the session was stopped and nobody has sent input since';
+
+function answeringChannel(on: On, lines: string[], answer: (text: string) => { text: string } | { drop: string }): string[] {
+  const submitted: string[] = [];
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  on('process.spawn', async function* () {
+    for (const line of lines) yield { stream: 'stdout' as const, text: line + '\n' };
+    return { value: { code: 0, signal: null } };
+  });
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text);
+    return answer(e.text);
+  });
+  return submitted;
+}
+
+const words = (posted: Posted[]) => posted.map((p) => JSON.parse(p.body)).filter((b) => b.hook_event_name === 'ModSubmit');
+
+test('a dropped submit posts ModSubmit not entered with the engine\'s reason, and the next submit still goes in (M9 fix 781)', async ($, on) => {
+  mock.env(on, CHANNEL);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on);
+  const submitted = answeringChannel(on, ['{"text":"after the stop","submitId":"s1-1"}', '{"text":"and again","submitId":"s1-2"}'], (text) => (text === 'after the stop' ? { drop: STOP_STANDS } : { text }));
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  expect(submitted).toEqual(['after the stop', 'and again']);
+  expect(words(posted)).toEqual([
+    expect.objectContaining({ submit_id: 's1-1', entered: false, drop: STOP_STANDS }),
+    expect.objectContaining({ submit_id: 's1-2', entered: true }),
+  ]);
+});
+
+test('a submit with no submitId (an older daemon) posts no word (M9 fix 781)', async ($, on) => {
+  mock.env(on, CHANNEL);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on);
+  const submitted = answeringChannel(on, ['{"text":"hi"}'], () => ({ drop: STOP_STANDS }));
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  expect(submitted).toEqual(['hi']);
+  expect(words(posted)).toEqual([]);
+});
+
 // M9 fix 742: the ask, posted at the decision. The test's tool.check hook
 // beneath is core's decision. The kit's $.tool.call raises no tool.check,
 // so a real call's check is raised as the engine raises it, with the
@@ -198,6 +244,17 @@ test('a Spinner drawn as Perusing twice then Grinding posts Perusing then Grindi
   expect(bodiesOf(posted, 'Spinner').map((b) => b.word)).toEqual(['Perusing', 'Grinding']);
 });
 
+test('a ToolProgress drawn twice for u1 then once for u2 posts ToolRunning for u1 then u2 (M9 fix 775)', async ($, on) => {
+  mock.env(on, VARS);
+  const posted = recordFetches(on);
+  for (const id of ['u1', 'u1', 'u2']) {
+    await $.ui.render({ surface: 'terminal', component: 'ToolProgress', props: { tool_use_id: id, kind: 'background_hint', hint: '(ctrl+b to run in background)' } });
+  }
+  await settle();
+  expect(bodiesOf(posted, 'ToolRunning').map((b) => b.tool_use_id)).toEqual(['u1', 'u2']);
+  expect(bodiesOf(posted, 'Spinner').length).toBe(0);
+});
+
 test('an aborted main turn posts one TurnComplete with is_aborted (M9 fix 738)', async ($, on) => {
   mock.env(on, VARS);
   const posted = recordFetches(on);
@@ -238,4 +295,123 @@ test('a measure posts one Measure with the context, the limits and the cost unde
   expect(measured.length).toBe(1);
   expect(measured[0]!.measure).toEqual({ context: { tokens: 64601, window: 1000000, percent: 6 }, rateLimits, cost: { usd: 0.25 }, changed: ['context', 'rateLimits', 'cost'], model: 'claude-opus-5-5' });
   expect(measured[0]!.model).toBe(undefined);
+});
+
+// M9 fix 769: each kept row of the conversation, posted as an Append.
+const MODEL_ORIGIN = { kind: 'model' as const, model: 'claude-opus-5-5' };
+
+test('a kept response row posts one Append with its uuid, its door and the row (M9 fix 769)', async ($, on) => {
+  mock.env(on, VARS);
+  mock.session(on);
+  const posted = recordFetches(on);
+  await $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'From the mod.' }] }, door: 'response', origin: MODEL_ORIGIN, uuid: 'u-769' });
+  await settle();
+  const rows = bodiesOf(posted, 'Append');
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.uuid).toBe('u-769');
+  expect(rows[0]!.door).toBe('response');
+  expect(rows[0]!.session_id).toBe('conv-738');
+  expect(rows[0]!.cut).toBe(undefined);
+  expect(rows[0]!.row).toEqual({ type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'From the mod.' }] });
+});
+
+test("a subagent's row posts nothing (M9 fix 769)", async ($, on) => {
+  mock.env(on, VARS);
+  mock.session(on);
+  const posted = recordFetches(on);
+  await $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'side chain' }] }, door: 'response', origin: MODEL_ORIGIN, uuid: 'u-agent', agentId: 'agent-1' });
+  await settle();
+  expect(bodiesOf(posted, 'Append').length).toBe(0);
+});
+
+test('a reply of 40000 characters posts cut with no blocks (M9 fix 769)', async ($, on) => {
+  mock.env(on, VARS);
+  mock.session(on);
+  const posted = recordFetches(on);
+  await $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(40000) }] }, door: 'response', origin: MODEL_ORIGIN, uuid: 'u-long' });
+  await settle();
+  const rows = bodiesOf(posted, 'Append');
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.cut).toBe(true);
+  expect((rows[0]!.row as { content: unknown[] }).content).toEqual([]);
+});
+
+test('a tool result holding an image posts its text and an empty image (M9 fix 769)', async ($, on) => {
+  mock.env(on, VARS);
+  mock.session(on);
+  const posted = recordFetches(on);
+  const content = [{ type: 'text', text: 'shot taken' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }];
+  await $.session.append({ message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content }] }, door: 'tool-result', origin: { kind: 'tool', tool: 'Screenshot' }, uuid: 'u-shot' });
+  await settle();
+  const rows = bodiesOf(posted, 'Append');
+  expect(rows.length).toBe(1);
+  expect(rows[0]!.cut).toBe(undefined);
+  expect((rows[0]!.row as { content: unknown[] }).content).toEqual([
+    { type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'shot taken' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }] },
+  ]);
+});
+
+// M9 fix 773: the mod asks the daemon before a compaction. The kit raises
+// session.compact only through $.session.compact(), and hands the hook the
+// call's args as its input as they are: the trigger the engine would pin
+// (the idle compactor's `auto` here) and the transcript go in the call, and
+// the engine's own answer beneath must leave at least one message. These
+// pin the mod's half (the ask, the skip handed back, the engine's result
+// otherwise); the daemon's tests pin the rule.
+const SKIP = 'kept whole while idle by emerald';
+const BEFORE = { trigger: 'auto', messages: [{ role: 'user', text: 'the conversation', toolUses: [] }] } as never;
+const AFTER = { messages: [{ role: 'assistant', text: 'the summary', toolUses: [] }] };
+
+function answerCompact(on: On, reply: string | 'throw'): Posted[] {
+  const asked: Posted[] = [];
+  // A clock that holds the ask's 1.5 s bound, so the answer always wins
+  // the race; the kit's own clock answers a sleep at once.
+  mock.clock(on);
+  on('http.fetch', ($, e) => {
+    if (!e.url.endsWith('/compact')) return { value: { status: 204, ok: true, headers: {}, text: '' } };
+    asked.push({ url: e.url, headers: e.init?.headers ?? {}, body: e.init?.body ?? '' });
+    if (reply === 'throw') throw new Error('connection refused');
+    return { value: { status: 200, ok: true, headers: {}, text: reply } };
+  });
+  return asked;
+}
+
+test('a compaction the daemon says to skip resolves the skip, and the engine beneath never compacts (M9 fix 773)', async ($, on) => {
+  mock.env(on, VARS);
+  const asked = answerCompact(on, JSON.stringify({ skip: SKIP }));
+  let compacted = 0;
+  on('session.compact', () => {
+    compacted++;
+    return AFTER;
+  });
+  const result = await $.session.compact(BEFORE);
+  expect({ asked: asked.length, compacted, result }).toEqual({ asked: 1, compacted: 0, result: { skip: SKIP } });
+  expect(asked[0]!.url).toBe('http://127.0.0.1:7419/compact');
+  expect(asked[0]!.headers['X-Emerald-Token']).toBe('tok');
+  expect(asked[0]!.headers['X-Emerald-Session']).toBe('sess-725');
+  expect(asked[0]!.headers['X-Emerald-Hook']).toBe('emerald-mod');
+  expect(asked[0]!.headers['Content-Type']).toBe('application/json');
+  expect(asked[0]!.body).toBe('{"trigger":"auto"}');
+});
+
+test('a compaction the daemon lets through is the engine\'s (M9 fix 773)', async ($, on) => {
+  mock.env(on, VARS);
+  answerCompact(on, JSON.stringify({ skip: null }));
+  on('session.compact', () => AFTER);
+  expect((await $.session.compact(BEFORE)).messages).toEqual(AFTER.messages);
+});
+
+test('a compaction whose ask throws is the engine\'s (M9 fix 773)', async ($, on) => {
+  mock.env(on, VARS);
+  answerCompact(on, 'throw');
+  on('session.compact', () => AFTER);
+  expect((await $.session.compact(BEFORE)).messages).toEqual(AFTER.messages);
+});
+
+test('with EMERALD_SESSION_ID unset a compaction asks nothing and is the engine\'s (M9 fix 773)', async ($, on) => {
+  mock.env(on, { EMERALD_HOOK_PORT: '7419', EMERALD_HOOK_TOKEN: 'tok' });
+  const asked = answerCompact(on, JSON.stringify({ skip: SKIP }));
+  on('session.compact', () => AFTER);
+  expect((await $.session.compact(BEFORE)).messages).toEqual(AFTER.messages);
+  expect(asked.length).toBe(0);
 });

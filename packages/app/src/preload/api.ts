@@ -157,6 +157,19 @@ export type FileSaved = { saved: FileStamp } | { changed: true };
 // read.
 export type FileRead = ({ text: string; stamp: FileStamp } & TextFormat) | { binary: true; size: number } | { error: string };
 
+// Where the chat view's last transcript read stopped (M9 fix 770): the
+// byte past the last whole line it took, and the file's id as a decimal
+// string, since the mark crosses the IPC and lives in renderer state.
+export interface TailMark {
+  offset: number;
+  ino: string;
+}
+
+// A tail read: the text of the whole lines read, the mark to read on
+// from, whether the reader starts its folds again, and whether a fresh
+// read of a file over the cap skipped its head; or why it failed.
+export type FileTail = { text: string; next: TailMark; fresh: boolean; cut: boolean } | { error: string };
+
 // What is at a path: a folder or a file, or why it could not be looked at.
 // Asked for a drop from Explorer, which hands over a path and nothing else.
 export type FileStat = { kind: 'dir' | 'file' } | { error: string };
@@ -182,6 +195,10 @@ export interface FilesApi {
   list(dir: string, keep?: string): Promise<FileListing>;
   // The whole file, capped at 8 MB.
   read(path: string): Promise<FileRead>;
+  // The chat view's transcript read (M9 fix 770): the whole lines the
+  // file grew by since `from`, or its last 2 MB on a fresh read of a file
+  // over 8 MB, with the mark to read on from.
+  readTail(path: string, from: TailMark | null): Promise<FileTail>;
   // The editor's text back onto the file (M9 fix 248), with the format
   // the read noted; rejects with why when it cannot. Answers `changed`
   // without writing when the file moved since `stamp` (M9 fix 525).

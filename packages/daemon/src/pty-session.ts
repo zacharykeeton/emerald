@@ -120,6 +120,42 @@ export function stampEnv(base: NodeJS.ProcessEnv, stamp: EnvStamp): Record<strin
 
 const { Terminal } = xtermHeadless;
 type Terminal = InstanceType<typeof Terminal>;
+type BufferLine = NonNullable<ReturnType<Terminal['buffer']['active']['getLine']>>;
+type BufferCell = ReturnType<Terminal['buffer']['active']['getNullCell']>;
+
+// The dim run on a prompt row (M9 fix 779), as Claude Code draws a
+// suggested prompt, a stock placeholder or an inline completion: every
+// placeholder goes through one renderer, the first character inverse when
+// the cursor sits on it and the rest SGR 2 dim. The walk starts after the
+// row's ❯ cell; the run starts at the first dim cell, a cell earlier when
+// that one is the inverse cursor on a character, and ends before the next
+// cell that is not dim. x is the index into the row's string, which stays
+// right after a wide character where a cell index would not. Null when
+// the row holds no ❯ or no dim run with text.
+export function ghostRun(line: BufferLine, cell: BufferCell): { x: number; text: string } | null {
+  const cols = line.length;
+  let i = 0;
+  while (i < cols && line.getCell(i, cell)?.getChars() !== '❯') i++;
+  if (i >= cols) return null;
+  const arrow = i;
+  let start = -1;
+  for (i = arrow + 1; i < cols; i++) {
+    if (line.getCell(i, cell)?.isDim() !== 0) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  if (start - 1 > arrow) {
+    const before = line.getCell(start - 1, cell);
+    if (before !== undefined && before.isInverse() !== 0 && before.getChars().trim() !== '') start--;
+  }
+  let end = start + 1;
+  while (end < cols && line.getCell(end, cell)?.isDim() !== 0) end++;
+  const text = line.translateToString(true, start, end).trimEnd();
+  if (text === '') return null;
+  return { x: line.translateToString(false, 0, start).length, text };
+}
 
 // Lines of scrollback on the screen terminal; see its construction.
 const SCREEN_SCROLLBACK_ROWS = 200;
@@ -161,6 +197,9 @@ export interface Screen {
   // The ring's sequence number when the frame was rendered, so a reader
   // can go on with read --cursor from the same point.
   seq: number;
+  // The dim run on the last row starting with ❯ (M9 fix 779, ghostRun),
+  // y indexing rows; null when there is none, and on the exit frame.
+  ghost: { y: number; x: number; text: string } | null;
 }
 
 // One PTY plus its scrollback and the fan-out to attached clients.
@@ -252,7 +291,8 @@ export class PtySession extends EventEmitter {
   // answer waits for everything written so far to have been applied.
   screen(): Promise<Screen> {
     if (this.exitFrame !== null) {
-      return this.exitFrame.then((f) => ({ rows: [...f.rows], cursor: { ...f.cursor }, seq: f.seq }));
+      // A session that has ended suggests nothing (M9 fix 779).
+      return this.exitFrame.then((f) => ({ rows: [...f.rows], cursor: { ...f.cursor }, seq: f.seq, ghost: null }));
     }
     return this.renderFrame();
   }
@@ -273,9 +313,17 @@ export class PtySession extends EventEmitter {
           rows.push((buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '').trimEnd());
         }
         while (rows.length > 0 && rows[rows.length - 1] === '') rows.pop();
+        let ghost: Screen['ghost'] = null;
+        let y = rows.length - 1;
+        while (y >= 0 && !rows[y]!.trimStart().startsWith('❯')) y--;
+        if (y >= 0) {
+          const line = buffer.getLine(buffer.viewportY + y);
+          const run = line === undefined ? null : ghostRun(line, buffer.getNullCell());
+          if (run !== null) ghost = { y, ...run };
+        }
         // The screen was fed raw chunks; flush so the ring has seen the same bytes.
         this.flush();
-        resolve({ rows, cursor: { x: buffer.cursorX, y: buffer.cursorY }, seq: this.ring.seq });
+        resolve({ rows, cursor: { x: buffer.cursorX, y: buffer.cursorY }, seq: this.ring.seq, ghost });
       });
     });
   }

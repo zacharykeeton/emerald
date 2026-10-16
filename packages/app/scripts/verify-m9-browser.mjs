@@ -148,6 +148,25 @@ try {
     if (w === 278) await s.screenshot('browser-tiles-278.png');
   }
   step('M9 fix 706: the tile names stay whole at 340, 328 and 312 px with two tiles a row, and at 308 and 278 px one above another');
+  // M9 fix 791: in a narrow pane a tile's shortcut hint goes whole before
+  // its name loses a letter. Shell's hint is the person's own binding, so
+  // the widths are logged and the relations expected.
+  const hintRead = () =>
+    s.evalJs(`[...document.querySelectorAll('.empty-pane .empty-kind')].map((t) => { const n = t.querySelector('.empty-kind-name'); const k = t.querySelector('.empty-kind-key'); const box = t.querySelector('.empty-kind-hint'); const shown = k !== null && box !== null && getComputedStyle(box).display !== 'none' && k.getBoundingClientRect().top < box.getBoundingClientRect().bottom - 0.5; return { kind: t.dataset.kind, whole: n.scrollWidth <= n.clientWidth, over: n.scrollWidth - n.clientWidth, hint: k?.textContent ?? null, shown }; })`);
+  for (const w of [380, 420, 600]) {
+    await emulate(w + 522);
+    const pane = (await tileRead()).pane;
+    expect(Math.abs(pane - w) <= 4, `the empty pane is ${w} px wide, got ${pane}`);
+    const r = await hintRead();
+    console.log(`[791] at ${w} px ${JSON.stringify(r)}`);
+    expect(r.every((t) => !(t.shown && !t.whole)), `at ${w} px no name is clipped beside a hint (${JSON.stringify(r)})`);
+    const shell = r.find((t) => t.kind === 'shell');
+    const claude = r.find((t) => t.kind === 'claude');
+    if (w < 600) expect(shell.whole && !shell.shown, `at ${w} px the Shell name is whole and its hint gone (${JSON.stringify(r)})`);
+    else expect(shell.whole && shell.shown && claude.whole && claude.shown, `at ${w} px both hints show with both names whole (${JSON.stringify(r)})`);
+    if (w === 420) await s.screenshot('browser-tiles-791-420.png');
+  }
+  step('M9 fix 791: at 380 and 420 px the Shell name is whole and its hint gone, no name is clipped beside a hint, and at 600 px both hints show with both names whole');
   await s.send('Emulation.clearDeviceMetricsOverride');
   await sleep(300);
   await s.evalJs(`document.querySelector(${JSON.stringify(browserTile)}).click()`);

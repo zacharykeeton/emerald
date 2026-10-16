@@ -483,6 +483,68 @@ export function compactPercent(cw: Pick<ContextWindow, 'size'>): number {
   return ((cw.size - COMPACT_BUFFER_TOKENS) / cw.size) * 100;
 }
 
+// M9 fix 772: Claude Code's idle compaction, added in 2.1.299 (its
+// changelog, read 2026-10-14): a conversation of IDLE_COMPACT_MIN_TOKENS or
+// more on the one-hour cache is compacted 54 minutes into the cache's hour,
+// 6 before it goes cold (the bundle's fireAtFraction of 0.9 over
+// lastActivityAt to expiresAt, read 2026-10-15 off 2.1.301).
+// CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS moves the floor and idleCompaction
+// false in Claude's settings.json turns it off; emerald reads neither, so
+// the count is what Claude Code does by default. Rerun the read after a
+// Claude Code update that names idle compaction.
+export const IDLE_COMPACT_AFTER_MS = 54 * 60_000;
+export const IDLE_COMPACT_MIN_TOKENS = 200_000;
+
+// What an idle session counts down to (M9 fix 772): Claude Code's idle
+// compaction when one is due, else the prompt cache going cold, else, for a
+// session kept whole (fix 773), the cache going cold with the mark said.
+// `words` are the pane title's; `rowWords` the sidebar row's, the same but
+// for the kept kind, whose full words do not fit a row at the default
+// width (the tech lead's call at fixes 769 to 796), so the row says
+// `kept whole · 50m` and its tooltip the rest.
+export interface IdleClock {
+  kind: 'compact' | 'cold' | 'kept';
+  at: number;
+  words: string;
+  rowWords: string;
+}
+
+// The idle countdown (M9 fix 772), null when there is nothing to count: a
+// session at work or asking (a prompt clears it, and PreCompact is a
+// working event, so the compaction's own start clears it too), a shell
+// whose Claude left, a cache that is not warm or already past its time
+// (the status line runs again when a warm cache reaches its expiry, which
+// turns warm false). The compaction is due only on the hour's TTL and at
+// the floor's tokens, `used` being the last request's whole input.
+export function idleClock(session: Pick<SessionInfo, 'state' | 'claudeSessionId' | 'contextWindow' | 'cache' | 'keepWhole'>, now: number): IdleClock | null {
+  if (session.state !== 'idle' && session.state !== 'waiting' && session.state !== 'done') return null;
+  if (session.claudeSessionId === null) return null;
+  const cache = session.cache;
+  if (cache === undefined || cache === null || !cache.warm || cache.expiresAt <= now) return null;
+  const compactAt = cache.ttl === '1h' && (session.contextWindow?.used ?? 0) >= IDLE_COMPACT_MIN_TOKENS ? cache.expiresAt - 60 * 60_000 + IDLE_COMPACT_AFTER_MS : null;
+  const minutes = (at: number): number => Math.max(1, Math.ceil((at - now) / 60_000));
+  if (session.keepWhole === true) {
+    const m = minutes(cache.expiresAt);
+    return { kind: 'kept', at: cache.expiresAt, words: `kept whole · cache cold in ${m}m`, rowWords: `kept whole · ${m}m` };
+  }
+  if (compactAt !== null && compactAt > now) {
+    const words = `compacts in ${minutes(compactAt)}m`;
+    return { kind: 'compact', at: compactAt, words, rowWords: words };
+  }
+  const words = `cache cold in ${minutes(cache.expiresAt)}m`;
+  return { kind: 'cold', at: cache.expiresAt, words, rowWords: words };
+}
+
+// The countdown's tooltip (M9 fix 772); `time` is the clock time of `at`
+// as the renderer formats it.
+export function idleClockTitle(clock: IdleClock, time: string): string {
+  if (clock.kind === 'compact') {
+    return `Claude Code compacts a conversation this size about 54 minutes into an idle hour, before its prompt cache goes cold at ${time}; a prompt before then keeps it whole. Its "idleCompaction": false setting turns idle compaction off for every session; emerald does not read that setting, so the count shows even when it is off.`;
+  }
+  if (clock.kind === 'kept') return `Kept whole while idle: emerald skips Claude Code's idle compaction for this session (the row menu or emmer set --keep-whole off undoes it). The prompt cache goes cold at ${time}.`;
+  return `The prompt cache goes cold at ${time}; the first prompt after that sends the whole conversation again.`;
+}
+
 // A token count the way the mock's legend prints one: one decimal, a
 // whole number when the decimal is 0, so 31.6k, 844.7k, 33k, 1M.
 export function formatTokens(n: number): string {

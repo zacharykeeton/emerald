@@ -24,10 +24,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { ALT, CTRL, SHIFT, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, startSession, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
 
+// M9 fix 796: 90 s, since cdp.mjs's connect now waits up to 40 s after the
+// page-target poll's 20 s and the watchdog would fire before its message.
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 60 s');
+  console.error('[verify] WATCHDOG: run exceeded 90 s');
   process.exit(3);
-}, 60000);
+}, 90000);
 
 const configPath = path.join(emeraldHome, 'config.json');
 // The user's own config is put back whatever happens below.
@@ -470,6 +472,49 @@ try {
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`document.querySelector(${JSON.stringify(emptyBox576)})?.value === '' && document.querySelectorAll(${JSON.stringify(emptySel + ' .action-row')}).length === 0`, "an Escape in the empty pane's own box emptied it");
   step("M9 fix 576: an Escape in another pane leaves an empty pane's > query alone, and an Escape in the empty pane's own box still empties it");
+  // M9 fix 792: a × in the picker overlay's top right corner closes it as
+  // Escape does, the terminal keeping the keyboard; a click beside the list
+  // does not close it. Shell B's pane is up and no picker is open.
+  await s.click(fpCentre.x, fpCentre.y);
+  await s.waitFor(focusedIs(fp), 'shell B focused for fix 792');
+  const fpSel = `[data-pane-id=${JSON.stringify(fp)}]`;
+  const xAt = () =>
+    s.evalJs(`(() => { const b = document.querySelector('.picker-overlay .picker-x'); if (!b) return null; const r = b.getBoundingClientRect(); const box = document.querySelector('.picker-overlay .palette-input').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, text: b.textContent, title: b.title, clear: r.bottom <= box.top || r.left >= box.right || r.right <= box.left || r.top >= box.bottom }; })()`);
+  const termHasKeys = `(document.activeElement?.className?.includes('xterm') ?? false) && !!document.activeElement.closest(${JSON.stringify(fpSel)})`;
+  // (a) A control: the jump palette closed by Escape gives the keyboard back.
+  await s.key('J', 'KeyJ', 74, CTRL);
+  await s.waitFor(`document.activeElement === document.querySelector('.picker-overlay .palette-input')`, 'the jump palette has the keyboard');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.picker-overlay') && ${termHasKeys}`, 'Escape closed the jump palette and the terminal has the keyboard');
+  const clickX = async (what) => {
+    const x = await xAt();
+    expect(x !== null && x.text === '×' && x.title === 'Close (Esc)' && x.clear, `${what}: the × at the overlay's corner, clear of the filter box, got ${JSON.stringify(x)}`);
+    await s.click(x.x, x.y);
+    await s.waitFor(`!document.querySelector('.picker-overlay') && !document.querySelector(${JSON.stringify(`${fpSel} [data-picker]`)}) && ${termHasKeys}`, `${what}: the × closed the overlay and the terminal has the keyboard`);
+  };
+  // (b) Run an action… from the app menu, a query typed.
+  const mark = await s.evalJs(`(() => { const r = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.click(mark.x, mark.y);
+  await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu');
+  await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Run an action…').click()`);
+  await s.waitFor(`document.querySelector('.picker-overlay .palette-input')?.dataset.mode === 'actions'`, 'Run an action… opened the overlay in action mode');
+  await s.type('ren');
+  await s.screenshot('m5-prefix-picker-x.png');
+  await clickX('Run an action…');
+  // (c) The jump palette.
+  await s.key('J', 'KeyJ', 74, CTRL);
+  await s.waitFor(`!!document.querySelector('.picker-overlay .palette-input')`, 'the jump palette again');
+  await clickX('the jump palette');
+  // (d) The backdrop: a click between the list and the start line leaves it open.
+  await s.key('J', 'KeyJ', 74, CTRL);
+  await s.waitFor(`!!document.querySelector('.picker-overlay .palette-input')`, 'the jump palette for the backdrop');
+  const veil = await s.evalJs(`(() => { const r = document.querySelector('.picker-overlay .empty-spacer').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.click(veil.x, veil.y);
+  await sleep(300);
+  expect(await s.evalJs(`!!document.querySelector('.picker-overlay')`), 'a click on the backdrop left the overlay open');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.picker-overlay')`, 'Escape closed the overlay after the backdrop click');
+  step("M9 fix 792: the × at the overlay's top right closes Run an action and the jump palette, the terminal keeping the keyboard; a click on the backdrop leaves it open");
   await s.screenshot('m5-prefix-final.png');
   step('PASS');
 } catch (err) {

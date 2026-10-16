@@ -15,10 +15,13 @@ import { renamedPath } from './files-model.ts';
 import { cycleKeys, currentKey, layoutTabOf, moveKey, orderFromJson, orderWithNew, replaceKey, stripOrder } from './tab-order.ts';
 import type { FileTabView, TabsModel } from './tabs-model.ts';
 import { reviewFolderPath, reviewPath } from './review-model.ts';
+import type { ReviewBase } from './review-model.ts';
+import { updateReview } from './review-state.ts';
 import { restoreOpenedFolds } from './history-model.ts';
 import type { StoredHistoryFolds } from './history-model.ts';
 import { defaultSearchSettings, scopeUnder, searchSettingsFromJson } from './rail-search-model.ts';
 import type { SearchMode, SearchSettings } from './rail-search-model.ts';
+import type { RemovalCount } from './close-countdown-model.ts';
 import { isSidebarFilter } from './sidebar-filter-model.ts';
 import type { SidebarFilter } from './sidebar-filter-model.ts';
 import { isShowOffscreen } from './show-model.ts';
@@ -172,6 +175,8 @@ export interface UiState {
   // Rows whose prompt from the sidebar's box did not get the session
   // working in time (M56): the row flashes and says so for a moment.
   stalled: ReadonlySet<string>;
+  // M9 fix 787: the Exited rows counting down to their removal after a close, by session id. Not persisted: a reload or a closed window leaves the row under Exited, which fails safe.
+  removing: ReadonlyMap<string, RemovalCount>;
   // Panes with the shade pulled over them (M63): the terminal hidden
   // behind one calm face. By pane id, kept in localStorage so a reload
   // finds the wall as calm as it was left; pruned as panes close.
@@ -339,6 +344,7 @@ let state: UiState = {
   chimeMode: 'real',
   findOpen: new Map(),
   stalled: new Set(),
+  removing: new Map(),
   railTab: loadRailTab(),
   filesChanged: loadFilesChanged(),
   activityFolded: loadActivityFolded(),
@@ -1176,7 +1182,11 @@ export function openTranscriptTab(path: string, view: 'turns' | 'raw'): void {
 // second Review changes on the same row comes back to the tab it has.
 // With a file (M9 fix 199, a changed row's letter or its menu) the tab
 // opens on that file, or moves to it when the tab is already open.
-export function openReviewTab(sessionId: string, file?: string): void {
+// M9 fix 790: with a base the review is put on it first (the chat view's
+// diff chip asks for the session's start); with none the tab keeps the
+// base the review holds.
+export function openReviewTab(sessionId: string, file?: string, base?: ReviewBase): void {
+  if (base !== undefined) updateReview(sessionId, (s) => ({ ...s, base }));
   setTabs(openFile(state.tabs, reviewPath(sessionId, file)));
 }
 
@@ -1485,6 +1495,14 @@ export function markStalled(sessionId: string): void {
     next.delete(sessionId);
     setState({ ...state, stalled: next });
   }, STALLED_FOR_MS);
+}
+
+// M9 fix 787: sets or (null) clears a session's removal count.
+export function setRemoval(sessionId: string, count: RemovalCount | null): void {
+  const removing = new Map(state.removing);
+  if (count === null) removing.delete(sessionId);
+  else removing.set(sessionId, count);
+  setState({ ...state, removing });
 }
 
 export function cycleAttentionSound(): void {

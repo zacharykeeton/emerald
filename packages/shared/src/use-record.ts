@@ -111,6 +111,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'rename-session', label: 'Rename a session', group: 'clicks' },
   { name: 'set-colour', label: "Set a session's colour", group: 'clicks' },
   { name: 'set-scheme', label: "Set a session's colour scheme", group: 'clicks' },
+  { name: 'set-keep-whole', label: 'Mark a session to keep whole while idle', group: 'clicks' },
   { name: 'set-folder-label', label: "Set a folder's label", group: 'clicks' },
   { name: 'kill-session', label: 'Kill a session', group: 'clicks' },
   { name: 'resume-beside', label: 'Resume a session beside', group: 'clicks' },

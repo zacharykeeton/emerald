@@ -31,9 +31,11 @@ interface AnchorProps {
   children: React.ReactNode;
 }
 
+// M9 fix 793: the id carries the caller's class, so the strip's card and an activity view's are told apart by the outside-press check; two activity views share one, their cards being the same card.
 export function UsageWindowAnchor({ windows, current, now, fetchedAt, stale, className, children }: AnchorProps) {
+  const id = `usage ${className} ${current.key}`;
   return (
-    <PopoverAnchor id={`usage ${current.key}`} className={className} data={{ 'data-key': current.key }} card={(props) => <UsageCard windows={windows} current={current.key} now={now} fetchedAt={fetchedAt} stale={stale} {...props} />}>
+    <PopoverAnchor id={id} className={className} data={{ 'data-key': current.key }} card={(props) => <UsageCard windows={windows} current={current.key} anchorId={id} now={now} fetchedAt={fetchedAt} stale={stale} {...props} />}>
       {children}
     </PopoverAnchor>
   );
@@ -62,9 +64,9 @@ export function UsageBar({ bar, form, tall }: { bar: PaceBar; form: 'strip' | 'c
   );
 }
 
-export function UsageCard({ windows, current, now, fetchedAt, stale, anchor, onClose, onEnter, onLeave }: CardProps & { windows: readonly UsageWindow[]; current: string; now: number; fetchedAt: number | null; stale: string | null }) {
+export function UsageCard({ windows, current, anchorId, now, fetchedAt, stale, anchor, onClose, onEnter, onLeave }: CardProps & { windows: readonly UsageWindow[]; current: string; anchorId: string; now: number; fetchedAt: number | null; stale: string | null }) {
   return (
-    <PopoverCard id={`usage ${current}`} className="usage-popover" data={{ 'data-key': current, ...(stale === null ? {} : { 'data-stale': '' }) }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
+    <PopoverCard id={anchorId} className="usage-popover" data={{ 'data-key': current, ...(stale === null ? {} : { 'data-stale': '' }) }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
       <div className="usage-card-heading">Claude usage</div>
       {windows.map((w) => {
         const bar = paceBar(w, now, CARD_BAR_PX);

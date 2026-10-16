@@ -1,10 +1,11 @@
+import { MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
 import { parse } from '../args.ts';
 import { CliError, usageError } from '../cli-error.ts';
 import { println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { connectHello, findSession } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
-import { MOD_CHANNEL_LEVEL, modRoutable, refuseBusy } from '../mod-route.ts';
+import { refuseBusy } from '../mod-route.ts';
 import { shortId } from '../resolve.ts';
 
 const options = {
@@ -29,7 +30,7 @@ const INTERRUPT = '\x03';
 const command: Command = {
   name: 'send',
   summary: 'type text into a session',
-  usage: 'emmer send <session> [text...] [--enter] [--interrupt] [--if-idle]',
+  usage: 'emmer send <session> [text...] [--enter] [--interrupt] [--if-idle]\nraw keys, typed whatever the input already holds; emmer prompt refuses an input holding a prompt given back after an interrupt',
   async run(argv) {
     const parsed = parse(argv, options);
     const [ref, ...words] = parsed.positionals;

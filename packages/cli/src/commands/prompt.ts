@@ -1,4 +1,4 @@
-import { describeState } from '@emerald/shared';
+import { describeState, MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
 import type { ServerMessage, SessionInfo } from '@emerald/shared';
 import { integerOption, parse } from '../args.ts';
 import { CliError, EXIT, usageError } from '../cli-error.ts';
@@ -6,7 +6,7 @@ import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { connectHello } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
-import { MOD_CHANNEL_LEVEL, modRoutable, refuseBusy } from '../mod-route.ts';
+import { refuseBusy } from '../mod-route.ts';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { resolveSession, shortId } from '../resolve.ts';
 import { CLAUDE_ENTER_DELAY_MS } from './send.ts';
@@ -101,6 +101,25 @@ class SessionWatch {
   }
 }
 
+// M9 fix 778: the prompt Claude Code put back in its input after an
+// interrupt, which a typed send would be joined onto. The text of the last
+// `❯` row, read as the app's promptRowText reads it (chat-model.ts), and
+// only when it starts with the session's last prompt cut to 20 characters:
+// the CLI has neither the ghost field nor colour, so an input holding
+// anything else (a placeholder, a suggestion) is never refused.
+export function heldPrompt(rows: readonly string[], lastPrompt: string | null): string | null {
+  if (lastPrompt === null) return null;
+  const head = (lastPrompt.split('\n')[0] ?? '').trim().slice(0, 20);
+  if (head === '') return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]!.trimStart();
+    if (!row.startsWith('❯')) continue;
+    const text = row.slice(1).trim();
+    return text.startsWith(head) ? text : null;
+  }
+  return null;
+}
+
 function goneError(step: Extract<Step, { kind: 'gone' }>): CliError {
   return new CliError(step.session === null ? `session was removed while waiting on the prompt` : `${shortId(step.session.id)} ${step.session.name} exited while waiting on the prompt`, EXIT.failure);
 }
@@ -138,6 +157,18 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
       via = (await client.request('session.submit', { sessionId: found.id, text })).via;
     }
     if (via === 'typed') {
+      // M9 fix 778: an input holding the prompt given back after an
+      // interrupt would take this text onto its end. Only a session Claude
+      // runs in carries lastPrompt, so a plain shell is never read. The
+      // mod route is not checked: whether $.prompt.submit joins onto the
+      // input's text is not traced.
+      if (!opts.force && found.lastPrompt !== null) {
+        const reply = await client.request('pty.screen', { sessionId: found.id }).catch(() => null);
+        const held = reply === null ? null : heldPrompt(reply.rows, found.lastPrompt);
+        if (held !== null) {
+          throw new CliError(`${shortId(found.id)} ${found.name}'s input holds the prompt Claude Code gave back after an interrupt (${JSON.stringify(held.slice(0, 40))}); clear it, or --force to send anyway`, EXIT.failure);
+        }
+      }
       client.send({ type: 'pty.input', sessionId: found.id, data: text });
       // The same pause send --enter takes, so Claude Code does not take the
       // line for a paste and turn the Enter into a newline.
@@ -171,7 +202,7 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
 }
 
 const options = {
-  // Send even to a session that needs input.
+  // Send even to a session that needs input, or whose input holds a prompt given back after an interrupt.
   force: { type: 'boolean', default: false },
   // The text is the name of a saved prompt (emmer prompts).
   saved: { type: 'boolean', default: false },

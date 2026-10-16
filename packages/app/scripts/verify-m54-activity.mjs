@@ -1857,6 +1857,37 @@ try {
   q766 = await tabQuery766();
   expect(q766 === null || !q766.includes('usage='), `fix 766: the query carries no usage once shown (${JSON.stringify(q766)})`);
   await s.waitFor(`document.querySelector('.usage-strip')?.dataset.state === 'ok'`, 'fix 766: the strip has its reading after the reload', 10000);
+  // M9 fix 793: the strip's card and the row's carry different ids, so a
+  // press on the row's reading closes the strip's pinned card of the same
+  // window instead of counting as its own anchor, and one card shows.
+  const key793 = (await row766(tabSel766)).keys[0];
+  const stripAnchor793 = `.usage-strip .usage-window[data-key=${JSON.stringify(key793)}]`;
+  const rowAnchor793 = `${tabSel766} .activity-usage-window[data-key=${JSON.stringify(key793)}]`;
+  // The strip's anchor is display: contents in its stacked form (fix 29), so its label is the box to press.
+  const centre793 = (sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel + ' .usage-label')}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  const stripAt793 = await centre793(stripAnchor793);
+  await s.click(stripAt793.x, stripAt793.y);
+  try {
+    await s.waitFor(`document.querySelector(${JSON.stringify(stripAnchor793)}).dataset.popoverOpen === 'pinned'`, "fix 793: a click pins the strip's card", 5000);
+  } catch (err) {
+    const seen = await s.evalJs(`(() => { const a = document.querySelector(${JSON.stringify(stripAnchor793)}); const r = a.getBoundingClientRect(); const hit = document.elementFromPoint(${stripAt793.x}, ${stripAt793.y}); return { open: a.dataset.popoverOpen ?? null, rect: [r.x, r.y, r.width, r.height], hit: hit?.className ?? null, hitAnchor: hit?.closest('[data-popover-for]')?.dataset.popoverFor ?? null, cards: document.querySelectorAll('.usage-popover').length, strips: document.querySelectorAll('.usage-strip').length, hiddenBy: (() => { let e = a; while (e && getComputedStyle(e).display !== 'none') e = e.parentElement; return e ? e.className : null; })(), sidebar: document.querySelector('.sidebar')?.getBoundingClientRect().width ?? null, at: [${stripAt793.x}, ${stripAt793.y}] }; })()`);
+    throw new Error(`${err.message}: ${JSON.stringify(seen)}`);
+  }
+  let rowAt793 = await centre793(rowAnchor793);
+  const covered793 = () => s.evalJs(`document.elementFromPoint(${rowAt793.x}, ${rowAt793.y})?.closest('.activity-usage-window') === null`);
+  if (await covered793()) {
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 40 });
+    await sleep(300);
+    rowAt793 = await centre793(rowAnchor793);
+  }
+  expect(!(await covered793()), "fix 793: the strip's card does not cover the row's reading");
+  await s.click(rowAt793.x, rowAt793.y);
+  await s.waitFor(`document.querySelector(${JSON.stringify(stripAnchor793)}).dataset.popoverOpen !== 'pinned'`, "fix 793: a press on the row's reading unpins the strip's card", 3000);
+  expect((await s.evalJs(`document.querySelectorAll('.usage-popover').length`)) <= 1, 'fix 793: one usage card at a time');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.usage-popover')`, 'fix 793: the usage card closed');
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 40 });
+  step("M9 fix 793: a press on the activity view's reading closes the strip's pinned card of the same window, one card at a time");
   await s.evalJs(`document.querySelector(${JSON.stringify(tabSel766 + ' .activity-unit[data-unit="five-hour"]')}).click()`);
   await s.waitFor(`document.querySelector(${JSON.stringify(tabSel766)})?.dataset.unit === 'five-hour' && document.querySelector(${JSON.stringify(tabSel766)})?.dataset.state === 'ready'`, 'fix 766: the tab on the five-hour unit');
   await s.waitFor(`!!document.querySelector(${JSON.stringify(tabSel766 + ' .activity-view-usage')})`, 'fix 766: the row drawn on the five-hour unit', 5000);

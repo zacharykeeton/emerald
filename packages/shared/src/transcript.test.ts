@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, editCounts, effortOf, movesHead, parseSteps, parseTurns, resultText, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, editCounts, effortFold, effortOf, effortState, modRowLine, movesHead, parseSteps, parseTurns, resultText, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
 import type { Step, StepTurn } from './transcript.ts';
 
 const line = (o: unknown): string => JSON.stringify(o);
@@ -86,6 +86,25 @@ test('parseTurns: meta lines, side-chain lines and broken lines are skipped', ()
 const toolUse = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id, name, input });
 const result = (id: string, content: unknown, at: string, extra: Record<string, unknown> = {}, isError = false) =>
   line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }] }, timestamp: at, ...extra });
+// M9 fix 770: the chat view folds a transcript as it grows, so each text
+// these tests parse is also folded in two halves cut at every line
+// boundary in turn (a cut between a tool_use and its result among them),
+// which must give the same turns as one parse; the effort fold likewise.
+function parseFolded(text: string): StepTurn[] {
+  const whole = parseSteps(text);
+  const all = text.split('\n');
+  for (let k = 0; k <= all.length; k++) {
+    const state = stepState();
+    stepFold(state, all.slice(0, k).join('\n'));
+    stepFold(state, all.slice(k).join('\n'));
+    assert.deepEqual(stepList(state), whole, `the fold cut before line ${k} differs from the parse`);
+    const effort = effortState();
+    effortFold(effort, all.slice(0, k).join('\n'));
+    effortFold(effort, all.slice(k).join('\n'));
+    assert.equal(effort.effort, effortOf(text));
+  }
+  return whole;
+}
 const toolOf = (turn: StepTurn, i: number) => {
   const s = turn.steps[i]!;
   assert.equal(s.kind, 'tool');
@@ -104,7 +123,7 @@ test('parseSteps: thinking, an Agent, a Read, an Edit and the reply, in order', 
     result('e1', 'ok', '2026-10-15T14:03:01.000Z', { toolUseResult: { filePath: 'packages/app/scripts/cdp.mjs', structuredPatch: [{ lines: [' x', '-a', '+b', '+c', '+d'] }, { lines: ['-e', '+f', '+g', '+h', ' y'] }] } }),
     turnLine([{ type: 'text', text: 'It sends rawKeyDown now.' }], '2026-10-15T14:05:12.000Z'),
   ].join('\n');
-  const turns = parseSteps(text);
+  const turns = parseFolded(text);
   assert.equal(turns.length, 1);
   const t = turns[0]!;
   assert.equal(t.prompt, 'find where cdp.mjs sends keyDown');
@@ -132,7 +151,7 @@ test('parseSteps: a passing Bash is exit 0, a failing one reads its code off the
     turnLine([toolUse('b3', 'PowerShell', { command: 'x' })], '2026-10-15T14:09:42.000Z'),
     result('b3', [{ type: 'text', text: 'the shell went away' }], '2026-10-15T14:09:43.000Z', {}, true),
   ].join('\n');
-  const t = parseSteps(text)[0]!;
+  const t = parseFolded(text)[0]!;
   assert.equal(toolOf(t, 0).arg, 'npm run verify:browser');
   assert.equal(toolOf(t, 0).result?.exitCode, 0);
   assert.equal(resultText(toolOf(t, 0)), 'exit 0 · 38s');
@@ -148,7 +167,7 @@ test('parseSteps: an image result carries its media type and size', () => {
     turnLine([toolUse('i1', 'Read', { file_path: 'after-key.png' })], '2026-10-15T14:10:01.000Z'),
     result('i1', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }], '2026-10-15T14:10:02.000Z', { toolUseResult: { type: 'image', file: { type: 'image/png', originalSize: 86016, dimensions: {} } } }),
   ].join('\n');
-  const step = toolOf(parseSteps(text)[0]!, 0);
+  const step = toolOf(parseFolded(text)[0]!, 0);
   assert.deepEqual(step.result?.image, { mediaType: 'image/png', bytes: 86016, data: 'AAAA' });
   assert.equal(resultText(step), '84 KB');
 });
@@ -158,7 +177,7 @@ test('parseSteps: a pasted image rides on its prompt', () => {
     user([{ type: 'text', text: '[Image #1] look at this' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BBBB' } }], '2026-10-15T14:10:00.000Z', { promptId: 'p1', imagePasteIds: [1] }),
     turnLine([{ type: 'text', text: 'Seen.' }], '2026-10-15T14:10:01.000Z'),
   ].join('\n');
-  const turns = parseSteps(text);
+  const turns = parseFolded(text);
   assert.equal(turns.length, 1);
   assert.equal(turns[0]!.prompt, '[Image #1] look at this');
   assert.deepEqual(turns[0]!.images, [{ mediaType: 'image/png', data: 'BBBB' }]);
@@ -173,7 +192,7 @@ test("parseSteps: a slash command's images ride on its meta line", () => {
     turnLine([{ type: 'text', text: 'Filed.' }], '2026-10-15T14:10:02.000Z'),
   ].join('\n');
   for (const ids of [true, false]) {
-    const turns = parseSteps(lines(ids));
+    const turns = parseFolded(lines(ids));
     assert.equal(turns.length, 1);
     assert.equal(turns[0]!.prompt, '/backlog [Image #1] file it [Image #2]');
     assert.deepEqual(turns[0]!.images.map((i) => i.data), ['CCCC', 'DDDD'], `ids ${ids}`);
@@ -185,11 +204,11 @@ test('parseSteps: a tool with no result yet is pending, and an edit\'s counts co
     user('edit it', '2026-10-15T14:11:00.000Z'),
     turnLine([toolUse('e1', 'Edit', { file_path: 'a.ts', old_string: 'a\nb\nc', new_string: 'a\nB\nX\nc' })], '2026-10-15T14:11:01.000Z'),
   ].join('\n');
-  const pending = toolOf(parseSteps(text)[0]!, 0);
+  const pending = toolOf(parseFolded(text)[0]!, 0);
   assert.equal(pending.result, null);
   assert.equal(resultText(pending), '');
   assert.deepEqual(editCounts('a\nb\nc', 'a\nB\nX\nc'), { added: 2, removed: 1 });
-  const done = toolOf(parseSteps(text + '\n' + result('e1', 'ok', '2026-10-15T14:11:02.000Z'))[0]!, 0);
+  const done = toolOf(parseFolded(text + '\n' + result('e1', 'ok', '2026-10-15T14:11:02.000Z'))[0]!, 0);
   assert.equal(resultText(done), '+2 −1', 'no structuredPatch: the counts come off the input');
 });
 
@@ -203,7 +222,7 @@ test('parseSteps: side-chain lines, a result for an unknown id, a broken line an
     user([{ type: 'text', text: '[Request interrupted by user for tool use]' }], '2026-10-15T14:12:04.000Z', { interruptedMessageId: 'msg_1' }),
     user('[Request interrupted by user]', '2026-10-15T14:12:05.000Z'),
   ].join('\n');
-  const turns = parseSteps(text);
+  const turns = parseFolded(text);
   assert.equal(turns.length, 1);
   assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['tool', 'note', 'note']);
   assert.equal(toolOf(turns[0]!, 0).result, null, 'the stray result fills nothing');
@@ -215,7 +234,7 @@ test('parseSteps: side-chain lines, a result for an unknown id, a broken line an
 
 test("parseSteps: the prompts are parseTurns' prompts", () => {
   const text = tabsFixture();
-  assert.deepEqual(parseSteps(text).map((t) => [t.prompt, t.at, t.endAt]), parseTurns(text).map((t) => [t.prompt, t.at, t.endAt]));
+  assert.deepEqual(parseFolded(text).map((t) => [t.prompt, t.at, t.endAt]), parseTurns(text).map((t) => [t.prompt, t.at, t.endAt]));
 });
 
 // M9 fix 713: the model chip's effort, off the last main-chain assistant line.
@@ -367,7 +386,7 @@ test('parseSteps: a human queued_command attachment is a queued step of the open
     attach({ type: 'queued_command', prompt: [{ type: 'text', text: 'see' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA' } }, { type: 'text', text: 'this' }], commandMode: 'prompt', origin: { kind: 'human' }, timestamp: '2026-10-15T14:03:00.000Z' }),
     attach({ type: 'queued_command', prompt: NOTE, commandMode: 'task-notification', origin: { kind: 'task-notification' } }),
   ].join('\n');
-  const steps = parseSteps(text)[0]!.steps;
+  const steps = parseFolded(text)[0]!.steps;
   assert.deepEqual(
     steps.filter((s) => s.kind === 'queued'),
     [
@@ -376,4 +395,29 @@ test('parseSteps: a human queued_command attachment is a queued step of the open
     ],
   );
   assert.equal(steps.length, 3);
+});
+
+// M9 fix 769: the step parse as a fold, and the mod's rows folded onto a
+// fork of the file's state.
+test('stepFork: a live tool_result folded onto a fork fills the call there and leaves the file state pending', () => {
+  const text = [
+    user('read the notes', '2026-10-15T14:00:00.000Z', { uuid: 'f-p' }),
+    turnLine([toolUse('r1', 'Read', { file_path: 'C:/sim/notes.md' })], '2026-10-15T14:00:01.000Z', { uuid: 'f-t' }),
+  ].join('\n');
+  const state = stepState();
+  stepFold(state, text);
+  assert.deepEqual([...state.uuids], ['f-p', 'f-t']);
+  const fork = stepFork(state);
+  stepFoldEntry(fork, modRowLine({ type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content: [{ type: 'text', text: 'one' }] }] }, 'm-r', Date.parse('2026-10-15T14:00:02.000Z')));
+  stepFoldEntry(fork, modRowLine({ type: 'assistant', content: [{ type: 'text', text: 'Read them.' }] }, 'm-a', Date.parse('2026-10-15T14:00:03.000Z')));
+  const drawn = stepList(fork);
+  assert.equal(toolOf(drawn[0]!, 0).result?.error, false);
+  assert.deepEqual(drawn[0]!.steps[1], { kind: 'text', text: 'Read them.', at: Date.parse('2026-10-15T14:00:03.000Z') });
+  const filed = stepList(state);
+  assert.equal(toolOf(filed[0]!, 0).result, null, "the file's call is still pending");
+  assert.equal(filed[0]!.steps.length, 1);
+  assert.equal(filed[0]!.endAt, Date.parse('2026-10-15T14:00:01.000Z'));
+  // The fork's uuids start empty; the file's are untouched.
+  assert.deepEqual([...fork.uuids], ['m-r', 'm-a']);
+  assert.deepEqual([...state.uuids], ['f-p', 'f-t']);
 });

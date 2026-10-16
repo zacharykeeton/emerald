@@ -61,6 +61,23 @@ test('filterGroups drops rows that do not match, groups left empty, and the exit
   );
 });
 
+test('filterGroups keeps the Exited rows named in keep under a chip (fix 787)', () => {
+  const groups = [group('C:\\work\\a', session('a1', 'needs-input')), group('exited', session('x1', 'exited'), session('x2', 'exited'))];
+  const kept = filterGroups(groups, 'needs', none, new Set(['x2']));
+  assert.deepEqual(
+    kept.map((g) => [g.key, g.sessions.map((s) => s.id)]),
+    [
+      ['C:\\work\\a', ['a1']],
+      ['exited', ['x2']],
+    ],
+  );
+  assert.deepEqual(
+    filterGroups(groups, 'needs', none, new Set()).map((g) => g.key),
+    ['C:\\work\\a'],
+    'an empty keep drops the group',
+  );
+});
+
 test('isSidebarFilter and the empty text', () => {
   assert.equal(isSidebarFilter('needs'), true);
   assert.equal(isSidebarFilter('unshown'), true);

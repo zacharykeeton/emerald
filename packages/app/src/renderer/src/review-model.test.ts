@@ -1,6 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EMPTY_REVIEW, branchLine, commentCount, keepDraft, openDraft, removeComment, reviewFile, reviewFolder, reviewFolderKey, reviewFolderPath, reviewPath, reviewPrompt, reviewSessionId, sendGate } from './review-model.ts';
+import { EMPTY_REVIEW, branchLine, commentCount, keepDraft, openDraft, removeComment, reviewFile, reviewFolder, reviewFolderKey, reviewFolderPath, reviewPath, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
+
+// M9 fix 790
+test('sessionStartHead: the current conversation\'s span, then the last span, then the record\'s own; reviewBaseArg', () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const span = (conversation: string, startHead: string | null) => ({ conversation, remoteSessionId: null, startedAt: 0, endedAt: null, startHead });
+  const spans = [span('a', h1), span('b', h2)];
+  assert.equal(sessionStartHead({ claudeSessionId: 'a', spans, startHead: 'r' }), h1);
+  assert.equal(sessionStartHead({ claudeSessionId: 'z', spans, startHead: 'r' }), h2);
+  assert.equal(sessionStartHead({ claudeSessionId: 'a', startHead: h1 }), h1);
+  assert.equal(sessionStartHead({ claudeSessionId: 'a', spans: [span('a', null)], startHead: h1 }), null);
+  assert.equal(reviewBaseArg('session', null), 'HEAD');
+  assert.equal(reviewBaseArg('session', h1), `since:${h1}`);
+  assert.equal(reviewBaseArg('default', h1), 'default');
+  assert.equal(reviewBaseArg('head', h1), 'HEAD');
+});
 
 test('reviewPath: a document per session, read back to the id', () => {
   const p = reviewPath('abc-123');

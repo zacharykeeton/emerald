@@ -291,6 +291,13 @@ test("the mod's post and the hook file's copy of one Stop, keys in another order
   assert.equal(lines[0]!['mod'], true);
 });
 
+test('modSeenFor is true for a session whose mod posted and false for another (M9 fix 776)', async () => {
+  await post({ hook_event_name: 'Stop', session_id: 'mod-776' }, { 'X-Emerald-Hook': 'emerald-mod', 'X-Emerald-Session': 'seen-776' });
+  await settle();
+  assert.equal(sink.modSeenFor('seen-776'), true);
+  assert.equal(sink.modSeenFor('other-776'), false);
+});
+
 test('an over-limit hook-file PostToolUse and the mod\'s whole copy of one tool_use_id reach the handler once (M9 fix 740)', async () => {
   const before = calls.length;
   const filePath = 'C:/repo/big.txt';
@@ -476,7 +483,7 @@ test('the written line is trimmed: a tool response cut to its first kilobyte and
       .map((l) => JSON.parse(l) as Record<string, unknown>);
   const big = 'x'.repeat(10 * 1024);
   const post = { hook_event_name: 'PostToolUse', session_id: 'c1', cwd: 'C:\\x', tool_name: 'Read', tool_use_id: 't1', tool_input: { file_path: 'C:\\x\\a.ts' }, tool_response: { type: 'text', file: { filePath: 'C:\\x\\a.ts', content: big, numLines: 400 } } };
-  const status = { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: { id: 'claude-opus-5', display_name: 'Opus 5' }, cost: { total_cost_usd: 1.5, total_duration_ms: 100 }, context_window: { context_window_size: 200000, current_usage: { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 }, used_percentage: 7 }, rate_limits: { five_hour: { used_percentage: 34 } }, prompt_cache: { warm: true }, workspace: { current_dir: 'C:\\x' }, version: '2.1.278' };
+  const status = { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: { id: 'claude-opus-5', display_name: 'Opus 5' }, cost: { total_cost_usd: 1.5, total_duration_ms: 100 }, context_window: { context_window_size: 200000, current_usage: { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 }, used_percentage: 7 }, rate_limits: { five_hour: { used_percentage: 34 } }, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3, hit_ratio: 0.9 }, workspace: { current_dir: 'C:\\x' }, version: '2.1.278' };
   // The Agent tool's response keeps the fields the activity log binds a
   // description by, whatever the report's length.
   const agent = { hook_event_name: 'PostToolUse', session_id: 'c1', tool_name: 'Agent', tool_input: { description: 'Look around', subagent_type: 'Explore', prompt: big }, tool_response: { agentId: 'a1', description: 'Look around', content: [{ type: 'text', text: big }] } };
@@ -501,7 +508,7 @@ test('the written line is trimmed: a tool response cut to its first kilobyte and
     assert.equal(response.file.content.length, 1024);
     assert.equal(response.file.numLines, 400);
     assert.ok(JSON.stringify(lines[0]).length < 1500, `the line is ${JSON.stringify(lines[0]).length} bytes`);
-    assert.deepEqual(lines[1]!['payload'], { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: status.model, cost: status.cost, context_window: status.context_window });
+    assert.deepEqual(lines[1]!['payload'], { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: status.model, cost: status.cost, context_window: status.context_window, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000 } });
     const agentLine = lines[2]!['payload'] as Record<string, unknown>;
     assert.equal(agentLine['truncated'], true);
     assert.deepEqual(agentLine['tool_input'], { description: 'Look around', subagent_type: 'Explore', prompt: 'x'.repeat(1024) });
@@ -620,4 +627,81 @@ test('a Test event is answered and remembered, and reaches no handler and no lin
   await settle();
   assert.equal(calls.length, callsBefore, 'still no handler call');
   assert.equal(logLines().length, linesBefore, 'still no line in hooks.jsonl');
+});
+
+test("an Append's hooks.jsonl line carries its uuid, door and the row's kind and block count, and no content (M9 fix 769)", async () => {
+  const row = { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'a reply the transcript keeps' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'C:/x' } }] };
+  const body = { hook_event_name: 'Append', session_id: 'c769', uuid: 'u-769', door: 'response', row };
+  const before = logLines().length;
+  assert.equal((await post(body)).status, 204);
+  await settle();
+  // The handler sees the row whole.
+  assert.deepEqual(calls.at(-1)!.payload, body);
+  const lines = logLines();
+  assert.equal(lines.length, before + 1);
+  assert.deepEqual(lines.at(-1)!['payload'], { hook_event_name: 'Append', session_id: 'c769', uuid: 'u-769', door: 'response', row: { type: 'assistant', blocks: 2 } });
+  assert.ok(!JSON.stringify(lines.at(-1)).includes('a reply the transcript keeps'));
+});
+
+test("POST /compact answers the mod's question from the handler, with the session and trigger it got, and writes nothing to the log (M9 fix 773)", async () => {
+  const dir = mkTemp('emerald-compact-');
+  const asked: Array<[string, string]> = [];
+  const ask = (id: string, trigger: string) => {
+    asked.push([id, trigger]);
+    if (trigger === 'boom') throw new Error('handler blew up');
+    return trigger === 'auto' ? 'kept whole while idle by emerald' : null;
+  };
+  const withAsk = await HookSink.listen(handler, { preferredPort: 0, token: TOKEN, eventLogPath: path.join(dir, 'a.jsonl'), log: silentLogger, compactAsk: ask });
+  const without = await HookSink.listen(handler, { preferredPort: 0, token: TOKEN, eventLogPath: path.join(dir, 'b.jsonl'), log: silentLogger });
+  const compact = (s: HookSink, body: object, headers: Record<string, string> = {}) =>
+    fetch(`http://127.0.0.1:${s.port}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': TOKEN, 'X-Emerald-Session': 'emerald-1', ...headers }, body: JSON.stringify(body) });
+  try {
+    const yes = await compact(withAsk, { trigger: 'auto' });
+    assert.equal(yes.status, 200);
+    assert.match(yes.headers.get('content-type') ?? '', /application\/json/);
+    assert.deepEqual(await yes.json(), { skip: 'kept whole while idle by emerald' });
+    assert.deepEqual(asked, [['emerald-1', 'auto']], 'the handler got the session and the trigger');
+    assert.deepEqual(await (await compact(withAsk, { trigger: 'manual' })).json(), { skip: null });
+    assert.deepEqual(await (await compact(withAsk, { trigger: 'boom' })).json(), { skip: null }, 'a handler that throws lets the compaction through');
+    assert.deepEqual(await (await compact(without, { trigger: 'auto' })).json(), { skip: null }, 'a sink with no handler lets every compaction through');
+    assert.equal((await compact(withAsk, { trigger: 'auto' }, { 'X-Emerald-Token': 'nope' })).status, 401);
+    assert.equal((await compact(withAsk, { trigger: 'auto' }, { 'X-Emerald-Session': '' })).status, 400);
+    assert.equal((await fetch(`http://127.0.0.1:${withAsk.port}/compact`, { headers: { 'X-Emerald-Token': TOKEN } })).status, 404, 'a GET is 404');
+    await settle();
+    for (const f of ['a.jsonl', 'b.jsonl']) {
+      const file = path.join(dir, f);
+      assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '', '', `nothing written to ${f}`);
+    }
+  } finally {
+    await withAsk.close();
+    await without.close();
+  }
+});
+
+test("the mod's ModSubmit goes to onModSubmit alone, never the handler or the log, and only from the mod (M9 fix 781)", async () => {
+  const dir = mkTemp('emerald-modsubmit-');
+  const file = path.join(dir, 'h.jsonl');
+  const words: Array<[string, string, boolean, string | null]> = [];
+  const handled: string[] = [];
+  const own = await HookSink.listen((_id, payload) => {
+    handled.push(String(payload.hook_event_name));
+    return { outcome: 'applied', from: 'idle', to: 'idle' };
+  }, { preferredPort: 0, token: TOKEN, eventLogPath: file, log: silentLogger, onModSubmit: (id, submitId, entered, drop) => words.push([id, submitId, entered, drop]) });
+  const send = (body: object, hook: string) =>
+    fetch(`http://127.0.0.1:${own.port}/hook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': TOKEN, 'X-Emerald-Session': 'emerald-781', 'X-Emerald-Hook': hook }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--1', entered: false, drop: 'the session was stopped and nobody has sent input since' }, 'emerald-mod')).status, 204);
+    assert.equal((await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--2', entered: true }, 'emerald-mod')).status, 204);
+    // From the hook file, not the mod: ignored.
+    await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--3', entered: true }, HOOK_A['X-Emerald-Hook']);
+    await settle();
+    assert.deepEqual(words, [
+      ['emerald-781', 'emerald--1', false, 'the session was stopped and nobody has sent input since'],
+      ['emerald-781', 'emerald--2', true, null],
+    ]);
+    assert.deepEqual(handled, [], 'the session handler never sees a ModSubmit');
+    assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '', '', 'no hooks.jsonl line');
+  } finally {
+    await own.close();
+  }
 });

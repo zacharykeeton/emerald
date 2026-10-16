@@ -1,3 +1,4 @@
+import { MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
 import type { SessionInfo, SessionState } from '@emerald/shared';
 
 // M56: a prompt sent from the sidebar's box goes through the same two
@@ -34,3 +35,49 @@ export function promptRefusal(session: Pick<SessionInfo, 'state'>): string | nul
 // The words on the row when the session did not start working after the
 // Enter, gate two's failure.
 export const STALLED_TITLE = 'did not start working; the text may be sitting in its input box';
+
+// The least time between two Ctrl+Cs any renderer sender sends one
+// session (M9 fix 748, shared since fix 783: sendCtrlC in actions.ts).
+// Claude Code 2.1.301 counts any Ctrl+C toward its press-again exit, the
+// one that clears the input too: two Ctrl+Cs 0.4 s apart ended the
+// session in fix 748's runs, 1.6 s apart did not.
+export const CTRL_C_GAP_MS = 2000;
+
+// How long a Ctrl+C must wait after the last one sent to the session.
+export function ctrlCWaitMs(last: number | undefined, now: number): number {
+  return last === undefined ? 0 : Math.max(0, last + CTRL_C_GAP_MS - now);
+}
+
+// M9 fix 781: how a prompt from the renderer reaches the session. A plain
+// prompt to a Claude whose daemon has session.submit goes in through its
+// emerald mod, with no Enter pause, when the session is not busy. A send
+// while it works is typed, since a mod submit made mid-turn waits in the
+// mod's own chain and writes no enqueue line, which would lose fix 754's
+// Queued card; Claude Code's own queue holds a typed one. `typed` is the
+// caller's word that the text must be typed (an image chip's [Image #N]
+// marker lives in Claude Code's input, and a mod submit would leave it
+// there). The daemon itself answers typed when the mod has no channel.
+export function sendRoute(session: Pick<SessionInfo, 'kind' | 'state'>, text: string, level: number, typed: boolean): 'mod' | 'typed' {
+  if (typed || session.kind !== 'claude' || level < MOD_CHANNEL_LEVEL) return 'typed';
+  if (isBusy(session.state) || session.state === 'needs-input') return 'typed';
+  return modRoutable(text) ? 'mod' : 'typed';
+}
+
+// M9 fix 781: one chain per key, so two quick sends to one session stay
+// two messages; without it the second's text was typed inside the first's
+// Enter pause and the TUI read one line. A run starts once the previous run
+// for the key has settled, resolved or rejected, and the key is dropped
+// when its last run settles, so an idle session holds nothing.
+export function chainOn<T>(chains: Map<string, Promise<unknown>>, key: string, run: () => Promise<T>): Promise<T> {
+  const before = chains.get(key) ?? Promise.resolve();
+  const result = before.then(run, run);
+  const tail: Promise<unknown> = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  chains.set(key, tail);
+  void tail.then(() => {
+    if (chains.get(key) === tail) chains.delete(key);
+  });
+  return result;
+}

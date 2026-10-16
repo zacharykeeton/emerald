@@ -33,8 +33,28 @@ export interface ReviewState {
 }
 
 // HEAD is the index and work tree against the last commit; default is the
-// branch's whole story since it left main (or master).
-export type ReviewBase = 'head' | 'default';
+// branch's whole story since it left main (or master); session is
+// everything since the commit the session's conversation started on.
+export type ReviewBase = 'head' | 'default' | 'session';
+
+// M9 fix 790: the start commit of the conversation the chat view shows:
+// the last span whose conversation is the Claude session id, else the last
+// span, else (a record with no spans) the record's own startHead. A found
+// span's own null stays null.
+export function sessionStartHead(session: Pick<SessionInfo, 'claudeSessionId' | 'spans' | 'startHead'>): string | null {
+  const spans = session.spans ?? [];
+  if (spans.length === 0) return session.startHead ?? null;
+  const span = spans.findLast((s) => s.conversation === session.claudeSessionId) ?? spans[spans.length - 1]!;
+  return span.startHead ?? null;
+}
+
+// M9 fix 790: the base as gitReview is asked for it. A session base with
+// no start commit reads as HEAD.
+export function reviewBaseArg(base: ReviewBase, startHead: string | null): string {
+  if (base === 'default') return 'default';
+  if (base === 'session' && startHead !== null) return `since:${startHead}`;
+  return 'HEAD';
+}
 
 export const EMPTY_REVIEW: ReviewState = { comments: [], draft: null, general: '', generalOpen: false, base: 'head' };
 

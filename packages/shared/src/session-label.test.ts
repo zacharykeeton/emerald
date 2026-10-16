@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, SessionKind, SessionState } from './session.ts';
-import { COMPACT_BUFFER_TOKENS, NEEDS_INPUT_WORD, activityText, commandText, compactPercent, contextPercentText, contextText, contextTitle, contextWords, describeState, elapsedText, formatTokens, hasState, shellCommand, needsInputWords, quietText, resumeTitle, shortModel, stateMarker, titleGlyph, titleText, costText, tokensDetail, tokensFigures, tokensLines, tokensParts, tokensRowText, tokensText, waitingDetail, waitingOnText, workingMotion } from './session-label.ts';
+import { COMPACT_BUFFER_TOKENS, IDLE_COMPACT_AFTER_MS, IDLE_COMPACT_MIN_TOKENS, NEEDS_INPUT_WORD, activityText, idleClock, idleClockTitle, commandText, compactPercent, contextPercentText, contextText, contextTitle, contextWords, describeState, elapsedText, formatTokens, hasState, shellCommand, needsInputWords, quietText, resumeTitle, shortModel, stateMarker, titleGlyph, titleText, costText, tokensDetail, tokensFigures, tokensLines, tokensParts, tokensRowText, tokensText, waitingDetail, waitingOnText, workingMotion } from './session-label.ts';
 
 const ALL_STATES: SessionState[] = ['starting', 'idle', 'working', 'needs-input', 'done', 'errored', 'exited'];
 
@@ -281,4 +281,30 @@ test("waitingOnText names the mod's ask ahead of the call's phrase, and an agent
   assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'permission', liveTool: 'Running npm', askedFor }), 'Allow? Bash: npm publish');
   assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'agent-permission', liveTool: null, team: [], askedFor }), "Allow? an agent's Bash: npm publish");
   assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'permission', liveTool: 'Running npm', askedFor: null }), 'Allow? Running npm');
+});
+
+test('idleClock: compacts in, cache cold in and kept whole, by the TTL and the context\'s tokens, at idle, waiting and done only (M9 fix 772)', () => {
+  assert.equal(IDLE_COMPACT_AFTER_MS, 54 * 60 * 1000);
+  assert.equal(IDLE_COMPACT_MIN_TOKENS, 200000);
+  const now = 1_792_000_000_000;
+  const cw = (used: number) => ({ size: 1_000_000, used, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 });
+  const at = (overrides: Partial<SessionInfo> = {}, ttl: '5m' | '1h' = '1h', expiresAt = now + 3000_000, used = 250_000) => ({ ...session('claude', 'idle', 'c1'), contextWindow: cw(used), cache: { ttl, expiresAt, warm: true }, ...overrides });
+  const compact = idleClock(at(), now);
+  assert.deepEqual(compact, { kind: 'compact', at: now + 3000_000 - 360_000, words: 'compacts in 44m', rowWords: 'compacts in 44m' });
+  assert.deepEqual(idleClock(at({}, '1h', now + 3000_000, 199_999), now), { kind: 'cold', at: now + 3000_000, words: 'cache cold in 50m', rowWords: 'cache cold in 50m' });
+  assert.equal(idleClock(at({}, '1h', now + 3000_000, 200_000), now)?.kind, 'compact', 'the floor itself compacts');
+  assert.deepEqual(idleClock(at({}, '5m', now + 240_000, 300_000), now), { kind: 'cold', at: now + 240_000, words: 'cache cold in 4m', rowWords: 'cache cold in 4m' });
+  const late = now + 3000_000 - 120_000;
+  assert.equal(idleClock(at(), late)?.words, 'cache cold in 2m', 'past the compaction time, before the expiry');
+  assert.deepEqual(idleClock({ ...at(), keepWhole: true }, now), { kind: 'kept', at: now + 3000_000, words: 'kept whole · cache cold in 50m', rowWords: 'kept whole · 50m' });
+  for (const state of ['waiting', 'done'] as const) assert.deepEqual(idleClock(at({ state }), now), compact, state);
+  for (const state of ['working', 'needs-input', 'exited', 'starting'] as const) assert.equal(idleClock(at({ state }), now), null, state);
+  assert.equal(idleClock(at({ claudeSessionId: null }), now), null, 'a shell whose Claude left');
+  assert.equal(idleClock(at({ cache: { ttl: '1h', expiresAt: now + 3000_000, warm: false } }), now), null, 'a cold cache');
+  assert.equal(idleClock(at({ cache: null }), now), null);
+  assert.equal(idleClock({ ...at(), cache: undefined }, now), null, 'an older daemon');
+  assert.equal(idleClock(at({}, '1h', now), now), null, 'expiresAt is now');
+  assert.equal(idleClock(at({}, '1h', now + 30_000, 1000), now)?.words, 'cache cold in 1m');
+  assert.ok(idleClockTitle(compact!, '9:41 PM').includes('"idleCompaction": false'));
+  assert.ok(idleClockTitle(compact!, '9:41 PM').includes('9:41 PM'));
 });

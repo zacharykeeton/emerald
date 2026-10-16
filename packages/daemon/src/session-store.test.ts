@@ -94,6 +94,7 @@ test('toPersisted keeps identity and records the exit only for exited sessions',
     phase: null,
     color: '#61afef',
     scheme: null,
+    keepWhole: false,
     createdAt: 1000,
     exitCode: null,
     exitedAt: null,
@@ -276,6 +277,24 @@ test('the colour scheme round trips, loads as null for entries written before M9
       ['d', null],
     ],
     "an old entry loads on the window's scheme; a malformed or empty one reads as none rather than dropping the session",
+  );
+});
+
+test('the keep-whole mark round trips, loads as not marked for entries written before M9 fix 773, and a bad shape reads as not marked', () => {
+  const file = tempFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const { keepWhole: _k, ...old } = toPersisted(info({}));
+  assert.equal(toPersisted(info({ keepWhole: true })).keepWhole, true);
+  assert.equal(toPersisted(info({})).keepWhole, false, 'a record from before the field persists as not marked');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [old, toPersisted(info({ id: 'b', keepWhole: true })), { ...toPersisted(info({ id: 'c' })), keepWhole: 'yes' }] }));
+  const loaded = new SessionStore(file, silentLogger).load();
+  assert.deepEqual(
+    loaded.map((s) => [s.id, s.keepWhole]),
+    [
+      ['a', false],
+      ['b', true],
+      ['c', false],
+    ],
   );
 });
 

@@ -267,6 +267,10 @@ function fetchedAt(common: string | null): number | null {
 // `--numstat` against that hash, which covers the index and the work
 // tree, plus the untracked files from the status, which a diff never
 // lists. Any failure is an empty list with the root kept.
+// M9 fix 790: since:<hash> is the session's start, the merge base of that
+// commit and HEAD in this folder, so a session in a worktree compares
+// against where its branch left the commit it started on; a hash this
+// repository lacks reads as HEAD.
 export function gitReview(dir: string, base: string): Promise<GitReview> {
   const empty = (root: string | null): GitReview => ({ root, head: null, defaultBranch: null, baseHash: null, files: [] });
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) return Promise.resolve(empty(null));
@@ -278,10 +282,7 @@ export function gitReview(dir: string, base: string): Promise<GitReview> {
     const isMain = (await run(['rev-parse', '--verify', '--quiet', 'refs/heads/main'])) !== null;
     const isMaster = !isMain && (await run(['rev-parse', '--verify', '--quiet', 'refs/heads/master'])) !== null;
     const defaultBranch = isMain ? 'main' : isMaster ? 'master' : null;
-    let baseHash: string | null;
-    if (/^[0-9a-f]{40}$/.test(base)) baseHash = base;
-    else if (base === 'default' && defaultBranch !== null && head !== defaultBranch) baseHash = (await run(['merge-base', defaultBranch, 'HEAD']))?.trim() ?? null;
-    else baseHash = (await run(['rev-parse', 'HEAD']))?.trim() ?? null;
+    const baseHash = await resolveReviewBase(base, defaultBranch, head, run);
     if (baseHash === null || !/^[0-9a-f]{40}$/.test(baseHash)) return { root, head, defaultBranch, baseHash: null, files: [] };
     const [names, nums, status] = await Promise.all([run(['diff', '--name-status', '-z', baseHash]), run(['diff', '--numstat', '-z', baseHash]), gitStatus(dir)]);
     const letters = names === null ? new Map<string, { rel: string; letter: string }>() : parseNameStatus(names, root);
@@ -307,6 +308,24 @@ export function gitReview(dir: string, base: string): Promise<GitReview> {
     files.sort((a, b) => a.rel.localeCompare(b.rel));
     return { root, head, defaultBranch, baseHash, files };
   })();
+}
+
+// The commit a review compares against, for the base the tab asked for
+// (M9 fix 790 lifted this out of gitReview so a test can drive it): a
+// 40-hex hash as it is; since:<hash> as the merge base of that commit and
+// HEAD, falling through to HEAD when this repository does not know the
+// commit; default as the merge base with the default branch; anything
+// else as HEAD.
+export async function resolveReviewBase(base: string, defaultBranch: string | null, head: string | null, run: (args: string[]) => Promise<string | null>): Promise<string | null> {
+  if (/^[0-9a-f]{40}$/.test(base)) return base;
+  const since = /^since:([0-9a-f]{40})$/.exec(base);
+  if (since !== null) {
+    const merged = (await run(['merge-base', since[1]!, 'HEAD']))?.trim() ?? null;
+    if (merged !== null && /^[0-9a-f]{40}$/.test(merged)) return merged;
+  } else if (base === 'default' && defaultBranch !== null && head !== defaultBranch) {
+    return (await run(['merge-base', defaultBranch, 'HEAD']))?.trim() ?? null;
+  }
+  return (await run(['rev-parse', 'HEAD']))?.trim() ?? null;
 }
 
 // Past this an untracked file's count is not worth reading (M9 fix 474):

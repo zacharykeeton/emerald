@@ -53,7 +53,7 @@ function session(id: string, name: string): SessionInfo {
   };
 }
 
-const sets: { sessionId: string; comment?: string | null }[] = [];
+const sets: { sessionId: string; comment?: string | null; keepWhole?: boolean }[] = [];
 const sockets = new Set<net.Socket>();
 let server: net.Server;
 const savedEnv = process.env['EMERALD_SESSION_ID'];
@@ -65,13 +65,13 @@ before(async () => {
     const decoder = new JsonLinesDecoder();
     sock.on('data', (chunk: Buffer) => {
       for (const raw of decoder.push(chunk)) {
-        const msg = raw as { id?: number; type: string; sessionId?: string; comment?: string | null };
+        const msg = raw as { id?: number; type: string; sessionId?: string; comment?: string | null; keepWhole?: boolean };
         const reply = (result: unknown) => sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: true, result }));
         if (msg.type === 'hello') reply({ daemonPid: 1, daemonVersion: 'fake', featureLevel: 99 });
         else if (msg.type === 'subscribe') reply({});
         else if (msg.type === 'session.list') reply({ sessions: [session(OTHER, 'other'), session(OWN, 'me')] });
         else if (msg.type === 'session.set') {
-          sets.push({ sessionId: msg.sessionId ?? '', comment: msg.comment });
+          sets.push({ sessionId: msg.sessionId ?? '', comment: msg.comment, ...(msg.keepWhole === undefined ? {} : { keepWhole: msg.keepWhole }) });
           reply({});
         } else sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: false, error: { code: 'bad-request', message: `fake daemon does not do ${msg.type}` } }));
       }
@@ -119,4 +119,17 @@ test('outside emerald with no session named, the usage error says so before any 
   sets.length = 0;
   await assert.rejects(set.run(['--comment', 'checkpoint']), (err: unknown) => err instanceof CliError && err.exitCode === EXIT.usage && /not inside emerald \(EMERALD_SESSION_ID is not set\); name a session/.test(err.message));
   assert.deepEqual(sets, []);
+});
+
+test('--keep-whole takes on or off, sends the mark in its session.set, and anything else is a usage error before any pipe is touched (M9 fix 773)', async () => {
+  process.env['EMERALD_SESSION_ID'] = OWN;
+  sets.length = 0;
+  await assert.rejects(set.run(['--keep-whole', 'maybe']), (err: unknown) => err instanceof CliError && err.exitCode === EXIT.usage && err.message === '--keep-whole must be on or off, got "maybe"');
+  assert.deepEqual(sets, []);
+  await set.run(['--keep-whole', 'on', '--json']);
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0]!.sessionId, OWN);
+  assert.equal(sets[0]!.keepWhole, true);
+  await set.run(['--keep-whole', 'off', '--json']);
+  assert.equal(sets[1]!.keepWhole, false);
 });

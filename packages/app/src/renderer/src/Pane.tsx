@@ -53,7 +53,7 @@ import { useSqueeze } from './squeeze.ts';
 import { dialStyle } from './usage-model.ts';
 import { folderName } from './files-model.ts';
 import { lastFolder } from './recent-folders.ts';
-import { ackable, compactPercent, contextPercentText, contextText, contextWords, describeState, hasState, markKind, memberParts, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
+import { ackable, compactPercent, contextPercentText, contextText, contextWords, describeState, hasState, idleClock, idleClockTitle, markKind, memberParts, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
 import { editTab, getState, useStore } from './store.ts';
 import { otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
@@ -62,7 +62,6 @@ import type { FileStat } from '../../preload/api.ts';
 import { TokensArrow, TokensText } from './TokensText.tsx';
 import { RollingFigure } from './RollingFigure.tsx';
 import { HushButton } from './HushButton.tsx';
-import { PREVIEW_TITLE, PREVIEW_WORD } from './preview-mark.ts';
 import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
 import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPane, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
@@ -76,6 +75,9 @@ interface Props {
 }
 
 const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
+
+// The idle countdown's clock time in its tooltip (M9 fix 772).
+const clockTime = (at: number): string => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 // How long the exited notice (M9 fix 313) stays up after the last blocked
 // key or paste, each one restarting the same four seconds.
@@ -288,6 +290,10 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   }, [paneId]);
 
   const label = session === undefined ? null : describeState(session);
+  // The idle countdown (M9 fix 772): to Claude Code's idle compaction, else
+  // to the prompt cache going cold, ticking only while there is one to count.
+  const clockNow = useNow(session !== undefined && session.cache != null && ['idle', 'waiting', 'done'].includes(session.state));
+  const clock = session === undefined ? null : idleClock(session, clockNow);
   // The state text pulses while the session works, as the sidebar row
   // moves (M33); nothing when stale. Claude's own title glyph stays in
   // the title and the tooltip (fix 59).
@@ -335,7 +341,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // empty second, which is simpler than renumbering.
   const titleRef = useRef<HTMLDivElement>(null);
   const team = session === undefined ? null : teamCounts(session);
-  useSqueeze(titleRef, 8, '.pane-state', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), renaming], renaming);
+  useSqueeze(titleRef, 8, '.pane-state', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
   // The session's colour on the pane as well as its title (M9 fix 43): the
   // focus ring is the pane's ::after, so it reads the variable from here.
   // An empty pane and a session with no colour keep the amber.
@@ -405,12 +411,6 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
               {session?.name ?? sessionId}
             </span>
           )}
-          {/* The chat face is in progress (M9 fix 737); it gives at the third squeeze level with the splits. */}
-          {face === 'chat' && (
-            <span className="pane-preview" title={PREVIEW_TITLE}>
-              {PREVIEW_WORD}
-            </span>
-          )}
           {/* A plain shell shows no state (hasState); an unknown session says so. The mark before the name is the one motion (M46). */}
           {(session === undefined || hasState(session)) && (
             // The word opens the turn card (M73 task 4), which carries the state's sentence and the terminal title its tooltip did.
@@ -423,6 +423,11 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
                 {label?.text ?? 'unknown'}
               </TurnStateAnchor>
             )
+          )}
+          {session !== undefined && hasState(session) && clock !== null && (
+            <span className="pane-idle-clock" data-clock={clock.kind} title={idleClockTitle(clock, clockTime(clock.at))}>
+              {clock.words}
+            </span>
           )}
           {/* The roster (M46): the same units as the row's, before the seam; folded to a total once the title is squeezed (M9 fix 77), the CSS picking one of the two. */}
           {session !== undefined && team !== null && <RosterUnits id={session.id} counts={team} members={session.team} size="unit" />}

@@ -1,5 +1,5 @@
 import { isSessionId } from './session.ts';
-import type { ContextWindow, NeedsInputReason, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
+import type { ContextWindow, NeedsInputReason, SessionCache, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
 import { Limits } from './limits.ts';
 import { ackable, folderName, runningKind, staleSince, titleGlyph, titleText } from './session-label.ts';
 import { askWords, toolPhrase } from './tool-phrase.ts';
@@ -94,6 +94,8 @@ export interface HookPayload {
   // The same status line's cost block (M9 fix 154): the dollars so far at
   // API rates, beside durations and line counts the record does not keep.
   cost?: { total_cost_usd?: number };
+  // The same status line's prompt cache block (M9 fix 772): its TTL, expiry in epoch seconds and warmth.
+  prompt_cache?: { warm?: boolean; ttl?: string; expires_at?: number | null; [key: string]: unknown };
   // The emerald mod's ToolAsk (M9 fix 742): the agent whose call asked,
   // under its own key since an agent_id would send the post to the agent
   // reducer, and the decision's rule; its reason is the `reason` above,
@@ -320,7 +322,7 @@ function closeSpan(session: SessionInfo, at: number): SessionInfo {
 function leave(session: SessionInfo, at: number): SessionInfo {
   let next = closeSpan(session, at);
   if (session.kind === 'shell') {
-    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null };
+    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null };
   }
   return transition(followAutoName(clearTeam(next), null), 'idle', at, null);
 }
@@ -456,6 +458,9 @@ function reduceHook(session: SessionInfo, payload: HookPayload, at: number): Ses
 
 function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number): SessionInfo {
   const outcome = classifyHook(session, payload);
+  // The ask as it stood before this event, for the mod's ToolRunning
+  // (M9 fix 775), which settleAsk clears.
+  const askedBefore = session.askedFor ?? null;
   session = settleAsk(session, payload);
   // A subagent's own hooks say nothing about the parent's turn, with one
   // exception (M9 fix 109): its permission prompt blocks the agent, and
@@ -608,11 +613,16 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // The line is the record; UserPromptSubmit stays what moves the row.
     case 'TurnStart':
       return next;
-    // An interrupted turn fires no Stop, so the row sat at working until the
-    // stale check. It waits on the person, who interrupted it, so it is idle,
-    // never done: no chime and no attention. A subagent's turn moves nothing.
+    // A turn that ends with no Stop (an Escape or Ctrl+C mid-turn, or an
+    // Escape at a permission dialog, which 2.1.301 reports as reason
+    // "answer" with is_aborted false) left the row at working or
+    // needs-input. A finished turn's Stop lands about a second before its
+    // TurnComplete and has moved the row on already, so a row still busy
+    // here waits on the person: idle, never done, so no chime and no
+    // attention. A subagent's turn moves nothing, nor does a paused turn
+    // waiting on an asking member (M9 fixes 738 and 774).
     case 'TurnComplete':
-      if (payload.is_aborted === true && payload.turn_agent_id === undefined && (next.state === 'working' || next.state === 'needs-input')) return transition(next, 'idle', at, null);
+      if (payload.turn_agent_id === undefined && (next.state === 'working' || next.state === 'needs-input') && !awaitsAgent(next)) return transition(next, 'idle', at, null);
       return next;
     case 'ToolAsk':
       // The mod's ask at the decision (M9 fix 742) names what is asked
@@ -621,6 +631,13 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       // PermissionRequest that follows a real dialog moves the row, and
       // transition keeps the field through it.
       return { ...next, askedFor: { words: askWords(payload.tool_name, payload.tool_input) ?? 'a tool call', toolUseId: payload.tool_use_id ?? null, agentId: payload.ask_agent_id ?? null, at } };
+    // The mod's ToolRunning (M9 fix 775): the call's progress row drew, so
+    // the call is running and its dialog was answered Allow. Only the
+    // parent's own permission ask moves; an agent's is settled by the
+    // agent's own events.
+    case 'ToolRunning':
+      if (next.state === 'needs-input' && next.needsInputReason === 'permission' && (askedBefore === null || askedBefore.toolUseId === null || askedBefore.toolUseId === payload.tool_use_id)) return transition(next, 'working', at, null);
+      return next;
     default:
       return next;
   }
@@ -630,13 +647,16 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
 // it was for ends: allowed and run, failed, or denied. Any agent's event
 // counts, since the ask may be an agent's. One with no call id is ended
 // by any call's end. The same object when nothing is cleared.
-const ASK_ENDS_TURN = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionStart', 'SessionEnd']);
-const ASK_ENDS_CALL = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']);
+const ASK_ENDS_TURN = new Set(['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionStart', 'SessionEnd', 'TurnComplete']);
+const ASK_ENDS_CALL = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'ToolRunning']);
 
 function settleAsk(session: SessionInfo, payload: HookPayload): SessionInfo {
   const asked = session.askedFor;
   if (asked === undefined || asked === null) return session;
   const name = payload.hook_event_name ?? '';
+  // A background member's turn ending while the parent's dialog is up
+  // answers nothing (M9 fix 774).
+  if (name === 'TurnComplete' && payload.turn_agent_id !== undefined) return session;
   const ended = ASK_ENDS_TURN.has(name) || (ASK_ENDS_CALL.has(name) && (asked.toolUseId === null || payload.tool_use_id === asked.toolUseId));
   return ended ? { ...session, askedFor: null } : session;
 }
@@ -1046,8 +1066,25 @@ function applyStatusLine(session: SessionInfo, payload: HookPayload): SessionInf
   // line without it keeps the last; a negative or a NaN is malformed.
   const usd = payload.cost?.total_cost_usd;
   const costUsd = typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : (session.costUsd ?? null);
-  if (model === session.model && contextPercent === session.contextPercent && contextWindow === session.contextWindow && tokens === session.tokens && costUsd === (session.costUsd ?? null)) return session;
-  return { ...session, model, contextPercent, contextWindow, tokens, costUsd };
+  const cache = readCache(payload.prompt_cache, session.cache ?? null);
+  if (model === session.model && contextPercent === session.contextPercent && contextWindow === session.contextWindow && tokens === session.tokens && costUsd === (session.costUsd ?? null) && cache === (session.cache ?? null)) return session;
+  return { ...session, model, contextPercent, contextWindow, tokens, costUsd, cache };
+}
+
+// The status line's prompt cache (M9 fix 772). A line without the block
+// keeps the last, as a measure does; a TTL Claude Code does not write or an
+// expiry that is no time (null when the last response reported no cache
+// tokens) reads as no cache; the last object itself when nothing moved, so
+// a repeated line returns the same record.
+function readCache(pc: HookPayload['prompt_cache'], last: SessionCache | null): SessionCache | null {
+  if (pc === undefined || pc === null || typeof pc !== 'object') return last;
+  const ttl = pc.ttl;
+  const exp = pc.expires_at;
+  if ((ttl !== '5m' && ttl !== '1h') || typeof exp !== 'number' || !Number.isFinite(exp) || exp <= 0) return null;
+  const expiresAt = Math.round(exp * 1000);
+  const warm = pc.warm === true;
+  if (last !== null && last.ttl === ttl && last.expiresAt === expiresAt && last.warm === warm) return last;
+  return { ttl, expiresAt, warm };
 }
 
 // The mod's measure (M9 fix 739) as a status line: its context and cost

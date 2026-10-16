@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { HEAD_TOOLS, Limits, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
-import type { HookPayload, KeptScreen, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
+import { HEAD_TOOLS, Limits, MOD_APPEND, MOD_TOOL_RUNNING, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
+import type { HookOutcome, HookPayload, KeptScreen, ModRow, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
 import type { HookResult } from './hook-sink.ts';
 import { RequestError } from './errors.ts';
 import { findGitDir, onReftableBranch, readBranch, repoKey } from './git-branch.ts';
@@ -168,6 +168,11 @@ export interface SessionManagerOptions {
 
 // Kept as its own class so a stack trace says where the error came from.
 export class SessionError extends RequestError {}
+
+// What the mod hands Claude Code as the skip of an idle compaction (M9 fix
+// 773); the engine writes no notice for a skip, so the words land in the
+// mod's own log and the daemon's answer alone.
+export const KEEP_WHOLE_SKIP = 'kept whole while idle by emerald';
 
 // The hook events after which the branch is read again. SessionEnd can put
 // a shell's folder back where its prompt last was (M9 fix 74).
@@ -612,8 +617,14 @@ export class SessionManager extends EventEmitter {
   // be written without touching the phase and the other way round; a
   // blank comment is the same as clearing it. The colour (M29) rides the
   // same request since it is set the same way, from a menu or the CLI.
-  set(sessionId: string, fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null }): void {
+  set(sessionId: string, fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean }): void {
     const rec = this.get(sessionId);
+    // Keep whole (M9 fix 773) is for a Claude session alone, since a
+    // shell's hand-typed claude never loads the mod that asks; refused
+    // before any field is applied, and false on a shell changes nothing.
+    if (fields.keepWhole === true && rec.info.kind !== 'claude') {
+      throw new SessionError('bad-request', `keep whole is for a Claude session emerald started; ${rec.info.name} is a shell`);
+    }
     let info = rec.info;
     if (fields.comment !== undefined) {
       const trimmed = fields.comment === null ? '' : fields.comment.trim();
@@ -625,10 +636,33 @@ export class SessionManager extends EventEmitter {
     // The scheme (M9 fix 244) can be cleared, unlike the colour: null
     // puts the session back on the window's pick.
     if (fields.scheme !== undefined && fields.scheme !== (info.scheme ?? null)) info = { ...info, scheme: fields.scheme };
+    if (fields.keepWhole !== undefined && fields.keepWhole !== (info.keepWhole === true)) info = { ...info, keepWhole: fields.keepWhole };
     if (info === rec.info) return;
     rec.info = info;
-    this.log.info('session set', { id: sessionId, comment: info.comment, phase: info.phase, color: info.color, scheme: info.scheme ?? null });
+    this.log.info('session set', { id: sessionId, comment: info.comment, phase: info.phase, color: info.color, scheme: info.scheme ?? null, keepWhole: info.keepWhole === true });
     this.changed(rec);
+  }
+
+  // The emerald mod's question before a compaction (M9 fix 773, POST
+  // /compact on the sink): the skip reason when the session is marked to
+  // keep whole, sits idle, waiting or done, and the compaction is the
+  // engine's own (auto, which the idle compactor and a full window both
+  // pass, or precompute, its ahead-of-time summary); else null, let
+  // through. A manual /compact or a plugin's is the person's or a mod's
+  // own ask, and a compaction while the session works or needs input is a
+  // full window's mid-turn, whose skip would end the turn in an error.
+  compactAsk(sessionId: string, trigger: string): string | null {
+    const id8 = sessionId.slice(0, 8);
+    const rec = this.sessions.get(sessionId);
+    if (rec === undefined) {
+      this.log.info(`compact asked for an unknown session ${id8}: let through`);
+      return null;
+    }
+    const { state } = rec.info;
+    const kept = rec.info.keepWhole === true;
+    const skip = kept && (state === 'idle' || state === 'waiting' || state === 'done') && (trigger === 'auto' || trigger === 'precompute');
+    this.log.info(`compact asked for ${id8}: trigger ${trigger}, keep whole ${kept ? 'on' : 'off'}, state ${state}: ${skip ? 'skipped' : 'let through'}`);
+    return skip ? KEEP_WHOLE_SKIP : null;
   }
 
   // The user looked at a finished session, so it no longer needs highlighting.
@@ -665,6 +699,21 @@ export class SessionManager extends EventEmitter {
     this.emit('limits', { at, limits });
   }
 
+  // A row of the conversation the mod kept (M9 fix 769), emitted as `row`
+  // for the pipe server to push on, when it is the bound conversation's
+  // and carries a uuid and a user or assistant row with blocks. A foreign
+  // or malformed one emits nothing and logs nothing, since a line per row
+  // would flood the log.
+  private noteRow(rec: SessionRecord, payload: HookPayload, at: number, outcome: HookOutcome): HookResult {
+    if (outcome !== 'applied') return { outcome };
+    const uuid = payload.uuid;
+    const row = payload.row as Partial<ModRow> | null | undefined;
+    if (typeof uuid !== 'string' || uuid === '') return { outcome };
+    if (row === null || typeof row !== 'object' || (row.type !== 'user' && row.type !== 'assistant') || !Array.isArray(row.content)) return { outcome };
+    this.emit('row', { sessionId: rec.info.id, at, uuid, row: row as ModRow, cut: payload.cut === true });
+    return { outcome };
+  }
+
   // Entry point for the hook sink. Returns why an event was or was not used,
   // and the state change it made when it made one, so the sink can record
   // both next to the payload in hooks.jsonl.
@@ -682,6 +731,9 @@ export class SessionManager extends EventEmitter {
     // tool but the git-writing ones dropped.
     if (payload.hook_event_name === 'PreToolUse' && typeof payload.agent_id === 'string') this.noteAgentActivity(rec, payload.agent_id, payload);
     const outcome = classifyHook(rec.info, payload);
+    // A kept row (M9 fix 769) says nothing about the state, so it never
+    // reaches the reducer and leaves the record alone.
+    if (payload.hook_event_name === MOD_APPEND) return this.noteRow(rec, payload, at, outcome);
     if (outcome === 'applied' && payload.hook_event_name === 'Spinner') rec.spinnerFromMod = true;
     if (outcome === 'applied-agent') {
       // A known subagent's own Bash call (M61): where the agent works and
@@ -1289,6 +1341,17 @@ export class SessionManager extends EventEmitter {
       }
       const words = spinner.push(chunk);
       const verb = words.length === 0 ? null : words[words.length - 1]!;
+      // M9 fix 775: Claude Code hides its spinner while a permission dialog
+      // is up and draws it again once the answered call runs, so a word on
+      // a row at a permission ask says the call is running. The mod's own
+      // ToolRunning, off the call's progress row, draws only at the end of
+      // a run on Windows (the probe: 10 to 12 s into a ten-second run),
+      // where the word came 0.6 and 1.75 s after the answer. The event is
+      // the mod's, aimed at the ask's own call.
+      if (verb !== null && rec.pty === pty && rec.info.state === 'needs-input' && rec.info.needsInputReason === 'permission') {
+        const moved = this.applyHook(id, { hook_event_name: MOD_TOOL_RUNNING, ...(rec.info.claudeSessionId ? { session_id: rec.info.claudeSessionId } : {}), ...(rec.info.askedFor?.toolUseId ? { tool_use_id: rec.info.askedFor.toolUseId } : {}) }, Date.now());
+        if (moved.to === 'working') this.log.info('permission answered: the spinner drew again', { id, word: verb });
+      }
       if (verb !== null && verb !== (rec.info.liveVerb ?? null) && rec.pty === pty && rec.spinnerFromMod !== true) {
         rec.info = { ...rec.info, liveVerb: verb };
         publishTitle();
@@ -1492,6 +1555,7 @@ function restoredInfo(p: PersistedSession, now: number): SessionInfo {
     phase: p.phase,
     color: p.color,
     scheme: p.scheme,
+    keepWhole: p.keepWhole,
     title: null,
     transcriptPath: null,
     liveReply: null,

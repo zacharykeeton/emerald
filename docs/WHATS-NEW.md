@@ -2,6 +2,48 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 769 to 796, 2026-10-16
+
+Twenty-eight fixes, and with them the chat view is complete: its last story has landed (the view fed by the emerald mod, a tail read for very long transcripts, and the idle pair), so the `Preview` chip is gone from the chat pane's title. The view now draws each row the moment Claude Code keeps it, the box takes Claude's suggestions, its full `/` menu and the text you typed in the terminal, and Stop gives you back the prompt it interrupted. Beside it, an idle Claude session counts down to Claude Code's idle compaction or to its cache going cold, and can be kept whole. The daemon goes to level 66, since it now carries the prompt cache, the keep-whole mark and the mod's rows; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.
+
+### Highlights
+
+**The view as Claude Code keeps it.** Where the emerald mod is loaded, each row of the conversation reaches the chat view the moment Claude Code keeps it, before the transcript file has it, and the live line's word is the spinner's own. The transcript stays the record, and each row is redrawn from it once its line lands.
+
+**Long sessions stay on the chat face.** The view reads only what the transcript grew by since its last read. A transcript over 8 MB opens on its last 2 MB under the note `Earlier turns are in the terminal`, rather than showing `Too large`.
+
+**The idle countdown.** An idle Claude session shows on its row and its pane title what Claude Code does next while nobody types: `compacts in 12m` when a conversation that size is due Claude Code's idle compaction, else `cache cold in 48m`, when its prompt cache expires and the next prompt sends the whole conversation again. On the row the count takes the age's place; the tooltip gives the clock time.
+
+**Keep whole while idle.** On a Claude row's menu, or `emmer set --keep-whole on`, it tells the emerald mod to skip Claude Code's idle compaction for that session, so a long conversation you step away from is not summarised. The row reads `kept whole · 50m` and the pane title `kept whole · cache cold in 50m`. A `/compact` you type still runs.
+
+**Questions drawn as the terminal draws them.** When Claude asks with AskUserQuestion, the chat view's card and the sidebar's answer card read `Claude has a question`, show the question itself, its tabs when it asks several (the current one marked), and each option's description under its label.
+
+**Stop gives the prompt back.** Stop on a turn that had not started its reply moves the prompt you sent into the chat box and clears Claude's own input, so you can edit it and send again, and the next message goes alone. `emmer prompt` refuses a session whose input holds a prompt given back this way (exit 1, `--force` sends anyway); `emmer send` stays raw keys.
+
+**Claude's suggestion and the full `/` menu.** With the box empty, Claude's suggested next prompt shows ghosted where the placeholder sits; Tab or Right puts it in the box, and Enter on the empty box still sends nothing. A `/` lists every Claude Code built-in that runs at the prompt, `/rename` among them, with its argument hint after the name; a command that takes an argument completes on Enter, Tab or a click with the caret ready for it.
+
+**What you sent, at once.** A message sent from the box shows straight away at the end of the conversation, dimmed and marked Sending, until Claude Code takes it; after 15 quiet seconds it reads Not seen yet, and a refused one keeps the reason while its text goes back into the box.
+
+**Text carried between the faces.** Text typed in Claude's own input on the terminal face moves into the chat box when you flip to chat, and the box's text goes back into Claude's input on the flip back, with no Enter. An input of more than one row, or one holding an image or a pasted block, stays in the terminal.
+
+### Details
+
+**Permission dialogs.** An Escape at a permission dialog puts the row at idle and frees the chat box. After you answer one, the row goes back to working within about two seconds, once Claude Code's spinner draws again, rather than when the call ends.
+
+**Sends to a fresh session.** A send in the first seconds after an Emerald Claude session goes idle waits up to three seconds for the mod to be ready, rather than being typed.
+
+**Two quick sends.** Two messages sent quickly from the chat box stay two messages, and a plain prompt to an idle Claude goes in through the mod with no pause before the Enter. Right after a Stop, when Claude Code will not take a prompt from the mod, the message is typed instead, so nothing you send after a Stop is lost; `emmer send --enter` does the same.
+
+**The image chips' ×.** It waits a second and a half after a turn ends before it can be clicked, and shows a small turning ring while it clears the images.
+
+**The footer.** The view chip shows only once the turns hold a tool call or a thinking step; Ctrl+O works before it does. A model the menu does not list shows first as `Current model`, ticked. The `+N -M` chip counts only edits under the session's folder and opens Review changes on the commit the session's conversation started on, and the review tab has a new `Since session start` chip beside HEAD and Since main.
+
+**Closing a Claude pane.** A pane closed with its × leaves its Claude session on the Exited row with `removing in 10s` where the badge sits, and forgets it when the count ends. A hover holds the count, and Resume during it puts the session back where it was. A session that ends any other way, `/exit` typed inside Claude included, stays under Exited as before.
+
+**The sidebar.** At a narrow sidebar a team member's line drops the word `agent` and then shortens the type, so its age is never cut off. A working row's band stops while its line is scrolled out of view and starts again in step when it comes back.
+
+**Smaller things.** In a narrow empty pane the tile names stay whole and the shortcut hints give way first. The palette and the Ctrl+J picker have a × at their top right that closes them as Escape does. The usage cards in the activity view and the sidebar's strip open one at a time.
+
 ## Fixes 738 to 768, 2026-10-15
 
 Thirty-one fixes, led by the Chat face's third story, which is the thing to look at first: the footer's mode and model chips open menus, a message sent mid-turn shows as queued, a turn's fold opens and closes without moving what you were reading, and the paperclip takes any file. Beside it, the emerald mod now tells Emerald what Claude Code itself shows: the spinner word, an interrupted turn, the usage, and a permission ask named on the row. The activity view shows the usage windows, and the palette reaches the empty pane's shells and the terminal colours. The chat view is still a preview: still to come are the view fed by the mod, a tail read for very long transcripts, and the idle pair. The daemon goes to level 65, since it now takes prompts and permission asks through the mod; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.

@@ -1152,6 +1152,7 @@ function slimFixture(): string[] {
       model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' },
       context_window: { used_percentage: 12, context_window_size: 200000, total_input_tokens: 9000, current_usage: { input_tokens: 120, output_tokens: 340, cache_creation_input_tokens: 2000, cache_read_input_tokens: 7000 } },
       cost: { total_cost_usd: 0.4321, total_duration_ms: 99999, total_lines_added: 12 },
+      prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3, hit_ratio: 0.9 },
       workspace: { current_dir: 'C:/code/p' },
       version: '2.1.300',
     }),
@@ -1219,6 +1220,14 @@ test('a log loaded whole and slimmed answers the same spans over its whole windo
   assert.equal(isFullPayloadLine(fixture[0]!), false, 'a presence line is not a hook line');
   fs.rmSync(wholeDir, { recursive: true, force: true });
   fs.rmSync(slimDir, { recursive: true, force: true });
+});
+
+test('a slimmed StatusLine keeps the prompt cache\'s ttl, expires_at and warm and nothing else of it (M9 fix 772)', () => {
+  const fixture = slimFixture();
+  const i = fixture.findIndex((raw) => raw.includes('"event":"StatusLine"'));
+  assert.ok(i >= 0, 'the fixture has a status line');
+  const slim = JSON.parse(slimHookLine(fixture[i]!)) as { payload: Record<string, unknown> };
+  assert.deepEqual(slim.payload['prompt_cache'], { warm: true, ttl: '1h', expires_at: 1792090000 });
 });
 
 test('a rotation slims generation 1 and leaves the current file whole (M9 fix 629)', async () => {

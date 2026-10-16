@@ -603,6 +603,189 @@ try {
   expect((await costProbe()).cost.shown, 'fix 246: the dollars are back on the wide title');
   step(`M9 fix 246: $1.40 on the title after the percent in --cost, the tokens gone from level 2 and the dollars from 3: ${costWalk.map((r) => `${r.width}px L${r.level}${r.cost ? ' $' : ''}${r.tokens ? ' tok' : ''}`).join(', ')}`);
 
+  // M9 fix 795: fix 760's percent cut read on a live Claude title. Pane 1's
+  // exited title above carries Resume and is at level 3 by 450px, so its
+  // walk never meets level 2 at 340px, where the cut was seen. Pane 2's
+  // shell is brought back if the daemon restart left it exited, made a
+  // Claude title by a SessionStart and a status line under an id of its
+  // own, and walked from wide to narrow; fix 246's walk is untouched.
+  const plainRow = `document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(plain)}]')`;
+  const p2Sel = (sel) => `document.querySelector('[data-pane-id=${JSON.stringify(p2)}] ${sel}')`;
+  if ((await s.evalJs(`${plainRow}?.dataset.state ?? null`)) === 'exited') {
+    await s.evalJs(`${p2Sel('.pane-resume')}.click()`);
+    await s.waitFor(`${plainRow}?.dataset.state !== 'exited' && !${p2Sel('.pane-resume')}`, 'pane 2 resumed');
+  }
+  await post(plain, { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sim-m16-live' });
+  await s.waitFor(`${plainRow}?.dataset.state === 'idle'`, 'pane 2 reports in as Claude');
+  await post(plain, { ...statusLine('Opus 5 (1M context)', 14, { session_id: 'sim-m16-live' }), cost: { total_cost_usd: 1.4029585 } });
+  await s.waitFor(`${p2Sel('.pane-context-percent')}?.textContent === '14%' && ${p2Sel('.pane-cost')}?.textContent === '$1.40'`, 'pane 2 shows 14% and $1.40');
+  expect(!(await s.evalJs(`!!${p2Sel('.pane-resume')}`)), 'fix 795: the live title carries no Resume');
+  const paneW = (id) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(id)}]').getBoundingClientRect().width`);
+  const gutter = splitWidth - (await paneW(p1)) - (await paneW(p2));
+  const cutRead = () =>
+    s.evalJs(
+      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; return { width: Math.round(t.getBoundingClientRect().width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost') }; })()`,
+    );
+  const walk795 = [];
+  for (const width of [480, 450, 420, 380, 340, 310, 280, 250, 220, 200, 180, 160]) {
+    // Pane 1 keeps at least 160px, the narrowest the walk above gave it.
+    if (splitWidth - gutter - width < 160) continue;
+    layout = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...layout, root: { ...layout.root, ratio: (splitWidth - gutter - width) / splitWidth } } });
+    await s.waitFor(`Math.abs(document.querySelector('[data-pane-id=${JSON.stringify(p2)}]').getBoundingClientRect().width - ${width}) < 3`, `pane 2 at ${width}px`);
+    await sleep(250);
+    // The level follows the width through a state update, so a read right
+    // after the width lands can still hold the last level; read until two
+    // reads 300 ms apart agree (3 s at most).
+    let r = await cutRead();
+    for (let tries = 0; tries < 10; tries++) {
+      await sleep(300);
+      const again = await cutRead();
+      const same = JSON.stringify(again) === JSON.stringify(r);
+      r = again;
+      if (same) break;
+    }
+    walk795.push(r);
+    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}`);
+  }
+  step(`M9 fix 795: fix 760's read on pane 2's live Claude title, no Resume: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+
+  // M9 fix 772: the idle countdown. A real claude (it sits at the trust
+  // dialog of the fresh fixture folder and makes no request) on pane 1,
+  // bound to a conversation of the script's own by SessionStart, then
+  // status lines with Claude Code's prompt_cache block. Every expiry is
+  // set from the moment of its post, so the minute words hold for 60 s and
+  // no read meets a minute boundary or the time of day.
+  const live = (await zreq(s, 'session.spawn', { kind: 'claude', cwd: fixture, name: 'cache', cols: 80, rows: 24 })).session;
+  const withSession772 = (node, paneId, sessionId) => (node.kind === 'pane' ? (node.id === paneId ? { ...node, sessionId } : node) : { ...node, first: withSession772(node.first, paneId, sessionId), second: withSession772(node.second, paneId, sessionId) });
+  layout = await getLayout(s);
+  await zreq(s, 'layout.set', { layout: { ...layout, root: withSession772(layout.root, p1, live.id) } });
+  const liveRow = `.sidebar-row[data-session-id=${JSON.stringify(live.id)}]`;
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p1)}] .pane-state`)})`, 'the live claude on pane 1');
+  const postLive = (payload) => post(live.id, { session_id: 'sim-m16-772', ...payload });
+  await postLive({ hook_event_name: 'SessionStart', source: 'startup' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(liveRow)})?.dataset.state === 'idle'`, 'SessionStart made the live claude idle');
+  const exp = (secs) => Math.floor(Date.now() / 1000) + secs;
+  const cacheLine = (tokens, cache) => statusLine('Opus 5 (1M context)', 25, { context_window: { used_percentage: 25, context_window_size: 1000000, total_input_tokens: tokens }, prompt_cache: cache });
+  const clockRead = () =>
+    s.evalJs(
+      `(() => { const p = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p1)}] .pane-idle-clock`)}); const r = document.querySelector(${JSON.stringify(`${liveRow} .sidebar-row-clock`)}); const w = (sel) => Math.round(document.querySelector(${JSON.stringify(liveRow)} + ' ' + sel)?.getBoundingClientRect().width ?? -1); return { pane: p ? { text: p.textContent, kind: p.dataset.clock, title: p.title } : null, row: r ? { text: r.textContent, kind: r.dataset.clock, shown: getComputedStyle(r).display !== 'none', title: r.title } : null, state: document.querySelector(${JSON.stringify(liveRow)})?.dataset.state ?? null, age: (() => { const a = document.querySelector(${JSON.stringify(`${liveRow} .sidebar-row-age`)}); return a === null ? null : getComputedStyle(a).display !== 'none'; })(), widths: { line: w('.sidebar-row-main'), name: w('.sidebar-row-name'), badge: w('.sidebar-row-state'), clock: w('.sidebar-row-clock'), age: w('.sidebar-row-age') } }; })()`,
+    );
+  const waitClock = async (ok, what) => {
+    const end = Date.now() + 5000;
+    let r = null;
+    while (Date.now() < end) {
+      r = await clockRead();
+      if (ok(r)) return r;
+      await sleep(200);
+    }
+    expect(false, `${what}, got ${JSON.stringify(r)}`);
+  };
+  // The row says the title's words but for the kept kind's short form.
+  const reads = (words, kind, rowWords = words) => (r) => r.pane?.text === words && r.pane.kind === kind && r.row?.text === rowWords && r.row.kind === kind && r.row.shown;
+  const none = (r) => r.pane === null && r.row === null;
+  // The row line's widths at each kind, for the record of what fits at the default width.
+  const logWidths = (kind, r) => console.log(`[verify] fix 772 row widths, ${kind}: ${JSON.stringify(r.widths)}`);
+  // (1) 250k tokens on the hour's cache: the compaction is due 6 minutes before the expiry.
+  await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 4 }));
+  const compact772 = await waitClock(reads('compacts in 44m', 'compact'), 'fix 772: 250k on the hour reads compacts in 44m on the title and the row');
+  logWidths('compact', compact772);
+  expect(compact772.pane.title.includes('"idleCompaction": false'), `fix 772: the title's tooltip names Claude Code's setting, got ${JSON.stringify(compact772.pane.title)}`);
+  // The row's clock takes the age's place while it is drawn.
+  expect(compact772.age === false, `fix 772: the row draws no age beside the clock, got ${JSON.stringify(compact772)}`);
+  // (2) The control: under the floor no compaction is due.
+  await postLive(cacheLine(100000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 5 }));
+  logWidths('cold', await waitClock(reads('cache cold in 50m', 'cold'), 'fix 772: 100k reads cache cold in 50m'));
+  // (3) The five-minute TTL never compacts.
+  await postLive(cacheLine(250000, { warm: true, ttl: '5m', expires_at: exp(240), requests: 6 }));
+  await waitClock(reads('cache cold in 4m', 'cold'), 'fix 772: the 5m TTL reads cache cold in 4m');
+  // (4) The compaction's own start is a working event and clears the count.
+  await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 7 }));
+  await waitClock(reads('compacts in 44m', 'compact'), 'fix 772: back to compacts in 44m');
+  await postLive({ hook_event_name: 'PreCompact', trigger: 'auto' });
+  await waitClock((r) => r.state === 'working' && none(r) && r.age === true, 'fix 772: PreCompact puts the row at working with no count and its age back');
+  // (5) A cold cache counts nothing, at done either.
+  await postLive(cacheLine(250000, { warm: false, ttl: '1h', expires_at: null, requests: 8 }));
+  await postLive({ hook_event_name: 'Stop', stop_hook_active: false });
+  await waitClock((r) => (r.state === 'done' || r.state === 'idle') && none(r), 'fix 772: a cold cache at done reads no count');
+  // A second later the focused pane may have acked done to idle; the count
+  // stays off either way.
+  await sleep(1000);
+  const coldAgain = await clockRead();
+  expect(none(coldAgain), `fix 772: still no count a second later, got ${JSON.stringify(coldAgain)}`);
+  // (6) Past the expiry reads nothing.
+  await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(-5), requests: 9 }));
+  await sleep(1000);
+  const past = await clockRead();
+  expect(none(past), `fix 772: a cache past its expiry reads no count, got ${JSON.stringify(past)}`);
+  step("M9 fix 772: an idle Claude row and its pane title count down to the idle compaction at 250k tokens on the hour's cache (compacts in 44m), to the cache's expiry under 200k or on the 5m TTL (cache cold in 50m, 4m), and clear at PreCompact, on a cold cache and past the time");
+
+  // M9 fix 773: Keep whole while idle, on the same live claude, back at
+  // idle with a warm hour's cache of 250k tokens. The row menu marks it,
+  // the clocks say so, and the sink answers the mod's question as the mod
+  // asks it.
+  await zreq(s, 'session.ack', { sessionId: live.id });
+  await s.waitFor(`document.querySelector(${JSON.stringify(liveRow)})?.dataset.state === 'idle'`, 'the live claude back at idle', 5000);
+  await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 10 }));
+  await waitClock(reads('compacts in 44m', 'compact'), 'fix 773: compacts in 44m before the mark');
+  const keepLabel = 'Keep whole while idle';
+  const keepItem = () =>
+    s.evalJs(
+      `(() => { const m = document.querySelector('.row-menu'); if (!m || m.dataset.sessionId !== ${JSON.stringify(live.id)}) return null; const b = [...m.querySelectorAll('.menu-item')].find((x) => (x.querySelector('.menu-label')?.textContent ?? '').endsWith(${JSON.stringify(keepLabel)})); return b ? { disabled: b.disabled, checked: b.dataset.checked ?? null } : 'missing'; })()`,
+    );
+  const openRowMenu = async () => {
+    await s.evalJs(`document.querySelector(${JSON.stringify(`${liveRow} .sidebar-row-menu`)}).click()`);
+    await s.waitFor(`document.querySelector('.row-menu')?.dataset.sessionId === ${JSON.stringify(live.id)}`, 'the live row menu', 5000);
+  };
+  const clickKeep = () => s.evalJs(`[...document.querySelectorAll('.row-menu .menu-item')].find((x) => (x.querySelector('.menu-label')?.textContent ?? '').endsWith(${JSON.stringify(keepLabel)})).click()`);
+  const keptOnRecord = async () => (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === live.id)?.keepWhole === true;
+  const waitKept = async (want) => {
+    const end = Date.now() + 5000;
+    while (Date.now() < end) {
+      if ((await keptOnRecord()) === want) return;
+      await sleep(200);
+    }
+    expect(false, `fix 773: keepWhole ${want} on the record, got ${await keptOnRecord()}`);
+  };
+  const ask = async (trigger) => {
+    const d = daemonInfo();
+    const r = await fetch(`http://127.0.0.1:${d.hookPort}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': d.hookToken, 'X-Emerald-Session': live.id }, body: JSON.stringify({ trigger }) });
+    expect(r.status === 200, `fix 773: the sink answered /compact with 200, got ${r.status}`);
+    return (await r.json()).skip;
+  };
+  const SKIP = 'kept whole while idle by emerald';
+  await openRowMenu();
+  const offered = await keepItem();
+  expect(offered !== null && offered !== 'missing' && offered.disabled === false && offered.checked === 'false', `fix 773: the row menu offers Keep whole while idle, unchecked, got ${JSON.stringify(offered)}`);
+  await clickKeep();
+  await waitKept(true);
+  const kept773 = await waitClock(reads('kept whole · cache cold in 50m', 'kept', 'kept whole · 50m'), 'fix 773: a kept session reads kept whole · cache cold in 50m on the title and kept whole · 50m on the row');
+  logWidths('kept', kept773);
+  expect(kept773.row.title.startsWith('kept whole · cache cold in 50m. '), `fix 773: the row's tooltip carries the full words, got ${JSON.stringify(kept773.row.title)}`);
+  expect((await ask('auto')) === SKIP, 'fix 773: an auto compaction at idle is skipped');
+  expect((await ask('manual')) === null, 'fix 773: a manual compaction at idle goes on');
+  await postLive({ hook_event_name: 'UserPromptSubmit', prompt: 'keep going' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(liveRow)})?.dataset.state === 'working'`, 'the live claude working', 5000);
+  expect((await ask('auto')) === null, "fix 773: an auto compaction mid-turn (a full window's) goes on");
+  await postLive({ hook_event_name: 'Stop', stop_hook_active: false });
+  // The focused pane acks done to idle within a second; both are idle states.
+  await s.waitFor(`['done', 'idle'].includes(document.querySelector(${JSON.stringify(liveRow)})?.dataset.state)`, 'the live claude done', 5000);
+  expect((await ask('auto')) === SKIP, 'fix 773: an auto compaction at done is skipped');
+  await openRowMenu();
+  const checked = await keepItem();
+  expect(checked !== null && checked !== 'missing' && checked.checked === 'true', `fix 773: the item reads checked once marked, got ${JSON.stringify(checked)}`);
+  await clickKeep();
+  await waitKept(false);
+  expect((await ask('auto')) === null, 'fix 773: unmarked, an auto compaction goes on');
+  // Unmarked at 250k on the hour the count is the compaction's again (the
+  // plan's verify line said cache cold; fix 772's rule decides).
+  await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 11 }));
+  await waitClock(reads('compacts in 44m', 'compact'), 'fix 773: unmarked, the clocks count to the compaction again');
+  step('M9 fix 773: Keep whole while idle on the row menu marks the session, the title reads kept whole · cache cold in 50m and the row kept whole · 50m with the full words in its tooltip, and the sink tells the mod to skip an auto compaction at idle and done, never a manual one or one mid-turn, and none once unmarked');
+
+  await zreq(s, 'session.kill', { sessionId: live.id, remove: true });
+  await s.waitFor(`!document.querySelector(${JSON.stringify(liveRow)})`, 'the live claude row is gone', 8000);
+
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

@@ -51,14 +51,19 @@ export function filterCounts(sessions: Iterable<Pick<SessionInfo, 'id' | 'state'
 }
 
 // The groups with only the matching rows; a group with none left drops,
-// and the exited group with it (an exited session is neither ask). Under
-// all the groups come back as they are, the same array, so nothing
-// re-renders for nothing.
-export function filterGroups(groups: SessionGroup[], filter: SidebarFilter, onPanes: ReadonlySet<string>): SessionGroup[] {
+// and the exited group with it (an exited session is neither ask), except
+// for the rows named in keep (M9 fix 787: the Exited rows counting down to
+// their removal show whatever chip is on). Under all the groups come back
+// as they are, the same array, so nothing re-renders for nothing.
+export function filterGroups(groups: SessionGroup[], filter: SidebarFilter, onPanes: ReadonlySet<string>, keep: ReadonlySet<string> = new Set()): SessionGroup[] {
   if (filter === 'all') return groups;
   const out: SessionGroup[] = [];
   for (const g of groups) {
-    if (g.key === EXITED_GROUP) continue;
+    if (g.key === EXITED_GROUP) {
+      const kept = g.sessions.filter((s) => keep.has(s.id));
+      if (kept.length > 0) out.push({ ...g, sessions: kept });
+      continue;
+    }
     const sessions = g.sessions.filter((s) => matchesFilter(filter, s, onPanes));
     if (sessions.length > 0) out.push({ ...g, sessions });
   }

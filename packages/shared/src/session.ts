@@ -333,6 +333,16 @@ export interface TeamMember {
 // which is what the used percentage is taken over), and how the last
 // request's input split, in tokens. The split is what current_usage says:
 // read from the cache, written to it, sent fresh, and the reply's output.
+// The prompt cache of the main conversation (M9 fix 772), off the status
+// line's prompt_cache block: the TTL the last request wrote ('5m' or '1h'),
+// when the cached prefix goes cold (epoch ms, Claude Code's expires_at in
+// seconds times 1000) and whether it is warm now.
+export interface SessionCache {
+  ttl: '5m' | '1h';
+  expiresAt: number;
+  warm: boolean;
+}
+
 export interface ContextWindow {
   size: number;
   used: number;
@@ -592,6 +602,14 @@ export interface SessionInfo {
   // tokens, so the figure is per process as the sum is. Optional so a
   // record or a fixture from before the field reads as none.
   costUsd?: number | null;
+  // M9 fix 772: the prompt cache of the main conversation off the status
+  // line's prompt_cache: the TTL the last request wrote, when the cached
+  // prefix goes cold, epoch ms, and whether it is warm now. Null when the
+  // last response reported no cache tokens; a status line without the
+  // block keeps the last. Not persisted (toPersisted picks its fields), so
+  // an exited or restored session has none; optional so an older daemon's
+  // record and a fixture read as none.
+  cache?: SessionCache | null;
   // Claude's task list (M9 fix 153, see SessionTask): what its TaskCreate,
   // TaskUpdate and TodoWrite calls built this turn, cleared by the next
   // prompt a person types, since a list belongs to a turn, and read back
@@ -615,6 +633,11 @@ export interface SessionInfo {
   // renderer. Optional so a record or a fixture from before the field
   // reads as none.
   scheme?: string | null;
+  // M9 fix 773: the person's mark that the emerald mod skips Claude Code's
+  // idle compaction for this session (POST /compact on the hook sink).
+  // Persisted and kept across a resume; a Claude session only. Optional so
+  // a record or a fixture from before the field reads as not marked.
+  keepWhole?: boolean;
   // The terminal title the process last set through OSC 0 or 2, as
   // written, glyph and all; null for a process that never set one or
   // cleared it. Claude Code puts a spinner glyph and the conversation's

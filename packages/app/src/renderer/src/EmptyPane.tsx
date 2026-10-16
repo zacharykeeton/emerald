@@ -439,6 +439,22 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
             Claude session…
           </button>
         </div>
+        {/* M9 fix 792: the corner × does what Escape does; a click beside the list does not close. */}
+        <button
+          className="picker-x"
+          title="Close (Esc)"
+          aria-label="Close"
+          onMouseDown={keepFocus}
+          onClick={() => {
+            if (isActionQuery(queryRef.current)) {
+              setQuery('');
+              setHighlighted(0);
+            }
+            onDone();
+          }}
+        >
+          ×
+        </button>
       </div>
     );
   }
@@ -608,7 +624,11 @@ function KindTile({ kind, pressed, glyph, gem, name, hint, sub, onPick, onMouseD
           {glyph}
         </span>
         <span className="empty-kind-name">{name}</span>
-        {hint !== '' && <span className="empty-kind-key">{hint}</span>}
+        {hint !== '' && (
+          <span className="empty-kind-hint">
+            <span className="empty-kind-key">{hint}</span>
+          </span>
+        )}
         {caret !== undefined && (
           // A span, not a button: a button inside the tile's button is invalid HTML.
           <span

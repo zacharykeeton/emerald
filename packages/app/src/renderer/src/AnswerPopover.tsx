@@ -4,7 +4,9 @@ import type { SessionInfo } from '@emerald/shared';
 import { ackIfDone, typeInto } from './actions.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
-import { answerOptions, promptExcerpt } from './screen-prompt-model.ts';
+import { answerOptions, askQuestion, promptExcerpt } from './screen-prompt-model.ts';
+import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
+import { askHeading } from './chat-model.ts';
 import { acknowledgeAttention } from './ui.ts';
 
 // M55: the badge of a needs-input row opens a card with what the session
@@ -70,15 +72,18 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
     if (session.state !== 'needs-input') onCloseRef.current();
   }, [session.state]);
 
+  // M9 fix 777: an AskUserQuestion drawn as the terminal draws it, as the
+  // chat view's card draws it, with no box.
+  const ask = screen === null ? null : askQuestion(screen.rows);
   const excerpt = screen === null ? [] : promptExcerpt(screen.rows, screen.cursor);
-  const options = screen === null ? [] : answerOptions(screen.rows);
+  const options: (AnswerOption | AskOption)[] = ask?.options ?? (screen === null ? [] : answerOptions(screen.rows));
   const send = (data: string) => {
     typeInto(session.id, data);
     // An answer is a look at the row, as a click in the pane would be.
     acknowledgeAttention(session.id);
     void ackIfDone(session.id);
   };
-  const askText = session.needsInputReason === 'question' || session.needsInputReason === 'elicitation' || options.length === 0;
+  const askText = ask === null && (session.needsInputReason === 'question' || session.needsInputReason === 'elicitation' || options.length === 0);
   // A question wants words, so the box takes the keyboard as the card
   // opens; a permission keeps it in the terminal, the buttons need none.
   useEffect(() => {
@@ -86,15 +91,36 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   }, [askText]);
   return (
     <PopoverCard id={`answer:${session.id}`} className="answer-popover" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
-      <div className="answer-popover-heading">{session.needsInputReason === 'permission' ? 'Claude is asking permission' : session.needsInputReason === 'agent-permission' ? 'A subagent is asking permission' : session.needsInputReason === 'question' ? 'Claude has a question' : 'Waiting on you'}</div>
-      <pre className="answer-popover-screen" data-rows={excerpt.length}>
-        {screen === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
-      </pre>
+      <div className="answer-popover-heading">{askHeading(session.needsInputReason, screen?.rows)}</div>
+      {ask !== null ? (
+        <>
+          {ask.tabs.length > 0 && (
+            <div className="answer-popover-tabs">
+              {ask.tabs
+                .filter((t) => t.state !== 'submit')
+                .map((t, i) => (
+                  <span key={i} className="answer-popover-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
+                    {t.state === 'answered' && <span className="answer-popover-tab-mark">✓</span>}
+                    {t.name}
+                  </span>
+                ))}
+            </div>
+          )}
+          <div className="answer-popover-question">{ask.question}</div>
+        </>
+      ) : (
+        <pre className="answer-popover-screen" data-rows={excerpt.length}>
+          {screen === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
+        </pre>
+      )}
       <div className="answer-popover-options">
         {options.map((o) => (
-          <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} title={`Sends ${o.key} to the session`} onClick={() => send(o.key)}>
+          <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} title={`Sends ${o.key} to the session`} onClick={() => send(o.key)}>
             <span className="answer-popover-key">{o.key}</span>
-            <span className="answer-popover-label">{o.label}</span>
+            <span className="answer-popover-text">
+              <span className="answer-popover-label">{o.label}</span>
+              {'description' in o && o.description !== '' && <span className="answer-popover-desc">{o.description}</span>}
+            </span>
           </button>
         ))}
         <button type="button" className="answer-popover-option answer-popover-esc" data-key="esc" title="Sends Escape to the session" onClick={() => send('\x1b')}>

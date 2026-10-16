@@ -387,6 +387,73 @@ test('the exit disposes the screen terminal and later reads answer the frame tak
   assert.deepEqual((await session.screen()).rows, ['PS> dir']);
 });
 
+// M9 fix 779: Claude Code draws a suggested prompt, a stock placeholder and
+// an inline completion through one renderer, the first character inverse
+// (the drawn cursor) and the rest SGR 2 dim; the frame reports that run.
+test('the frame reports the dim run on the prompt row, the inverse cursor cell first (fix 779)', async () => {
+  const pty = new FakePty();
+  const session = new PtySession(pty, { cols: 40, rows: 4 });
+  pty.emitData('❯ \x1b[7mR\x1b[27m\x1b[2mun the tests\x1b[22m');
+  const screen = await session.screen();
+  assert.deepEqual(screen.ghost, { y: 0, x: 2, text: 'Run the tests' });
+  assert.ok(screen.rows[0]!.slice(screen.ghost!.x).startsWith(screen.ghost!.text));
+});
+
+test('an inline completion after typed text is a dim run too (fix 779)', async () => {
+  const pty = new FakePty();
+  const session = new PtySession(pty, { cols: 40, rows: 4 });
+  pty.emitData('❯ /comp\x1b[2mact\x1b[22m');
+  assert.deepEqual((await session.screen()).ghost, { y: 0, x: 7, text: 'act' });
+});
+
+test('the ghost is read off the last prompt row (fix 779)', async () => {
+  const pty = new FakePty();
+  const session = new PtySession(pty, { cols: 40, rows: 6 });
+  pty.emitData('❯ first\r\nreply\r\n❯ \x1b[2mnext one\x1b[22m');
+  const screen = await session.screen();
+  assert.deepEqual(screen.ghost, { y: 2, x: 2, text: 'next one' });
+});
+
+test('a row with no prompt or no dim run has no ghost, and nor does the exit frame (fix 779)', async () => {
+  const pty = new FakePty();
+  const session = new PtySession(pty, { cols: 40, rows: 4 });
+  pty.emitData('PS> dir');
+  assert.equal((await session.screen()).ghost, null);
+  pty.emitData('\r\n❯ \x1b[2mlater\x1b[22m');
+  assert.equal((await session.screen()).ghost?.text, 'later');
+  pty.emitExit(0);
+  assert.equal((await session.screen()).ghost, null);
+});
+
+// The probe of whether ConPTY passes SGR 2 and 7 through to the headless
+// terminal; a real Claude Code on Windows draws through ConPTY too.
+test('a real ConPTY passes the dim run through (fix 779)', async () => {
+  const s = PtySession.spawn({
+    file: 'powershell.exe',
+    args: ['-NoProfile', '-NoLogo', '-NoExit', '-Command', '$null'],
+    cwd: process.cwd(),
+    env: stampEnv(process.env, { sessionId: 'test-779' }),
+    cols: 120,
+    rows: 30,
+  });
+  try {
+    s.write("Write-Host ([char]0x276F + ' ' + [char]27 + '[7mR' + [char]27 + '[27m' + [char]27 + '[2mun the tests' + [char]27 + '[22m')\r");
+    const deadline = Date.now() + 20_000;
+    let ghost = null as Awaited<ReturnType<PtySession['screen']>>['ghost'];
+    let rows: string[] = [];
+    while (Date.now() < deadline) {
+      const frame = await s.screen();
+      rows = frame.rows;
+      ghost = frame.ghost;
+      if (ghost !== null) break;
+      await sleep(200);
+    }
+    assert.equal(ghost?.text, 'Run the tests', `no ghost on ${JSON.stringify(rows)}`);
+  } finally {
+    s.kill();
+  }
+});
+
 test('readSince hands back only the new output and the next cursor', async () => {
   const pty = new FakePty();
   const session = new PtySession(pty, { flushIntervalMs: 5 });

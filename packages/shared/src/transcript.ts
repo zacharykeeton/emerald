@@ -1,6 +1,7 @@
 import { summarize } from './state-machine.ts';
 import { HEAD_TOOLS } from './command-dir.ts';
 import { formatDuration } from './session-order.ts';
+import type { ModRow } from './protocol.ts';
 
 // One line of a Claude Code transcript (the JSONL at transcript_path) read
 // for what the sidebar's agent line wants (M47): the text Claude wrote in
@@ -307,77 +308,136 @@ function stepResult(tool: ToolStep, part: Record<string, unknown>, extra: unknow
 // fills the result of the call with its id in the same turn and is
 // dropped when none matches. Side-chain and broken lines are skipped.
 export function parseSteps(text: string): StepTurn[] {
-  const turns: StepTurn[] = [];
-  let turn: StepTurn | null = null;
-  let tools = new Map<string, ToolStep>();
-  // The open turn's prompt line, for the meta line that carries a slash
-  // command's pasted images (M9 fix 718).
-  let promptId: string | null = null;
-  let promptUuid: string | null = null;
+  const state = stepState();
+  stepFold(state, text);
+  return stepList(state);
+}
+
+// The step parse as a fold (M9 fix 769), so the chat view keeps its state
+// and folds only what the transcript grew by (fix 770), and the mod's rows
+// fold onto a copy of it. turn is the open turn (the last of turns), tools
+// its calls by id, promptId and promptUuid its prompt line's (M9 fix 718),
+// and uuids every line's uuid folded, so a mod row the file has caught up
+// with is drawn once.
+export interface StepState {
+  turns: StepTurn[];
+  turn: StepTurn | null;
+  tools: Map<string, ToolStep>;
+  promptId: string | null;
+  promptUuid: string | null;
+  uuids: Set<string>;
+}
+
+export function stepState(): StepState {
+  return { turns: [], turn: null, tools: new Map(), promptId: null, promptUuid: null, uuids: new Set() };
+}
+
+// Every whole line of text folded in turn; a caller folding a tail hands
+// whole lines only, since a line cut in two parses as nothing.
+export function stepFold(state: StepState, text: string): void {
   for (const raw of text.split('\n')) {
     const o = parseObject(raw);
-    if (o === null || o['isSidechain'] === true) continue;
-    const at = lineTime(o);
-    if (isInterrupt(o)) {
-      if (turn === null) continue;
-      if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
-      turn.steps.push({ kind: 'note', text: 'Interrupted', at });
-      continue;
-    }
-    const prompt = promptOf(o);
-    if (prompt !== null) {
-      turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
-      tools = new Map();
-      promptId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
-      promptUuid = typeof o['uuid'] === 'string' ? o['uuid'] : null;
-      turns.push(turn);
-      continue;
-    }
-    if (turn === null) continue;
-    if (o['type'] === 'user' && o['isMeta'] === true) {
-      const sameId = promptId !== null && o['promptId'] === promptId;
-      const noIds = promptId === null || typeof o['promptId'] !== 'string';
-      if (sameId || (noIds && promptUuid !== null && o['parentUuid'] === promptUuid)) turn.images.push(...imagesOf(o));
-    }
+    if (o !== null) stepFoldEntry(state, o);
+  }
+}
+
+// The turns as a new array each call; the turn objects are the state's,
+// and the open one is changed by later folds.
+export function stepList(state: StepState): StepTurn[] {
+  return [...state.turns];
+}
+
+// A copy for the mod's rows to fold onto without touching the file's
+// state: the open turn, its steps, its tool steps and its images are
+// copied, the closed turns shared, and uuids starts empty.
+export function stepFork(state: StepState): StepState {
+  const turns = [...state.turns];
+  const tools = new Map<string, ToolStep>();
+  let turn: StepTurn | null = null;
+  if (state.turn !== null && turns.length > 0 && turns[turns.length - 1] === state.turn) {
+    const steps = state.turn.steps.map((step) => {
+      if (step.kind !== 'tool') return step;
+      const copy: ToolStep = { ...step };
+      if (copy.id !== '' && state.tools.get(copy.id) === step) tools.set(copy.id, copy);
+      return copy;
+    });
+    turn = { ...state.turn, steps, images: [...state.turn.images] };
+    turns[turns.length - 1] = turn;
+  }
+  return { turns, turn, tools, promptId: state.promptId, promptUuid: state.promptUuid, uuids: new Set() };
+}
+
+// One parsed transcript line folded into the state.
+export function stepFoldEntry(state: StepState, o: Record<string, unknown>): void {
+  if (typeof o['uuid'] === 'string' && o['uuid'] !== '') state.uuids.add(o['uuid']);
+  if (o['isSidechain'] === true) return;
+  let turn = state.turn;
+  const at = lineTime(o);
+  if (isInterrupt(o)) {
+    if (turn === null) return;
     if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
-    // M9 fix 754: a message of the person's that Claude absorbed mid-turn
-    // is an attachment line after the call it waited on; Claude Code's own
-    // queued kinds (task notifications, peer messages) are skipped.
-    if (o['type'] === 'attachment') {
-      const queued = queuedStepOf(o['attachment']);
-      if (queued !== null) turn.steps.push(queued);
-      continue;
+    turn.steps.push({ kind: 'note', text: 'Interrupted', at });
+    return;
+  }
+  const prompt = promptOf(o);
+  if (prompt !== null) {
+    turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
+    state.turn = turn;
+    state.tools = new Map();
+    state.promptId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+    state.promptUuid = typeof o['uuid'] === 'string' ? o['uuid'] : null;
+    state.turns.push(turn);
+    return;
+  }
+  if (turn === null) return;
+  if (o['type'] === 'user' && o['isMeta'] === true) {
+    const sameId = state.promptId !== null && o['promptId'] === state.promptId;
+    const noIds = state.promptId === null || typeof o['promptId'] !== 'string';
+    if (sameId || (noIds && state.promptUuid !== null && o['parentUuid'] === state.promptUuid)) turn.images.push(...imagesOf(o));
+  }
+  if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+  // M9 fix 754: a message of the person's that Claude absorbed mid-turn
+  // is an attachment line after the call it waited on; Claude Code's own
+  // queued kinds (task notifications, peer messages) are skipped.
+  if (o['type'] === 'attachment') {
+    const queued = queuedStepOf(o['attachment']);
+    if (queued !== null) turn.steps.push(queued);
+    return;
+  }
+  const message = o['message'];
+  if (!isObject(message) || !Array.isArray(message['content'])) return;
+  if (o['type'] === 'assistant') {
+    for (const part of message['content']) {
+      if (!isObject(part)) continue;
+      if (part['type'] === 'thinking') {
+        const ms = typeof o['thinkingDurationMs'] === 'number' ? o['thinkingDurationMs'] : null;
+        turn.steps.push({ kind: 'thinking', text: typeof part['thinking'] === 'string' ? part['thinking'] : '', ms, at });
+      } else if (part['type'] === 'text') {
+        if (typeof part['text'] === 'string' && part['text'].trim() !== '') turn.steps.push({ kind: 'text', text: part['text'], at });
+      } else if (part['type'] === 'tool_use') {
+        const id = typeof part['id'] === 'string' ? part['id'] : '';
+        const name = typeof part['name'] === 'string' ? part['name'] : '';
+        if (id !== '' && state.tools.has(id)) continue;
+        const input = isObject(part['input']) ? part['input'] : {};
+        const step: ToolStep = { kind: 'tool', id, name, arg: stepArg(name, input), input, at, result: null };
+        if (id !== '') state.tools.set(id, step);
+        turn.steps.push(step);
+      }
     }
-    const message = o['message'];
-    if (!isObject(message) || !Array.isArray(message['content'])) continue;
-    if (o['type'] === 'assistant') {
-      for (const part of message['content']) {
-        if (!isObject(part)) continue;
-        if (part['type'] === 'thinking') {
-          const ms = typeof o['thinkingDurationMs'] === 'number' ? o['thinkingDurationMs'] : null;
-          turn.steps.push({ kind: 'thinking', text: typeof part['thinking'] === 'string' ? part['thinking'] : '', ms, at });
-        } else if (part['type'] === 'text') {
-          if (typeof part['text'] === 'string' && part['text'].trim() !== '') turn.steps.push({ kind: 'text', text: part['text'], at });
-        } else if (part['type'] === 'tool_use') {
-          const id = typeof part['id'] === 'string' ? part['id'] : '';
-          const name = typeof part['name'] === 'string' ? part['name'] : '';
-          if (id !== '' && tools.has(id)) continue;
-          const input = isObject(part['input']) ? part['input'] : {};
-          const step: ToolStep = { kind: 'tool', id, name, arg: stepArg(name, input), input, at, result: null };
-          if (id !== '') tools.set(id, step);
-          turn.steps.push(step);
-        }
-      }
-    } else if (o['type'] === 'user') {
-      for (const part of message['content']) {
-        if (!isObject(part) || part['type'] !== 'tool_result') continue;
-        const tool = typeof part['tool_use_id'] === 'string' ? tools.get(part['tool_use_id']) : undefined;
-        if (tool === undefined) continue;
-        tool.result = stepResult(tool, part, o['toolUseResult'], at);
-      }
+  } else if (o['type'] === 'user') {
+    for (const part of message['content']) {
+      if (!isObject(part) || part['type'] !== 'tool_result') continue;
+      const tool = typeof part['tool_use_id'] === 'string' ? state.tools.get(part['tool_use_id']) : undefined;
+      if (tool === undefined) continue;
+      tool.result = stepResult(tool, part, o['toolUseResult'], at);
     }
   }
-  return turns;
+}
+
+// A mod row (M9 fix 769) as the transcript line it will become, for
+// stepFoldEntry; lineTime takes a number.
+export function modRowLine(row: ModRow, uuid: string, at: number): Record<string, unknown> {
+  return { type: row.type, uuid, isSidechain: false, timestamp: at, ...(row.isMeta ? { isMeta: true } : {}), message: { role: row.role ?? row.type, content: row.content } };
 }
 
 // The right-hand text of a tool row: what the call came to, then how
@@ -405,14 +465,32 @@ export function resultText(step: Extract<Step, { kind: 'tool' }>): string {
 // status line payload carries none. The last line alone decides, so a
 // line written without it reads as unknown rather than as an older pick.
 export function effortOf(text: string): string | null {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const o = parseObject(lines[i]!);
+  const state = effortState();
+  effortFold(state, text);
+  return state.effort;
+}
+
+// The same read as a fold (M9 fix 770), for the chat view's tail read:
+// how many main-chain assistant lines it has folded, and the last one's
+// effort, so a pick in the footer is read against the count rather than
+// a slice of the text.
+export interface EffortState {
+  assistants: number;
+  effort: string | null;
+}
+
+export function effortState(): EffortState {
+  return { assistants: 0, effort: null };
+}
+
+export function effortFold(state: EffortState, text: string): void {
+  for (const raw of text.split('\n')) {
+    const o = parseObject(raw);
     if (o === null || o['isSidechain'] === true || o['type'] !== 'assistant') continue;
     const effort = o['effort'];
-    return typeof effort === 'string' && effort !== '' ? effort : null;
+    state.assistants += 1;
+    state.effort = typeof effort === 'string' && effort !== '' ? effort : null;
   }
-  return null;
 }
 
 // One API request of a conversation as its transcript records it (M9 fix

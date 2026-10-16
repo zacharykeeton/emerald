@@ -320,10 +320,13 @@ function within(promise, ms, message) {
 export async function connect(wsUrl) {
   // One budget from here to the box read (M9 fix 645): a window whose
   // devtools never answered held two runs to the watchdog with no step named.
-  const CONNECT_MS = 20000;
+  // M9 fix 796: 40 s, since with many seats building and launching at once a
+  // window's devtools answered past 20 s (22 runs at the kickoff of fixes 738
+  // to 768); no retry, which would start a second window under the same load.
+  const CONNECT_MS = 40000;
   const connectBy = Date.now() + CONNECT_MS;
   const connectLeft = () => Math.max(0, connectBy - Date.now());
-  const tooSlow = "the window's devtools did not answer within 20 s";
+  const tooSlow = "the window's devtools did not answer within 40 s";
   const ws = new WebSocket(wsUrl);
   try {
     await within(new Promise((resolve, reject) => {
