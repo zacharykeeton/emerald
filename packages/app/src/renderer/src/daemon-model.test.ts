@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, ShellOption } from '@emerald/shared';
-import { BROWSER_VIEW_LEVEL, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserViewSupported, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
+import { BROWSER_VIEW_LEVEL, CRASHED_TEXT, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserViewSupported, crashedTitle, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
 
 test('a daemon with no feature level is level 1 and counts as outdated against 2', () => {
   const old = { pid: 7, version: '0.1.0', featureLevel: null, otherHome: null };
@@ -57,7 +57,8 @@ test('normalizeSession fills the fields an older daemon does not send and leaves
   assert.equal(filled.groupCwd, 'C:\\x', 'a daemon before fix 60 groups by the live folder');
   assert.equal(filled.name, 'x');
   assert.equal(filled.shell, null, 'a daemon before fix 624 does not say which shell');
-  const current = { ...fromOldDaemon, branch: 'main', lastPrompt: 'p', lastReply: 'r', model: 'Fable', contextPercent: 42, contextWindow: { size: 200000, used: 84000, cacheRead: 80000, cacheWrite: 3000, fresh: 1000, output: 200 }, tokens: { fresh: 2000, cacheWrite: 6000, cacheRead: 160000, output: 400 }, costUsd: 1.4, comment: 'c', phase: 'todo' as const, color: '#61afef', title: '✳ Claude Code', transcriptPath: 'C:\\t.jsonl', liveReply: 'Reading the log.', liveTool: 'Reading BACKLOG.md', liveVerb: 'Grinding', waitingOn: [], team: [], conversation: null, shell: null, shellCwd: null, remoteSessionId: null, startHead: null, commits: [], lastPromptAt: 7, lastReplyAt: 9, groupCwd: 'C:\\x' };
+  assert.equal(filled.effort, null, 'a daemon before level 67 (fix 799) sends no effort');
+  const current = { ...fromOldDaemon, branch: 'main', lastPrompt: 'p', lastReply: 'r', model: 'Fable', effort: 'high', contextPercent: 42, contextWindow: { size: 200000, used: 84000, cacheRead: 80000, cacheWrite: 3000, fresh: 1000, output: 200 }, tokens: { fresh: 2000, cacheWrite: 6000, cacheRead: 160000, output: 400 }, costUsd: 1.4, comment: 'c', phase: 'todo' as const, color: '#61afef', title: '✳ Claude Code', transcriptPath: 'C:\\t.jsonl', liveReply: 'Reading the log.', liveTool: 'Reading BACKLOG.md', liveVerb: 'Grinding', waitingOn: [], team: [], conversation: null, shell: null, shellCwd: null, remoteSessionId: null, startHead: null, commits: [], lastPromptAt: 7, lastReplyAt: 9, groupCwd: 'C:\\x' };
   assert.deepEqual(normalizeSession(current), current, 'a full record is unchanged');
   assert.equal(normalizeSession({ ...current, state: 'waiting' }).state, 'waiting', 'a known state passes');
   assert.equal(normalizeSession({ ...current, state: 'dreaming' as SessionInfo['state'] }).state, 'idle', 'an unknown state reads as idle');
@@ -136,4 +137,11 @@ test('the installed shells are all the reported ones, on a daemon at level 61 al
   assert.deepEqual(installedShells({ pid: 7, version: '0.1.608', featureLevel: 60, otherHome: null, shells: [pwsh, cmd] }), []);
   assert.deepEqual(installedShells({ pid: 7, version: '0.1.620', featureLevel: 61, otherHome: null }), []);
   assert.deepEqual(installedShells({ pid: 7, version: '0.1.620', featureLevel: 61, otherHome: null, shells: [pwsh, cmd] }), [pwsh, cmd]);
+});
+
+// M9 fix 815: the crash banner's words are plain; the pid and the code are
+// the tooltip's.
+test('crashedTitle names the pid and the code, and the banner text names neither', () => {
+  assert.equal(crashedTitle({ pid: 17500, code: 'C0000374' }), 'emmerd pid 17500 exited with code 0xC0000374');
+  assert.equal(CRASHED_TEXT.includes('0x'), false);
 });

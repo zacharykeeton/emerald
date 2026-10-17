@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MODEL_RATES, costParts, formatUsd, modelWord, ratesFor, ratesLookStale, uncachedCost } from './rates.ts';
+import { MODEL_RATES, costParts, formatUsd, modelName, modelWord, ratesFor, ratesLookStale, uncachedCost } from './rates.ts';
 
 test('M9 fix 154: the rate table prices each part of the sum and the uncached figure, and knows a model it lacks', () => {
   const opus = ratesFor('Opus 5 (1M context)');
@@ -97,4 +97,11 @@ test('M9 fix 464: a dated single-number id reads its family, and Opus 4.8 has a 
   assert.equal(modelWord('claude-opus-4-8'), 'Opus');
   // Opus 4.8 is not Opus 5 and Opus 5 is not Opus 4.8.
   assert.equal(ratesFor('claude-opus-5')?.family, 'Opus 5');
+});
+
+test('M9 fix 821: modelName gives the whole name a card wears, and an id the table lacks as itself', () => {
+  assert.equal(modelName('claude-opus-5'), 'Opus 5');
+  assert.equal(modelName('claude-sonnet-5'), 'Sonnet 5');
+  assert.equal(modelName('claude-opus-6'), 'claude-opus-6');
+  assert.equal(modelName(null), null);
 });

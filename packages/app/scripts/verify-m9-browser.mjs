@@ -164,9 +164,11 @@ try {
     const claude = r.find((t) => t.kind === 'claude');
     if (w < 600) expect(shell.whole && !shell.shown, `at ${w} px the Shell name is whole and its hint gone (${JSON.stringify(r)})`);
     else expect(shell.whole && shell.shown && claude.whole && claude.shown, `at ${w} px both hints show with both names whole (${JSON.stringify(r)})`);
+    if (w < 600) expect(claude.whole, `fix 818: at ${w} px the Claude session name is whole (${JSON.stringify(r)})`);
+    if (w === 380) await s.screenshot('browser-tiles-818-380.png');
     if (w === 420) await s.screenshot('browser-tiles-791-420.png');
   }
-  step('M9 fix 791: at 380 and 420 px the Shell name is whole and its hint gone, no name is clipped beside a hint, and at 600 px both hints show with both names whole');
+  step('M9 fix 791 and 818: at 380 and 420 px both names are whole and the Shell hint gone, no name is clipped beside a hint, and at 600 px both hints show with both names whole');
   await s.send('Emulation.clearDeviceMetricsOverride');
   await sleep(300);
   await s.evalJs(`document.querySelector(${JSON.stringify(browserTile)}).click()`);

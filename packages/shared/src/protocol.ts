@@ -102,7 +102,12 @@ export const PROTOCOL_VERSION = 1;
 //  66: M9 fix 773, keepWhole on SessionInfo and session.set, and the hook sink's POST /compact, which the emerald mod asks before a compaction and which skips an idle one of a session marked to keep whole
 //  66: M9 fixes 774 to 776, a top-level TurnComplete ending a turn that had no Stop, the mod's ToolRunning moving an answered permission ask back to working, and session.submit held up to 3 s for a hosted Claude's mod channel
 //  66: M9 fix 781, submitId on the mod.submit push and the mod's ModSubmit post on the hook sink, session.submit answering typed for a prompt the engine did not enter (a person's Stop standing)
-export const DAEMON_FEATURE_LEVEL = 66;
+//  67: M9 fix 799, effort on SessionInfo, the session's effort level off the status line's effort.level, null for a model with no effort setting
+//  67: M9 fix 800, effort on the activity reply's request points, off the same status line, now kept in hooks.jsonl
+//  67: M9 fixes 812 and 813, compactFrom on SessionInfo, the state an idle compaction found, which its PostCompact puts the row back to, and endReason, the reason a Claude session's SessionEnd gave, by which an /exit drops its pane to a shell
+//  67: M9 fix 808, needs-input with the reason trust on SessionInfo, a Claude session at its folder's trust dialog read off its screen while starting
+//  67: M9 fix 802, needsInputReason question for an AskUserQuestion's PermissionRequest, which a permission_prompt Notification no longer turns back to permission
+export const DAEMON_FEATURE_LEVEL = 67;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.

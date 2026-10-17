@@ -21,6 +21,8 @@ import { askBeforeClose, clearReveal, closeFileTab, getUiState, revealInFiles, s
 import { focusPane } from '@emerald/shared';
 import { editTab } from './store.ts';
 import { useSqueeze } from './squeeze.ts';
+import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomStep } from './image-zoom-model.ts';
+import type { ImageZoom } from './image-zoom-model.ts';
 
 // A file tab's content: a header with the full path and the two ways out
 // to Windows, then the file in a Monaco editor. One editor serves every
@@ -136,7 +138,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   // Any change in the file's folder gives the <img> a new src, so a rewrite
   // shows; zoom starts fitted for each path.
   const [version, setVersion] = useState(0);
-  const [zoom, setZoom] = useState<'fit' | 'actual'>('fit');
+  const [zoom, setZoom] = useState<ImageZoom>('fit');
   useEffect(() => setZoom('fit'), [path]);
   const animated = raster && isAnimatedKind(path);
   const [paused, setPaused] = useState(false);
@@ -144,6 +146,18 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [loaded, setLoaded] = useState<{ src: string; w: number; h: number } | null>(null);
+  // M9 fix 820: the host's room, read in the <img>'s onLoad (so no read
+  // waits on an observer) and kept by a ResizeObserver after. Fit is the
+  // scale that room gives the picture; zoom is 'fit' or a step.
+  const imageHostRef = useRef<HTMLDivElement | null>(null);
+  const [room, setRoom] = useState({ w: 0, h: 0 });
+  const readRoom = () => {
+    const h = imageHostRef.current;
+    if (h !== null) setRoom((r) => (r.w === h.clientWidth && r.h === h.clientHeight ? r : { w: h.clientWidth, h: h.clientHeight }));
+  };
+  const fit = loaded === null ? 1 : fitScale(loaded, room);
+  const scale = zoom === 'fit' ? fit : zoom;
+  const zoomNote = useRef<{ x: number; y: number; ox: number; oy: number; from: number } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const url = showImage ? fileUrl(pathFolder, encodeURIComponent(pathName)) : '';
   const src = url === '' ? '' : `${url}?v=${version}`;
@@ -160,6 +174,57 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     c.height = img.naturalHeight;
     c.getContext('2d')?.drawImage(img, 0, 0);
   }, [paused, loaded]);
+  const imageShown = showImage && !(src === '' || failed === src);
+  useEffect(() => {
+    const h = imageHostRef.current;
+    if (!imageShown || h === null) return;
+    readRoom();
+    const ro = new ResizeObserver(readRoom);
+    ro.observe(h);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageShown]);
+  // Ctrl+wheel steps the zoom about the pointer, the commit graph's shape
+  // (CommitsPanel): capture and not passive so the host never scrolls on
+  // it; the point under the pointer is noted per axis and the scroll set
+  // once the scaled picture has rendered.
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  useEffect(() => {
+    const host = imageHostRef.current;
+    if (!imageShown || host === null) return;
+    const onWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      host.focus({ preventScroll: true });
+      const from = scaleRef.current;
+      const next = zoomStep(from, ev.deltaY < 0 ? 1 : -1);
+      if (next === from) return;
+      const shown = host.querySelector<HTMLElement>('.file-image:not([hidden])');
+      if (shown !== null) {
+        const hr = host.getBoundingClientRect();
+        const ir = shown.getBoundingClientRect();
+        zoomNote.current = { x: ev.clientX - ir.left, y: ev.clientY - ir.top, ox: ev.clientX - hr.left, oy: ev.clientY - hr.top, from };
+      }
+      setZoom(next);
+    };
+    host.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => host.removeEventListener('wheel', onWheel, { capture: true });
+  }, [imageShown]);
+  useLayoutEffect(() => {
+    const n = zoomNote.current;
+    zoomNote.current = null;
+    const host = imageHostRef.current;
+    const shown = host?.querySelector<HTMLElement>('.file-image:not([hidden])') ?? null;
+    if (n === null || host === null || shown === null) return;
+    const hr = host.getBoundingClientRect();
+    const ir = shown.getBoundingClientRect();
+    host.scrollLeft = anchoredScroll({ scroll: host.scrollLeft, imageStart: ir.left, hostStart: hr.left, into: n.x, offset: n.ox, from: n.from, to: scale });
+    host.scrollTop = anchoredScroll({ scroll: host.scrollTop, imageStart: ir.top, hostStart: hr.top, into: n.y, offset: n.oy, from: n.from, to: scale });
+  }, [zoom]);
+  // Off fit the picture draws at its natural size times the scale.
+  const imgSize = zoom !== 'fit' && loaded !== null ? { width: loaded.w * scale, height: loaded.h * scale } : undefined;
   const setView = onView ?? ((next: FileTabView) => setFileTabView(path, next));
   // A pane's close asks about unsaved edits the way the tab's does; the
   // tab's close asks inside closeFileTab itself.
@@ -443,7 +508,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   // ellipsis, which does not widen the header, is what says a level is
   // not enough yet.
   const sizeText = showImage && !imageFailed && loaded !== null && loaded.src === src ? `${loaded.w} \u00d7 ${loaded.h}` : '';
-  useSqueeze(headerRef, 5, '.file-path', [path, own, view, edit.dirty, json, showEditor, sizeText, animated, paused]);
+  useSqueeze(headerRef, 5, '.file-path', [path, own, view, edit.dirty, json, showEditor, sizeText, animated, paused, zoom]);
 
   // The DOM views' menu. The editor's own right-click is left to Monaco's
   // handler above (its host cannot be the target while hidden, since
@@ -473,6 +538,20 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   // On the root, so a press with the header's switch focused counts as in
   // the view. ev.code, as keys.ts matches, not ev.key.
   const onKeyDown = (ev: React.KeyboardEvent<HTMLDivElement>) => {
+    if (showImage && !imageFailed && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      // M9 fix 820: + and - step the zoom (no anchoring), 0 goes to fit.
+      const dir = ev.code === 'Equal' || ev.code === 'NumpadAdd' ? 1 : ev.code === 'Minus' || ev.code === 'NumpadSubtract' ? -1 : 0;
+      if (dir !== 0) {
+        ev.preventDefault();
+        setZoom(zoomStep(scale, dir));
+        return;
+      }
+      if (ev.code === 'Digit0' || ev.code === 'Numpad0') {
+        ev.preventDefault();
+        setZoom('fit');
+        return;
+      }
+    }
     if (findView === null) return;
     if (ev.code !== 'KeyF' || !ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return;
     ev.preventDefault();
@@ -583,7 +662,10 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       data-state={showImage ? (imageFailed ? 'error' : 'image') : result === null ? 'loading' : 'text' in result ? 'text' : 'binary' in result ? 'binary' : 'error'}
       data-lines={hasText ? result.text.split('\n').length : undefined}
       data-view={own !== null ? view : undefined}
-      data-zoom={showImage ? zoom : undefined}
+      data-zoom={showImage ? (zoom === 'fit' ? 'fit' : zoom === 1 ? 'actual' : 'scaled') : undefined}
+      data-scale={showImage ? String(Math.round(scale * 100) / 100) : undefined}
+      data-cursor={showImage ? (clickCursor(zoom, fit) ?? undefined) : undefined}
+      data-pixelated={showImage && scale > 1 ? '' : undefined}
       data-pretty={view === 'pretty' ? prettyState.status : undefined}
       data-pretty-runs={json ? prettyRuns(path) : undefined}
       data-scheme={fileScheme?.name}
@@ -604,6 +686,11 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
           <span className="file-path-name">{pathName}</span>
         </span>
         {sizeText !== '' && <span className="file-image-size">{sizeText}</span>}
+        {sizeText !== '' && (
+          <button className="files-button file-image-zoom" title="Back to fit (0)" onClick={() => setZoom('fit')}>
+            {zoom === 'fit' ? 'Fit' : `${Math.round(scale * 100)}%`}
+          </button>
+        )}
         {animated && !imageFailed && (
           <button className="files-button file-image-pause" title={paused ? 'Play the animation' : 'Pause the animation'} onClick={() => setPaused(!paused)}>
             {paused ? 'Play' : 'Pause'}
@@ -706,18 +793,22 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
         )}
         <div className="file-editor" ref={hostRef} style={{ visibility: showEditor ? 'visible' : 'hidden' }} />
         {showImage && !imageFailed && (
-          <div className="file-image-host">
+          <div className="file-image-host" ref={imageHostRef} tabIndex={-1}>
             <img
               ref={imgRef}
               hidden={paused}
               className="file-image"
               src={src}
               alt={pathName}
-              onLoad={(ev) => setLoaded({ src, w: ev.currentTarget.naturalWidth, h: ev.currentTarget.naturalHeight })}
+              style={imgSize}
+              onLoad={(ev) => {
+                readRoom();
+                setLoaded({ src, w: ev.currentTarget.naturalWidth, h: ev.currentTarget.naturalHeight });
+              }}
               onError={() => setFailed(src)}
-              onClick={() => setZoom(zoom === 'fit' ? 'actual' : 'fit')}
+              onClick={() => setZoom(clickTarget(zoom))}
             />
-            {paused && <canvas ref={canvasRef} className="file-image" onClick={() => setZoom(zoom === 'fit' ? 'actual' : 'fit')} />}
+            {paused && <canvas ref={canvasRef} className="file-image" style={imgSize} onClick={() => setZoom(clickTarget(zoom))} />}
           </div>
         )}
         {imageFailed && (

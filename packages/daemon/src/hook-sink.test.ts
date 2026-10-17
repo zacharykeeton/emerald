@@ -483,7 +483,7 @@ test('the written line is trimmed: a tool response cut to its first kilobyte and
       .map((l) => JSON.parse(l) as Record<string, unknown>);
   const big = 'x'.repeat(10 * 1024);
   const post = { hook_event_name: 'PostToolUse', session_id: 'c1', cwd: 'C:\\x', tool_name: 'Read', tool_use_id: 't1', tool_input: { file_path: 'C:\\x\\a.ts' }, tool_response: { type: 'text', file: { filePath: 'C:\\x\\a.ts', content: big, numLines: 400 } } };
-  const status = { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: { id: 'claude-opus-5', display_name: 'Opus 5' }, cost: { total_cost_usd: 1.5, total_duration_ms: 100 }, context_window: { context_window_size: 200000, current_usage: { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 }, used_percentage: 7 }, rate_limits: { five_hour: { used_percentage: 34 } }, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3, hit_ratio: 0.9 }, workspace: { current_dir: 'C:\\x' }, version: '2.1.278' };
+  const status = { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: { id: 'claude-opus-5', display_name: 'Opus 5' }, effort: { level: 'high' }, cost: { total_cost_usd: 1.5, total_duration_ms: 100 }, context_window: { context_window_size: 200000, current_usage: { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 }, used_percentage: 7 }, rate_limits: { five_hour: { used_percentage: 34 } }, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3, hit_ratio: 0.9 }, workspace: { current_dir: 'C:\\x' }, version: '2.1.278' };
   // The Agent tool's response keeps the fields the activity log binds a
   // description by, whatever the report's length.
   const agent = { hook_event_name: 'PostToolUse', session_id: 'c1', tool_name: 'Agent', tool_input: { description: 'Look around', subagent_type: 'Explore', prompt: big }, tool_response: { agentId: 'a1', description: 'Look around', content: [{ type: 'text', text: big }] } };
@@ -508,7 +508,7 @@ test('the written line is trimmed: a tool response cut to its first kilobyte and
     assert.equal(response.file.content.length, 1024);
     assert.equal(response.file.numLines, 400);
     assert.ok(JSON.stringify(lines[0]).length < 1500, `the line is ${JSON.stringify(lines[0]).length} bytes`);
-    assert.deepEqual(lines[1]!['payload'], { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: status.model, cost: status.cost, context_window: status.context_window, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000 } });
+    assert.deepEqual(lines[1]!['payload'], { hook_event_name: 'StatusLine', session_id: 'c1', cwd: 'C:\\x', transcript_path: 'C:\\t.jsonl', model: status.model, effort: { level: 'high' }, cost: status.cost, context_window: status.context_window, prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000 } });
     const agentLine = lines[2]!['payload'] as Record<string, unknown>;
     assert.equal(agentLine['truncated'], true);
     assert.deepEqual(agentLine['tool_input'], { description: 'Look around', subagent_type: 'Explore', prompt: 'x'.repeat(1024) });

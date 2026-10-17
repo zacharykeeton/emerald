@@ -1,7 +1,7 @@
 // M5 acceptance, part 3: resume with real Claude Code, one short turn. A
 // Claude session binds its id on SessionStart, answers one prompt, exits
-// with /exit and shows "exited (0)"; Resume on the pane spawns
-// claude --resume <id> in the same folder, whose SessionStart reports
+// with /exit (code 0), its pane dropping to a shell (M9 fix 813); Resume on
+// its row spawns claude --resume <id> in the same folder, in a pane beside, whose SessionStart reports
 // source=resume with the same session id, the record rebinds it, and the
 // earlier turn is back on screen. Needs hooks installed. Starts from an
 // empty layout, so run it when no Emerald app is open. Then the M48 case: a
@@ -93,16 +93,41 @@ try {
   await waitTitle(s, pane.id, 'idle', 'done acked in the focused pane', 5000);
   await sleep(500);
   await typeLine(s, '/exit');
-  await waitTitle(s, pane.id, 'exited (0)', 'claude exited', 30000);
+  await waitState(s, claudeId, (i) => i.state === 'exited' && i.exitCode === 0 && i.endReason === 'prompt_input_exit', 'claude exited (0) with /exit', 30000);
+  // M9 fix 813: the pane drops to a shell in the folder Claude started in.
+  const shellOn = async (paneId, other, what) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const on = leaves(await getLayout(s)).find((p) => p.id === paneId)?.sessionId ?? null;
+      if (on !== null && on !== other) {
+        const info = await stateOf(s, on);
+        if (info?.kind === 'shell') return on;
+      }
+      await sleep(100);
+    }
+    throw new Error(`timed out waiting for ${what} (layout ${JSON.stringify(leaves(await getLayout(s)))})`);
+  };
+  const dropped1 = await shellOn(pane.id, claudeId, 'fix 813: the pane dropped to a shell after /exit');
   const before = eventsFor(claudeId).length;
-  step(`turn answered, /exit gave exited (0) after ${before} hook events`);
+  step(`turn answered, /exit gave exited (0) and dropped the pane to a shell after ${before} hook events`);
 
-  // Resume from the pane. The new process reports in with source=resume and
-  // the same session id, the record rebinds it, and the old turn is on screen.
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(pane.id)}] .pane-resume').click()`);
-  await waitTitle(s, pane.id, 'starting', 'resumed session starting', 5000);
+  // Resume from the row during its count: the Claude opens in a pane beside
+  // the shell (M9 fix 813). The new process reports in with source=resume
+  // and the same session id, the record rebinds it, and the old turn is on
+  // screen.
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(claudeId)}] .sidebar-row-resume`)}).click()`);
+  let claudePane = null;
+  {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && claudePane === null) {
+      claudePane = leaves(await getLayout(s)).find((p) => p.sessionId === claudeId && p.id !== pane.id)?.id ?? null;
+      if (claudePane === null) await sleep(50);
+    }
+    expect(claudePane !== null, 'fix 813: Resume opened the Claude in a pane beside the shell');
+  }
+  await waitTitle(s, claudePane, 'starting', 'resumed session starting', 5000);
   const t0 = Date.now();
-  const idleAt = await waitTitle(s, pane.id, 'idle', 'SessionStart after resume', 30000);
+  const idleAt = await waitTitle(s, claudePane, 'idle', 'SessionStart after resume', 30000);
   const events = eventsFor(claudeId).slice(before);
   const start = events.find((e) => e.event === 'SessionStart');
   expect(start !== undefined, 'a new SessionStart was logged');
@@ -111,17 +136,34 @@ try {
   expect(start.payload.session_id === first.claudeSessionId, `same claude session id ${first.claudeSessionId.slice(0, 8)}, got ${String(start.payload.session_id).slice(0, 8)}`);
   const after = await stateOf(s, claudeId);
   expect(after.claudeSessionId === first.claudeSessionId && after.pid !== null && after.exitCode === null, 'record rebound and live');
-  expect(leaves(await getLayout(s))[0].sessionId === claudeId, 'same pane, same id');
-  await sleep(1500);
-  const screen = await screenOf(s, pane.id);
+  {
+    const two = leaves(await getLayout(s));
+    expect(two.length === 2 && two.some((p) => p.id === pane.id && p.sessionId === dropped1) && two.some((p) => p.id === claudePane && p.sessionId === claudeId), `the Claude in a pane beside the shell, same id, got ${JSON.stringify(two)}`);
+  }
+  // A new pane's terminal starts from the pty's replay, so the redraw is
+  // waited for rather than read once (M9 fix 813).
+  let screen = '';
+  for (const end = Date.now() + 15000; Date.now() < end; await sleep(250)) {
+    screen = await screenOf(s, claudePane);
+    if (screen.includes(marker)) break;
+  }
+  if (!screen.includes(marker)) console.error(`[verify] the Claude pane's screen: ${JSON.stringify(screen.split('\n').filter((l) => l.trim() !== '').slice(-25))}`);
   expect(screen.includes(marker), 'the earlier turn is back on screen');
   step(`resume: claude --resume reported in ${idleAt - t0} ms with source=resume and the same id; the earlier reply "${marker}" is on screen`);
   await s.screenshot('m5-claude-resume.png');
 
-  await s.evalJs(`document.querySelector('.term-host .xterm-helper-textarea')?.focus()`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(claudePane)}] .xterm-helper-textarea`)})?.focus()`);
   await typeLine(s, '/exit');
-  await waitTitle(s, pane.id, 'exited (0)', 'resumed claude exited', 30000);
-  step('the Claude session resumed and exited again');
+  await waitState(s, claudeId, (i) => i.state === 'exited' && i.exitCode === 0, 'resumed claude exited', 30000);
+  const dropped2 = await shellOn(claudePane, claudeId, 'fix 813: the second /exit dropped that pane to a shell too');
+  step('the Claude session resumed and exited again, its pane a shell');
+  // Back to one pane for the M48 case; the two dropped shells go.
+  {
+    const layout1 = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...layout1, root: { kind: 'pane', id: pane.id, sessionId: dropped1, view: null }, focusedPaneId: pane.id } });
+    await zreq(s, 'session.kill', { sessionId: dropped1, remove: true }).catch(() => {});
+    await zreq(s, 'session.kill', { sessionId: dropped2, remove: true }).catch(() => {});
+  }
 
   // M48, the cd case: a shell in the repo root, cd into packages/app,
   // claude typed by hand. Its SessionStart binds the conversation to the

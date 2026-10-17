@@ -91,7 +91,9 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
   return { handlers, menu: drawn };
 }
 
-export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text' }>; paneId: string; session: SessionInfo }) {
+// M9 fix 797: an update (Claude Code's ● progress line) is drawn as a
+// reply in every mode, its kind on data-kind.
+export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo }) {
   // Bumped when a stat lands, so the paths it settled are drawn as links.
   const [version, setVersion] = useState(0);
   const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
@@ -118,7 +120,7 @@ export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text
   }, [ask]);
   // The clicks are the turn's (usePathLinks), which this sits inside.
   return (
-    <div className="chat-step chat-reply" data-kind="text">
+    <div className="chat-step chat-reply" data-kind={step.kind}>
       {/* The tick is the cell's ::before, so the reply's text is the rendered Markdown's alone. */}
       <span className="chat-tick-cell" aria-hidden="true" />
       <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />

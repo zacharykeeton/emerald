@@ -79,9 +79,18 @@ export function reopenAt(layout: Layout, spot: ClosedSpot, sessionId: string, ne
   return switchTab(replaceTab(layout, next), tab.id);
 }
 
+// The time run is clamped at zero (M9 fix 814): the sidebar's clock is the
+// last tick's, up to a second older than a count's start, so an unclamped
+// read opened at 11s.
 export function secondsLeft(count: RemovalCount, now: number): number {
-  const left = count.runningSince === null ? count.leftMs : count.leftMs - (now - count.runningSince);
+  const left = count.runningSince === null ? count.leftMs : count.leftMs - Math.max(0, now - count.runningSince);
   return Math.max(1, Math.ceil(left / 1000));
+}
+
+// M9 fix 814: a pointer already on the row when its count starts holds it,
+// since no mouseenter comes for a pointer that has not moved.
+export function holdsOnStart(count: RemovalCount | undefined, hovered: boolean): boolean {
+  return count !== undefined && count.started && count.runningSince !== null && hovered;
 }
 
 export function removalWords(seconds: number): string {

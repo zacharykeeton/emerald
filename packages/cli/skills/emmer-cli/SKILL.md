@@ -1,6 +1,6 @@
 ---
 name: emmer-cli
-description: Use the `emmer` CLI to see, start, drive and wait on the other Claude Code and shell sessions in the emerald desktop app, and to write a checkpoint on your own session so the person watching the sidebar knows where you are. Use when the user says "emerald", "the other session", "hand this to another session", "wait for that session to finish", "what is the other Claude doing", "set a checkpoint", or when you are running inside emerald (EMERALD_SESSION_ID is set) and reach a phase change worth reporting.
+description: Use the `emmer` CLI to see, start, drive and wait on the other Claude Code and shell sessions in the emerald desktop app, to write a checkpoint on your own session so the person watching the sidebar knows where you are, and to drive a web page in an Emerald browser pane (a click-through, a dev server, a form) with `emmer browser`, preferred over an outside browser such as Chrome when running inside emerald (EMERALD_SESSION_ID is set). Use when the user says "emerald", "the other session", "hand this to another session", "wait for that session to finish", "what is the other Claude doing", "set a checkpoint", "click-through", "browser pane", "drive the page", "in Emerald", or asks to drive a page in Chrome or a browser while running inside emerald, or when you are running inside emerald (EMERALD_SESSION_ID is set) and reach a phase change worth reporting.
 ---
 
 # emmer CLI
@@ -115,7 +115,21 @@ emmer read fix-login --screen
 
 `emmer focus <session>` shows a session in the focused pane for the person watching, or switches to the layout tab and pane already showing it (`ls --json` names that tab as `tab`). `emmer kill|resume|rm <session>` end a session, start it again under the same id (a Claude session resumes its conversation), or forget an exited one.
 
-`emmer open <path>` opens a file in the window as a pinned tab for the person watching (`--pane` puts it in a pane beside the focused one), so a report or a diff you wrote can be put in front of them without a paste; `emmer open localhost:3000` (or any http or https URL) puts that page in a browser pane beside the focused one, so a dev server you started can sit in front of the person; exit 69 means no window is open, the same for `emmer update`; exit 75 means the window is there and did not answer within 3 s (a reload, say), and the open may still land. `emmer browser <verb>` drives a browser pane's page (a snapshot of its controls with refs, a click, a fill, a key, a screenshot); `emmer help browser` lists the verbs.
+`emmer open <path>` opens a file in the window as a pinned tab for the person watching (`--pane` puts it in a pane beside the focused one), so a report or a diff you wrote can be put in front of them without a paste; `emmer open localhost:3000` (or any http or https URL) puts that page in a browser pane beside the focused one, so a dev server you started can sit in front of the person; exit 69 means no window is open, the same for `emmer update`; exit 75 means the window is there and did not answer within 3 s (a reload, say), and the open may still land.
+
+## Drive a web page in a browser pane
+
+When you run inside emerald and the work needs a web page driven (a click-through, a dev server you started, a form to fill), use `emmer browser` rather than an outside browser: the page opens in a pane beside your own and the person watches it there. This is the answer to "drive it in Chrome" or "do the click-through in a browser" while EMERALD_SESSION_ID is set.
+
+```
+emmer browser open localhost:3000
+emmer browser snapshot
+emmer browser click @e3
+emmer browser fill @e5 "hello"
+emmer browser screenshot
+```
+
+Open the page, take a `snapshot` (each control with a ref such as `@e1`, its role, name, value and state), then act on the refs with `click`, `hover`, `fill`, `key`, `eval`, `wait`, `navigate` and `upload`; take a fresh `snapshot` after the page changes, since refs belong to the snapshot that made them. `screenshot` saves a PNG and prints its path, and `events` says what happened since the last read (a window the page tried to open, a download, a console error). When the person clicks or types in the page, every verb but `events` and `resume` exits 77 until `emmer browser resume` or the pane's Resume button: stop, ask whether they are done, then resume. `emmer help browser` lists the verbs and their options.
 
 `emmer conflicts` is the conflict forecast: which live sessions' branches would conflict on a merge and on which files, and how far each branch is ahead of and behind the default. Read it before setting a merge order or handing a file's ownership to one lane; `--json` gives `{ conflicts, base }`, `--folder <path>` one repository's block.
 

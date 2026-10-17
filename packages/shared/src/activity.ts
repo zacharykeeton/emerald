@@ -82,6 +82,9 @@ export interface ActivityRequest {
   output: number;
   usd: number | null;
   model: string | null;
+  // The effort level the line ran at (M9 fix 800); optional so an older
+  // daemon's reply and a fixture read as none.
+  effort?: string | null;
 }
 
 // A commit the track landed (M9 fix 218), off the session record's

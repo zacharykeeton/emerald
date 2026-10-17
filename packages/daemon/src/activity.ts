@@ -68,10 +68,12 @@ export interface ActivityLine {
   running: string[] | null;
   // A StatusLine's request counts (M9 fix 217), null on any other line
   // and on a status line without them (the fakes the verify scripts
-  // post carry a percentage alone); its cost so far and its model.
+  // post carry a percentage alone); its cost so far, its model and its
+  // effort level (M9 fix 800).
   usage: { fresh: number; cacheWrite: number; cacheRead: number; output: number } | null;
   usd: number | null;
   model: string | null;
+  effort: string | null;
   // The sink's unhosted mark (M9 fix 233) and the folder the hook named,
   // read for such a line only.
   unhosted: boolean;
@@ -214,6 +216,7 @@ function lineOf(at: number, sessionId: string, event: string | null, from: unkno
     usage: null,
     usd: null,
     model: null,
+    effort: null,
     unhosted,
     cwd: unhosted ? nonEmpty(payload.cwd) : null,
   };
@@ -228,6 +231,7 @@ function lineOf(at: number, sessionId: string, event: string | null, from: unkno
     line.usd = typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : null;
     const m = payload.model;
     line.model = nonEmpty(m?.display_name) ?? nonEmpty(m?.id);
+    line.effort = nonEmpty(payload.effort?.level);
   } else if (event === 'SubagentStart' || event === 'SubagentStop') {
     line.agentId = nonEmpty(payload.agent_id);
     line.agentType = nonEmpty(payload.agent_type);
@@ -1024,10 +1028,11 @@ export class ActivityLog {
       point.output = usage.output;
       point.updatedAt = line.at;
     } else {
-      point = { at: line.at, fresh: usage.fresh, cacheWrite: usage.cacheWrite, cacheRead: usage.cacheRead, output: usage.output, usd: null, model: line.model, usdBefore: track.lastUsd ?? (track.requests.length === 0 && (track.started || (line.usd !== null && line.usd < FIRST_REQUEST_USD)) ? 0 : null), updatedAt: line.at };
+      point = { at: line.at, fresh: usage.fresh, cacheWrite: usage.cacheWrite, cacheRead: usage.cacheRead, output: usage.output, usd: null, model: line.model, effort: line.effort, usdBefore: track.lastUsd ?? (track.requests.length === 0 && (track.started || (line.usd !== null && line.usd < FIRST_REQUEST_USD)) ? 0 : null), updatedAt: line.at };
       track.requests.push(point);
     }
     if (line.model !== null) point.model = line.model;
+    if (line.effort !== null) point.effort = line.effort;
     if (line.usd !== null) {
       if (point.usdBefore !== null && line.usd < point.usdBefore) point.usdBefore = 0;
       if (point.usdBefore !== null) point.usd = line.usd - point.usdBefore;
@@ -1351,7 +1356,7 @@ function clipRequests(points: RequestPoint[], from: number, to: number, since: n
   for (const p of points) {
     if (p.at < from || p.at > to) continue;
     if (since !== null && p.updatedAt < since) continue;
-    out.push({ at: p.at, fresh: p.fresh, cacheWrite: p.cacheWrite, cacheRead: p.cacheRead, output: p.output, usd: p.usd, model: p.model });
+    out.push({ at: p.at, fresh: p.fresh, cacheWrite: p.cacheWrite, cacheRead: p.cacheRead, output: p.output, usd: p.usd, model: p.model, effort: p.effort ?? null });
   }
   return out;
 }

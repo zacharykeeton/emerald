@@ -3871,7 +3871,7 @@ try {
     await hoverOver(cgRowSel);
     await s.waitFor(`!!document.querySelector('.agent-popover[data-member="cg"]')`, 'the row opens the same card as the marker', 5000);
     const cgCard = await s.evalJs(`(() => { const c = document.querySelector('.agent-popover[data-member="cg"]'); return { model: c.querySelector('.agent-card-model')?.textContent ?? null, branch: c.querySelector('.agent-card-branch')?.textContent ?? null, tokens: c.querySelector('.agent-card-tokens')?.textContent ?? null }; })()`);
-    expect(cgCard.model === 'Opus', `the card's model word reads off the agents-running store, the way ShadeTeam does (${JSON.stringify(cgCard)})`);
+    expect(cgCard.model === 'Opus 5', `the card names the model in full off the agents-running store (fix 821) (${JSON.stringify(cgCard)})`);
     expect(cgCard.branch === '⑂ cg', `the card still reads the branch off the member's own record (${JSON.stringify(cgCard)})`);
     expect(cgCard.tokens === '↑ 12.3k sent, ↓ 4.1k received, ~$0.12', `the tokens line sums the member's own span from the conversation usage (${JSON.stringify(cgCard)})`);
     // M9 fix 646: Escape, not the pointer's leave, closes the card: the leave

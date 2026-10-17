@@ -109,6 +109,7 @@ function bareInfo(conversationId: string, payload: HookPayload, at: number): Ses
     waitingOn: [],
     team: [],
     model: null,
+    effort: null,
     contextPercent: null,
     contextWindow: null,
     tokens: null,

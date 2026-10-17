@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ClientMessage, RequestType, Requests, ServerMessage, UsageEdge } from '@emerald/shared';
-import type { AttentionRequest, ChimeMode, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
+import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
 import { runCliJson } from './cli.ts';
 import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, readTail, revealPath, statPath } from './files.ts';
@@ -171,6 +171,7 @@ client.on('connected', (daemon: DaemonInfo) => pushToRenderer({ type: 'daemon.co
 ipcMain.handle('emerald:daemon-restart', () => client.restartDaemon());
 ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
 client.on('disconnected', () => pushToRenderer({ type: 'daemon.disconnected' }));
+client.on('daemon-crashed', (crash: DaemonCrash) => pushToRenderer({ type: 'daemon.crashed', crash }));
 
 // Requests made before the first connection wait for it instead of failing;
 // after a later disconnect they fail fast and the renderer resyncs on reconnect.

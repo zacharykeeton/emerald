@@ -2,7 +2,7 @@ import { useRef, useSyncExternalStore } from 'react';
 import { currentTab, pushSample, replaceTab, tabHolding } from '@emerald/shared';
 import { EMPTY_CONFLICTS } from '@emerald/shared';
 import type { ConflictReport, Layout, LayoutTab, SessionInfo } from '@emerald/shared';
-import type { DaemonInfo, RendererPush } from '../../preload/api.ts';
+import type { DaemonCrash, DaemonInfo, RendererPush } from '../../preload/api.ts';
 import { withPreview } from './color-preview-model.ts';
 import type { ColorPreview } from './color-preview-model.ts';
 import { conflictsSupported, folderLabelsSupported, keptSupported, layoutForWire, normalizeLayout, normalizeSession } from './daemon-model.ts';
@@ -36,6 +36,8 @@ export interface State {
   conflicts: ConflictReport;
   // What hello said about the daemon this window is on; null until connected.
   daemon: DaemonInfo | null;
+  // The last daemon this window started that ended on a crash code (M9 fix 815), until Not now; kept across the disconnect and the next hello.
+  crashed: DaemonCrash | null;
   // The colour a Colour row's swatch is previewing on one session (M9
   // fix 157), laid over `sessions` in the snapshot getState hands out;
   // `sessions` here is what the daemon pushed.
@@ -46,7 +48,7 @@ export interface State {
 // object until a preview is on, then a copy with the previewed colour
 // on its one session, so a reader never sees the preview and the saved
 // colour at once.
-let state: State = { connected: true, layout: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: null, preview: null };
+let state: State = { connected: true, layout: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: null, crashed: null, preview: null };
 let snapshot: State = state;
 const listeners = new Set<() => void>();
 let started = false;
@@ -169,6 +171,11 @@ async function sync(): Promise<void> {
   resetRates();
 }
 
+// The crash banner's Not now (M9 fix 815).
+export function dismissCrash(): void {
+  setState({ crashed: null });
+}
+
 // Exported for the store's test, which feeds it a push by hand.
 export function onPush(msg: RendererPush): void {
   switch (msg.type) {
@@ -180,6 +187,9 @@ export function onPush(msg: RendererPush): void {
       return;
     case 'daemon.disconnected':
       setState({ connected: false, daemon: null });
+      return;
+    case 'daemon.crashed':
+      setState({ crashed: msg.crash });
       return;
     case 'layout.changed': {
       const layout = normalizeLayout(msg.layout);

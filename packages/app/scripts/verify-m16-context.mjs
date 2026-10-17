@@ -175,6 +175,40 @@ try {
   expect((await rowContext(s, plain)) === null && (await paneContext(s, p2)) === null, 'the plain shell still shows nothing');
   step('later status lines update the text without touching the state; the plain shell shows nothing');
 
+  // M9 fix 800: the effort level after the model, inside the model span,
+  // so a narrow row or a short title drops the two together; a percent
+  // alone keeps it, the written log line keeps effort.level, and a line
+  // with a model and no effort shows the model alone again, as the steps
+  // after this one expect.
+  await post(claude, statusLine('Opus', 61, { effort: { level: 'medium' } }));
+  await waitRowContext(s, claude, 'Opus · medium · 61%', 'fix 800: the row reads the effort after the model');
+  expect((await paneContext(s, p1)) === 'Opus · medium · 61%', `fix 800: the title reads the effort after the model, got ${JSON.stringify(await paneContext(s, p1))}`);
+  {
+    const spans = await s.evalJs(`[document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(claude)}] .sidebar-row-context-model')?.textContent ?? null, document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-context-model')?.textContent ?? null]`);
+    expect(spans[0] === 'Opus · medium · ' && spans[1] === 'Opus · medium · ', `fix 800: the effort sits in the model span on the row and the title, got ${JSON.stringify(spans)}`);
+  }
+  await post(claude, { hook_event_name: 'StatusLine', context_window: { used_percentage: 62 } });
+  await waitRowContext(s, claude, 'Opus · medium · 62%', 'fix 800: a percent alone keeps the effort');
+  {
+    const hooksLog = path.join(process.env['EMERALD_HOME'], 'logs', 'hooks.jsonl');
+    const lastEffort = () => {
+      const lines = (fs.existsSync(hooksLog) ? fs.readFileSync(hooksLog, 'utf8') : '').split('\n').filter((l) => l !== '');
+      const mine = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((l) => l !== null && l.sessionId === claude && l.event === 'StatusLine' && l.payload?.model !== undefined);
+      return mine.length === 0 ? undefined : (mine[mine.length - 1].payload?.effort?.level ?? null);
+    };
+    const until = Date.now() + 3000;
+    while (Date.now() < until && lastEffort() !== 'medium') await sleep(100);
+    expect(lastEffort() === 'medium', `fix 800: the last written status line with a model keeps effort.level medium, got ${JSON.stringify(lastEffort())}`);
+  }
+  await post(claude, statusLine('Opus', 60));
+  await waitRowContext(s, claude, 'Opus · 60%', 'fix 800: a line with no effort shows the model alone');
+  expect((await paneContext(s, p1)) === 'Opus · 60%', `fix 800: and the title, got ${JSON.stringify(await paneContext(s, p1))}`);
+  {
+    const back = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === claude);
+    expect(back.effort === null, `fix 800: a model block without effort clears the record's effort, got ${JSON.stringify(back.effort)}`);
+  }
+  step('fix 800: a status line at medium reads Opus · medium · 61% on the row and the title, the effort inside the model span; a percent alone keeps it, the log line keeps effort.level, and a line with no effort shows the model alone');
+
   // Fix 28: the model loses its trailing parenthetical on the row and the
   // title (the tooltip keeps it), and the percent is never cut in a
   // sidebar too narrow for the whole second line: since fix 76 the line
@@ -647,8 +681,9 @@ try {
     }
     walk795.push(r);
     console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}`);
+    expect(!/(percent|cost) [^,]*(CUT|OUT)/.test(r.cut), `fix 817: at ${r.width}px level ${r.level} the percent and the cost are whole inside the reading's box or hidden, got ${r.cut}`);
   }
-  step(`M9 fix 795: fix 760's read on pane 2's live Claude title, no Resume: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden at every width: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
 
   // M9 fix 772: the idle countdown. A real claude (it sits at the trust
   // dialog of the fresh fixture folder and makes no request) on pane 1,
@@ -704,6 +739,13 @@ try {
   await waitClock(reads('compacts in 44m', 'compact'), 'fix 772: back to compacts in 44m');
   await postLive({ hook_event_name: 'PreCompact', trigger: 'auto' });
   await waitClock((r) => r.state === 'working' && none(r) && r.age === true, 'fix 772: PreCompact puts the row at working with no count and its age back');
+  // M9 fix 812: the compaction's SessionStart keeps it working, and its
+  // PostCompact puts the row back at idle with its clock.
+  await postLive({ hook_event_name: 'SessionStart', source: 'compact' });
+  const restarted812 = await clockRead();
+  expect(restarted812.state === 'working', `fix 812: the compaction's SessionStart keeps the row at working, got ${JSON.stringify(restarted812)}`);
+  await postLive({ hook_event_name: 'PostCompact', trigger: 'auto' });
+  await waitClock((r) => r.state === 'idle' && reads('compacts in 44m', 'compact')(r), 'fix 812: an idle compaction ending puts the row back at idle with its clock');
   // (5) A cold cache counts nothing, at done either.
   await postLive(cacheLine(250000, { warm: false, ttl: '1h', expires_at: null, requests: 8 }));
   await postLive({ hook_event_name: 'Stop', stop_hook_active: false });
@@ -718,7 +760,7 @@ try {
   await sleep(1000);
   const past = await clockRead();
   expect(none(past), `fix 772: a cache past its expiry reads no count, got ${JSON.stringify(past)}`);
-  step("M9 fix 772: an idle Claude row and its pane title count down to the idle compaction at 250k tokens on the hour's cache (compacts in 44m), to the cache's expiry under 200k or on the 5m TTL (cache cold in 50m, 4m), and clear at PreCompact, on a cold cache and past the time");
+  step("M9 fix 772: an idle Claude row and its pane title count down to the idle compaction at 250k tokens on the hour's cache (compacts in 44m), to the cache's expiry under 200k or on the 5m TTL (cache cold in 50m, 4m), and clear at PreCompact, on a cold cache and past the time, and come back when an idle compaction ends (fix 812)");
 
   // M9 fix 773: Keep whole while idle, on the same live claude, back at
   // idle with a warm hour's cache of 250k tokens. The row menu marks it,

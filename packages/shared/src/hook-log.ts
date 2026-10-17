@@ -125,6 +125,8 @@ export function slimHookLine(raw: string): string {
       if (str(payload.model['id'])) model['id'] = payload.model['id'];
       slim['model'] = model;
     }
+    // The effort level the activity line reads (M9 fix 800).
+    if (obj(payload.effort) && str(payload.effort['level'])) slim['effort'] = { level: payload.effort['level'] };
   } else if (event === 'SubagentStart' || event === 'SubagentStop') {
     if (str(payload.agent_type)) slim['agent_type'] = payload.agent_type;
   } else if (event === 'PostToolUse' && payload.tool_name === 'Agent') {

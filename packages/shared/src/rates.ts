@@ -103,6 +103,14 @@ export function modelWord(model: string | null): string | null {
   return null;
 }
 
+// The model's full name for a card (M9 fix 821): the family and its number
+// ("Opus 5", "Sonnet 5") off the table, or the id as it came when the table
+// lacks it, so a new release still reads as something; null for none.
+export function modelName(model: string | null): string | null {
+  if (model === null) return null;
+  return ratesFor(model)?.family ?? model;
+}
+
 // Each part of the sum priced at its rate, in dollars.
 export interface CostParts {
   fresh: number;

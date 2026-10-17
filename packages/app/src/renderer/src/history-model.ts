@@ -29,10 +29,9 @@ export const RECENT_CAP = 250;
 // A preview is one line of about this length; the rest is in the tooltip.
 export const PREVIEW_CHARS = 200;
 
-// The folder Claude Code keeps a cwd's transcripts in.
-export function encodeProjectDir(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, '-');
-}
+// The folder Claude Code keeps a cwd's transcripts in, in shared since the
+// daemon reads it at a restore (M9 fix 804).
+export { encodeProjectDir } from '@emerald/shared';
 
 export interface HistoryLine {
   sessionId: string;

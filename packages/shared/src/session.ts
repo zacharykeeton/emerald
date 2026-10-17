@@ -39,7 +39,9 @@ export type SessionState =
 // own PostToolUse, PostToolUseFailure or PermissionDenied, or its return;
 // the parent's own permission is 'permission', which only the parent's
 // next event releases.
-export type NeedsInputReason = 'permission' | 'agent-permission' | 'elicitation' | 'question';
+// trust (M9 fix 808): a starting Claude at its folder's trust dialog,
+// read off the screen by the daemon, since no hook fires before it.
+export type NeedsInputReason = 'permission' | 'agent-permission' | 'elicitation' | 'question' | 'trust';
 
 // The phases a checkpoint can name, Orca's board columns. A checkpoint is a
 // comment a session writes on itself with `emmer set` (or a person writes
@@ -610,6 +612,14 @@ export interface SessionInfo {
   // an exited or restored session has none; optional so an older daemon's
   // record and a fixture read as none.
   cache?: SessionCache | null;
+  // M9 fix 799: the effort level the session's model runs at, off the
+  // status line's effort.level, the level Claude Code resolved from
+  // /effort, the settings and the model's default. Null for a model with
+  // no effort setting and until the first status line; a line without a
+  // model block (the mod's measure, a percent alone) keeps it. Not
+  // persisted (toPersisted picks its fields); optional so an older
+  // daemon's record and a fixture read as none.
+  effort?: string | null;
   // Claude's task list (M9 fix 153, see SessionTask): what its TaskCreate,
   // TaskUpdate and TodoWrite calls built this turn, cleared by the next
   // prompt a person types, since a list belongs to a turn, and read back
@@ -638,6 +648,11 @@ export interface SessionInfo {
   // Persisted and kept across a resume; a Claude session only. Optional so
   // a record or a fixture from before the field reads as not marked.
   keepWhole?: boolean;
+  // M9 fix 812: the state and stateSince an automatic PreCompact found at
+  // idle, waiting or done, which its PostCompact puts the row back to. Set
+  // and cleared by the reducer; not persisted. Optional so a record or a
+  // fixture from before the field reads as none.
+  compactFrom?: { state: 'idle' | 'waiting' | 'done'; since: number } | null;
   // The terminal title the process last set through OSC 0 or 2, as
   // written, glyph and all; null for a process that never set one or
   // cleared it. Claude Code puts a spinner glyph and the conversation's
@@ -727,6 +742,11 @@ export interface SessionInfo {
   loadNames?: string[];
   pid: number | null;
   exitCode: number | null;
+  // M9 fix 813: the reason a Claude session's last SessionEnd gave
+  // (prompt_input_exit for /exit, logout, other for a kill), kept through
+  // the exit and cleared by the next SessionStart and by a resume. Not
+  // persisted. Optional so a record from before the field reads as none.
+  endReason?: string | null;
   createdAt: number;
   // When the session was removed from the list (M57). The daemon keeps a
   // removed session's record so the activity timeline still names it and

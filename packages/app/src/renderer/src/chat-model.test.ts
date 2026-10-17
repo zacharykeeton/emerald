@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { effortFold, effortState } from '@emerald/shared';
 import type { Step, StepResult, StepTurn } from '@emerald/shared';
-import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown } from './chat-model.ts';
+import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
+import { askBoxShown } from './chat-model.ts';
 
 test('chatPanes: the pairs round trip, and a corrupt entry reads as nothing', () => {
   const panes = new Map([
@@ -48,6 +49,7 @@ test('askHeading: the four reasons and none', () => {
   assert.equal(askHeading('question'), 'Claude has a question');
   assert.equal(askHeading('elicitation'), 'Waiting on you');
   assert.equal(askHeading(null), 'Waiting on you');
+  assert.equal(askHeading('trust'), 'Trust this folder?', 'M9 fix 808');
 });
 
 // M9 fix 777: an AskUserQuestion comes as a permission_prompt; its dialog
@@ -59,6 +61,25 @@ test('askHeading: the rows tell a question from a permission', () => {
   assert.equal(askHeading('permission', question), 'Claude has a question');
   const permission = ['Bash command', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', '', 'Esc to cancel · Tab to amend'];
   assert.equal(askHeading('permission', permission), 'Claude is asking permission');
+});
+
+// M9 fix 801: a pressed card never opens its box.
+test('askBoxShown: a question or a read with no options, never once pressed (fix 801)', () => {
+  const askedFor = null;
+  assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 0, pressed: true, askedFor }), false);
+  assert.equal(askBoxShown({ reason: 'permission', recognised: false, options: 0, pressed: true, askedFor }), false);
+  assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor }), true);
+  assert.equal(askBoxShown({ reason: 'question', recognised: true, options: 5, pressed: false, askedFor }), false);
+  assert.equal(askBoxShown({ reason: 'permission', recognised: false, options: 0, pressed: false, askedFor }), true);
+  assert.equal(askBoxShown({ reason: 'permission', recognised: false, options: 2, pressed: false, askedFor }), false);
+});
+
+// M9 fix 802: an AskUserQuestion the screen read could not parse keeps
+// its buttons and gets no box; the bare question (no askedFor) keeps it.
+test('askBoxShown: no box for an unparsed AskUserQuestion (fix 802)', () => {
+  const asked = { words: 'AskUserQuestion', toolUseId: 'u1', agentId: null, at: 0 };
+  assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: asked }), false);
+  assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: null }), true);
 });
 
 test('opensMenu: a picker command first in the box, case-sensitive', () => {
@@ -181,7 +202,7 @@ test('timelineItems: the stub turn in each mode', () => {
   const steps = stubSteps();
   const normal = timelineItems(steps, 'normal', false);
   assert.deepEqual(shape(normal), ['fold', 'text']);
-  assert.deepEqual(normal[0], { kind: 'fold', count: 3, names: ['Bash', 'Bash', 'Edit'], added: 6, removed: 2, open: false, tone: 'done' });
+  assert.deepEqual(normal[0], { kind: 'fold', count: 3, text: 'Edited 1 file, ran 2 shell commands', added: 6, removed: 2, open: false, tone: 'done' });
   assert.deepEqual(shape(timelineItems(steps, 'thinking', false)), ['thinking', 'fold', 'text']);
   assert.deepEqual(shape(timelineItems(steps, 'verbose', false)), ['thinking', 'Bash', 'Bash', 'Edit', 'text']);
   assert.deepEqual(shape(timelineItems(steps, 'normal', true)), ['fold(open)', 'Bash', 'Bash', 'Edit', 'text']);
@@ -198,9 +219,49 @@ test('timelineItems: the thinking above the fold, no fold without tools, images 
   assert.deepEqual(shape(timelineItems([tool('Bash', null)], 'normal', false)), ['fold']);
 });
 
-test('foldText: the count and the names', () => {
-  assert.equal(foldText({ count: 1, names: ['Bash'] }), '1 step · Bash');
-  assert.equal(foldText({ count: 3, names: ['Bash', 'Bash', 'Edit'] }), '3 steps · Bash, Bash, Edit');
+test("timelineItems: a notification breaks the fold as a note does, so the calls before it fold above it (M9 fix 805)", () => {
+  const note: Step = { kind: 'notification', source: 'task', text: 'Background command "Fast gate" completed (exit code 0)', tone: 'quiet', output: null, title: '', at: null };
+  assert.deepEqual(shape(timelineItems([tool('Bash', res({ exitCode: 0 })), note, reply('Answered.')], 'normal', false)), ['fold', 'notification', 'text']);
+});
+
+// M9 fix 797: Claude Code 2.1.302's collapsed-group sentence.
+test('foldText: the sentence Claude Code writes for a stretch of calls', () => {
+  const call = (name: string, input: Record<string, unknown> = {}) => ({ ...tool(name, res()), input }) as ToolStep;
+  const bash = (command: string) => call('Bash', { command });
+  assert.equal(foldText([call('Grep', { pattern: 'x' }), bash('ls packages'), ...Array.from({ length: 5 }, () => bash('npm test'))], false), 'Searched for 1 pattern, listed 1 directory, ran 5 shell commands');
+  assert.equal(foldText([call('Read', { file_path: 'a.ts' }), call('Read', { file_path: 'a.ts' }), call('Read', { file_path: 'b.ts' })], false), 'Read 2 files');
+  assert.equal(foldText([bash('grep -n x f | head -5')], false), 'Searched for 1 pattern');
+  assert.equal(foldText([bash('echo hi')], false), 'Ran 1 shell command');
+  assert.equal(foldText([bash('cat a && npm test')], false), 'Ran 1 shell command');
+  assert.equal(foldText([call('mcp__github__get_issue'), call('mcp__github__get_issue')], false), 'Called github 2 times');
+  assert.equal(foldText([call('Agent', { description: 'where the keys go' })], false), 'Ran agent · where the keys go');
+  assert.equal(foldText([call('WebFetch')], false), 'Called 1 tool');
+  assert.equal(foldText([call('TodoWrite')], false), 'Called 1 tool');
+  assert.equal(foldText([call('Edit', { file_path: 'a' }), bash('npm test')], true), 'Editing 1 file, running 1 shell command…');
+  // A few more of the rules: a PowerShell call is always a shell command,
+  // edits count distinct paths, two agents count, the bare tools count.
+  assert.equal(foldText([call('PowerShell', { command: 'ls' })], false), 'Ran 1 shell command');
+  assert.equal(foldText([call('Edit', { file_path: 'a' }), call('Write', { file_path: 'a' }), call('Edit')], false), 'Edited 2 files');
+  assert.equal(foldText([call('Agent', { description: 'one' }), call('Task', { description: 'two' })], false), 'Ran 2 agents');
+  assert.equal(foldText([call('TodoWrite'), call('TaskUpdate')], true), 'Calling 2 tools…');
+  assert.equal(foldText([bash('cat a.ts | wc -l'), call('mcp__x__a'), call('mcp__y__b')], false), 'Read 1 file, called x, y 2 times');
+});
+
+test('placeholderFirstLine: whole when it fits, cut with an ellipsis inside the quotes when not (M9 fix 810)', () => {
+  const measure = (s: string): number => s.length;
+  assert.equal(placeholderFirstLine('short', 40, measure), 'Message session: "short"');
+  const cut = placeholderFirstLine('abcd efghijklmnopqrstuvwxyz0123456789ABCDEF', 30, measure);
+  assert.ok(cut.length <= 30 && cut.endsWith('…"') && cut.startsWith('Message session: "abcd'), cut);
+  assert.equal(placeholderFirstLine('abcdefghi jklmnopqrstu', 30, measure), 'Message session: "abcdefghi…"', 'no space left before the ellipsis');
+  assert.equal(placeholderFirstLine('anything long', 5, measure), 'Message session: "…"');
+});
+
+test('slashRowTitle: the hint and the description, or whichever there is (M9 fix 811)', () => {
+  const row = (hint: string, description: string): SlashRow => ({ name: '/x', description, section: 'sent', skill: false, hint, argument: false });
+  assert.equal(slashRowTitle(row('[model]', 'Set the AI model')), '[model] · Set the AI model');
+  assert.equal(slashRowTitle(row('[model]', '')), '[model]');
+  assert.equal(slashRowTitle(row('', 'Set the AI model')), 'Set the AI model');
+  assert.equal(slashRowTitle(row('', '')), undefined);
 });
 
 test('slashQuery: a `/` first and no space yet', () => {
@@ -363,12 +424,12 @@ test('promptRowText: the last prompt row, and inputHolds reads text, not emptine
   assert.equal(inputHolds(['❯ '], ''), false);
 });
 
-test('timelineItems: a queued step stands after a closed fold like a reply', () => {
+test('timelineItems: a queued step ends a stretch, and the calls after it fold on their own (fix 797)', () => {
   const queuedStep: Step = { kind: 'queued', text: 'also this', at: null };
   const steps = [tool('Bash', res({ exitCode: 0 })), queuedStep, tool('Bash', res({ exitCode: 0 })), reply('done')];
   assert.deepEqual(
     timelineItems(steps, 'normal', false).map((i) => (i.kind === 'step' ? i.step.kind : i.kind)),
-    ['fold', 'queued', 'text'],
+    ['fold', 'queued', 'fold', 'text'],
   );
 });
 
@@ -400,6 +461,37 @@ test('stepModeTo: presses until the footer reads the target, five at most, and s
   let n = 0;
   const gone = await stepModeTo('Plan', { press: () => (n += 1), read: () => Promise.resolve(manual), wait, cancelled: () => n >= 1 });
   assert.deepEqual(gone, { reached: false, presses: 1, cancelled: true });
+});
+
+// M9 fix 819: the footer is read every quarter second after a press, until
+// its mode changes, rather than once a second later.
+test('stepModeTo: polls every MODE_POLL_MS after a press and stops at the first change', async () => {
+  const manual = ['  ⏸ manual mode on · ← 1 agent'];
+  const accept = ['  ⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent'];
+  const plan = ['  ⏸ plan mode on (shift+tab to cycle) · ← 1 agent'];
+  const reads = [manual, manual, accept];
+  let i = 0;
+  const waits: number[] = [];
+  const wait = (ms: number) => {
+    waits.push(ms);
+    return Promise.resolve();
+  };
+  const got = await stepModeTo('Accept edits', { press: () => {}, read: () => Promise.resolve(reads[Math.min(i++, reads.length - 1)]!), wait, cancelled: () => false });
+  assert.deepEqual(got, { reached: true, presses: 1, cancelled: false });
+  assert.deepEqual(waits, [250, 250]);
+  const capped: number[] = [];
+  const never = await stepModeTo('Auto', {
+    press: () => {},
+    read: () => Promise.resolve(plan),
+    wait: (ms) => {
+      capped.push(ms);
+      return Promise.resolve();
+    },
+    cancelled: () => false,
+  });
+  assert.deepEqual(never, { reached: false, presses: 5, cancelled: false });
+  assert.equal(capped.length, 20);
+  assert.ok(capped.every((ms) => ms === 250));
 });
 
 // M9 fix 744: the model chip's menu and the effort it shows after a pick.
@@ -438,9 +530,11 @@ test('viewChipShown: a tool call or a thinking step, never prompts and replies a
   assert.equal(viewChipShown([turnOf([{ kind: 'queued', text: 'x', at: null }, { kind: 'note', text: 'Interrupted', at: null }])]), false);
   assert.equal(viewChipShown([turnOf([{ kind: 'text', text: 'Hello.', at: null }]), turnOf([{ kind: 'thinking', text: '', ms: 6000, at: null }])]), true);
   assert.equal(viewChipShown([turnOf([tool('Bash', null)])]), true);
+  // M9 fix 797: an update is a reply line in every mode.
+  assert.equal(viewChipShown([turnOf([{ kind: 'update', text: 'Found it.', at: null }, { kind: 'text', text: 'Done.', at: null }])]), false);
 });
 
-test('effortShown: the transcript effort, or a pick until a later assistant line says one (M9 fix 770: read against the fold)', () => {
+test('effortShown: the status line\'s level, else the transcript\'s, a pick held until either moves (M9 fixes 770 and 799)', () => {
   const asst = (extra: Record<string, unknown>) => JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [] }, ...extra });
   const folded = (text: string) => {
     const state = effortState();
@@ -448,11 +542,22 @@ test('effortShown: the transcript effort, or a pick until a later assistant line
     return state;
   };
   const before = `${asst({ effort: 'high' })}\n`;
-  const pick = { level: 'low', assistants: folded(before).assistants };
-  assert.equal(effortShown(folded(before), null), 'high');
-  assert.equal(effortShown(folded(before), pick), 'low');
-  assert.equal(effortShown(folded(`${before}${asst({ effort: 'medium' })}\n`), pick), 'medium');
-  assert.equal(effortShown(folded(`${before}${asst({})}\n`), pick), 'low');
+  // The status line's level (M9 fix 799).
+  assert.equal(effortShown('high', effortState(), null), 'high', 'no assistant line yet: the status line says it');
+  assert.equal(effortShown('high', folded(`${asst({ effort: 'low' })}\n`), null), 'high', 'the status line wins over the transcript');
+  assert.equal(effortShown(null, folded(`${asst({ effort: 'medium' })}\n`), null), 'medium', 'a daemon before level 67: the transcript');
+  assert.equal(effortShown(null, effortState(), null), null);
+  const livePick = { level: 'low', assistants: folded(before).assistants, live: 'high' };
+  assert.equal(effortShown('high', folded(before), livePick), 'low', 'the pick holds while the status line has not moved');
+  assert.equal(effortShown('low', folded(before), livePick), 'low', 'the status line says the pick');
+  assert.equal(effortShown('medium', folded(before), livePick), 'medium', 'Claude Code clamped the pick');
+  assert.equal(effortShown('high', folded(`${before}${asst({ effort: 'xhigh' })}\n`), livePick), 'high', 'an answer after the pick: the status line still wins');
+  // The fix 770 cases, on a daemon with no status line effort.
+  const pick = { level: 'low', assistants: folded(before).assistants, live: null };
+  assert.equal(effortShown(null, folded(before), null), 'high');
+  assert.equal(effortShown(null, folded(before), pick), 'low');
+  assert.equal(effortShown(null, folded(`${before}${asst({ effort: 'medium' })}\n`), pick), 'medium');
+  assert.equal(effortShown(null, folded(`${before}${asst({})}\n`), pick), 'low');
 });
 
 test('promptRowImages: the markers on the prompt row alone (M9 fix 748)', () => {
@@ -473,6 +578,15 @@ test('promptRowImages: the markers on the prompt row alone (M9 fix 748)', () => 
   assert.deepEqual(promptRowImages(freshBelow), [5]);
   assert.deepEqual(promptRowImages(['', 'no prompt']), []);
   assert.equal(promptRow(['', 'no prompt']), null);
+});
+
+test('freshImage: the highest prompt-row marker no chip holds (M9 fix 807)', () => {
+  assert.equal(freshImage(['❯ [Image #1] [Image #2]'], new Set([1])), 2);
+  assert.equal(freshImage(['❯ [Image #1] [Image #2]'], new Set([1, 2])), null);
+  // A marker only above the prompt row is a sent prompt's.
+  assert.equal(freshImage(['> [Image #3] sent', '❯ '], new Set()), null);
+  // A pending chip (n null) holds no number.
+  assert.equal(freshImage(['❯ [Image #1]'], new Set([null])), 1);
 });
 
 // M9 fix 782: the pending bubble's match and words.
@@ -599,4 +713,48 @@ test('stopCarry: the input when it holds the prompt, the turn\'s prompt when it 
   assert.equal(stopCarry({ kind: 'none' }, answered), 'none');
   assert.equal(stopCarry({ kind: 'none' }, null), 'none');
   assert.equal(stopCarry({ kind: 'blocked' }, quiet), 'none');
+});
+
+// M9 fix 797: the folds per stretch, an update ending one, and a shell
+// call's words.
+import { shellWords } from './chat-model.ts';
+
+const update = (text: string): Step => ({ kind: 'update', text, at: null });
+const storySteps = (): Step[] => [update('Found it.'), tool('Grep', res()), tool('Bash', res({ exitCode: 0 })), update('Now the fix.'), tool('Edit', res({ added: 1, removed: 0 })), reply('Done.')];
+
+test('timelineItems: an update ends a stretch, so the turn reads update, fold, update, fold, reply (fix 797)', () => {
+  const steps = storySteps();
+  assert.deepEqual(shape(timelineItems(steps, 'normal', false)), ['update', 'fold', 'update', 'fold', 'text']);
+  assert.deepEqual(shape(timelineItems(steps, 'thinking', false)), ['update', 'fold', 'update', 'fold', 'text']);
+  assert.deepEqual(shape(timelineItems(steps, 'normal', true)), ['update', 'fold(open)', 'Grep', 'Bash', 'update', 'fold(open)', 'Edit', 'text']);
+  assert.deepEqual(shape(timelineItems(steps, 'verbose', false)), ['update', 'Grep', 'Bash', 'update', 'Edit', 'text']);
+  // Each stretch's own calls in its fold.
+  const folds = timelineItems(steps, 'normal', false).filter((i) => i.kind === 'fold');
+  assert.deepEqual(folds.map((f) => (f.kind === 'fold' ? f.count : 0)), [2, 1]);
+});
+
+test('timelineItems: the replies after the first fold row are the same steps closed and open (fix 752 anchor, fix 797)', () => {
+  const after = (items: TimelineItem[]) => {
+    const at = items.findIndex((i) => i.kind === 'fold');
+    return items.slice(at + 1).flatMap((i) => (i.kind === 'step' && (i.step.kind === 'text' || i.step.kind === 'update') ? [i.step] : []));
+  };
+  const steps = storySteps();
+  assert.deepEqual(after(timelineItems(steps, 'normal', false)), after(timelineItems(steps, 'normal', true)));
+  assert.equal(after(timelineItems(steps, 'normal', false)).length, 2);
+});
+
+// M9 fix 798: a command note ends a stretch too.
+test('timelineItems: a command note between calls splits the fold', () => {
+  const note: Step = { kind: 'command', text: 'Session renamed to: x', at: null };
+  assert.deepEqual(shape(timelineItems([tool('Bash', res({ exitCode: 0 })), note, tool('Bash', res({ exitCode: 0 }))], 'normal', false)), ['fold', 'command', 'fold']);
+  assert.equal(viewChipShown([turnOf([note])]), false);
+});
+
+test('shellWords: a shell call\'s trimmed description, else null', () => {
+  const withInput = (name: string, input: Record<string, unknown>) => ({ ...tool(name, null), input }) as ToolStep;
+  assert.equal(shellWords(withInput('Bash', { command: 'ls', description: '  List the packages ' })), 'List the packages');
+  assert.equal(shellWords(withInput('PowerShell', { command: 'dir', description: 'List the folder' })), 'List the folder');
+  assert.equal(shellWords(withInput('Bash', { command: 'ls', description: '  ' })), null);
+  assert.equal(shellWords(withInput('Bash', { command: 'ls' })), null);
+  assert.equal(shellWords(withInput('Read', { file_path: 'a.ts', description: 'Read a' })), null);
 });

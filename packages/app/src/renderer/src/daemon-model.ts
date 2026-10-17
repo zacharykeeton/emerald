@@ -1,6 +1,6 @@
 import { DAEMON_FEATURE_LEVEL, currentTab, isSingleTree, wrapSingleTree } from '@emerald/shared';
 import type { Layout, LayoutNode, LayoutTab, SessionInfo, SessionState, ShellOption, SingleTree } from '@emerald/shared';
-import type { DaemonInfo } from '../../preload/api.ts';
+import type { DaemonCrash, DaemonInfo } from '../../preload/api.ts';
 
 // The daemon survives an app upgrade on purpose, so the window may be
 // talking to an older build. These are the pure rules behind the banner
@@ -27,7 +27,15 @@ export function otherHomeText(daemon: DaemonInfo): string {
   return `emmerd on another home: it serves ${theirs}, and this window's home is ${mine}. Its sessions and layout belong to that home.`;
 }
 
-const KNOWN_STATES: ReadonlySet<string> = new Set<SessionState>(['starting', 'idle', 'working', 'waiting', 'needs-input', 'done', 'errored', 'exited']);
+// The banner for a daemon this window started that crashed (M9 fix 815):
+// the words plain, the pid and the code in the tooltip.
+export const CRASHED_TEXT = 'emmerd stopped unexpectedly and was restarted. The sessions it held have ended.';
+
+export function crashedTitle(crash: DaemonCrash): string {
+  return `emmerd pid ${crash.pid} exited with code 0x${crash.code}`;
+}
+
+const KNOWN_STATES:ReadonlySet<string> = new Set<SessionState>(['starting', 'idle', 'working', 'waiting', 'needs-input', 'done', 'errored', 'exited']);
 
 // Fields added after the daemon was built arrive missing, not null; the
 // renderer's checks are against null, so fill them in once, on receipt. A
@@ -45,6 +53,8 @@ export function normalizeSession(raw: SessionInfo): SessionInfo {
     lastPromptAt: raw.lastPromptAt ?? null,
     lastReplyAt: raw.lastReplyAt ?? null,
     model: raw.model ?? null,
+    // A daemon before level 67 (M9 fix 799) sends no effort.
+    effort: raw.effort ?? null,
     contextPercent: raw.contextPercent ?? null,
     contextWindow: raw.contextWindow ?? null,
     tokens: raw.tokens ?? null,

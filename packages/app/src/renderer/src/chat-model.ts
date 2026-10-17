@@ -1,4 +1,5 @@
 import type { EffortState, NeedsInputReason, SessionState, Step, StepTurn, TeamCounts } from '@emerald/shared';
+import type { SessionInfo } from '@emerald/shared';
 import { normalizePath, relativePath } from './files-model.ts';
 import { isQuestionDialog } from './screen-prompt-model.ts';
 
@@ -20,7 +21,8 @@ export function nextChatMode(mode: ChatMode): ChatMode {
 // M9 fix 785: the view chip shows only once the mode has something to
 // change: a tool call (Normal folds it) or a thinking step (Normal hides
 // it). A session with prompts and replies alone draws the same in all
-// three modes.
+// three modes. An update (fix 797) is a reply line, the same in every
+// mode, so it brings no chip.
 export function viewChipShown(turns: readonly StepTurn[]): boolean {
   return turns.some((t) => t.steps.some((s) => s.kind === 'tool' || s.kind === 'thinking'));
 }
@@ -94,14 +96,25 @@ export const CHAT_REREAD_MS = 500;
 
 // M9 fix 690: the ask card's heading. Since fix 777 the sidebar's answer
 // card (AnswerPopover.tsx) calls it too, and an AskUserQuestion, which
-// reaches the daemon as a permission_prompt, is told apart by its dialog
-// on the screen rows.
+// the daemon reports as a question since fix 802, is told apart by its
+// dialog on the screen rows whatever the reason.
 export function askHeading(reason: NeedsInputReason | null | undefined, rows?: readonly string[]): string {
   if (rows !== undefined && isQuestionDialog(rows)) return 'Claude has a question';
   if (reason === 'permission') return 'Claude is asking permission';
   if (reason === 'agent-permission') return 'A subagent is asking permission';
   if (reason === 'question') return 'Claude has a question';
+  if (reason === 'trust') return 'Trust this folder?';
   return 'Waiting on you';
+}
+
+// M9 fix 801: whether an ask card opens its answer box: a question or an
+// elicitation the card cannot draw as a dialog, or a read with no options,
+// and never once the card has been pressed, since a dialog cleared by the
+// press would otherwise read as nothing left but words to type.
+export function askBoxShown(o: { reason: NeedsInputReason | null | undefined; recognised: boolean; options: number; pressed: boolean; askedFor: SessionInfo['askedFor'] }): boolean {
+  // A select dialog the screen read could not parse: a typed answer would land in its Type something row only after a digit, so the excerpt and the buttons stand as for a permission (M9 fix 802).
+  const unreadQuestion = o.askedFor?.words.split(':', 1)[0] === 'AskUserQuestion';
+  return !o.pressed && !o.recognised && !unreadQuestion && (o.reason === 'question' || o.reason === 'elicitation' || o.options === 0);
 }
 
 // M9 fix 713: the view's one read of the session's screen, this often,
@@ -230,26 +243,43 @@ export const MODE_CHOICES: readonly { word: string; line: string }[] = [
 ];
 
 // Claude Code has no command that sets a mode by name, so a pick presses
-// Shift+Tab and reads the footer after each press, at most this often.
+// Shift+Tab and reads the footer every MODE_POLL_MS after each press until
+// its mode changes, SCREEN_READ_MS at most, this many presses at most (M9
+// fix 819: five presses took about six seconds at one read a second).
 export const MODE_PICK_PRESSES = 5;
+export const MODE_POLL_MS = 250;
 
 export async function stepModeTo(
   target: string,
   io: { press: () => void; read: () => Promise<readonly string[]>; wait: (ms: number) => Promise<void>; cancelled: () => boolean },
 ): Promise<{ reached: boolean; presses: number; cancelled: boolean }> {
+  // A failed read is a read of no mode.
+  const readMode = async (): Promise<string | null> => {
+    try {
+      return modeOf(await io.read());
+    } catch {
+      return null;
+    }
+  };
+  // The mode before a press, so a poll knows the press has landed when the
+  // footer reads anything else; a read of no mode keeps polling.
+  let before = await readMode();
   let presses = 0;
   while (presses < MODE_PICK_PRESSES) {
     if (io.cancelled()) return { reached: false, presses, cancelled: true };
     io.press();
     presses += 1;
-    await io.wait(SCREEN_READ_MS);
-    let rows: readonly string[] = [];
-    try {
-      rows = await io.read();
-    } catch {
-      // A failed read is a read of no mode; the next press tries again.
+    let now: string | null = null;
+    for (let polls = 0; polls < SCREEN_READ_MS / MODE_POLL_MS; polls++) {
+      await io.wait(MODE_POLL_MS);
+      const word = await readMode();
+      if (word !== null && word !== before) {
+        now = word;
+        break;
+      }
     }
-    if (modeOf(rows) === target) return { reached: true, presses, cancelled: false };
+    if (now === target) return { reached: true, presses, cancelled: false };
+    if (now !== null) before = now;
   }
   return { reached: false, presses, cancelled: false };
 }
@@ -301,13 +331,16 @@ export const EFFORT_LINES: Readonly<Record<EffortLevel, string>> = {
   max: 'Maximum capability with deepest reasoning (on supported models)',
 };
 
-// The effort the chip shows. Claude Code writes `effort` only on an
-// assistant line, so after a pick the picked level shows until a line
-// written after the pick (one past the assistant count then, M9 fix 770)
-// says one.
-export function effortShown(state: EffortState, pick: { level: string; assistants: number } | null): string | null {
-  if (pick === null) return state.effort;
-  if (state.assistants > pick.assistants) return state.effort ?? pick.level;
+// The effort the chip shows (M9 fix 799): the status line's level, which
+// Claude Code posts at the session's start and again at once after an
+// /effort or a /model, else the last assistant line's (a daemon before
+// level 67). A pick shows until the status line moves off the level it had
+// at the pick, or an assistant line written after it (one past the count
+// then, M9 fix 770) says one.
+export function effortShown(live: string | null, state: EffortState, pick: { level: string; assistants: number; live: string | null } | null): string | null {
+  const base = live ?? state.effort;
+  if (pick === null) return base;
+  if (live !== pick.live || state.assistants > pick.assistants) return base ?? pick.level;
   return pick.level;
 }
 
@@ -364,18 +397,23 @@ function stepsDiff(steps: readonly Step[]): { added: number; removed: number } {
 }
 
 // M9 fix 714: a turn's steps as the view mode draws them. Verbose is
-// every step. Normal and Thinking fold the tool calls into one row
-// (Normal drops the thinking, Thinking keeps it in place): closed, the
-// row stands just before the first reply or note after the first tool
-// call, or at the end, so the thinking reads above it; open, it stands
-// at the first tool call's place with every call after it. A closed
-// fold is followed by the folded calls that returned an image, which
-// m9-chat-reply draws as thumbnails, since they stay in Normal.
+// every step. Normal and Thinking (Normal drops the thinking, Thinking
+// keeps it in place) fold the tool calls per stretch (fix 797): a
+// breaker (a reply, an update, a note, a queued message) ends a stretch,
+// and each stretch that holds a call gets a fold row of its own, so the
+// story reads update, fold, update, fold as Claude Code's does. Closed,
+// a stretch's other steps are drawn in order and its fold row stands at
+// the stretch's end, just before the breaker, so the thinking reads
+// above it; open, the row stands at the stretch's first call with every
+// step in place. A closed fold is followed by its calls that returned an
+// image, which m9-chat-reply draws as thumbnails, since they stay in
+// Normal. A turn with no breaker between its calls draws one row.
 export type ToolStep = Extract<Step, { kind: 'tool' }>;
 export interface FoldItem {
   kind: 'fold';
   count: number;
-  names: string[];
+  // Claude Code's collapsed-group sentence for the stretch (foldText).
+  text: string;
   added: number;
   removed: number;
   open: boolean;
@@ -383,46 +421,169 @@ export interface FoldItem {
 }
 export type TimelineItem = { kind: 'step'; step: Step } | FoldItem | { kind: 'images'; steps: ToolStep[] };
 
+// The steps that end a stretch of calls (fix 797; fix 798's command notes;
+// fix 805's notifications).
+function breaksStretch(s: Step): boolean {
+  return s.kind === 'text' || s.kind === 'update' || s.kind === 'note' || s.kind === 'queued' || s.kind === 'command' || s.kind === 'notification';
+}
+
 export function timelineItems(steps: readonly Step[], mode: ChatMode, open: boolean): TimelineItem[] {
   const one = (step: Step): TimelineItem => ({ kind: 'step', step });
   if (mode === 'verbose') return steps.map(one);
   const kept = steps.filter((s) => s.kind !== 'thinking' || mode === 'thinking');
-  const tools = kept.filter((s): s is ToolStep => s.kind === 'tool');
-  if (tools.length === 0) return kept.map(one);
-  const fold: FoldItem = { kind: 'fold', count: tools.length, names: tools.map((t) => t.name), ...stepsDiff(tools), open, tone: foldTone(tools) };
   const out: TimelineItem[] = [];
-  let placed = false;
-  if (open) {
-    for (const s of kept) {
-      if (s.kind === 'tool' && !placed) {
+  let stretch: Step[] = [];
+  const flush = () => {
+    const tools = stretch.filter((s): s is ToolStep => s.kind === 'tool');
+    if (tools.length === 0) {
+      out.push(...stretch.map(one));
+    } else {
+      const tone = foldTone(tools);
+      const fold: FoldItem = { kind: 'fold', count: tools.length, text: foldText(tools, tone === 'pending'), ...stepsDiff(tools), open, tone };
+      if (open) {
+        let placed = false;
+        for (const s of stretch) {
+          if (s.kind === 'tool' && !placed) {
+            out.push(fold);
+            placed = true;
+          }
+          out.push(one(s));
+        }
+      } else {
+        for (const s of stretch) if (s.kind !== 'tool') out.push(one(s));
         out.push(fold);
-        placed = true;
+        const images = tools.filter((t) => t.result !== null && t.result.image !== null);
+        if (images.length > 0) out.push({ kind: 'images', steps: images });
       }
-      out.push(one(s));
     }
-    return out;
-  }
-  const images = tools.filter((t) => t.result !== null && t.result.image !== null);
-  const place = () => {
-    out.push(fold);
-    if (images.length > 0) out.push({ kind: 'images', steps: images });
-    placed = true;
+    stretch = [];
   };
-  let seenTool = false;
   for (const s of kept) {
-    if (s.kind === 'tool') {
-      seenTool = true;
-      continue;
+    if (breaksStretch(s)) {
+      flush();
+      out.push(one(s));
+    } else {
+      stretch.push(s);
     }
-    if (seenTool && !placed && (s.kind === 'text' || s.kind === 'note' || s.kind === 'queued')) place();
-    out.push(one(s));
   }
-  if (!placed) place();
+  flush();
   return out;
 }
 
-export function foldText(fold: Pick<FoldItem, 'count' | 'names'>): string {
-  return `${fold.count} step${fold.count === 1 ? '' : 's'} · ${fold.names.join(', ')}`;
+// M9 fix 797: the plain words a shell call carries, which Claude Code
+// draws on the row in place of the command; null for any other tool or
+// a call with none. An agent's description already reaches stepArg.
+export function shellWords(step: ToolStep): string | null {
+  if (step.name !== 'Bash' && step.name !== 'PowerShell') return null;
+  const d = step.input['description'];
+  return typeof d === 'string' && d.trim() !== '' ? d.trim() : null;
+}
+
+// Claude Code 2.1.302's sets (bundle pcs: EYn, RYn, CYn, xYn).
+export const SEARCH_WORDS: ReadonlySet<string> = new Set(['find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis']);
+export const READ_WORDS: ReadonlySet<string> = new Set(['cat', 'head', 'tail', 'less', 'more', 'wc', 'stat', 'file', 'strings', 'jq', 'awk', 'cut', 'sort', 'uniq', 'tr']);
+export const LIST_WORDS: ReadonlySet<string> = new Set(['ls', 'tree', 'du']);
+export const NEUTRAL_WORDS: ReadonlySet<string> = new Set(['echo', 'printf', 'true', 'false', ':']);
+
+const knownWord = (w: string): boolean => SEARCH_WORDS.has(w) || READ_WORDS.has(w) || LIST_WORDS.has(w) || NEUTRAL_WORDS.has(w);
+
+// How Claude Code sorts a Bash command for the sentence: every piece's
+// first word one of the four sets (the neutral ones skipped), then a list
+// before a search before a read, as its count tries isList, isSearch,
+// then read. Null is a shell command. Quoting is not parsed, so
+// `grep "a|b" x` is a shell command here.
+function shellSort(command: string): 'search' | 'read' | 'list' | null {
+  const first = /^\s*(?:(?:#[^\n]*|\\)\n\s*)*([^\s|&;<>()]+)/.exec(command)?.[1];
+  if (first === undefined || !knownWord(first)) return null;
+  const words: string[] = [];
+  for (const piece of command.split(/\|\||&&|[|;\n]/)) {
+    const word = piece.trim().split(/\s+/)[0] ?? '';
+    if (word === '' || NEUTRAL_WORDS.has(word)) continue;
+    if (!knownWord(word)) return null;
+    words.push(word);
+  }
+  if (words.length === 0) return null;
+  if (words.some((w) => LIST_WORDS.has(w))) return 'list';
+  if (words.some((w) => SEARCH_WORDS.has(w))) return 'search';
+  return 'read';
+}
+
+const EDIT_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+// The calls Claude Code absorbs into a group without a word (its Vmr).
+const SILENT_NAMES = new Set(['TodoWrite', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList']);
+
+// M9 fix 797: a fold row's words, Claude Code 2.1.302's collapsed-group
+// sentence for the calls of one stretch, done or (running) still going.
+// Read off its grouped row's renderer with
+// `node .claude/skills/batch/bundle-grep.mjs 'qe=d.bashCount??0' --window 7000`
+// and `bundle-grep.mjs '"command":"commands"' --window 3000`, and the
+// shell sort pcs with `bundle-grep.mjs '"ls","tree"' --window 1500`; read
+// them again at the next update. Left out: its `Thought for Ns` head (the
+// thinking is drawn on its own in Thinking), its commit, push and PR
+// parts (a git command counts as a shell command here) and its hook
+// timings. Claude Code counts a read's paths alone when it has any;
+// this adds the shell reads to them.
+export function foldText(tools: readonly ToolStep[], running: boolean): string {
+  const edits = new Set<string>();
+  let editsBare = 0;
+  const reads = new Set<string>();
+  let readsBare = 0;
+  let searches = 0;
+  let lists = 0;
+  let shells = 0;
+  let others = 0;
+  let mcpCalls = 0;
+  const servers: string[] = [];
+  const agents: ToolStep[] = [];
+  for (const t of tools) {
+    const path = t.input['file_path'] ?? t.input['notebook_path'];
+    if (EDIT_NAMES.has(t.name)) {
+      if (typeof path === 'string') edits.add(path);
+      else editsBare++;
+    } else if (t.name === 'Read') {
+      if (typeof t.input['file_path'] === 'string') reads.add(t.input['file_path']);
+      else readsBare++;
+    } else if (t.name === 'Grep' || t.name === 'Glob') {
+      searches++;
+    } else if (t.name.startsWith('mcp__')) {
+      mcpCalls++;
+      const server = t.name.slice('mcp__'.length).split('__')[0] ?? '';
+      if (!servers.includes(server)) servers.push(server);
+    } else if (t.name === 'Agent' || t.name === 'Task') {
+      agents.push(t);
+    } else if (SILENT_NAMES.has(t.name)) {
+      continue;
+    } else if (t.name === 'Bash' || t.name === 'PowerShell') {
+      const command = t.input['command'];
+      const sort = t.name === 'Bash' && typeof command === 'string' ? shellSort(command) : null;
+      if (sort === 'search') searches++;
+      else if (sort === 'read') readsBare++;
+      else if (sort === 'list') lists++;
+      else shells++;
+    } else {
+      others++;
+    }
+  }
+  const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  const add = (done: string, going: string, rest: string) => parts.push(`${running ? going : done} ${rest}`);
+  const editCount = edits.size + editsBare;
+  const readCount = reads.size + readsBare;
+  if (editCount > 0) add('edited', 'editing', counted(editCount, 'file', 'files'));
+  if (searches > 0) add('searched for', 'searching for', counted(searches, 'pattern', 'patterns'));
+  if (readCount > 0) add('read', 'reading', counted(readCount, 'file', 'files'));
+  if (lists > 0) add('listed', 'listing', counted(lists, 'directory', 'directories'));
+  if (mcpCalls > 0) add('called', 'calling', servers.join(', ') + (mcpCalls > 1 ? ` ${mcpCalls} times` : ''));
+  if (agents.length > 0) {
+    const d = agents.length === 1 ? agents[0]!.input['description'] : undefined;
+    if (typeof d === 'string' && d.trim() !== '') add('ran', 'running', `agent · ${d.trim()}`);
+    else add('ran', 'running', counted(agents.length, 'agent', 'agents'));
+  }
+  if (others > 0) add('called', 'calling', counted(others, 'tool', 'tools'));
+  if (shells > 0) add('ran', 'running', counted(shells, 'shell command', 'shell commands'));
+  if (parts.length === 0) add('called', 'calling', counted(tools.length, 'tool', 'tools'));
+  const sentence = parts.join(', ');
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1) + (running ? '…' : '');
 }
 
 // M9 fix 719: the `/` menu over the box. The built-ins that run and leave
@@ -469,6 +630,29 @@ export interface SlashRow {
   // whether a pick completes rather than sends.
   hint: string;
   argument: boolean;
+}
+
+// The first line of the chat box's placeholder (M9 fix 810): the session's
+// name in quotes, cut with an ellipsis inside the quotes at the longest
+// prefix that fits `room` when the whole line does not, so the hints keep
+// their own second line. `measure` is the line's width in the box's font.
+export function placeholderFirstLine(name: string, room: number, measure: (s: string) => number): string {
+  const whole = `Message session: "${name}"`;
+  if (measure(whole) <= room) return whole;
+  const chars = Array.from(name);
+  for (let n = chars.length - 1; n > 0; n--) {
+    const line = `Message session: "${chars.slice(0, n).join('').trimEnd()}…"`;
+    if (measure(line) <= room) return line;
+  }
+  return 'Message session: "…"';
+}
+
+// A menu row's tooltip: the hint and the description, since the hint is cut
+// with an ellipsis on a narrow row and the tooltip is where it reads whole
+// (M9 fix 811).
+export function slashRowTitle(row: SlashRow): string | undefined {
+  if (row.hint === '') return row.description === '' ? undefined : row.description;
+  return row.description === '' ? row.hint : `${row.hint} · ${row.description}`;
 }
 
 // The menu's query: the whole box a `/` and no space yet, else none.
@@ -639,6 +823,13 @@ export function promptRow(rows: readonly string[]): string | null {
 export function promptRowImages(rows: readonly string[]): number[] {
   const row = promptRow(rows);
   return row === null ? [] : imageMarkers([row]);
+}
+
+// The highest image number on the prompt row that no chip holds yet, else
+// null (M9 fix 807).
+export function freshImage(rows: readonly string[], held: ReadonlySet<number | null>): number | null {
+  const fresh = promptRowImages(rows).filter((n) => !held.has(n));
+  return fresh.length > 0 ? Math.max(...fresh) : null;
 }
 
 // M9 fix 754: the text in Claude Code's input, after the `❯`, trimmed;

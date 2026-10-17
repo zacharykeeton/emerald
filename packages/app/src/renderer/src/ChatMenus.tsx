@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { slashRowTitle } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 import { TerminalIcon } from './icons.tsx';
 
@@ -75,7 +76,7 @@ export function SlashMenu({ box, rows, active, onPick, onHover, onClose }: { box
         data-skill={row.skill ? '' : undefined}
         data-active={i === active ? 'true' : undefined}
         data-hint={row.hint === '' ? undefined : row.hint}
-        title={row.description === '' ? undefined : row.description}
+        title={slashRowTitle(row)}
         onMouseDown={(ev) => ev.preventDefault()}
         onMouseMove={(ev) => moved(ev, i, onHover)}
         onClick={() => onPick(row)}

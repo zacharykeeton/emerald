@@ -445,6 +445,66 @@ test('a session that was live when the daemon died restores with no exit code', 
   }
 });
 
+test('a restored session keeps its transcript path, and a resume keeps it until the new process names one (M9 fix 804)', () => {
+  const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
+  const transcript = path.join(tempDir(), 'kept.jsonl');
+  store.save([
+    {
+      id: 'kept-804',
+      kind: 'shell',
+      name: 'proj',
+      spawnCwd: process.cwd(),
+      args: ['-NoProfile', '-Command', 'Start-Sleep 60'],
+      autoName: true,
+      branch: null,
+      lastPrompt: null,
+      lastReply: null,
+      cwd: process.cwd(),
+      groupCwd: process.cwd(),
+      state: 'exited',
+      stateSince: 1000,
+      lastEventAt: 1000,
+      stale: false,
+      needsInputReason: null,
+      errorType: null,
+      waitingOn: [],
+      team: [],
+      conversation: null,
+      shellCwd: null,
+      commits: [],
+      model: null,
+      contextPercent: null,
+      contextWindow: null,
+      tokens: null,
+      comment: null,
+      phase: null,
+      color: '#61afef',
+      title: null,
+      transcriptPath: transcript,
+      liveReply: null,
+      liveTool: null,
+      // No session id, so the resume types nothing into the shell.
+      claudeSessionId: 'c-1',
+      remoteSessionId: null,
+      startHead: null,
+      pid: null,
+      exitCode: 0,
+      createdAt: 1000,
+    },
+  ]);
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
+  try {
+    manager.restore();
+    const [s] = manager.list();
+    assert.equal(s?.transcriptPath, transcript, 'the chat face of a restored session has its transcript to draw');
+    const resumed = manager.resume('kept-804', 80, 24);
+    assert.equal(resumed.transcriptPath, transcript, 'the resume carries on in the same transcript until a SessionStart names another');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
 test('over the pipe: a restored session lists, attaches with a note, reads empty and ignores input', async () => {
   const dir = tempDir();
   const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);

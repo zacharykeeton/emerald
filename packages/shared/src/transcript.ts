@@ -160,10 +160,16 @@ export type Step =
   | { kind: 'thinking'; text: string; ms: number | null; at: number | null }
   | { kind: 'tool'; id: string; name: string; arg: string; input: Record<string, unknown>; at: number | null; result: StepResult | null }
   | { kind: 'text'; text: string; at: number | null }
+  // M9 fix 797: a progress line Claude Code shows as ● prose: a non-empty thinking part on a line written with thinkingDisplay "updates", where the model's own thinking is stored empty.
+  | { kind: 'update'; text: string; at: number | null }
+  // M9 fix 798: what a Claude Code command printed (its local-command stdout or stderr), drawn as a divider in the turn it lands in.
+  | { kind: 'command'; text: string; at: number | null }
   | { kind: 'note'; text: 'Interrupted'; at: number | null }
   // M9 fix 754: a message the person sent while the turn ran, which
   // Claude read mid-turn; `at` is its send time.
-  | { kind: 'queued'; text: string; at: number | null };
+  | { kind: 'queued'; text: string; at: number | null }
+  // M9 fix 805: a line Claude Code wrote for itself, a background task's end, an agent's report or another session's message, read as one line in the open turn.
+  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null };
 
 export interface StepResult {
   error: boolean;
@@ -379,6 +385,35 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     turn.steps.push({ kind: 'note', text: 'Interrupted', at });
     return;
   }
+  // M9 fix 805: Claude Code's own lines go into the open turn as one
+  // line each; with no turn open one is dropped, as an interrupt is, so
+  // it never opens a turn of its own.
+  const notice = notificationOf(o, at);
+  if (notice !== null) {
+    if (turn === null) return;
+    if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+    turn.steps.push(notice);
+    return;
+  }
+  const said = commandNoteOf(o);
+  if (said === 'drop') return;
+  if (said !== null) {
+    // The note does not move the turn's endAt, so a rename ten minutes
+    // after a reply does not stretch the turn's length on its prompt row.
+    const note: Step = { kind: 'command', text: said.text, at };
+    if (turn === null) {
+      // A command before the first prompt opens a bare turn of its own.
+      turn = { prompt: '', at, endAt: null, steps: [note], images: [] };
+      state.turn = turn;
+      state.tools = new Map();
+      state.promptId = null;
+      state.promptUuid = null;
+      state.turns.push(turn);
+    } else {
+      turn.steps.push(note);
+    }
+    return;
+  }
   const prompt = promptOf(o);
   if (prompt !== null) {
     turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
@@ -411,6 +446,10 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
       if (!isObject(part)) continue;
       if (part['type'] === 'thinking') {
         const ms = typeof o['thinkingDurationMs'] === 'number' ? o['thinkingDurationMs'] : null;
+        if (o['thinkingDisplay'] === 'updates' && typeof part['thinking'] === 'string' && part['thinking'].trim() !== '') {
+          turn.steps.push({ kind: 'update', text: part['thinking'], at });
+          continue;
+        }
         turn.steps.push({ kind: 'thinking', text: typeof part['thinking'] === 'string' ? part['thinking'] : '', ms, at });
       } else if (part['type'] === 'text') {
         if (typeof part['text'] === 'string' && part['text'].trim() !== '') turn.steps.push({ kind: 'text', text: part['text'], at });
@@ -461,9 +500,11 @@ export function resultText(step: Extract<Step, { kind: 'tool' }>): string {
 
 // The effort the session's model answers at (M9 fix 713), off the last
 // main-chain assistant line: Claude Code 2.1.300 writes a top-level
-// `effort` on every assistant line (claim 3 of the chat claims), and the
-// status line payload carries none. The last line alone decides, so a
-// line written without it reads as unknown rather than as an older pick.
+// `effort` on every assistant line (claim 3 of the chat claims). The last
+// line alone decides, so a line written without it reads as unknown rather
+// than as an older pick. The status line carries the session's level too
+// (M9 fix 799) and the chat view reads that first; this fold is its
+// fallback.
 export function effortOf(text: string): string | null {
   const state = effortState();
   effortFold(state, text);
@@ -668,6 +709,36 @@ function imagesOf(o: Record<string, unknown>): { mediaType: string; data: string
 // The text of a user line that is a prompt someone typed, else null: not
 // a meta line, not a tool result, and a slash command as the command and
 // its arguments (the same reading the Sessions rows give a prompt).
+// What a dialog closed with no pick prints (Claude Code 2.1.302's onDone(..., { display: "system" }) strings), and /compact's ctrl+o hint: nothing happened that the conversation needs to say.
+export const COMMAND_LEFTOVER = /^(?:.+ dialog dismissed|.+ cancell?ed\.?|Cancelled .+|Kept model as .+|Artifacts panel closed|Theme picker dismissed|Cloud session details dismissed|No IDE selected\.|Exited without opening IDE|Compacted\b[\s\S]*)$/;
+
+// M9 fix 798: a command's printed output, from either shape Claude Code
+// writes it in: a system local_command line, or a user line (a /model,
+// /effort or /exit pick) holding the tags. Null is any other line, and
+// 'drop' a line that says nothing worth drawing: an empty output, a
+// dialog's leftover, and a system line naming the command itself, which
+// is dropped rather than left to move the open turn's endAt.
+function commandNoteOf(o: Record<string, unknown>): { text: string } | 'drop' | null {
+  let source: string | null = null;
+  const system = o['type'] === 'system' && o['subtype'] === 'local_command';
+  if (system) {
+    source = typeof o['content'] === 'string' ? o['content'] : null;
+  } else if (o['type'] === 'user' && o['isMeta'] !== true) {
+    const message = o['message'];
+    const content = isObject(message) ? message['content'] : undefined;
+    if (typeof content === 'string') source = content;
+    else if (Array.isArray(content)) {
+      const first = content.find((part): part is { type: 'text'; text: string } => isObject(part) && part['type'] === 'text' && typeof part['text'] === 'string');
+      source = first === undefined ? null : first.text;
+    }
+  }
+  if (source === null) return system ? 'drop' : null;
+  const m = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>\s*$/.exec(source);
+  if (m === null) return system ? 'drop' : null;
+  const text = m[2]!.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  return text === '' || COMMAND_LEFTOVER.test(text) ? 'drop' : { text };
+}
+
 function promptOf(o: Record<string, unknown>): string | null {
   if (o['type'] !== 'user' || o['isMeta'] === true) return null;
   const message = o['message'];
@@ -687,6 +758,68 @@ function promptOf(o: Record<string, unknown>): string | null {
   if (name === null) return trimmed;
   const args = /<command-args>([^<]*)<\/command-args>/.exec(trimmed);
   return `${name[1]!.trim()} ${args?.[1]?.trim() ?? ''}`.trim();
+}
+
+// M9 fix 805: a user line Claude Code wrote for itself, read as one line.
+// A background task's end is a plain user line holding a
+// <task-notification> (origin kind task-notification); an agent's report
+// and another session's message are meta lines holding an <agent-message>
+// or a <cross-session-message> (origin kind peer, its name and body). A
+// line with no origin (an older one, or a mod row) is read off its text.
+function notificationOf(o: Record<string, unknown>, at: number | null): Step | null {
+  if (o['type'] !== 'user') return null;
+  const origin = isObject(o['origin']) ? o['origin'] : null;
+  if (origin !== null && origin['kind'] === 'human') return null;
+  const message = o['message'];
+  if (!isObject(message)) return null;
+  const content = message['content'];
+  let text: string | null = null;
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    const first = content[0];
+    if (isObject(first) && first['type'] === 'text' && typeof first['text'] === 'string') text = first['text'];
+  }
+  if (text === null) return null;
+  const trimmed = text.trim();
+  const kind = origin === null ? null : origin['kind'];
+  if (kind === 'task-notification' || (origin === null && trimmed.startsWith('<task-notification>'))) return taskNote(trimmed, at);
+  const fromText = origin === null && (trimmed.startsWith('Another Claude session sent a message:') || trimmed.startsWith('<agent-message') || trimmed.startsWith('<cross-session-message'));
+  if (kind !== 'peer' && !fromText) return null;
+  const tag = trimmed.includes('<agent-message') ? 'agent-message' : trimmed.includes('<cross-session-message') ? 'cross-session-message' : null;
+  if (tag === null && origin === null) return null;
+  const open = tag === null ? null : new RegExp(`<${tag}\\b[^>]*>`).exec(trimmed);
+  const attr = (name: string) => (open === null ? null : (new RegExp(`\\s${name}="([^"]*)"`).exec(open[0])?.[1] ?? null));
+  const originText = (key: string) => (origin !== null && typeof origin[key] === 'string' && origin[key] !== '' ? (origin[key] as string) : null);
+  const name = originText('name') ?? attr('from-name') ?? attr('from') ?? 'another session';
+  let body = originText('body');
+  if (body === null) {
+    // The text between the opening tag's line and the closing tag (or the
+    // end); Claude Code's instructions to the model come after the close.
+    const after = open === null ? '' : trimmed.slice(open.index + open[0].length).replace(/^\r?\n/, '');
+    const close = after.indexOf(`</${tag}>`);
+    body = (close < 0 ? after : after.slice(0, close)).replace(/\r?\n$/, '');
+  }
+  // A hand-back says so on its origin; with none, by Claude Code's frame.
+  const handback = origin !== null ? origin['handback'] === true : body.startsWith('[Subagent hand-back]');
+  const source = tag === 'agent-message' ? 'agent' : tag === 'cross-session-message' ? 'peer' : handback ? 'agent' : 'peer';
+  const lines = body.split(/\r?\n/);
+  const follows = lines.findIndex((l) => l.trimEnd().endsWith('The report follows:'));
+  const firstLine = (follows >= 0 ? lines.slice(follows + 1) : lines).find((l) => l.trim() !== '')?.trim() ?? '';
+  const word = handback ? 'Report' : 'Message';
+  return { kind: 'notification', source, text: firstLine === '' ? `${word} from ${name}` : `${word} from ${name} · ${firstLine}`, tone: 'quiet', output: null, title: body.slice(0, 2000), at };
+}
+
+// A <task-notification>'s summary, else its status, with its output file.
+function taskNote(text: string, at: number | null): Step {
+  const field = (name: string) => {
+    const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text);
+    const v = m?.[1]?.trim() ?? '';
+    return v === '' ? null : v;
+  };
+  const status = field('status');
+  const summary = field('summary');
+  const shown = summary ?? (status !== null ? `Background task ${status}` : 'Background task finished');
+  return { kind: 'notification', source: 'task', text: shown, tone: status === 'failed' || status === 'killed' ? 'error' : 'quiet', output: field('output-file'), title: shown, at };
 }
 
 function lineTime(o: Record<string, unknown>): number | null {

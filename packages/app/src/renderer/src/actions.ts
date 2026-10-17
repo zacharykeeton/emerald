@@ -48,9 +48,13 @@ import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
 import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
 import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.ts';
 import type { ClosedSpot } from './close-countdown-model.ts';
+import { exitsToShell } from './exit-to-shell-model.ts';
 import { normalizePath } from './files-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
+import { flashCornerNote } from './ui.ts';
+import { copiedNote } from './copy-note.ts';
+import { FREE_MOVE_WAIT_MS, askQuestion, freeAnswerKeys, freeOption } from './screen-prompt-model.ts';
 
 // Layout and session actions shared by the sidebar, the picker and the
 // keybindings, so the rules live in one place.
@@ -434,6 +438,50 @@ export function sendPrompt(sessionId: string, text: string, opts: { typed?: bool
   return chainOn(promptChains, sessionId, () => sendNow(sessionId, text, opts.typed === true));
 }
 
+// M9 fix 803: a free answer to an AskUserQuestion, typed into its Type
+// something row: the row's digit when the pointer is elsewhere (read until
+// the pointer is there, since the keys after it must land in the field),
+// the clears and the text, then the Enter after the pause a Claude session
+// needs. The capture of 2.1.302 read a short text with its Enter in one
+// write submitting, and a long one taking the Enter as a newline in the
+// field, so the Enter goes on its own. On the prompt chain, so it never
+// types inside a prompt's pause.
+export function sendFreeAnswer(sessionId: string, text: string): Promise<'sent' | 'not-moved'> {
+  return chainOn(promptChains, sessionId, async () => {
+    const read = async () => {
+      const res = await window.emerald.request('pty.screen', { sessionId });
+      return askQuestion(res.rows);
+    };
+    let ask = await read();
+    if (ask === null || freeOption(ask) === null) return 'not-moved';
+    let keys = freeAnswerKeys(ask, text);
+    if (keys.move !== null) {
+      typeInto(sessionId, keys.move);
+      const until = Date.now() + FREE_MOVE_WAIT_MS;
+      let there = false;
+      while (!there && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const next = await read();
+        if (next !== null && freeOption(next)?.pointer === true) {
+          ask = next;
+          there = true;
+        }
+      }
+      if (!there) {
+        console.warn('[emerald] free answer: the pointer never reached the Type something row');
+        return 'not-moved';
+      }
+      // Recomputed off the read with the pointer there, so a digit that
+      // also typed itself is cleared with the rest.
+      keys = freeAnswerKeys(ask, text);
+    }
+    typeInto(sessionId, keys.text);
+    await new Promise((resolve) => setTimeout(resolve, CLAUDE_ENTER_DELAY_MS));
+    typeInto(sessionId, '\r');
+    return 'sent';
+  });
+}
+
 async function sendNow(sessionId: string, text: string, typed: boolean): Promise<PromptOutcome> {
   // Read again here: the chain may have waited, and the state with it.
   const session = getState().sessions.get(sessionId);
@@ -623,6 +671,49 @@ function watchRemovals(): void {
 function armRemoval(sessionId: string, spot: ClosedSpot | null): void {
   watchRemovals();
   setRemoval(sessionId, { spot, started: false, leftMs: REMOVE_AFTER_MS, runningSince: null });
+  // An /exit's count (M9 fix 813) is armed on a session already exited,
+  // which may meet no later store change, so it starts here; every close
+  // arms a live one and the subscription starts it.
+  if (getState().sessions.get(sessionId)?.state === 'exited') {
+    setRemoval(sessionId, { spot, started: true, leftMs: REMOVE_AFTER_MS, runningSince: Date.now() });
+    runRemoval(sessionId, REMOVE_AFTER_MS);
+  }
+}
+
+// M9 fix 813: a Claude left with /exit drops its pane to a shell in the
+// folder it was started in, as a terminal's own shell is there after
+// claude ends, and its Exited row counts down as a closed pane's does. A
+// close emerald made (Close all's typed /exit, a pane's ×) already counts
+// and is left to its own path. Installed once by App.
+export function installExitToShell(): () => void {
+  let live = new Set<string>();
+  return subscribe(() => {
+    const { sessions, layout } = getState();
+    const seen = exitsToShell(live, sessions.values());
+    live = seen.live;
+    for (const id of seen.exited) {
+      if (getUiState().removing.has(id)) continue;
+      const shown = layout === null ? null : paneShowingIn(layout, id);
+      if (shown === null) {
+        armRemoval(id, null);
+        continue;
+      }
+      armRemoval(id, { tabId: shown.tab.id, paneId: shown.pane.id, siblingId: null, direction: 'row', place: 'after', ratio: 0.5 });
+      void dropToShell(id, shown.pane.id).catch(warn('shell after /exit'));
+    }
+  });
+}
+
+// The shell takes the pane only while the pane still shows the exited
+// Claude; a pane closed, refilled or resumed during the spawn's round trip
+// keeps what it has and the shell is killed, so none is left stray. No
+// rememberFolderUsed, since nobody picked the folder.
+async function dropToShell(sessionId: string, paneId: string): Promise<void> {
+  const claude = getState().sessions.get(sessionId);
+  if (claude === undefined) return;
+  const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 });
+  const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneSession(t, paneId, shell.id) : t), paneId);
+  if (findPane(tab, paneId)?.sessionId !== shell.id) await killSessionUnrecorded(shell.id, true);
 }
 
 // The row's hover holds the count and the leave lets it run on from where
@@ -1126,4 +1217,14 @@ export function closeLayoutTab(tabId: string): Promise<Layout> {
 export function shownTab(): LayoutTab | null {
   const layout = getState().layout;
   return layout === null ? null : currentTab(layout);
+}
+
+// M9 fix 806: every copy out of a pane, either face, through the main
+// process (fix 370) and then a note in the corner of what was copied; a
+// failed write says nothing but the warning.
+export function copyAndNote(text: string): void {
+  window.emerald.clipboard
+    .write(text)
+    .then(() => flashCornerNote(copiedNote(text)))
+    .catch((err: unknown) => console.warn('[emerald] copy failed', err));
 }

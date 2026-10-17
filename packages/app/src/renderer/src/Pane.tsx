@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -8,10 +8,10 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { findPane, focusPane, formatDuration, formatSpanLength, formatTokens, formatUsd, runningKind, tallyText, taskTally, tasksOfAgent, tokensUp } from '@emerald/shared';
 import { Limits } from '@emerald/shared';
 import { SHELL_LABELS } from '@emerald/shared';
-import type { SessionInfo, ShellId, SplitDirection } from '@emerald/shared';
+import type { SessionInfo, ShellId, SplitDirection, TeamMember } from '@emerald/shared';
 import type { AttentionState } from './attention-model.ts';
 import '@xterm/xterm/css/xterm.css';
-import { closeSessionHere, hidePaneHere, renameSession, resumeSession, setSessionScheme, splitHere, splitWith, startShellHere, typeInto } from './actions.ts';
+import { closeSessionHere, copyAndNote, hidePaneHere, renameSession, resumeSession, setSessionScheme, splitHere, splitWith, startShellHere, typeInto } from './actions.ts';
 import { hadRecentInput } from './attention.ts';
 import { attentionState, waitOverlay } from './attention-model.ts';
 import { takeFresh } from './fresh-panes.ts';
@@ -23,7 +23,8 @@ import { useAgentsRunning, useTeamBeat } from './agents-running.ts';
 import { agentOut, runningFigure } from './agents-running-model.ts';
 import type { RunningFigure } from './agents-running-model.ts';
 import { TasksPopover, TasksReading } from './TasksPopover.tsx';
-import { PopoverAnchor } from './Popover.tsx';
+import { PopoverAnchor, usePopoverAnchor } from './Popover.tsx';
+import { AgentCard } from './AgentCard.tsx';
 import { TurnStateAnchor } from './TurnCard.tsx';
 import { FindBar } from './FindBar.tsx';
 import { ChatView } from './ChatView.tsx';
@@ -53,7 +54,7 @@ import { useSqueeze } from './squeeze.ts';
 import { dialStyle } from './usage-model.ts';
 import { folderName } from './files-model.ts';
 import { lastFolder } from './recent-folders.ts';
-import { ackable, compactPercent, contextPercentText, contextText, contextWords, describeState, hasState, idleClock, idleClockTitle, markKind, memberParts, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
+import { ackable, compactPercent, contextPercentText, contextText, describeState, hasState, idleClock, idleClockTitle, markKind, memberParts, modelEffortWords, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
 import { editTab, getState, useStore } from './store.ts';
 import { otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
@@ -338,10 +339,13 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // overflow is the measure, the buttons' box being the last thing on
   // the line. Every title has the seven levels (eight counting the
   // whole line at 0); one without tokens or a count passes through an
-  // empty second, which is simpler than renumbering.
+  // empty second, which is simpler than renumbering. The reading's box is
+  // measured too (M9 fix 817): once its words are gone its percent and
+  // dollars are flex: none and run past its width unseen, so a level at
+  // which the box overflows does not fit; hidden, it measures 0 against 0.
   const titleRef = useRef<HTMLDivElement>(null);
   const team = session === undefined ? null : teamCounts(session);
-  useSqueeze(titleRef, 8, '.pane-state', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
+  useSqueeze(titleRef, 8, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
   // The session's colour on the pane as well as its title (M9 fix 43): the
   // focus ring is the pane's ::after, so it reads the variable from here.
   // An empty pane and a session with no colour keep the amber.
@@ -436,9 +440,9 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
           {session !== undefined && contextText(session) !== null && (
             <ContextReading session={session} className="pane-context">
               {/* The tooltip is the card the reading opens (M9 fix 67). The words in a span of their own, so a short title takes them first and leaves the dial (M9 fix 50); the dial (M9 fix 44) sits right before the percent it pictures, "Opus 5 · ◔ 19%" (M9 fix 66). */}
-              {contextWords(session) !== null && (
+              {modelEffortWords(session) !== null && (
                 <span className="pane-context-model">
-                  {contextWords(session)}
+                  {modelEffortWords(session)}
                   {contextPercentText(session) !== null && ' · '}
                 </span>
               )}
@@ -671,7 +675,7 @@ function copyOnSelectItem(copyOnSelect: boolean): MenuItem[] {
       label: 'Copy on select',
       checked: copyOnSelect,
       separator: true,
-      title: 'Copy a selection in any terminal pane as the mouse is let go; Ctrl+Shift+C and a right-click copy either way',
+      title: 'Copy a selection in any terminal or chat pane as the mouse is let go; Ctrl+Shift+C and a right-click copy either way',
       onClick: () => setCopyOnSelect(!copyOnSelect),
     },
   ];
@@ -1076,10 +1080,15 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       {/* M9 fix 397: the counter is the lid's own while the shade is
           down, so the overlay never draws over the hero. */}
       {session !== undefined && !shaded && <WaitOverlay sessionId={session.id} wanting={wanting} since={session.stateSince} />}
-      {sessionState === 'exited' && notice && session !== undefined && (
+      {/* M9 fix 804: on the chat face there is no box to block a key
+          into, so the notice stands the whole time the session is exited
+          and a click in the pane does not put it away. */}
+      {sessionState === 'exited' && (notice || face === 'chat') && session !== undefined && (
         <div className="pane-exited-notice" data-exited-notice="">
           <div className="pane-exited-notice-title">exited</div>
-          <div className="pane-exited-notice-body">This session&apos;s process has ended; its last screen is kept.</div>
+          <div className="pane-exited-notice-body">
+            {face === 'chat' ? "This session's process has ended; its conversation is kept." : "This session's process has ended; its last screen is kept."}
+          </div>
           <button
             className="pane-exited-notice-resume"
             title={resumeTitle(session)}
@@ -1254,9 +1263,9 @@ function ShadeLine({ session, waiting }: { session: SessionInfo; waiting: boolea
     <span className="pane-shade-line">
       {contextText(session) !== null && (
         <span className="pane-shade-context">
-          {contextWords(session) !== null && (
+          {modelEffortWords(session) !== null && (
             <span className="pane-shade-context-model">
-              {contextWords(session)}
+              {modelEffortWords(session)}
               {contextPercentText(session) !== null && ' · '}
             </span>
           )}
@@ -1341,6 +1350,30 @@ function ShadeMemberRule({ session, agentId }: { session: SessionInfo; agentId: 
   );
 }
 
+// M9 fix 821: a hover on a member's box opens the commit graph's agent card
+// for it (a shell's gets the same card with its command). The box's name,
+// state and activity lines sit in this span, which is display: contents so
+// the grid does not move, and carries the hover only: not the click or the
+// press (usePopoverAnchor's other handlers pin the card and stop the click),
+// so a click on a box or on its open card still lifts the shade. The
+// checklist strip is outside it, the box's last child, and opens its own card.
+function ShadeMemberCard({ session, member, now, children }: { session: SessionInfo; member: TeamMember; now: number; children: ReactNode }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const state = usePopoverAnchor(true);
+  const id = `${session.id}:shade-member:${member.id}`;
+  return (
+    <>
+      <span ref={ref} className="pane-shade-member-body" data-popover-for={id} data-popover-open={state.open} onMouseEnter={state.handlers.onMouseEnter} onMouseLeave={state.handlers.onMouseLeave}>
+        {children}
+      </span>
+      {/* The span has no box of its own (display: contents), so the card hangs under the member's box. */}
+      {state.card(ref.current?.parentElement ?? null, (props) => (
+        <AgentCard member={member} session={session} now={now} anchorId={id} {...props} />
+      ))}
+    </>
+  );
+}
+
 // The team as a grid of boxes (M9 fix 372, after fix 291's list): one
 // per member in spawn order, each a mark (the model's family sizing the
 // star, fix 288), the name (the description's first line, or the type),
@@ -1382,28 +1415,26 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
         const kindWord = kind === 'shell' || type === name ? null : type;
         return (
           <div key={m.id} className="pane-shade-member" data-working={working || undefined} data-kind={kind} data-type={type} data-member={m.id} data-fold={i >= NARROW_MEMBERS ? '' : undefined}>
-            <span className="pane-shade-member-head">
-              <SessionMark kind={kind === 'shell' ? 'shell' : 'claude'} working={working} size="unit" family={word} />
-              <span className="pane-shade-member-name">{name}</span>
-            </span>
-            <span className="pane-shade-member-line">
-              <span className="pane-shade-member-state">{state}</span>
-              {(word !== null || kindWord !== null) && (
-                <span className="pane-shade-member-words">
-                  {word !== null && <span className="pane-shade-member-model">{word}</span>}
-                  {kindWord !== null && <span className="pane-shade-member-type">{kindWord}</span>}
-                </span>
-              )}
-              {usd !== null && <span className="pane-shade-member-price">{formatUsd(usd)}</span>}
-            </span>
+            <ShadeMemberCard session={session} member={m} now={now}>
+              <span className="pane-shade-member-head">
+                <SessionMark kind={kind === 'shell' ? 'shell' : 'claude'} working={working} size="unit" family={word} />
+                <span className="pane-shade-member-name">{name}</span>
+              </span>
+              <span className="pane-shade-member-line">
+                <span className="pane-shade-member-state">{state}</span>
+                {(word !== null || kindWord !== null) && (
+                  <span className="pane-shade-member-words">
+                    {word !== null && <span className="pane-shade-member-model">{word}</span>}
+                    {kindWord !== null && <span className="pane-shade-member-type">{kindWord}</span>}
+                  </span>
+                )}
+                {usd !== null && <span className="pane-shade-member-price">{formatUsd(usd)}</span>}
+              </span>
             {/* M9 fix 654: the agent's latest tool call; a shell's box draws
                 none, since its command is its name, and a returned agent
                 keeps its last phrase. */}
-            {kind === 'agent' && activity !== null && (
-              <span className="pane-shade-member-activity" title={activity}>
-                {activity}
-              </span>
-            )}
+            {kind === 'agent' && activity !== null && <span className="pane-shade-member-activity">{activity}</span>}
+            </ShadeMemberCard>
             <ShadeMemberRule session={session} agentId={m.id} />
           </div>
         );
@@ -1572,7 +1603,8 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     if (!term.hasSelection()) return false;
     const text = term.getSelection();
     if (text === '') return false;
-    void window.emerald.clipboard.write(text).catch((err: unknown) => console.warn('[emerald] copy failed', err));
+    // M9 fix 806: with a note in the corner of what was copied.
+    copyAndNote(text);
     return true;
   };
   term.attachCustomKeyEventHandler((ev) => {

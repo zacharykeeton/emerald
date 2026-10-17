@@ -138,6 +138,32 @@ test('initialState: claude starts starting, shell starts idle', () => {
   assert.equal(initialState('shell'), 'idle');
 });
 
+test('trust: the dialog read moves only a starting row to needs-input/trust, and only that ask back (M9 fix 808)', () => {
+  const shown: SessionEvent = { type: 'trust', shown: true, at: T0 + 10 };
+  const gone: SessionEvent = { type: 'trust', shown: false, at: T0 + 20 };
+  // A fresh Claude has bound no conversation yet.
+  const asking = reduce(session({ state: 'starting', claudeSessionId: null }), shown);
+  assert.equal(asking.state, 'needs-input');
+  assert.equal(asking.needsInputReason, 'trust');
+  assert.equal(asking.stateSince, T0 + 10);
+  for (const state of ['idle', 'working'] as const) {
+    const s = session({ state });
+    assert.equal(reduce(s, shown), s, `shown moves nothing from ${state}`);
+  }
+  const permission = session({ state: 'needs-input', needsInputReason: 'permission' });
+  assert.equal(reduce(permission, shown), permission, 'shown leaves a permission ask alone');
+  assert.equal(reduce(permission, gone), permission, 'gone leaves a permission ask alone');
+  const back = reduce(asking, gone);
+  assert.equal(back.state, 'starting');
+  assert.equal(back.needsInputReason, null);
+  const started = reduce(asking, { type: 'hook', payload: { hook_event_name: 'SessionStart', session_id: '11111111-2222-3333-4444-555555555555', cwd: 'C:\\repo', source: 'startup' }, at: T0 + 30 });
+  assert.equal(started.state, 'idle');
+  assert.equal(started.needsInputReason, null);
+  const exited = reduce(asking, { type: 'pty.exit', exitCode: 0, at: T0 + 40 });
+  assert.equal(exited.state, 'exited');
+  assert.equal(exited.needsInputReason, null);
+});
+
 test('the first SessionStart binds claudeSessionId and later ones do not rebind', () => {
   const unbound = session({ claudeSessionId: null, state: 'starting' });
   const bound = reduce(unbound, hook('SessionStart', { source: 'startup', session_id: 'first' }));
@@ -887,6 +913,30 @@ test('StatusLine keeps the prompt cache\'s TTL, expiry and warmth (M9 fix 772), 
   assert.equal(reduce(shell, hook('SessionEnd', { reason: 'exit' })).cache, null);
 });
 
+test('StatusLine sets the effort off effort.level (M9 fix 799): a line with a model and no effort clears it, a line with no model block and a Measure keep it, a shell\'s exit clears it', () => {
+  const opus = { id: 'claude-opus-5-5', display_name: 'Opus 5.5' };
+  const start = session({ state: 'done', lastEventAt: T0 });
+  assert.equal(start.effort ?? null, null);
+  const line = hook('StatusLine', { model: opus, effort: { level: 'high' } });
+  const high = reduce(start, line);
+  assert.equal(high.effort, 'high');
+  assert.equal(high.model, 'Opus 5.5');
+  assert.equal(high.state, 'done');
+  assert.equal(high.lastEventAt, T0, 'a status line moves no state');
+  assert.equal(reduce(high, line), high, 'the same line again returns the same record');
+  const sonnet = reduce(high, hook('StatusLine', { model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' }, effort: { level: 'medium' } }));
+  assert.equal(sonnet.effort, 'medium', 'a /model switch posts the new model\'s level');
+  assert.equal(sonnet.model, 'Sonnet 5.5');
+  assert.equal(reduce(high, hook('StatusLine', { context_window: { used_percentage: 7 } })).effort, 'high', 'a line with no model block keeps it');
+  assert.equal(reduce(high, hook('Measure', { measure: { context: { percent: 10 } } })).effort, 'high', 'a measure keeps it');
+  assert.equal(reduce(high, hook('StatusLine', { model: opus })).effort, null, 'a model with no effort setting clears it');
+  assert.equal(reduce(high, hook('StatusLine', { model: opus, effort: { level: '' } })).effort, null, 'an empty level reads as none');
+  // A shell whose Claude leaves takes the effort with it.
+  const shell = reduce(reduce(session({ kind: 'shell', claudeSessionId: null }), hook('SessionStart', { source: 'startup' })), line);
+  assert.equal(shell.effort, 'high');
+  assert.equal(reduce(shell, hook('SessionEnd', { reason: 'exit' })).effort, null);
+});
+
 test('runningKind: a shell says claude while a Claude session id is bound, and SessionEnd unbinds a shell only', () => {
   const shell = session({ kind: 'shell', claudeSessionId: null });
   assert.equal(runningKind(shell), 'shell');
@@ -1453,6 +1503,44 @@ test('an Escape at a permission dialog (TurnComplete reason answer, no Stop) put
   assert.equal(after.askedFor, null);
 });
 
+// M9 fix 801: the order an AskUserQuestion posts in (the capture's hooks
+// log), cancelled with Escape: fix 774's rule frees the row.
+test('an AskUserQuestion cancelled with Escape puts the row at idle with the ask gone (M9 fix 801)', () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'ask me' }, T0 + 10));
+  s = reduce(s, hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'u1' }, T0 + 20));
+  s = reduce(s, hook('ToolAsk', { tool_name: 'AskUserQuestion', tool_input: {}, tool_use_id: 'u1' }, T0 + 21));
+  s = reduce(s, hook('PermissionRequest', { tool_name: 'AskUserQuestion' }, T0 + 22));
+  s = reduce(s, hook('Notification', { notification_type: 'permission_prompt' }, T0 + 30));
+  assert.equal(s.state, 'needs-input');
+  assert.equal(s.needsInputReason, 'question', 'fix 802');
+  const after = reduce(s, hook('TurnComplete', { turn_id: 't-1', reason: 'answer', is_aborted: false }, T0 + 40));
+  assert.equal(after.state, 'idle');
+  assert.equal(after.needsInputReason, null);
+  assert.equal(after.askedFor, null);
+});
+
+// M9 fix 802: the captured order of an AskUserQuestion reads as a
+// question through its PermissionRequest and the permission_prompt after
+// it; a Bash call in the same order stays a permission.
+test('an AskUserQuestion asks a question, not a permission, through its permission_prompt (M9 fix 802)', () => {
+  const run = (tool: string) => {
+    let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'ask me' }, T0 + 10));
+    s = reduce(s, hook('PreToolUse', { tool_name: tool, tool_use_id: 'u1' }, T0 + 20));
+    s = reduce(s, hook('ToolAsk', { tool_name: tool, tool_input: {}, tool_use_id: 'u1' }, T0 + 21));
+    const asked = reduce(s, hook('PermissionRequest', { tool_name: tool }, T0 + 22));
+    const notified = reduce(asked, hook('Notification', { notification_type: 'permission_prompt' }, T0 + 30));
+    return { asked, notified };
+  };
+  const q = run('AskUserQuestion');
+  assert.equal(q.asked.state, 'needs-input');
+  assert.equal(q.asked.needsInputReason, 'question');
+  assert.equal(q.notified.state, 'needs-input');
+  assert.equal(q.notified.needsInputReason, 'question');
+  const b = run('Bash');
+  assert.equal(b.asked.needsInputReason, 'permission');
+  assert.equal(b.notified.needsInputReason, 'permission');
+});
+
 test('a finished turn replayed in its recorded order (Stop before TurnComplete) ends done, not idle (M9 fix 774)', () => {
   let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'ping it' }, T0 + 10));
   s = reduce(s, hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'u1' }, T0 + 20));
@@ -1547,4 +1635,64 @@ test("a new prompt clears the ask, and an agent's ToolAsk is applied with its ag
   const agentAsk = reduce(session({ state: 'working' }), { type: 'hook', at: T0 + 5000, payload });
   assert.equal(agentAsk.askedFor?.agentId, 'a1');
   assert.equal(agentAsk.askedFor?.words, 'Edit: a.ts');
+});
+
+test('an automatic compaction at idle, waiting or done puts the row back when it ends (M9 fix 812)', () => {
+  const auto = { trigger: 'auto' };
+  for (const state of ['idle', 'done'] as const) {
+    const pre = reduce(session({ state, stateSince: T0 }), hook('PreCompact', auto, T0 + 10));
+    assert.equal(pre.state, 'working', `${state}: PreCompact puts the row at working`);
+    assert.deepEqual(pre.compactFrom, { state, since: T0 }, `${state}: the record names where it was`);
+    const restarted = reduce(pre, hook('SessionStart', { source: 'compact' }, T0 + 20));
+    assert.equal(restarted.state, 'working', `${state}: the compaction's SessionStart keeps it working`);
+    assert.deepEqual(restarted.compactFrom, { state, since: T0 }, `${state}: and keeps the record`);
+    const post = reduce(restarted, hook('PostCompact', auto, T0 + 30));
+    assert.equal(post.state, state, `${state}: PostCompact puts it back`);
+    assert.equal(post.stateSince, T0, `${state}: with its age`);
+    assert.equal(post.compactFrom, null, `${state}: and drops the record`);
+  }
+  const task = { type: 'local_bash', description: 'npm test', command: 'npm test' };
+  const waiting = session({ state: 'waiting', stateSince: T0, waitingOn: [task] });
+  const waitPre = reduce(waiting, hook('PreCompact', auto, T0 + 10));
+  assert.equal(waitPre.state, 'working');
+  const waitPost = reduce(waitPre, hook('PostCompact', auto, T0 + 30));
+  assert.equal(waitPost.state, 'waiting', 'a waiting row comes back waiting');
+  assert.deepEqual(waitPost.waitingOn, [task], 'with the list it was waiting on');
+  assert.equal(waitPost.stateSince, T0);
+
+  const busy = reduce(reduce(session({ state: 'working', stateSince: T0 }), hook('PreCompact', auto, T0 + 10)), hook('PostCompact', auto, T0 + 30));
+  assert.equal(busy.state, 'working', 'a full window mid-turn stays working');
+  assert.equal(busy.compactFrom ?? null, null, 'and records nothing');
+  assert.equal(Object.hasOwn(busy, 'compactFrom'), false, 'nor touches the key');
+
+  const manual = reduce(reduce(session({ state: 'idle', stateSince: T0 }), hook('PreCompact', { trigger: 'manual' }, T0 + 10)), hook('PostCompact', { trigger: 'manual' }, T0 + 30));
+  assert.equal(manual.state, 'working', 'a typed /compact is left as it was');
+
+  const idlePre = reduce(session({ state: 'idle', stateSince: T0 }), hook('PreCompact', auto, T0 + 10));
+  const prompted = reduce(idlePre, hook('UserPromptSubmit', { prompt: 'go on' }, T0 + 20));
+  assert.equal(prompted.compactFrom, null, 'a prompt during the compaction clears the record');
+  assert.equal(reduce(prompted, hook('PostCompact', auto, T0 + 30)).state, 'working', 'and the PostCompact stays at working');
+  const stopped = reduce(idlePre, hook('Stop', {}, T0 + 20));
+  assert.equal(stopped.state, 'done');
+  assert.equal(stopped.compactFrom, null, 'a Stop during the compaction clears the record');
+  const gone = reduce(idlePre, { type: 'pty.exit', at: T0 + 20, exitCode: 0 });
+  assert.equal(gone.state, 'exited');
+  assert.equal(gone.compactFrom, null, 'an exit during the compaction clears the record');
+});
+
+test("a Claude session keeps its SessionEnd's reason through the exit, and a SessionStart clears it (M9 fix 813)", () => {
+  const end = hook('SessionEnd', { reason: 'prompt_input_exit' }, T0 + 10);
+  const exit: SessionEvent = { type: 'pty.exit', at: T0 + 20, exitCode: 0 };
+  const endFirst = reduce(reduce(session({ state: 'idle' }), end), exit);
+  assert.equal(endFirst.state, 'exited');
+  assert.equal(endFirst.endReason, 'prompt_input_exit', 'the SessionEnd before the exit');
+  const exitFirst = reduce(reduce(session({ state: 'idle' }), { ...exit, at: T0 + 5 }), end);
+  assert.equal(exitFirst.state, 'exited');
+  assert.equal(exitFirst.endReason, 'prompt_input_exit', 'the SessionEnd after the exit');
+  const resumed = reduce({ ...endFirst, state: 'starting', pid: 9 }, hook('SessionStart', { source: 'resume' }, T0 + 30));
+  assert.equal(resumed.endReason, null, 'a SessionStart clears it');
+  const shell = reduce(session({ kind: 'shell', state: 'idle' }), end);
+  assert.equal(Object.hasOwn(shell, 'endReason'), false, 'a shell hosting Claude keeps nothing');
+  const plain = reduce(session({ state: 'idle' }), hook('SessionEnd', {}, T0 + 10));
+  assert.equal(Object.hasOwn(plain, 'endReason'), false, 'a SessionEnd with no reason leaves the key alone');
 });

@@ -12,6 +12,12 @@ export function runningKind(session: Pick<SessionInfo, 'kind' | 'claudeSessionId
   return session.kind === 'claude' || session.claudeSessionId !== null ? 'claude' : 'shell';
 }
 
+// The folder Claude Code keeps a cwd's transcripts in, under its home's
+// projects: every character that is not a letter or digit turned into a dash.
+export function encodeProjectDir(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
+
 // The last segment of a path, whichever slash style wrote it (hooks send
 // forward slashes, the daemon backslashes). What a session is called until
 // someone renames it. Empty for a bare drive root, so callers fall back.
@@ -240,6 +246,8 @@ export function waitingOnText(session: Pick<SessionInfo, 'state' | 'needsInputRe
       return 'Question for you';
     case 'elicitation':
       return 'Waiting for your answer';
+    case 'trust':
+      return 'Trust this folder?';
     default:
       return 'Waiting on you';
   }
@@ -263,6 +271,8 @@ export function needsInputWords(reason: SessionInfo['needsInputReason']): string
       return 'a form';
     case 'question':
       return 'a question';
+    case 'trust':
+      return 'folder trust';
     default:
       return 'unknown';
   }
@@ -278,6 +288,8 @@ function needsInputDetail(reason: SessionInfo['needsInputReason']): string {
       return 'An MCP server is asking for input.';
     case 'question':
       return 'Claude asked you a question.';
+    case 'trust':
+      return 'Claude Code asks whether to trust this folder before it starts.';
     default:
       return 'Claude is waiting on you.';
   }
@@ -297,9 +309,20 @@ export function shortModel(model: string): string {
 // the short model, the number is the percent, either null until Claude
 // has reported it (a shell never does). contextText joins them for the
 // CLI and the tests: "Fable · 42%", or the percent alone when the model
-// is not known.
+// is not known. contextText joins modelEffortWords: "Opus 5.5 · high ·
+// 42%" once the status line has said the effort (M9 fix 800).
 export function contextWords(session: SessionInfo): string | null {
   return session.model === null ? null : shortModel(session.model);
+}
+
+// The words before the dial with the effort level after the model (M9 fix
+// 800): "Opus 5.5 · high". The chat view's chip and the context card keep
+// the model alone (contextWords); an unknown effort shows the model alone,
+// as before.
+export function modelEffortWords(session: SessionInfo): string | null {
+  const words = contextWords(session);
+  const effort = session.effort ?? null;
+  return words === null || effort === null ? words : `${words} · ${effort}`;
 }
 
 export function contextPercentText(session: SessionInfo): string | null {
@@ -307,7 +330,7 @@ export function contextPercentText(session: SessionInfo): string | null {
 }
 
 export function contextText(session: SessionInfo): string | null {
-  const words = contextWords(session);
+  const words = modelEffortWords(session);
   const percent = contextPercentText(session);
   if (words === null) return percent;
   return percent === null ? words : `${words} · ${percent}`;

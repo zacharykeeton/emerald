@@ -85,6 +85,7 @@ try {
   await setClip441('before-441');
   await s.key('C', 'KeyC', 67, CTRL | SHIFT);
   await s.waitFor(`window.emerald.clipboard.read().then((c) => c.text === ${JSON.stringify(copyLine441)})`, 'Ctrl+Shift+C copies the selection', 3000);
+  await s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Copied ${[...copyLine441].length} characters`)}`, "fix 806: the terminal's copy shows the corner note", 3000);
   step('Ctrl+Shift+C copied the selected line to the clipboard');
 
   await setClip441('before-441');
@@ -159,6 +160,7 @@ try {
   expect((await toggleCopyOnSelect441()) === false, 'copy on select starts off');
   await dragLine441();
   await s.waitFor(`window.emerald.clipboard.read().then((c) => c.text === ${JSON.stringify(copyLine441)})`, 'with copy on select on, the release copies the line', 3000);
+  await s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Copied ${[...copyLine441].length} characters`)}`, "fix 806: the terminal's copy shows the corner note", 3000);
   expect((await toggleCopyOnSelect441()) === true, 'copy on select was on, now off again');
   await s.evalJs(`${hostOf441}.emeraldTerm.clearSelection()`);
   step('copy on select copies on release only while it is on, and is off again');

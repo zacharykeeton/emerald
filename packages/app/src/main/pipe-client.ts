@@ -89,7 +89,8 @@ export interface DaemonInfo {
 
 // Pipe client for the Electron main process. Keeps one connection to emmerd,
 // starts the daemon when nothing owns the pipe, and reconnects after a drop.
-// Emits 'message' (ServerMessage push), 'connected' (DaemonInfo), 'disconnected'.
+// Emits 'message' (ServerMessage push), 'connected' (DaemonInfo), 'disconnected',
+// 'daemon-crashed' ({ pid, code }, a child daemon that ended on an NTSTATUS, M9 fix 815).
 // How long a daemon that took daemon.stop is given to let go of the pipe
 // before its tree is killed after all.
 const STOP_GRACE_MS = 3000;
@@ -399,9 +400,23 @@ export class PipeClient extends EventEmitter {
       }
       const hex = (code >>> 0).toString(16).toUpperCase().padStart(8, '0');
       this.opts.log(`emmerd pid ${child.pid} exited: code ${code} (0x${hex}), signal ${signal}`);
+      const crash = crashCode(code);
+      if (crash !== null) this.emit('daemon-crashed', { pid: child.pid, code: crash });
     });
     child.unref();
   }
+}
+
+// The NTSTATUS a daemon ended on, as eight upper-case hex digits, or null
+// when the code is not a crash (M9 fix 815). A JS crash, a kill and a
+// failed start all exit 1, a stop 0 and a lost start race 2, so only a
+// native fail-fast (0xC0000000 and up) is told apart; 0xFFFFFFFF is
+// TerminateProcess(h, -1), PowerShell's Stop-Process, a kill too.
+export function crashCode(code: number | null): string | null {
+  if (code === null) return null;
+  const u = code >>> 0;
+  if (u < 0xc0000000 || u === 0xffffffff) return null;
+  return u.toString(16).toUpperCase().padStart(8, '0');
 }
 
 // A string cut into pieces of at most `size` characters, never between the

@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
-import { PipeClient } from './pipe-client.ts';
+import { PipeClient, crashCode } from './pipe-client.ts';
 
 // M9 fix 380: a daemon that takes the connection and then drops it on the
 // hello, or never answers it, used to park the connect loop for good; the
@@ -136,6 +136,54 @@ test('a daemon that dies at start is started again on a backoff, each try logged
     await until('three exit lines', () => exits() >= 3, 10_000);
   } finally {
     c.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// M9 fix 815: only an NTSTATUS is a crash; a kill, a JS crash and a failed
+// start all exit 1, a stop 0, a lost start race 2, and Stop-Process's
+// TerminateProcess(h, -1) reads 0xFFFFFFFF.
+test('crashCode reads an NTSTATUS as eight hex digits and every other code as null', () => {
+  assert.equal(crashCode(-1073740940), 'C0000374');
+  assert.equal(crashCode(3221226356), 'C0000374');
+  assert.equal(crashCode(3221225477), 'C0000005');
+  for (const code of [0, 1, 2, -1, 4294967295, null]) assert.equal(crashCode(code), null, `code ${code}`);
+});
+
+// M9 fix 815: a child daemon that ends on a crash code is said as an event,
+// one that exits 1 (a kill) is not. Each client stops at its child's first
+// exit, so the backoff's next try never runs.
+test('a child daemon that ends on a crash code emits daemon-crashed with its pid, and one that exits 1 emits nothing', async () => {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'emerald-crash-'));
+  const crashing = path.join(dir, 'crash-daemon.mjs');
+  const killed = path.join(dir, 'nocrash-daemon.mjs');
+  fs.writeFileSync(crashing, 'process.exit(-1073740940);\n');
+  fs.writeFileSync(killed, 'process.exit(1);\n');
+  const crashLog: string[] = [];
+  const crashes: { pid: number; code: string }[] = [];
+  const c = new PipeClient({ pipePath: `${PIPE}-crash`, daemonMain: crashing, runner: 'node', log: (m) => crashLog.push(m) });
+  c.on('daemon-crashed', (crash: { pid: number; code: string }) => crashes.push(crash));
+  const quietLog: string[] = [];
+  const quiet: unknown[] = [];
+  const q = new PipeClient({ pipePath: `${PIPE}-nocrash`, daemonMain: killed, runner: 'node', log: (m) => quietLog.push(m) });
+  q.on('daemon-crashed', (crash: unknown) => quiet.push(crash));
+  try {
+    c.start();
+    await until('one daemon-crashed event', () => crashes.length >= 1, 10_000);
+    c.stop();
+    const crash = crashes[0];
+    assert.equal(crash?.code, 'C0000374', `the code: ${JSON.stringify(crashes)}`);
+    assert.equal(typeof crash?.pid, 'number');
+    const exited = crashLog.map((m) => /^emmerd pid (\d+) exited: /.exec(m)?.[1]).find((p) => p !== undefined);
+    assert.equal(crash?.pid, Number(exited), `the pid matches the exit line: ${JSON.stringify(crashLog)}`);
+
+    q.start();
+    await until('the exit line', () => quietLog.some((m) => /^emmerd pid \d+ exited: code 1 /.test(m)), 10_000);
+    q.stop();
+    assert.deepEqual(quiet, [], `no event for code 1: ${JSON.stringify(quietLog)}`);
+  } finally {
+    c.stop();
+    q.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

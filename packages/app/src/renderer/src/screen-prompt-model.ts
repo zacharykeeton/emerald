@@ -102,7 +102,8 @@ export function promptExcerpt(rows: readonly string[], cursor: { x: number; y: n
 // line. They are drawn dim through the same renderer as a suggested
 // prompt, so the daemon's ghost cannot tell them apart and the text does
 // (M9 fix 779). A suggestion that happens to read `Try "..."` is lost.
-const STOCK_PLACEHOLDERS = [/^Try ".*"$/, /^Press up to /, /^Press Enter to edit /, /^Message @/];
+// The suggestion is read off the row from the ghost's start, since Claude Code's row can break the dim run at a space (M9 fix 809), and the Try entry matches its opening quote alone, so a placeholder wrapped onto the next row is caught too.
+const STOCK_PLACEHOLDERS = [/^Try "/, /^Press up to /, /^Press Enter to edit /, /^Message @/];
 
 // The suggested prompt Claude Code shows ghosted in its empty input (M9
 // fix 779), off the pty.screen reply's ghost field: null when the field
@@ -119,8 +120,10 @@ export function ghostSuggestion(screen: { rows: readonly string[]; ghost?: { y: 
   }
   if (ghost.y !== last) return null;
   if ((screen.rows[last] ?? '').slice(0, ghost.x).trim() !== '❯') return null;
-  if (STOCK_PLACEHOLDERS.some((re) => re.test(ghost.text))) return null;
-  return ghost.text;
+  const rest = (screen.rows[last] ?? '').slice(ghost.x).trimEnd();
+  if (rest === '') return null;
+  if (STOCK_PLACEHOLDERS.some((re) => re.test(rest))) return null;
+  return rest;
 }
 
 // The pointer is Claude Code's ❯; a plain > is taken too, since a terminal
@@ -266,4 +269,83 @@ export function askQuestion(rows: readonly string[]): AskQuestion | null {
 
 export function isQuestionDialog(rows: readonly string[]): boolean {
   return askQuestion(rows) !== null;
+}
+
+// M9 fix 803: the Type something row, a text field in Claude Code 2.1.302
+// once its digit puts the pointer there (the digit itself is not typed;
+// a second one is). Typed into, the row's label is the field's text, so
+// it is found as the option before Chat about this when the placeholder
+// is gone.
+export function freeOption(ask: AskQuestion): AskOption | null {
+  const typeSomething = ask.options.find((o) => o.label.startsWith('Type something'));
+  if (typeSomething !== undefined) return typeSomething;
+  const chat = ask.options.find((o) => o.label === 'Chat about this');
+  if (chat === undefined) return null;
+  return ask.options.find((o) => o.key === String(Number(chat.key) - 1)) ?? null;
+}
+
+// The field's text as the screen draws it: nothing under the placeholder,
+// else the label, with the rows a long text wraps onto (read as the
+// option's description) joined back on.
+export function freeText(o: AskOption): string {
+  if (o.label.startsWith('Type something')) return '';
+  return o.description === '' ? o.label : `${o.label} ${o.description}`;
+}
+
+// The keys a free answer takes: the row's digit when the pointer is not on
+// it (with the pointer there a digit would be typed into the field), then
+// one DEL per character the field holds and the text.
+export function freeAnswerKeys(ask: AskQuestion, text: string): { move: string | null; text: string } {
+  const o = freeOption(ask);
+  if (o === null) return { move: null, text };
+  return { move: o.pointer ? null : o.key, text: '\x7f'.repeat([...freeText(o)].length) + text };
+}
+
+// How long the pointer has to reach the Type something row after its digit.
+export const FREE_MOVE_WAIT_MS = 2000;
+
+// M9 fix 801: which dialog the rows draw, so a card can tell a press that
+// was taken (another dialog, or none) from one still waiting. The pointer
+// is left out, so an arrow key leaves the dialog the same one. Null when
+// no dialog is drawn.
+export function dialogKey(rows: readonly string[], cursor: { x: number; y: number }): string | null {
+  const ask = askQuestion(rows);
+  if (ask !== null) {
+    return JSON.stringify([
+      'ask',
+      ask.question,
+      ask.tabs.map((t) => `${t.name}:${t.state}`),
+      ask.options.map((o) => o.label),
+    ]);
+  }
+  const options = answerOptions(rows);
+  if (options.length > 0) {
+    return JSON.stringify([
+      'options',
+      promptExcerpt(rows, cursor),
+      options.map((o) => o.label),
+    ]);
+  }
+  return null;
+}
+
+// A press the terminal did not take: the same dialog still drawn this long after it, the card takes a press again.
+export const ASK_PRESS_RETRY_MS = 3000;
+
+export interface AskPress {
+  at: number;
+  key: string | null;
+}
+
+// Whether a read ends a card's press: only a read sent after the press
+// counts; another dialog ends it (the next tab of a multi-question ask),
+// and so does the same dialog still drawn ASK_PRESS_RETRY_MS on (the
+// press was not taken); no dialog drawn does not, since the answer was
+// taken and the row has not moved yet.
+export function pressOver(press: AskPress, read: { rows: readonly string[]; cursor: { x: number; y: number }; sentAt: number }): boolean {
+  if (read.sentAt <= press.at) return false;
+  const k = dialogKey(read.rows, read.cursor);
+  if (k === null) return false;
+  if (k !== press.key) return true;
+  return read.sentAt - press.at >= ASK_PRESS_RETRY_MS;
 }

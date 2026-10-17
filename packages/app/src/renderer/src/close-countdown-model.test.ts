@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { closePane, currentTab, defaultLayout, findPane, listPanes, parentSplit, replaceTab, setPaneSession, splitPane, tabHolding } from '@emerald/shared';
 import type { IdGenerator, Layout } from '@emerald/shared';
-import { REMOVE_AFTER_MS, closedSpot, reopenAt, removalWords, secondsLeft } from './close-countdown-model.ts';
+import { REMOVE_AFTER_MS, closedSpot, holdsOnStart, reopenAt, removalWords, secondsLeft } from './close-countdown-model.ts';
 import type { RemovalCount } from './close-countdown-model.ts';
 
 // A counter for stable ids.
@@ -95,6 +95,7 @@ test('secondsLeft counts down while running and holds while paused', () => {
   assert.equal(secondsLeft(run, 3400), 8);
   assert.equal(secondsLeft(run, 10900), 1);
   assert.equal(secondsLeft(run, 20000), 1, 'never below one');
+  assert.equal(secondsLeft(run, 500), 10, 'a clock a tick behind the start reads 10, not 11');
   const paused: RemovalCount = { spot: null, started: true, leftMs: 10_000 - 2400, runningSince: null };
   assert.equal(secondsLeft(paused, 5000), 8);
   assert.equal(secondsLeft(paused, 99999), 8);
@@ -102,4 +103,13 @@ test('secondsLeft counts down while running and holds while paused', () => {
 
 test('removalWords', () => {
   assert.equal(removalWords(7), 'removing in 7s');
+});
+
+test('holdsOnStart: a pointer already on a running count holds it (M9 fix 814)', () => {
+  const run: RemovalCount = { spot: null, started: true, leftMs: REMOVE_AFTER_MS, runningSince: 1000 };
+  assert.equal(holdsOnStart(run, true), true);
+  assert.equal(holdsOnStart(run, false), false, 'not hovered');
+  assert.equal(holdsOnStart({ ...run, started: false, runningSince: null }, true), false, 'not started');
+  assert.equal(holdsOnStart({ ...run, runningSince: null }, true), false, 'paused already');
+  assert.equal(holdsOnStart(undefined, true), false, 'no count');
 });

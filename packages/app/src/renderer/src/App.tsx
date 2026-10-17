@@ -5,7 +5,7 @@ import { BrowserLayer } from './BrowserLayer.tsx';
 import { CheatSheet, PrefixIndicator } from './CheatSheet.tsx';
 import { DaemonBanner } from './DaemonBanner.tsx';
 import { installExplorerDrop } from './explorer-drop.ts';
-import { openFileFromOutside } from './actions.ts';
+import { installExitToShell, openFileFromOutside } from './actions.ts';
 import { FilesRail } from './FilesRail.tsx';
 import { ActivityTab } from './ActivityView.tsx';
 import { CommitsView } from './CommitsView.tsx';
@@ -67,6 +67,8 @@ export function App() {
 
   // The pulse and the chime for a session that needs someone (attention.ts).
   useEffect(() => installAttention(), []);
+  // A Claude left with /exit drops its pane to a shell (M9 fix 813).
+  useEffect(() => installExitToShell(), []);
   // Where the focus has been, for the strip's back and forward (M9 fix 184).
   useEffect(() => installFocusHistory(), []);
   // Design Mode's notes from main, for C and S (M9 fix 674).

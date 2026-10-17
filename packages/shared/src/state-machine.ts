@@ -47,6 +47,8 @@ export interface HookPayload {
   // field `source`, newer ones `session_start_type`; both are read.
   source?: string;
   session_start_type?: string;
+  // PreCompact and PostCompact: auto (the idle compactor's or a full window's) or manual (a typed /compact).
+  trigger?: string;
   // Notification: permission_prompt, idle_prompt, elicitation_dialog, ...
   notification_type?: string;
   // StopFailure.
@@ -96,6 +98,8 @@ export interface HookPayload {
   cost?: { total_cost_usd?: number };
   // The same status line's prompt cache block (M9 fix 772): its TTL, expiry in epoch seconds and warmth.
   prompt_cache?: { warm?: boolean; ttl?: string; expires_at?: number | null; [key: string]: unknown };
+  // The same status line's effort (M9 fix 799): the level in force for the model, absent for a model with no effort setting. Claude Code's tool hooks carry the same block, unread.
+  effort?: { level?: string };
   // The emerald mod's ToolAsk (M9 fix 742): the agent whose call asked,
   // under its own key since an agent_id would send the post to the agent
   // reducer, and the decision's rule; its reason is the `reason` above,
@@ -137,7 +141,9 @@ export type SessionEvent =
   // prompt after it (null when the prompt followed no command), A before
   // the prompt text, which changes nothing here. doneAfterMs is how long
   // a command must have run for its end to want a person.
-  | { type: 'shell-mark'; mark: 'A' | 'C' | 'D'; code: number | null; at: number; doneAfterMs: number };
+  | { type: 'shell-mark'; mark: 'A' | 'C' | 'D'; code: number | null; at: number; doneAfterMs: number }
+  // The daemon read Claude Code's folder trust dialog on the screen of a starting session, or read it gone (M9 fix 808).
+  | { type: 'trust'; shown: boolean; at: number };
 
 // applied-agent (M61): a known subagent's own Bash call, which the daemon
 // reads for where the agent works and what it committed and which touches
@@ -322,7 +328,7 @@ function closeSpan(session: SessionInfo, at: number): SessionInfo {
 function leave(session: SessionInfo, at: number): SessionInfo {
   let next = closeSpan(session, at);
   if (session.kind === 'shell') {
-    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null };
+    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, effort: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null };
   }
   return transition(followAutoName(clearTeam(next), null), 'idle', at, null);
 }
@@ -372,6 +378,12 @@ export function reduce(session: SessionInfo, event: SessionEvent): SessionInfo {
       const since = staleSince(session);
       return event.at - since >= event.staleAfterMs ? { ...session, stale: true, staleThresholdMs: event.staleAfterMs } : session;
     }
+    case 'trust':
+      // Only a starting row takes the dialog, and only the dialog's own
+      // ask goes back to starting, so a read that lands after the
+      // SessionStart moves nothing (M9 fix 808).
+      if (event.shown) return session.state === 'starting' ? transition(session, 'needs-input', event.at, 'trust') : session;
+      return session.state === 'needs-input' && session.needsInputReason === 'trust' ? transition(session, 'starting', event.at, null) : session;
     default:
       return session;
   }
@@ -509,6 +521,8 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // The title may have named the conversation before the hook bound
     // the id.
     next = followAutoName(placeIn(next, payload.cwd));
+    // A new start is no longer the last one's end (M9 fix 813).
+    if ((next.endReason ?? null) !== null) next = { ...next, endReason: null };
     // A compact restarts the session object mid-turn; Claude is still working.
     if ((payload.source ?? payload.session_start_type) === 'compact') return next;
     if (typeof payload.cwd === 'string' && payload.cwd !== '' && payload.cwd !== next.groupCwd) next = { ...next, groupCwd: payload.cwd };
@@ -561,11 +575,28 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // The parent's own call answers nothing an agent asked: the prompt
     // stays on show until the agent's own event lands (M9 fix 109).
     if (name !== 'UserPromptSubmit' && awaitsAgent(next)) return next;
+    // An automatic compaction of a row at rest (M9 fix 812): the idle
+    // compactor's PreCompact found it idle, waiting or done, and its
+    // PostCompact puts it back there with its age, since nobody asked for
+    // a turn. A prompt, a Stop or an exit in between clears the record
+    // (here for the prompt, in transition for the others).
+    const from = next.compactFrom ?? null;
+    if (name === 'PostCompact' && from !== null) {
+      return { ...transition(next, from.state, at, null), stateSince: from.since, compactFrom: null };
+    }
+    if (name === 'PreCompact' && payload.trigger === 'auto' && (next.state === 'idle' || next.state === 'waiting' || next.state === 'done')) {
+      const moved = transition({ ...next, compactFrom: { state: next.state, since: next.stateSince } }, 'working', at, null);
+      // The label reads waitingOn only at waiting, so the list rides the
+      // compaction unseen and comes back with the row.
+      return next.state === 'waiting' ? { ...moved, waitingOn: next.waitingOn } : moved;
+    }
+    if (name === 'UserPromptSubmit' && from !== null) next = { ...next, compactFrom: null };
     return transition(next, 'working', at, null);
   }
   switch (name) {
     case 'PermissionRequest':
-      return transition(next, 'needs-input', at, 'permission');
+      // An AskUserQuestion's dialog is a question to the person, not a tool to allow (M9 fix 802).
+      return transition(next, 'needs-input', at, payload.tool_name === 'AskUserQuestion' ? 'question' : 'permission');
     case 'Notification': {
       // Own keys only (M9 fix 510): `constructor` is no notification type.
       const type = payload.notification_type ?? '';
@@ -576,6 +607,8 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       // the agent's own PermissionRequest, which already said whose it
       // is; the plain reason would lose that.
       if (reason === 'permission' && awaitsAgent(next)) return next;
+      // Its permission_prompt follows and would put the plain reason back (M9 fix 802).
+      if (reason === 'permission' && next.state === 'needs-input' && next.needsInputReason === 'question') return next;
       return transition(next, 'needs-input', at, reason);
     }
     case 'Stop': {
@@ -599,7 +632,14 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     case 'SessionEnd':
       // Claude left (leave says what goes with it and what stays). A
       // shell whose prompt already reported the leaving (M9 fix 360) is
-      // plain by now, and leaving it again moves nothing.
+      // plain by now, and leaving it again moves nothing. A Claude
+      // session keeps the reason (M9 fix 813), by which an /exit drops its
+      // pane to a shell; a shell hosting Claude is a shell already. The key
+      // is touched only when there is a reason to keep or one to clear.
+      if (next.kind === 'claude') {
+        const reason = typeof payload.reason === 'string' ? payload.reason : null;
+        if (reason !== null || (next.endReason ?? null) !== null) next = { ...next, endReason: reason };
+      }
       return leave(next, at);
     case 'CwdChanged':
       return placeIn(next, payload.cwd);
@@ -1067,8 +1107,12 @@ function applyStatusLine(session: SessionInfo, payload: HookPayload): SessionInf
   const usd = payload.cost?.total_cost_usd;
   const costUsd = typeof usd === 'number' && Number.isFinite(usd) && usd >= 0 ? usd : (session.costUsd ?? null);
   const cache = readCache(payload.prompt_cache, session.cache ?? null);
-  if (model === session.model && contextPercent === session.contextPercent && contextWindow === session.contextWindow && tokens === session.tokens && costUsd === (session.costUsd ?? null) && cache === (session.cache ?? null)) return session;
-  return { ...session, model, contextPercent, contextWindow, tokens, costUsd, cache };
+  // The effort level (M9 fix 799). A real status line always has the model
+  // block, so one without effort is a model with no effort setting and
+  // clears it; a line with no model block (the mod's measure) keeps it.
+  const effort = m === undefined ? (session.effort ?? null) : typeof payload.effort?.level === 'string' && payload.effort.level !== '' ? payload.effort.level : null;
+  if (model === session.model && contextPercent === session.contextPercent && contextWindow === session.contextWindow && tokens === session.tokens && costUsd === (session.costUsd ?? null) && cache === (session.cache ?? null) && effort === (session.effort ?? null)) return session;
+  return { ...session, model, contextPercent, contextWindow, tokens, costUsd, cache, effort };
 }
 
 // The status line's prompt cache (M9 fix 772). A line without the block
@@ -1210,5 +1254,9 @@ function transition(session: SessionInfo, state: SessionState, at: number, reaso
   // agent's answered prompt puts the row back at waiting with its count
   // (M9 fix 109); a Stop sets its own list after this either way.
   const keepList = next.waitingOn.length === 0 || state === 'needs-input' || state === 'waiting';
-  return { ...next, state, stateSince: at, waitingOn: keepList ? next.waitingOn : [], liveReply: midTurn ? next.liveReply : null, liveTool: midTurn ? next.liveTool : null, liveVerb: midTurn ? (next.liveVerb ?? null) : null };
+  // An automatic compaction's record (M9 fix 812) goes with any move off
+  // working; the key is touched only when set, so a session that never
+  // had one stays without it.
+  const cleared = state !== 'working' && (next.compactFrom ?? null) !== null ? { ...next, compactFrom: null } : next;
+  return { ...cleared, state, stateSince: at, waitingOn: keepList ? next.waitingOn : [], liveReply: midTurn ? next.liveReply : null, liveTool: midTurn ? next.liveTool : null, liveVerb: midTurn ? (next.liveVerb ?? null) : null };
 }

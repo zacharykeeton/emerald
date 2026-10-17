@@ -1,5 +1,5 @@
 import { formatDuration } from '@emerald/shared';
-import type { SessionState } from '@emerald/shared';
+import type { SessionInfo, SessionState } from '@emerald/shared';
 
 // Which sessions want a person, as renderer state on top of the daemon's
 // session states. The daemon says when a session enters needs-input, done
@@ -20,7 +20,11 @@ export type AttentionState = SessionState | 'quiet';
 
 export const ATTENTION_STATES: ReadonlySet<AttentionState> = new Set(['needs-input', 'done', 'errored', 'quiet']);
 
-export function attentionState(session: { state: SessionState; stale?: boolean }): AttentionState {
+// M9 fix 812: a done row the idle compactor took to working reads done
+// across the compaction, so the pulse, the hush and the seen state stay and
+// its return to done is no arrival and no second chime.
+export function attentionState(session: { state: SessionState; stale?: boolean; compactFrom?: SessionInfo['compactFrom'] }): AttentionState {
+  if (session.state === 'working' && session.compactFrom?.state === 'done') return 'done';
   return session.state === 'working' && session.stale === true ? 'quiet' : session.state;
 }
 
@@ -71,7 +75,7 @@ export function chiming(model: AttentionModel): boolean {
 // nothing changed, so a caller can skip a store update. `answering` is the
 // session the person is typing into (fix 701, answeringSession), whose
 // arrival is settled rather than announced.
-export function observe(model: AttentionModel, sessions: Iterable<{ id: string; state: SessionState; stale?: boolean }>, answering: string | null = null): Observed {
+export function observe(model: AttentionModel, sessions: Iterable<{ id: string; state: SessionState; stale?: boolean; compactFrom?: SessionInfo['compactFrom'] }>, answering: string | null = null): Observed {
   const seen = new Map<string, AttentionState>();
   const wanting = new Set(model.wanting);
   const hushed = new Set(model.hushed);
@@ -174,7 +178,7 @@ export function canMarkUnread(state: SessionState): boolean {
 // puts it at the top, so both agree on who is next.
 const WAIT_RANK: Readonly<Record<string, number>> = { 'needs-input': 0, done: 1, errored: 2, quiet: 3 };
 
-export function waitingOrder<S extends { id: string; state: SessionState; stale?: boolean; stateSince: number }>(sessions: Iterable<S>, wanting: ReadonlySet<string>): S[] {
+export function waitingOrder<S extends { id: string; state: SessionState; stale?: boolean; compactFrom?: SessionInfo['compactFrom']; stateSince: number }>(sessions: Iterable<S>, wanting: ReadonlySet<string>): S[] {
   const out: S[] = [];
   for (const s of sessions) if (wanting.has(s.id) && attentionState(s) in WAIT_RANK) out.push(s);
   out.sort((a, b) => {

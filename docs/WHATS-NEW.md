@@ -2,6 +2,46 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 797 to 824, 2026-10-16
+
+Twenty-eight fixes, most of them the chat view as it was met in 0.1.769: it now says what Claude is doing as the terminal does, shows what a command printed, answers questions and the folder trust dialog from its card, and keeps an exited conversation on screen. Beside it, the rows behave after an idle compaction and an `/exit`, the window says so when its daemon crashed, and a few small sweeps land. The daemon goes from level 66 to 67, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**What Claude is doing, in Claude Code's words.** On the chat face (Ctrl+Shift+M on a Claude pane), the short lines Claude writes between its calls read as replies in every view, each stretch of calls folds under the sentence Claude Code itself shows (`Searched for 1 pattern, listed 1 directory, ran 5 shell commands`, with the edits' `+6 −2` beside it), and a shell call with a description reads it on the row with the command dim under it. Ask a Claude to look around a repository and watch a turn build up.
+
+**Command output in the conversation.** What a Claude Code command prints shows where it landed as a centred dim line: `/rename` from the chat box gives its `Session renamed to`, and a `/model` or `/effort` pick its confirmation. A dialog closed with no pick prints nothing.
+
+**The effort beside the model.** The pane header, the shade and the sidebar row read `Opus 5.5 · high · ◔ 42%` once Claude Code's status line names the level, and the chat footer's model chip shows the effort from the session's first moment, before any answer, and again at once after a `/model` or an `/effort`. On a narrow row the model and the effort drop together.
+
+**Answering from the card.** An AskUserQuestion's `Type something` row is a text box on the chat card and on the sidebar's answer card: type the answer and press Enter. A card takes one press per dialog, dimming once it has sent, so a second click no longer types a digit into the next prompt. The row reads `needs input: a question` rather than `permission`.
+
+**`/exit` leaves a shell behind.** A Claude you leave with `/exit`, typed in the terminal, from the chat box or from the `/` menu, drops its pane to a shell in the folder it was started in, as a terminal would, and its Exited row counts down to its removal. Resume during the count opens the Claude again in a new pane beside the shell.
+
+### Details
+
+**A new folder's trust dialog.** A Claude started in a folder Claude Code has not seen shows its trust question as a card on the chat face and under the row's badge, with `Yes, I trust this folder` and `No, exit`; the row reads `needs input: folder trust` with its ring and chime, and until the dialog is drawn the view says `Starting Claude in <folder>…`.
+
+**An exited conversation stays.** The chat face of a Claude whose process has ended keeps its conversation, dimmed, under the exited notice, also after a daemon restart, and Resume carries on in the same view with no blank.
+
+**Background tasks and messages.** A background task's end, an agent's report and another session's message each show in the conversation as one readable line in the turn they arrive in, rather than as raw text in a bubble of yours or not at all; a failed task's line is red, and the whole message is in the tooltip.
+
+**Copy on select in the chat view.** With Copy on select on (the pane menu), a selection in the conversation is copied as you let go of the mouse, and every copy out of a pane, on either face, shows a small note in the corner, `Copied 3 lines` or `Copied 142 characters`.
+
+**The chat box.** Its placeholder names the session in quotes, `Message session: "<name>"`, with the `/` and `@` hints on a second line, a long name cut with an ellipsis. Claude Code's stock `Try "..."` placeholder is no longer offered as a one-word suggestion. In the `/` menu a long argument hint, such as `/mcp`'s, gives way before the description does. An image dropped on the pane the moment after you answer an ask now gets its chip.
+
+**The mode chip.** While a pick presses Shift+Tab, the chip shows the mode it is going to, dimmed, with a turning ring for its chevron, and it reaches the mode sooner.
+
+**Rows.** An idle compaction puts the row back at idle, waiting or done when it ends, rather than leaving it at working until it goes quiet; a done row stays unread and does not chime again. The Exited row's count always opens at `removing in 10s`, and a pointer already on the row holds it.
+
+**A crashed daemon says so.** When the daemon the window started ends on a crash, a banner says `emmerd stopped unexpectedly and was restarted. The sessions it held have ended.` once the new one is up, with the crash code in its tooltip and Not now to put it away.
+
+**Pictures zoom.** A picture's tab zooms by Ctrl+wheel about the pointer, through the commit graph's steps from 50 to 200 percent, and by `+`, `-` and `0`; a chip beside the size reads the zoom and goes back to fit, and the magnifier cursor shows only where a click changes the size.
+
+**The shade's agent boxes.** A hover on a team member's box under the shade opens its card, the commit graph's agent card, with the name whole, the model's full name, the price, its commits and its checklist; a click still lifts the shade.
+
+**Smaller things.** In a git worktree that has its own `.claude/skills`, the `/` menu no longer offers the main checkout's skills, which Claude Code there would not take. A narrow pane title with a cost but no tokens hides the dollars rather than cutting them, and the empty pane's `Claude session` tile keeps its name whole at 380 px. The emmer-cli skill now tells a session inside Emerald to drive a web page with `emmer browser` in a browser pane rather than reach for an outside Chrome; until the new copy is installed, the hooks banner offers the reinstall.
+
 ## Fixes 769 to 796, 2026-10-16
 
 Twenty-eight fixes, and with them the chat view is complete: its last story has landed (the view fed by the emerald mod, a tail read for very long transcripts, and the idle pair), so the `Preview` chip is gone from the chat pane's title. The view now draws each row the moment Claude Code keeps it, the box takes Claude's suggestions, its full `/` menu and the text you typed in the terminal, and Stop gives you back the prompt it interrupted. Beside it, an idle Claude session counts down to Claude Code's idle compaction or to its cache going cold, and can be kept whole. The daemon goes to level 66, since it now carries the prompt cache, the keep-whole mark and the mod's rows; the update stops the old daemon with your screens kept and starts the new one, and every pane comes back by Resume.

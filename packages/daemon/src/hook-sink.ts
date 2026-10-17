@@ -113,14 +113,14 @@ function firstString(text: string, key: string, from: number): string | undefine
 // agentId and description that way, a Read's content is a kilobyte of
 // it), an array past the cut loses its tail, and the payload carries
 // `truncated: true` when anything was cut; and a StatusLine keeps the
-// fields the activity line reads (the model, the cost, the context
-// window) and the session's own, since the rest (the rate limits, the
+// fields the activity line reads (the model, the effort, the cost, the
+// context window) and the session's own, since the rest (the rate limits, the
 // workspace) is the moment's and read live; of the prompt cache it keeps
 // the warmth, the TTL and the expiry (M9 fix 772), for `emmer explain` and
 // the idle countdown's afterwards. Set EMERALD_HOOKS_FULL=1 to keep whole
 // payloads.
 export const TRIM_BYTES = 1024;
-const STATUS_LINE_KEPT = ['session_id', 'hook_event_name', 'cwd', 'agent_id', 'agent_type', 'transcript_path', 'model', 'cost', 'context_window', 'prompt_cache'] as const;
+const STATUS_LINE_KEPT = ['session_id', 'hook_event_name', 'cwd', 'agent_id', 'agent_type', 'transcript_path', 'model', 'effort', 'cost', 'context_window', 'prompt_cache'] as const;
 
 export function trimPayload(payload: HookPayload): HookPayload {
   const fields = payload as Record<string, unknown>;

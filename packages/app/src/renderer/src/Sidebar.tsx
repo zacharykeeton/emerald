@@ -3,8 +3,8 @@ import type { CSSProperties } from 'react';
 import type { SavedPrompt, SessionInfo } from '@emerald/shared';
 import { ackIfDone, clearExited, killSession, newGroupTab, openViewBeside, pauseRemoval, removeSession, renameSession, resumeAll, resumeSession, roomBesideFocused, sendPrompt, setKeepWhole, setSessionComment, showSession, showSessionBeside, showSessionInNewTab, setFolderLabel, startShellBeside, startShellBesideFocused, sweepSessions, unpauseRemoval } from './actions.ts';
 import { observeBand } from './band-visibility.ts';
-import { removalWords, secondsLeft } from './close-countdown-model.ts';
-import { NEEDS_INPUT_WORD, activityText, agentLineText, compactPercent, contextPercentText, contextText, contextWords, describeState, formatUsd, hasState, idleClock, idleClockTitle, needsInputWords, resumeTitle, shellCommand, stateMarker, tasksText, tokensRowText, workingMotion } from '@emerald/shared';
+import { holdsOnStart, removalWords, secondsLeft } from './close-countdown-model.ts';
+import { NEEDS_INPUT_WORD, activityText, agentLineText, compactPercent, contextPercentText, contextText, describeState, formatUsd, hasState, idleClock, idleClockTitle, modelEffortWords, needsInputWords, resumeTitle, shellCommand, stateMarker, tasksText, tokensRowText, workingMotion } from '@emerald/shared';
 import { EXITED_GROUP, SIDEBAR_ORDERS, currentTab, folderRollup, folderTitle, formatDuration, groupSessions, markKind, memberLine, memberParts, modelWord, paneShowingIn, rollup, sessionsOnPanes, teamCounts } from '@emerald/shared';
 import type { SessionGroup, SidebarOrder } from '@emerald/shared';
 import { AnswerBadge } from './AnswerPopover.tsx';
@@ -892,6 +892,15 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   const removal = session.state === 'exited' ? removing.get(session.id) : undefined;
   const counting = removal !== undefined && removal.started;
   const removalSeconds = counting ? secondsLeft(removal, now) : 0;
+  // M9 fix 814: the hover binds always (each half is a no-op when nothing
+  // counts), and a pointer already on the row when its count starts, or on
+  // a row remounted under a still pointer, holds it.
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (holdsOnStart(removal, rowRef.current?.matches(':hover') === true)) pauseRemoval(session.id);
+    // removal is read at the start alone; a pause or an unpause is the hover's own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counting, session.id]);
   // The meter's live samples (M41), when the daemon sends them.
   const { daemon, sessions, conflicts } = useStore('daemon', 'sessions', 'conflicts');
   const rate = useRates(session.id);
@@ -989,6 +998,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   );
   return (
     <div
+      ref={rowRef}
       className="sidebar-row"
       data-session-id={session.id}
       data-state={session.state}
@@ -1002,8 +1012,8 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
       data-flash={stalled.has(session.id) ? 'stalled' : undefined}
       data-removing={counting ? removalSeconds : undefined}
       data-removing-paused={counting && removal.runningSince === null ? '' : undefined}
-      onMouseEnter={counting ? () => pauseRemoval(session.id) : undefined}
-      onMouseLeave={counting ? () => unpauseRemoval(session.id) : undefined}
+      onMouseEnter={() => pauseRemoval(session.id)}
+      onMouseLeave={() => unpauseRemoval(session.id)}
       title={stalled.has(session.id) ? STALLED_TITLE : undefined}
       style={colorStyle(session)}
       onClick={(ev) => {
@@ -1153,9 +1163,9 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
         {contextText(session) !== null && (
           <ContextReading session={session} className="sidebar-row-context">
             {/* The same reading as the pane title's, opening the same card (M9 fix 67), dial right before the percent (M9 fix 66; the row's dial overrules fix 28's "text alone", the kind word's room is its room). */}
-            {contextWords(session) !== null && (
+            {modelEffortWords(session) !== null && (
               <span className="sidebar-row-context-model">
-                {contextWords(session)}
+                {modelEffortWords(session)}
                 {contextPercentText(session) !== null && ' · '}
               </span>
             )}

@@ -166,6 +166,10 @@ try {
   await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
   await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
   await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'the row needs input for the AskUserQuestion');
+  // M9 fix 802: the row reads the AskUserQuestion as a question, as the card does.
+  const words802 = await s.evalJs(`document.querySelector(${JSON.stringify(rowSel)} + ' .sidebar-row-state')?.textContent ?? null`);
+  expect(words802 === 'needs input: a question', `fix 802: the row's state words read a question, got ${JSON.stringify(words802)}`);
+  expect((await agentLine()) === 'Question for you', `fix 802: the agent line says a question, got ${JSON.stringify(await agentLine())}`);
   const badge3 = await centerOf(`${rowSel} .sidebar-row-state`);
   await s.click(badge3.x, badge3.y);
   await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-option[data-key="5"]')`, 'the card with its five options');
@@ -179,7 +183,7 @@ try {
   await type(sessionId, '');
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'the question card closed');
-  step('fix 777: the badge card draws an AskUserQuestion, its tabs, its question and the descriptions');
+  step('fix 777: the badge card draws an AskUserQuestion, its tabs, its question and the descriptions, the row reading needs input: a question');
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

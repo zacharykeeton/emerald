@@ -11,6 +11,7 @@
 // Uses a private home and pipe unless the environment already names them,
 // so it can run beside a live emerald. Starts from an empty layout.
 // Run: npm run verify:m9 -w @emerald/app
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -41,7 +42,7 @@ process.env['EMERALD_OPEN_LOG'] = openedLinks;
 // chooser being a native dialog no script can drive.
 const pickedDir = path.join(os.tmpdir(), 'emerald-verify', 'm9-picked');
 process.env['EMERALD_PICK_FOLDER'] = pickedDir;
-const { blockRunner, CTRL, SHIFT, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
+const { blockRunner, CTRL, SHIFT, daemonPid, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
 // M9 fix 605: the steps after the prelude are blocks, each a closure a
@@ -74,7 +75,10 @@ const BLOCKS = [
   { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575', 'fix-705'], needs: [] },
   { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
   { name: 'fix-738', fixes: ['fix-738'], needs: [] },
-  { name: 'fix-787', fixes: ['fix-787'], needs: [] },
+  { name: 'fix-787', fixes: ['fix-787', 'fix-813', 'fix-814'], needs: [] },
+  // Restarts the daemon and crashes the new one, ending every session it
+  // held: it stays the last block whatever lands after it (M9 fix 815).
+  { name: 'fix-815', fixes: ['fix-815'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -3906,7 +3910,7 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     await closePane787(at.P);
     await counting787(a.id);
     const first787 = await badge787(a.id);
-    expect(/^removing in \d+s$/.test(first787), `fix 787: the closed Claude's Exited row counts down where its badge sits, got ${first787}`);
+    expect(/^removing in (10|[1-9])s$/.test(first787), `fix 787: the closed Claude's Exited row counts down where its badge sits, got ${first787}`);
 
     // Hover: the count holds past its deadline.
     await enter787(a.id);
@@ -3971,14 +3975,166 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     await s.evalJs(`document.querySelector('.sidebar-filter[data-filter="all"]').click()`);
     expect(!bShownChip787, 'fix 787: under Needs you the counting row shows and the rest of Exited stays hidden');
 
+    // M9 fix 813: a Claude left with /exit drops its pane to a shell and
+    // its row counts down. The stub posts the SessionEnd an /exit gives and
+    // is killed, which is the order a real one's hook and exit can take.
+    // daemon.json is read at each post, since a block may restart the daemon.
+    const post813 = async (id, payload) => {
+      const daemon = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': id },
+        body: JSON.stringify({ session_id: 'sim-m9-813', cwd: dir787, ...payload }),
+      });
+      expect(res.status === 204, `fix 813: sink answered 204 for ${payload.hook_event_name}`);
+    };
+    const exit813 = async (id, reason) => {
+      await post813(id, { hook_event_name: 'SessionEnd', reason });
+      await zreq(s, 'session.kill', { sessionId: id });
+    };
+    const kindOf813 = async (id) => (await listed787()).find((x) => x.id === id)?.kind ?? null;
+    // The shell a pane took in place of the session, or null.
+    const shellIn813 = async (paneId, notId) => {
+      const on = leaves(await getLayout(s)).find((p) => p.id === paneId)?.sessionId ?? null;
+      return on !== null && on !== notId && (await kindOf813(on)) === 'shell' ? on : null;
+    };
+    const waitShell813 = async (paneId, notId) => {
+      let on = null;
+      for (const end = Date.now() + 10_000; on === null && Date.now() < end; ) {
+        on = await shellIn813(paneId, notId);
+        if (on === null) await sleep(200);
+      }
+      return on;
+    };
+    const isCounting813 = (id) => s.evalJs(`document.querySelector(${JSON.stringify(row787(id))})?.dataset.removing !== undefined`);
+    // Drop.
+    const e = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(e.id))})`, 'the /exit stub row', 8000);
+    const atE = await place787(e.id);
+    await post813(e.id, { hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(e.id))})?.dataset.state === 'idle'`, 'the /exit stub idle', 8000);
+    await exit813(e.id, 'prompt_input_exit');
+    const shellE = await waitShell813(atE.P, e.id);
+    const countingE = shellE !== null && (await isCounting813(e.id));
+    expect(shellE !== null && countingE, `fix 813: an /exit drops the pane to a shell and the Claude row counts down, got shell ${shellE} counting ${countingE}`);
+    // Resume during the count.
+    await s.evalJs(`document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}).click()`);
+    let paneE2 = null;
+    for (const end = Date.now() + 10_000; paneE2 === null && Date.now() < end; ) {
+      paneE2 = leaves(await getLayout(s)).find((p) => p.sessionId === e.id && p.id !== atE.P)?.id ?? null;
+      if (paneE2 === null) await sleep(200);
+    }
+    const resumedNoCount = paneE2 !== null && !(await isCounting813(e.id));
+    const shellKept = (await shellIn813(atE.P, e.id)) === shellE;
+    expect(paneE2 !== null && resumedNoCount && shellKept, `fix 813: Resume during the count opens the Claude beside the focused pane and keeps the shell, got pane ${paneE2} count gone ${resumedNoCount} shell kept ${shellKept}`);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(pane787(paneE2) + ' .term-host')})`, 'the resumed pane', 10_000);
+    // Left alone.
+    await exit813(e.id, 'prompt_input_exit');
+    const shellE2 = await waitShell813(paneE2, e.id);
+    const countingE2 = shellE2 !== null && (await isCounting813(e.id));
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(e.id))})`, 'the /exit row removed after the count', 16_000);
+    const bothKept = (await shellIn813(atE.P, e.id)) === shellE && (await shellIn813(paneE2, e.id)) === shellE2;
+    expect(shellE2 !== null && countingE2 && bothKept, `fix 813: a second /exit drops that pane too and the row is removed after the count, got shell ${shellE2} counting ${countingE2} both kept ${bothKept}`);
+    // Logout.
+    const f = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(f.id))})`, 'the logout stub row', 8000);
+    const atF = await place787(f.id);
+    await post813(f.id, { hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(f.id))})?.dataset.state === 'idle'`, 'the logout stub idle', 8000);
+    await exit813(f.id, 'logout');
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(f.id))})?.dataset.state === 'exited'`, 'the logout stub exited', 8000);
+    await sleep(2000);
+    const fOnPane = leaves(await getLayout(s)).find((p) => p.id === atF.P)?.sessionId === f.id;
+    const fCounting = await isCounting813(f.id);
+    expect(fOnPane && !fCounting, `fix 813: a logout is not an /exit and leaves the pane as it was, got on pane ${fOnPane} counting ${fCounting}`);
+    await closePane787(atF.P);
+    // No pane.
+    const shellsBefore813 = (await listed787()).filter((x) => x.kind === 'shell').length;
+    const g = await spawn787();
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(g.id))})`, 'the pane-less stub row', 8000);
+    await post813(g.id, { hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`document.querySelector(${JSON.stringify(row787(g.id))})?.dataset.state === 'idle'`, 'the pane-less stub idle', 8000);
+    await exit813(g.id, 'prompt_input_exit');
+    await counting787(g.id);
+    await sleep(1000);
+    const shellsAfter813 = (await listed787()).filter((x) => x.kind === 'shell').length;
+    expect(shellsAfter813 === shellsBefore813, `fix 813: an /exit on no pane counts the row and starts no shell, got ${shellsBefore813} shells then ${shellsAfter813}`);
+    // The two shells' panes go, so the tab's tree is back as the block found it.
+    await closePane787(paneE2);
+    await closePane787(atE.P);
+    step('M9 fix 813: an /exit drops the Claude\'s pane to a shell and counts its row down, Resume opens it beside, a logout leaves the pane, and an /exit on no pane starts no shell');
+
     // Clean up what the block spawned.
-    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(c.id))}) && !document.querySelector(${JSON.stringify(row787(d.id))})`, 'the counted rows removed', 16_000);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row787(c.id))}) && !document.querySelector(${JSON.stringify(row787(d.id))}) && !document.querySelector(${JSON.stringify(row787(g.id))})`, 'the counted rows removed', 16_000);
     await zreq(s, 'session.remove', { sessionId: b.id });
     await s.waitFor(`!document.querySelector(${JSON.stringify(row787(b.id))})`, 'the killed row removed', 5000);
     try {
       fs.rmSync(dir787, { recursive: true, force: true });
     } catch {}
     step("M9 fix 787: a closed Claude's Exited row counts down from 10s, a hover holds it, Resume restores its split, a close left alone is removed, and a counting row shows in a folded group and under a chip");
+  });
+  await block('fix-815', async () => {
+    // M9 fix 815: a daemon the window started that ends on a crash code
+    // brings a banner once the restarted daemon is up. The restart first
+    // makes the daemon on the pipe the window's own child, whatever the
+    // earlier blocks did; its old daemon dies by daemon.stop or taskkill,
+    // never a crash code. The block ends every session the daemon held, so
+    // it stays the script's last.
+    const pidNow815 = () => {
+      try {
+        return daemonPid();
+      } catch {
+        return null;
+      }
+    };
+    const crashSel815 = '.daemon-banner[data-reason="crash"]';
+    const pidBefore815 = pidNow815();
+    await s.evalJs('window.emerald.restartDaemon()');
+    for (const end = Date.now() + 20_000; Date.now() < end; await sleep(200)) {
+      const now = pidNow815();
+      if (now !== null && now !== pidBefore815) break;
+    }
+    expect(pidNow815() !== pidBefore815, `fix 815: the restart brought a new daemon, still ${pidBefore815}`);
+    await s.waitFor(`window.emerald.daemonInfo().then((d) => d?.pid === ${JSON.stringify(pidNow815())} && !document.querySelector('.banner'))`, 'the window on the restarted daemon', 20_000);
+    await sleep(2000);
+    const afterRestart815 = await s.evalJs(`!!document.querySelector(${JSON.stringify(crashSel815)})`);
+    expect(!afterRestart815, 'fix 815: a restart (code 1) brings no crash banner');
+
+    // The window's own daemon, ended on 0xC0000374 (heap corruption, the
+    // code fix 762 met) through TerminateProcess, matched on its command
+    // line before the kill, never its number alone.
+    const crashed815 = pidNow815();
+    const ps815 = path.join(os.tmpdir(), 'emerald-verify', 'm9-crash-815.ps1');
+    fs.mkdirSync(path.dirname(ps815), { recursive: true });
+    fs.writeFileSync(
+      ps815,
+      [
+        'param([uint32]$Target)',
+        "$ErrorActionPreference = 'Stop'",
+        '$line = (Get-CimInstance Win32_Process -Filter "ProcessId = $Target").CommandLine',
+        "if ($line -notlike '*daemon*main.js*') { 'not the daemon: ' + $line; exit 3 }",
+        "Add-Type -Namespace E -Name K -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid); [DllImport(\"kernel32.dll\")] public static extern bool TerminateProcess(IntPtr h, uint code);'",
+        '$h = [E.K]::OpenProcess(1, $false, $Target)',
+        "[E.K]::TerminateProcess($h, [uint32]'0xC0000374')",
+        '',
+      ].join('\r\n'),
+    );
+    const kill815 = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps815, String(crashed815)], { encoding: 'utf8', windowsHide: true });
+    expect(kill815.status === 0 && kill815.stdout.trim() === 'True', `fix 815: the daemon ${crashed815} killed with 0xC0000374, got status ${kill815.status}, stdout ${JSON.stringify(kill815.stdout)}, stderr ${JSON.stringify(kill815.stderr)}`);
+
+    const bannerSel815 = `${crashSel815}[data-crashed-pid=${JSON.stringify(String(crashed815))}]`;
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(bannerSel815)})`, 'the crash banner after the restart', 20_000);
+    const got815 = await s.evalJs(
+      `(() => { const b = document.querySelector(${JSON.stringify(bannerSel815)}); const t = b.querySelector('.daemon-banner-text'); return { text: t.textContent, title: t.title, pid: b.dataset.daemonPid }; })()`,
+    );
+    const newPid815 = pidNow815();
+    expect(
+      got815.text === 'emmerd stopped unexpectedly and was restarted. The sessions it held have ended.' && got815.title === `emmerd pid ${crashed815} exited with code 0xC0000374` && got815.pid === String(newPid815) && newPid815 !== crashed815,
+      `fix 815: the crash banner after the restart, got ${JSON.stringify({ text: got815.text, title: got815.title, pid: got815.pid, daemon: newPid815 })}`,
+    );
+    await s.evalJs(`document.querySelector(${JSON.stringify(bannerSel815 + ' .daemon-dismiss')}).click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(crashSel815)})`, 'the crash banner put away by Not now', 3000);
+    step('M9 fix 815: a daemon the window started that crashed (0xC0000374) brings the crash banner after the restart, its code in the tooltip, and Not now puts it away; a restart brings none');
   });
   step(blocksRun());
   step('PASS');

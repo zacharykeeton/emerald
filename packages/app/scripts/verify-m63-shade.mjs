@@ -18,7 +18,7 @@ import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm63-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m63';
-const { clickNewShell, expect, freshPort, getLayout, killTree, launch, leaves, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { clickNewShell, expect, freshPort, getLayout, hoverForCard, killTree, launch, leaves, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 setTimeout(() => {
@@ -668,8 +668,13 @@ try {
   const rowDone654 = await rowLine654();
   expect(done654.activity === 'lid built' && done654.activity === rowDone654 && done654.shown, `after the turn the face reads the reply as the row does, got ${JSON.stringify(done654)} against ${JSON.stringify(rowDone654)}`);
   expect(done654.a2?.state === 'returned' && done654.a2.activity === 'Reading lid.ts', `the returned fork keeps its last phrase, got ${JSON.stringify(done654.a2)}`);
-  expect(await click(paneSel(p1) + ' .pane-shade'), 'lift the shade after fix 654');
-  await s.waitFor(`!${q(paneSel(p1) + ' .pane-shade')}`, 'lifted after fix 654');
+  // M9 fix 821: a hover on a member's box opens its card, and a click on the
+  // box (the card still open) lifts the shade and takes the card with it.
+  await hoverForCard(s, paneSel(p1) + ' .pane-shade-member[data-member="shade-a2"] .pane-shade-member-name', '.agent-popover[data-member="shade-a2"]', "shade-a2's card on its box");
+  const card821 = await s.evalJs(`(() => { const c = document.querySelector('.agent-popover[data-member="shade-a2"]'); return { name: c.querySelector('.agent-card-name')?.textContent, role: c.querySelector('.agent-card-role')?.textContent, activity: c.querySelector('.agent-card-activity')?.textContent }; })()`);
+  expect(card821.name === 'fork' && card821.role === 'subagent · fork' && card821.activity === 'Reading lid.ts', `fix 821: a hover on a member's box opens its card, got ${JSON.stringify(card821)}`);
+  expect(await click(paneSel(p1) + ' .pane-shade-member[data-member="shade-a2"]'), 'click the member box with its card open');
+  await s.waitFor(`!${q(paneSel(p1) + ' .pane-shade')} && !document.querySelector('.agent-popover')`, 'lifted after fix 654, by a click on a member box that also closes its card (fix 821)');
   step("M9 fix 654: after the turn the face's line is the reply, the returned fork's box keeps its last tool call");
 
   // M9 fix 372: a seeded team of six with prices and a checklist, on a
@@ -867,6 +872,21 @@ try {
   await s.waitFor(`!document.querySelector('.tasks-popover')`, 'the grouped card closes after the mouse leaves');
   expect(await s.evalJs(`!!${q(sixSel + ' .pane-shade')}`), 'the shade is still down after the grouped hover');
   step("fix 435: the whole-list card groups the parent's own tasks and each member's with a task under a heading naming it, in team order, and a member with none draws no group");
+
+  // M9 fix 821: the fork's box opens the whole card (name, full model,
+  // price, tasks) and the shell's the same card with its command.
+  const boxPrice821 = await s.evalJs(`${q(sixSel + ' .pane-shade-member[data-member="a1"] .pane-shade-member-price')}?.textContent ?? null`);
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a1"] .pane-shade-member-name', '.agent-popover[data-member="a1"]', "a1's card on its box");
+  const forkCard821 = await s.evalJs(`(() => { const c = document.querySelector('.agent-popover[data-member="a1"]'); return { name: c.querySelector('.agent-card-name')?.textContent, model: c.querySelector('.agent-card-model')?.textContent ?? null, price: c.querySelector('.agent-card-price')?.textContent ?? null, tasks: [...c.querySelectorAll('.agent-card-task')].map((t) => [t.dataset.status, t.textContent]) }; })()`);
+  expect(forkCard821.name === 'Fork: fix-shade-grid (372)' && forkCard821.model === 'Opus 5' && boxPrice821 !== null && forkCard821.price === boxPrice821 && JSON.stringify(forkCard821.tasks) === JSON.stringify([['completed', 'Read the roster'], ['pending', 'Move the grid'], ['pending', 'Take the frame']]), `fix 821: the fork's card names it whole, the model in full, the box's price and its three tasks, got ${JSON.stringify(forkCard821)} against the box's ${boxPrice821}`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a1's card closes after the mouse leaves");
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="sh1"] .pane-shade-member-name', '.agent-popover[data-member="sh1"]', "sh1's card on its box");
+  const shellCard821 = await s.evalJs(`(() => { const c = document.querySelector('.agent-popover[data-member="sh1"]'); return { kind: c.dataset.kind, name: c.querySelector('.agent-card-name')?.textContent, role: c.querySelector('.agent-card-role')?.textContent, state: c.querySelector('.agent-card-state')?.textContent, branch: !!c.querySelector('.agent-card-branch') }; })()`);
+  expect(shellCard821.kind === 'shell' && shellCard821.name === 'npm run build' && shellCard821.role === 'shell' && shellCard821.state === 'running' && !shellCard821.branch, `fix 821: the shell's box opens the same card with its command, got ${JSON.stringify(shellCard821)}`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "sh1's card closes after the mouse leaves");
+  step("fix 821: a hover on a member's box opens the agent card (the fork's with its whole name, the model in full, the box's price and its tasks; the shell's with its command), a click on the box lifts the shade and closes the card");
 
   // The narrow fold: the six-member pane at a quarter of the row (under
   // 360px) is one column of four boxes, the fifth on hidden, and "and 3

@@ -28,6 +28,7 @@ import { writeFileAtomic } from './store-file.ts';
 import type { PersistedSession, SessionStore } from './session-store.ts';
 import { LoadSampler } from './load-sampler.ts';
 import type { SweepMethod, TreeReading } from './load-sampler.ts';
+import { TrustRead } from './trust-read.ts';
 
 // One load tick (M9 fix 703), emitted as 'load' once per tick in place of
 // a 'changed' per session: the samples in the sessions.load push's shape,
@@ -373,6 +374,7 @@ export class SessionManager extends EventEmitter {
       waitingOn: [],
       team: [],
       model: null,
+      effort: null,
       contextPercent: null,
       contextWindow: null,
       tokens: null,
@@ -523,17 +525,20 @@ export class SessionManager extends EventEmitter {
       // once its status line runs, and a bare prompt says nothing.
       title: null,
       model: null,
+      effort: null,
       contextPercent: null,
       contextWindow: null,
       tokens: null,
       costUsd: null,
-      // The new process reports its own transcript (M47).
-      transcriptPath: null,
+      // The transcript stays until the new process names its own (M9 fix 804): claude --resume writes on to the same file, so the chat face carries on with no blank; a SessionStart naming another file replaces it (M47).
+      transcriptPath: rec.info.transcriptPath,
       liveReply: null,
       liveTool: null,
       liveVerb: null,
       pid: pty.pid,
       exitCode: null,
+      compactFrom: null,
+      endReason: null,
     };
     this.log.info('session resumed', { id: sessionId, kind: rec.info.kind, pid: pty.pid, cwd, args, typed: plan.typed });
     this.changed(rec);
@@ -1321,7 +1326,21 @@ export class SessionManager extends EventEmitter {
     const marks = new MarkScanner();
     const publishTitle = this.throttledPublish(rec, Limits.titlePublishMs);
     rec.publish = publishTitle;
+    // And Claude Code's folder trust dialog (M9 fix 808), read off the
+    // screen while the session starts, since no hook fires before it is
+    // answered.
+    const trustGate = (): 'starting' | 'trust' | null =>
+      rec.pty !== pty ? null : rec.info.state === 'starting' ? 'starting' : rec.info.state === 'needs-input' && rec.info.needsInputReason === 'trust' ? 'trust' : null;
+    const trust = new TrustRead({
+      read: () => pty.screen(),
+      gate: trustGate,
+      apply: (shown) => {
+        this.apply(rec, { type: 'trust', shown, at: Date.now() });
+        this.log.info(shown ? 'the trust dialog is on screen' : 'the trust dialog is gone', { id });
+      },
+    });
     pty.on('data', (chunk: Buffer) => {
+      if (trustGate() !== null) trust.poke();
       for (const { mark, code } of marks.push(chunk)) {
         if (rec.pty === pty) this.apply(rec, { type: 'shell-mark', mark, code, at: Date.now(), doneAfterMs: this.shellDoneAfterMs });
       }
@@ -1372,6 +1391,7 @@ export class SessionManager extends EventEmitter {
     // the app, which draws it on the state meter.
     pty.on('rate', (samples: number[]) => this.emit('rate', { id, samples, at: Date.now() }));
     pty.on('exit', (exitCode: number) => {
+      trust.dispose();
       if (rec.pty === pty) this.dropTypeAtPrompt(rec);
       // The frame at the exit (M9 fix 159), read once the emulator has
       // applied the last bytes; it lands on the record a moment after
@@ -1557,7 +1577,7 @@ function restoredInfo(p: PersistedSession, now: number): SessionInfo {
     scheme: p.scheme,
     keepWhole: p.keepWhole,
     title: null,
-    transcriptPath: null,
+    transcriptPath: p.transcriptPath,
     liveReply: null,
     liveTool: null,
     liveVerb: null,

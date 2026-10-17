@@ -16,6 +16,8 @@ export type RendererPush =
   | { type: 'pty.output'; sessionId: string; data: Uint8Array; replay?: true }
   | { type: 'daemon.connected'; daemon: DaemonInfo }
   | { type: 'daemon.disconnected' }
+  // A daemon this window started ended on a crash code (M9 fix 815).
+  | { type: 'daemon.crashed'; crash: DaemonCrash }
   // The window went into or out of full screen (M43): the page cannot
   // tell on its own (neither the overlay's visible flag nor display-mode
   // moves under Electron), so the main process says.
@@ -23,6 +25,13 @@ export type RendererPush =
   // The updater's state changed (M9 fix 239): the title row's badge
   // follows it.
   | { type: 'update.state'; state: UpdateState };
+
+// A daemon the window started that ended on an NTSTATUS (M9 fix 815): its
+// pid and the code as eight hex digits, no 0x.
+export interface DaemonCrash {
+  pid: number;
+  code: string;
+}
 
 // What hello said about the daemon. featureLevel is null for a daemon older
 // than M9 fix 11, which the renderer treats as level 1.

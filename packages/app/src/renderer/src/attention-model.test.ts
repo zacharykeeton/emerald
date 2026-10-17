@@ -267,3 +267,21 @@ test('answeringSession names the focused pane session within the ten seconds of 
   assert.equal(answeringSession(null, { paneId: 'p1', at: now - 1_000 }, now), null);
   assert.equal(answeringSession(focused, null, now), null);
 });
+
+// M9 fix 812: the idle compactor takes a done row to working and back; the
+// row reads done all the way through, so nothing arrives and it keeps
+// pulsing for the reply nobody has read.
+test('an idle compaction of a done row is no arrival and keeps it wanting', () => {
+  const since = 1_000;
+  let { model, arrived } = observe(emptyAttention(), [{ id: 'a', state: 'working' }]);
+  ({ model, arrived } = observe(model, [{ id: 'a', state: 'done' }]));
+  assert.deepEqual(arrived, ['a'], 'the finished turn arrives');
+  ({ model, arrived } = observe(model, [{ id: 'a', state: 'working', compactFrom: { state: 'done', since } }]));
+  assert.deepEqual(arrived, [], 'the compaction is no arrival');
+  assert.deepEqual(ids(model), ['a'], 'and keeps the row wanting');
+  assert.equal(model.seen.get('a'), 'done');
+  ({ model, arrived } = observe(model, [{ id: 'a', state: 'done' }]));
+  assert.deepEqual(arrived, [], 'its return to done is no second arrival');
+  assert.deepEqual(ids(model), ['a']);
+  assert.equal(attentionState({ state: 'working', compactFrom: { state: 'idle', since } }), 'working', 'an idle row compacting is plain working');
+});

@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type React from 'react';
-import { agentLineText, describeState, formatDuration, formatTokens, formatUsd, markKind, modelWord, sliceUsage, tokensUp, workingMotion } from '@emerald/shared';
+import { agentLineText, describeState, formatDuration, formatTokens, formatUsd, markKind, memberParts, modelName, sliceUsage, tasksOfAgent, tokensUp, workingMotion } from '@emerald/shared';
 import type { SessionInfo, TeamMember } from '@emerald/shared';
+import { commitsLine } from './agent-card-model.ts';
 import { agentLabel, agentRole } from './commit-graph-model.ts';
 import { askAgentsRunning, useAgentsRunning } from './agents-running.ts';
 import { askUsageLive, useConversationUsage } from './commit-usage.ts';
@@ -31,6 +32,12 @@ import { SessionMark } from './session-mark.tsx';
 // row's own model word and the commit price ride; neither draws
 // anything until a request has landed for the member. The session's
 // own row (member null) gains nothing here.
+//
+// M9 fix 821: the card also opens on a hover over a member's box under the
+// shade (Pane.tsx's ShadeMemberCard), and says more: the name wraps whole,
+// the model by its full name (`Opus 5`), the price the box prints, the
+// commits the member made and its checklist. A shell member's card is the
+// same card with its command for a name and none of those lines.
 
 interface Props extends CardProps {
   member: TeamMember | null;
@@ -79,10 +86,30 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
   }
   const working = member.outcome === 'running';
   const elapsed = working ? formatDuration(member.startedAt, now) : `returned after ${formatDuration(member.startedAt, member.endedAt ?? now)}`;
-  const word = modelWord(running.get(conversationId ?? '')?.models[member.id] ?? null);
+  const answer = running.get(conversationId ?? '');
+  const word = modelName(answer?.models[member.id] ?? null);
+  const usd = answer?.spend?.[member.id] ?? null;
   const messages = conversationId === null ? null : (lists.get(conversationId) ?? null);
   const slice = messages === null ? null : sliceUsage(messages, member.startedAt, member.endedAt ?? now);
   const usage = slice?.agents.find((a) => a.id === member.id) ?? null;
+  if (member.kind === 'shell') {
+    const parts = memberParts(member, now);
+    return (
+      <PopoverCard id={anchorId} className="agent-popover" data={{ 'data-member': member.id, 'data-kind': 'shell', 'data-working': working ? '' : 'no' }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
+        <div className="agent-card-heading" style={style}>
+          <SessionMark kind="shell" working={working} size="unit" className="agent-card-mark" />
+          <span className="agent-card-name agent-card-command">{member.command ?? 'shell'}</span>
+          <span className="agent-card-role">shell</span>
+          <span className="agent-card-state">{working ? 'running' : 'finished'}</span>
+        </div>
+        <div className="agent-card-session">
+          session {session.name} · {parts.elapsed}
+        </div>
+      </PopoverCard>
+    );
+  }
+  const commits = commitsLine(member.commits);
+  const tasks = tasksOfAgent(session, member.id);
   return (
     <PopoverCard id={anchorId} className="agent-popover" data={{ 'data-member': member.id, 'data-working': working ? '' : 'no' }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
       <div className="agent-card-heading" style={style}>
@@ -91,12 +118,23 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
         <span className="agent-card-role" data-type={member.type ?? undefined}>{agentRole(member)}</span>
         {word !== null && <span className="agent-card-model">{word}</span>}
         <span className="agent-card-state">{working ? 'working' : 'idle'}</span>
+        {usd !== null && <span className="agent-card-price">{formatUsd(usd)}</span>}
       </div>
       {member.branch !== null ? <div className="agent-card-branch">⑂ {member.branch}</div> : <div className="agent-card-branch" data-folder="">in the session's folder</div>}
+      {commits !== null && <div className="agent-card-commits">{commits}</div>}
       <div className="agent-card-session">
         session {session.name} · {elapsed}
       </div>
       {member.activity !== null && <div className="agent-card-activity">{member.activity}</div>}
+      {tasks.length > 0 && (
+        <div className="agent-card-tasks">
+          {tasks.map((t) => (
+            <div key={t.id} className="agent-card-task" data-status={t.status}>
+              {t.subject}
+            </div>
+          ))}
+        </div>
+      )}
       {usage !== null && (
         <div className="agent-card-tokens">
           {`↑ ${formatTokens(tokensUp(usage.tokens))} sent, ↓ ${formatTokens(usage.tokens.output)} received${usage.usd === null ? '' : `, ~${formatUsd(usage.usd)}`}`}

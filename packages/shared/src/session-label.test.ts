@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, SessionKind, SessionState } from './session.ts';
-import { COMPACT_BUFFER_TOKENS, IDLE_COMPACT_AFTER_MS, IDLE_COMPACT_MIN_TOKENS, NEEDS_INPUT_WORD, activityText, idleClock, idleClockTitle, commandText, compactPercent, contextPercentText, contextText, contextTitle, contextWords, describeState, elapsedText, formatTokens, hasState, shellCommand, needsInputWords, quietText, resumeTitle, shortModel, stateMarker, titleGlyph, titleText, costText, tokensDetail, tokensFigures, tokensLines, tokensParts, tokensRowText, tokensText, waitingDetail, waitingOnText, workingMotion } from './session-label.ts';
+import { COMPACT_BUFFER_TOKENS, IDLE_COMPACT_AFTER_MS, IDLE_COMPACT_MIN_TOKENS, NEEDS_INPUT_WORD, activityText, idleClock, idleClockTitle, commandText, compactPercent, contextPercentText, contextText, contextTitle, contextWords, describeState, elapsedText, formatTokens, hasState, modelEffortWords, shellCommand, needsInputWords, quietText, resumeTitle, shortModel, stateMarker, titleGlyph, titleText, costText, tokensDetail, tokensFigures, tokensLines, tokensParts, tokensRowText, tokensText, waitingDetail, waitingOnText, workingMotion } from './session-label.ts';
 
 const ALL_STATES: SessionState[] = ['starting', 'idle', 'working', 'needs-input', 'done', 'errored', 'exited'];
 
@@ -151,6 +151,20 @@ test('M9 fix 66: contextWords and contextPercentText are the two halves the dial
   assert.equal(contextText({ ...s, model: null, contextPercent: null }), null);
 });
 
+test('modelEffortWords puts the effort after the model and contextText joins it (M9 fix 800)', () => {
+  const s = { ...session('claude', 'idle', 'bound'), model: 'Opus 5.5 (1M context)', effort: 'high', contextPercent: 19 };
+  assert.equal(modelEffortWords(s), 'Opus 5.5 · high');
+  assert.equal(contextText(s), 'Opus 5.5 · high · 19%');
+  assert.equal(contextWords(s), 'Opus 5.5', 'the chat chip and the card keep the model alone');
+  assert.equal(modelEffortWords({ ...s, effort: null }), 'Opus 5.5');
+  const { effort: _gone, ...older } = s;
+  assert.equal(modelEffortWords(older), 'Opus 5.5', 'a record with no effort field');
+  assert.equal(contextText({ ...s, effort: null }), 'Opus 5.5 · 19%');
+  assert.equal(modelEffortWords({ ...s, model: null }), null, 'no model, no words');
+  assert.equal(contextText({ ...s, model: null }), '19%');
+  assert.equal(contextText({ ...s, contextPercent: null }), 'Opus 5.5 · high');
+});
+
 test('M9 fix 143: the tokens reading, short on the row, whole in the detail and the tooltip, nothing without a sum', () => {
   const t = { fresh: 4, cacheWrite: 18518, cacheRead: 1194849, output: 2640 };
   assert.equal(tokensText({ tokens: t }), '↑1.2M ↓2.6k');
@@ -217,6 +231,9 @@ test('describeState says a needs-input reason in words, not its key (M9 fix 123)
   assert.equal(needsInputWords('agent-permission'), "an agent's permission");
   assert.equal(NEEDS_INPUT_WORD, 'needs input', 'the badge alone at the squeeze is the text before the colon');
   assert.equal(asking('agent-permission').detail, 'A subagent is asking permission to use a tool; answer it in the pane and the agent carries on.');
+  // M9 fix 808: a starting Claude at its folder's trust dialog.
+  assert.equal(asking('trust').text, 'needs input: folder trust');
+  assert.equal(asking('trust').detail, 'Claude Code asks whether to trust this folder before it starts.');
 });
 
 test('describeState says how many tasks a waiting session waits on, and which', () => {
@@ -251,6 +268,7 @@ test('waitingOnText names what a needs-input session waits on, and nothing in an
   assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: null, liveTool: null }), 'Waiting on you');
   assert.equal(waitingOnText({ state: 'working', needsInputReason: 'permission', liveTool: 'Editing session.ts' }), null, 'a stale reason outside needs-input says nothing');
   assert.equal(waitingOnText({ state: 'idle', needsInputReason: null, liveTool: null }), null);
+  assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'trust', liveTool: null }), 'Trust this folder?', 'M9 fix 808');
 });
 
 test('a plain shell\'s command words (M9 fix 196): the badge at done and errored, the tooltip text at idle, and nothing on a bound shell', () => {

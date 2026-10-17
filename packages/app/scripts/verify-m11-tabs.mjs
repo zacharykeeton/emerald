@@ -309,6 +309,27 @@ try {
   expect(Math.round(actual.w) === actual.nat && actual.scroll > actual.client, `actual size scrolls, got ${JSON.stringify(actual)}`);
   await s.evalJs(`document.querySelector('img.file-image').click()`);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'a second click fits again');
+  // M9 fix 820: Ctrl+wheel steps the picture through the commit graph's
+  // zoom steps about the pointer; 0 and = and the chip are the keys' side.
+  const zoomRead = () => s.evalJs(`(() => { const v = document.querySelector('.file-view'); const i = document.querySelector('img.file-image'); const r = i.getBoundingClientRect(); return { zoom: v.dataset.zoom, scale: v.dataset.scale, cursor: v.dataset.cursor ?? null, w: r.width, chip: document.querySelector('.file-image-zoom')?.textContent ?? null }; })()`);
+  const z0 = await zoomRead();
+  expect(+z0.scale < 0.5 && z0.cursor === 'zoom-in' && z0.chip === 'Fit', `fix 820: the SVG at fit is under 50 percent with a zoom-in cursor and the chip Fit, got ${JSON.stringify(z0)}`);
+  const wheelAt = await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+  for (const want of ['0.5', '0.67']) {
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheelAt.x, y: wheelAt.y, deltaX: 0, deltaY: -120, modifiers: 2 });
+    await s.waitFor(`document.querySelector('.file-view').dataset.scale === ${JSON.stringify(want)}`, `Ctrl+wheel steps the picture to ${want}`, 4000);
+  }
+  const z1 = await zoomRead();
+  expect(z1.zoom === 'scaled' && z1.scale === '0.67' && Math.round(z1.w) === 2010 && z1.chip === '67%', `fix 820: two Ctrl+wheel steps from fit take the picture to 67 percent about the pointer, got ${JSON.stringify(z1)}`);
+  console.log('fix 820 picture point under the pointer after the wheel', JSON.stringify(await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { x: ${wheelAt.x}, imageLeft: Math.round(r.left), width: Math.round(r.width) }; })()`)));
+  await s.evalJs(`document.querySelector('.file-image-host').focus()`);
+  await s.key('0', 'Digit0', 48);
+  await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit' && document.querySelector('.file-image-zoom').textContent === 'Fit'`, '0 goes back to fit and the chip reads Fit', 4000);
+  await s.key('=', 'Equal', 187);
+  await s.waitFor(`document.querySelector('.file-view').dataset.scale === '0.5'`, '= steps the picture in from fit to 50 percent', 4000);
+  await s.evalJs(`document.querySelector('.file-image-zoom').click()`);
+  await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'the chip goes back to fit', 4000);
+  step('fix 820: Ctrl+wheel takes a picture through the commit graph zoom steps about the pointer, = steps it, 0 and the chip go back to fit, and the cursor shows a magnifier at fit');
   await s.evalJs(`document.querySelector('.file-view-switch [data-view="raw"]').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'text'`, 'Raw is the editor');
   expect((await s.evalJs(`document.querySelector('.file-view').dataset.view`)) === 'raw', 'the SVG is on Raw');
@@ -324,6 +345,8 @@ try {
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'image' && document.querySelector('img.file-image')?.complete && document.querySelector('img.file-image')?.naturalWidth === 3`, 'the GIF shown as a picture');
   const gif1 = await s.evalJs(`({ label: document.querySelector('.file-image-pause')?.textContent, canvas: !!document.querySelector('canvas.file-image'), size: document.querySelector('.file-image-size')?.textContent })`);
   expect(gif1.label === 'Pause' && !gif1.canvas && gif1.size === '3 \u00d7 2', `the GIF has a Pause button, no canvas, and says its size, got ${JSON.stringify(gif1)}`);
+  const gifCursor = await s.evalJs(`({ cursor: document.querySelector('.file-view').dataset.cursor ?? null, css: getComputedStyle(document.querySelector('img.file-image')).cursor })`);
+  expect(gifCursor.cursor === null && gifCursor.css !== 'zoom-in', `fix 820: the 3 by 2 GIF at fit has no magnifier, got ${JSON.stringify(gifCursor)}`);
   await s.evalJs(`document.querySelector('.file-image-pause').click()`);
   await s.waitFor(`document.querySelector('canvas.file-image')?.width === 3 && document.querySelector('canvas.file-image')?.height === 2 && document.querySelector('img.file-image').hidden === true && document.querySelector('.file-image-pause').textContent === 'Play'`, 'Pause shows a still canvas and the button reads Play');
   console.log('fix 638 paused pixel r,g,b,a', JSON.stringify(await s.evalJs(`Array.from(document.querySelector('canvas.file-image').getContext('2d').getImageData(0, 0, 1, 1).data)`)));
@@ -335,6 +358,17 @@ try {
   await s.evalJs(`document.querySelector('.file-image-pause').click()`);
   await s.waitFor(`!document.querySelector('canvas.file-image') && document.querySelector('img.file-image').hidden === false && document.querySelector('.file-image-pause').textContent === 'Pause'`, 'Play shows the running picture again');
   step('fix 638: a GIF has a Pause button in its header; Pause holds a still frame the click to zoom still works on, and Play runs the picture again');
+  // M9 fix 820: the 3 by 2 GIF fits at scale 1, so = twice steps it
+  // through 125 to 150 percent.
+  await s.evalJs(`document.querySelector('.file-image-host').focus()`);
+  await s.key('=', 'Equal', 187);
+  await s.key('=', 'Equal', 187);
+  await s.waitFor(`document.querySelector('.file-view').dataset.scale === '1.5'`, 'two = presses take the small GIF to 150 percent', 4000);
+  const gifPix = await s.evalJs(`({ pixelated: document.querySelector('.file-view').hasAttribute('data-pixelated'), css: getComputedStyle(document.querySelector('img.file-image')).imageRendering })`);
+  expect(gifPix.pixelated && gifPix.css === 'pixelated', `fix 820: above 100 percent the picture draws its pixels, got ${JSON.stringify(gifPix)}`);
+  await s.key('0', 'Digit0', 48);
+  await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, '0 goes back to fit', 4000);
+  step('fix 820: a small picture has no magnifier at fit, steps to 150 percent by = and shows its pixels there');
   await clickRow(s, blob);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'binary'`, 'the binary file back in front');
   expect((await tabs(s)).join(',') === 'panes,blob.bin*', `the strip is back to the one file tab, blob.bin: ${await tabs(s)}`);

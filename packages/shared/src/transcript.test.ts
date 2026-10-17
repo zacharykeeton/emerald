@@ -234,7 +234,13 @@ test('parseSteps: side-chain lines, a result for an unknown id, a broken line an
 
 test("parseSteps: the prompts are parseTurns' prompts", () => {
   const text = tabsFixture();
-  assert.deepEqual(parseFolded(text).map((t) => [t.prompt, t.at, t.endAt]), parseTurns(text).map((t) => [t.prompt, t.at, t.endAt]));
+  const steps = parseFolded(text);
+  const turns = parseTurns(text);
+  assert.deepEqual(steps.map((t) => [t.prompt, t.at]), turns.map((t) => [t.prompt, t.at]));
+  // M9 fix 798: a command's printed line is a note that leaves the turn's
+  // endAt alone, where parseTurns counts it: /clear's `done` here.
+  assert.deepEqual(steps.map((t) => t.endAt), turns.map((t) => (t.prompt === '/clear' ? null : t.endAt)));
+  assert.deepEqual(steps[1]!.steps, [{ kind: 'command', text: 'done', at: Date.parse('2026-09-13T09:20:01.000Z') }]);
 });
 
 // M9 fix 713: the model chip's effort, off the last main-chain assistant line.
@@ -397,6 +403,75 @@ test('parseSteps: a human queued_command attachment is a queued step of the open
   assert.equal(steps.length, 3);
 });
 
+// M9 fix 805: the lines Claude Code writes for itself, in the shapes read
+// off Claude Code 2.1.293 and 2.1.294's transcripts.
+const userAt = (content: unknown, sec: number, extra: Record<string, unknown> = {}) =>
+  line({ type: 'user', isSidechain: false, message: { role: 'user', content }, timestamp: new Date(Date.parse('2026-10-16T14:00:00.000Z') + sec * 1000).toISOString(), ...extra });
+const replyAt = (text: string, sec: number) =>
+  line({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text }] }, timestamp: new Date(Date.parse('2026-10-16T14:00:00.000Z') + sec * 1000).toISOString() });
+const taskText = (status: string, summary: string | null, output: string | null) =>
+  `<task-notification>\n<task-id>b0dgbzd9d</task-id>\n<tool-use-id>toolu_805</tool-use-id>\n${output === null ? '' : `<output-file>${output}</output-file>\n`}<status>${status}</status>\n${summary === null ? '' : `<summary>${summary}</summary>\n`}</task-notification>`;
+const taskLine = (status: string, summary: string | null, output: string | null, sec: number) =>
+  userAt(taskText(status, summary, output), sec, { origin: { kind: 'task-notification', producer: 'session-task', runId: 'r1' }, promptSource: 'system' });
+const HANDBACK_BODY = '[Subagent hand-back] The text below is the final report of a subagent this session delegated to. The report follows:\n  Rehearsal finished.\n  Nothing broke.';
+const handbackText = `Another Claude session sent a message:\n<agent-message from="a54489f352dea06c4">\n${HANDBACK_BODY}\n</agent-message>\nReply to the person with what the report says.`;
+const handbackOrigin = { kind: 'peer', from: 'a54489f352dea06c4', senderTaskId: 'a54489f352dea06c4', name: 'general-purpose', body: HANDBACK_BODY, handback: true };
+const peerText = 'Another Claude session sent a message:\n<cross-session-message from="uds:abc" from-name="Plan batch B" from-mode="prompting">\nPlan batch B here: holding my write.\n</cross-session-message>\nAnswer it if it asks something.';
+const peerOrigin = { kind: 'peer', from: 'uds:abc', name: 'Plan batch B', fromMode: 'prompting', body: 'Plan batch B here: holding my write.' };
+const noteOf = (steps: Step[]) => steps.filter((s) => s.kind === 'notification').map((s) => (s.kind === 'notification' ? { source: s.source, text: s.text, tone: s.tone, output: s.output } : null));
+
+test('parseSteps: a task notification is one line of the open turn, not a turn of its own (M9 fix 805)', () => {
+  const text = [userAt('start the check', 0), replyAt('Started it.', 1), taskLine('completed', 'Background command "Fast gate" completed (exit code 0)', 'C:\\t\\b0.output', 30), replyAt('Answered.', 31)].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1, 'the notification opens no turn');
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['text', 'notification', 'text']);
+  assert.deepEqual(noteOf(turns[0]!.steps), [{ source: 'task', text: 'Background command "Fast gate" completed (exit code 0)', tone: 'quiet', output: 'C:\\t\\b0.output' }]);
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:31.000Z'));
+});
+
+test('parseSteps: a failed or killed task reads in the error tone, and one with no summary reads its status (M9 fix 805)', () => {
+  const text = [userAt('go', 0), taskLine('failed', 'Background command "Slow gate" failed with exit code 1', null, 1), taskLine('killed', 'Background command "x" was stopped', null, 2), taskLine('failed', null, null, 3), taskLine('completed', null, null, 4)].join('\n');
+  assert.deepEqual(noteOf(parseFolded(text)[0]!.steps), [
+    { source: 'task', text: 'Background command "Slow gate" failed with exit code 1', tone: 'error', output: null },
+    { source: 'task', text: 'Background command "x" was stopped', tone: 'error', output: null },
+    { source: 'task', text: 'Background task failed', tone: 'error', output: null },
+    { source: 'task', text: 'Background task completed', tone: 'quiet', output: null },
+  ]);
+});
+
+test("parseSteps: an agent's hand-back and another session's message read as one line each, off the origin or the text (M9 fix 805)", () => {
+  const withOrigin = [userAt('go', 0), userAt(handbackText, 1, { isMeta: true, origin: handbackOrigin }), userAt(peerText, 2, { isMeta: true, origin: peerOrigin })].join('\n');
+  assert.deepEqual(noteOf(parseFolded(withOrigin)[0]!.steps), [
+    { source: 'agent', text: 'Report from general-purpose · Rehearsal finished.', tone: 'quiet', output: null },
+    { source: 'peer', text: 'Message from Plan batch B · Plan batch B here: holding my write.', tone: 'quiet', output: null },
+  ]);
+  const peerStep = parseFolded(withOrigin)[0]!.steps.find((s) => s.kind === 'notification' && s.source === 'peer');
+  assert.equal(peerStep?.kind === 'notification' ? peerStep.title : null, 'Plan batch B here: holding my write.', 'the body is the tooltip');
+  // With no origin (an older line, a mod row) the text says the same; the
+  // agent's tag carries no name, so its id stands in.
+  const bare = [userAt('go', 0), userAt(handbackText, 1, { isMeta: true }), userAt(peerText, 2, { isMeta: true })].join('\n');
+  const steps = parseFolded(bare)[0]!.steps;
+  assert.deepEqual(noteOf(steps), [
+    { source: 'agent', text: 'Report from a54489f352dea06c4 · Rehearsal finished.', tone: 'quiet', output: null },
+    { source: 'peer', text: 'Message from Plan batch B · Plan batch B here: holding my write.', tone: 'quiet', output: null },
+  ]);
+  const agentStep = steps.find((s) => s.kind === 'notification' && s.source === 'agent');
+  assert.equal(agentStep?.kind === 'notification' ? agentStep.title : null, HANDBACK_BODY, 'the closing tag and the instructions after it are left out of the body');
+});
+
+test('parseSteps: a human line that starts with a notification tag is still a prompt, and a notification before any prompt is dropped (M9 fix 805)', () => {
+  const typed = userAt(taskText('completed', 'pasted', null), 0, { origin: { kind: 'human' } });
+  const turns = parseFolded([typed, replyAt('Read it.', 1)].join('\n'));
+  assert.equal(turns.length, 1);
+  assert.ok(turns[0]!.prompt.startsWith('<task-notification>'));
+  assert.deepEqual(parseFolded([taskLine('completed', 'early', null, 0), userAt(peerText, 1, { isMeta: true, origin: peerOrigin })].join('\n')), []);
+});
+
+test('stepFold: a text holding all three notifications folds at every line boundary the same as the whole (M9 fix 805)', () => {
+  const text = [userAt('go', 0), taskLine('completed', 'done', 'C:\\o', 1), userAt(handbackText, 2, { isMeta: true, origin: handbackOrigin }), userAt(peerText, 3, { isMeta: true, origin: peerOrigin }), replyAt('Ok.', 4)].join('\n');
+  assert.deepEqual(parseFolded(text)[0]!.steps.map((s) => (s.kind === 'notification' ? s.source : s.kind)), ['task', 'agent', 'peer', 'text']);
+});
+
 // M9 fix 769: the step parse as a fold, and the mod's rows folded onto a
 // fork of the file's state.
 test('stepFork: a live tool_result folded onto a fork fills the call there and leaves the file state pending', () => {
@@ -420,4 +495,72 @@ test('stepFork: a live tool_result folded onto a fork fills the call there and l
   // The fork's uuids start empty; the file's are untouched.
   assert.deepEqual([...fork.uuids], ['m-r', 'm-a']);
   assert.deepEqual([...state.uuids], ['f-p', 'f-t']);
+});
+
+// M9 fix 797: Claude Code's ● progress lines, a non-empty thinking part
+// on a line written with thinkingDisplay "updates".
+test('parseSteps: an update line is an update step, an empty part on it still thinking', () => {
+  const text = [
+    user('tell the story', '2026-10-16T14:00:00.000Z'),
+    turnLine([{ type: 'thinking', thinking: 'Found the cause. Now checking the rename.\n\n', signature: 's' }], '2026-10-16T14:00:01.000Z', { thinkingDisplay: 'updates', thinkingDurationMs: 12 }),
+    turnLine([{ type: 'thinking', thinking: '', signature: 's' }], '2026-10-16T14:00:04.000Z', { thinkingDisplay: 'updates', thinkingDurationMs: 3000 }),
+    turnLine([toolUse('b1', 'Bash', { command: 'ls packages', description: 'List the packages' })], '2026-10-16T14:00:05.000Z'),
+    turnLine([{ type: 'text', text: 'Told.' }], '2026-10-16T14:00:09.000Z'),
+  ].join('\n');
+  const t = parseFolded(text)[0]!;
+  assert.deepEqual(t.steps.map((s) => s.kind), ['update', 'thinking', 'tool', 'text']);
+  assert.deepEqual(t.steps[0], { kind: 'update', text: 'Found the cause. Now checking the rename.\n\n', at: Date.parse('2026-10-16T14:00:01.000Z') });
+});
+
+// M9 fix 798: what a Claude Code command printed, in both shapes it is
+// written in.
+const sys = (content: string, at: string) => line({ type: 'system', subtype: 'local_command', content, timestamp: at });
+const renameName = '<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>story time</command-args>';
+
+test('parseSteps: a /rename after a reply is a command note in that turn, its endAt the reply\'s', () => {
+  const text = [
+    user('hello', '2026-10-16T14:00:00.000Z'),
+    turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'),
+    sys(renameName, '2026-10-16T14:10:00.000Z'),
+    sys('<local-command-stdout>Session renamed to: story time</local-command-stdout>', '2026-10-16T14:10:01.000Z'),
+  ].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.at(-1), { kind: 'command', text: 'Session renamed to: story time', at: Date.parse('2026-10-16T14:10:01.000Z') });
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+});
+
+test('parseSteps: a /rename before any prompt opens a bare turn holding its note', () => {
+  const text = [sys(renameName, '2026-10-16T14:10:00.000Z'), sys('<local-command-stdout>Session renamed to: story time</local-command-stdout>', '2026-10-16T14:10:01.000Z')].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '');
+  assert.deepEqual(turns[0]!.steps.map((s) => (s.kind === 'command' ? s.text : s.kind)), ['Session renamed to: story time']);
+});
+
+test('parseSteps: /effort as user lines is a prompt and its confirmation one note', () => {
+  const said = 'Set effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing';
+  const text = [
+    user('<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>medium</command-args>', '2026-10-16T14:10:00.000Z'),
+    user(`<local-command-stdout>${said}</local-command-stdout>`, '2026-10-16T14:10:01.000Z'),
+  ].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '/effort medium');
+  assert.deepEqual(turns[0]!.steps, [{ kind: 'command', text: said, at: Date.parse('2026-10-16T14:10:01.000Z') }]);
+});
+
+test('parseSteps: an empty output, a dialog\'s leftover and /compact\'s hint add nothing; a stderr is kept', () => {
+  for (const out of ['', 'Kept model as `Opus 5.5`', 'Resume cancelled', 'Skills dialog dismissed', '\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m']) {
+    const text = [user('hello', '2026-10-16T14:00:00.000Z'), sys(`<local-command-stdout>${out}</local-command-stdout>`, '2026-10-16T14:00:01.000Z')].join('\n');
+    assert.deepEqual(parseFolded(text)[0]!.steps, [], `${JSON.stringify(out)} adds nothing`);
+  }
+  const text = [user('hello', '2026-10-16T14:00:00.000Z'), sys('<local-command-stderr>Unknown model</local-command-stderr>', '2026-10-16T14:00:01.000Z')].join('\n');
+  assert.deepEqual(parseFolded(text)[0]!.steps.map((s) => (s.kind === 'command' ? s.text : s.kind)), ['Unknown model']);
+});
+
+test('parseSteps: a non-empty thinking part with no thinkingDisplay stays thinking (older lines, the mod rows)', () => {
+  const text = [user('think', '2026-10-16T14:00:00.000Z'), turnLine([{ type: 'thinking', thinking: 'Found the cause.', signature: 's' }], '2026-10-16T14:00:01.000Z', { thinkingDurationMs: 12 })].join('\n');
+  const t = parseFolded(text)[0]!;
+  assert.deepEqual(t.steps.map((s) => s.kind), ['thinking']);
 });

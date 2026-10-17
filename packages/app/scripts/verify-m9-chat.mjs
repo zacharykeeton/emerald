@@ -9,7 +9,11 @@
 // `footer` (fix 713, needs stub) reads the footer's chips: the mode off
 // the screen, the model and its effort, the agents, the diff. Block
 // `views` (fix 714, needs stub) cycles Normal, Thinking and Verbose by
-// Ctrl+O and the view chip's menu and opens a fold. Block `real`
+// Ctrl+O and the view chip's menu and opens a fold. Block `story`
+// (fixes 797 and 798, needs stub) reads a turn of progress lines and
+// calls as update, fold, update, fold, reply under Claude Code's own
+// sentences, the shell rows' descriptions over their commands, and the
+// command notes. Block `real`
 // (fix 690) starts a real Claude Code from the empty pane on the chat
 // face and sends it one short turn, so this script costs one short real
 // Claude turn and runs one at a time like verify:claude-resume; it needs
@@ -36,10 +40,21 @@
 // carried into the box and back. Block `review-base` (fix 790) plays
 // Claude with a shell in a fixture repository whose edit is committed:
 // the diff chip counts only the edit under the folder and opens the
-// review on the session's start commit. Block
+// review on the session's start commit. Block `ask-once` (fix 801, needs
+// stub) answers a Bash permission whose dialog the stub clears and reads
+// the card keeping what it answered, with no box and no second press;
+// the `question` block reads fixes 801 to 803 on a second tab. Block
 // `mod-ask` (fixes 774 and 775) starts a real Claude in default mode,
 // Escapes a real permission dialog and answers a second one, a short
 // real turn of its own.
+// Block `notes` (fix 805) plays Claude with a shell over a fixture holding
+// a task notification, an agent's report and another session's message,
+// and reads each drawn as one line in its turn. Block `copy` (fix 806,
+// needs notes) turns Copy on select on and reads a selection in the chat
+// view copied with its corner note, and nothing copied with it off.
+// Block `exited` (fix 804) kills a stub on the chat face, restarts the
+// daemon and reads the conversation kept, dimmed, under the notice, then
+// Resume carrying on.
 // Run: npm run verify:chat -w @emerald/app [-- --only stub,ask]
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -53,27 +68,34 @@ const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort,
 const { block, blocksRun, partial } = blockRunner([
   { name: 'stub', fixes: ['689'], needs: [] },
   { name: 'ask', fixes: ['690'], needs: ['stub'] },
-  { name: 'footer', fixes: ['713', '715', '743', '744', '745'], needs: ['stub'] },
+  { name: 'footer', fixes: ['713', '715', '743', '744', '745', '799'], needs: ['stub'] },
   { name: 'views', fixes: ['714'], needs: ['stub'] },
+  { name: 'story', fixes: ['797', '798'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
   { name: 'thumbs', fixes: ['717', '718'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
-  { name: 'real', fixes: ['690', '778'], needs: [] },
+  { name: 'real', fixes: ['690', '778', '799', '809'], needs: [] },
   { name: 'fresh', fixes: ['722'], needs: [] },
   { name: 'menus', fixes: ['719', '720', '746', '749', '750', '751', '755'], needs: [] },
-  { name: 'image', fixes: ['721', '747', '748', '784'], needs: [] },
+  { name: 'image', fixes: ['721', '747', '748', '784', '807'], needs: [] },
   { name: 'more', fixes: ['723'], needs: [] },
   { name: 'turns', fixes: ['752', '753'], needs: [] },
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
   { name: 'mod-feed', fixes: ['769'], needs: [] },
   { name: 'tail', fixes: ['770'], needs: [] },
-  { name: 'question', fixes: ['777'], needs: ['stub'] },
-  { name: 'box', fixes: ['779', '780'], needs: [] },
+  { name: 'question', fixes: ['777', '801', '802', '803'], needs: ['stub'] },
+  { name: 'ask-once', fixes: ['801'], needs: ['stub'] },
+  { name: 'box', fixes: ['779', '780', '809', '810', '811'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
+  { name: 'notes', fixes: ['805'], needs: [] },
+  { name: 'copy', fixes: ['806'], needs: ['notes'] },
+  { name: 'trust', fixes: ['808'], needs: [] },
+  // Restarts the daemon, so it stays the list's last entry.
+  { name: 'exited', fixes: ['804'], needs: [] },
 ]);
 
 let app = null;
@@ -129,6 +151,19 @@ const waitRecord = async (id, pred, what, ms) => {
   }
   throw new Error(`timed out waiting for ${what} (record ${JSON.stringify(await record(id))?.slice(0, 300)})`);
 };
+// M9 fix 813: an /exit drops the Claude's pane to a shell; a block that
+// ends on one waits for it, so the next block's layout.set is not refilled
+// by the late shell.
+const waitShellOn = async (paneId, claudeId, what) => {
+  const until = Date.now() + 10000;
+  let on = null;
+  while (Date.now() < until) {
+    on = leaves(await getLayout(s)).find((p) => p.id === paneId)?.sessionId ?? null;
+    if (on !== null && on !== claudeId && (await record(on))?.kind === 'shell') return on;
+    await sleep(200);
+  }
+  throw new Error(`timed out waiting for ${what} (pane holds ${on})`);
+};
 // A reload that has happened: the old document carries a mark the new
 // one does not, so a read after this never lands on the page going away.
 const reload = async () => {
@@ -160,6 +195,31 @@ const toVerbose = async (paneId) => {
 const toChat = async (paneId) => {
   if ((await s.evalJs(`${q(paneSel(paneId))}.dataset.face ?? null`)) !== 'chat') await s.evalJs(`${q(paneSel(paneId) + ' .pane-face-toggle')}.click()`);
   await s.waitFor(`${q(paneSel(paneId))}.dataset.face === 'chat'`, 'the stub on the chat face');
+};
+
+// M9 fix 823: a shell playing Claude, bound to a pane, posting hooks as Claude would and started with one turn. Block turns and chips use these; the other copies move over in a later batch, so the blocks this batch's other branches edit are not rewritten under them.
+// The layout is read fresh at each call, since a stale one is the trap a later block meets.
+const bindPane = async (paneId, sessionId, { focus = true } = {}) => {
+  const lay = await getLayout(s);
+  const rec = (n) => (n.kind === 'pane' ? (n.id === paneId ? { ...n, sessionId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+  await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), ...(focus ? { focusedPaneId: paneId } : {}) } });
+};
+const hookPoster = (sessionId, { simId, cwd, transcript }) => {
+  const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+  return async (payload) => {
+    const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sessionId },
+      body: JSON.stringify({ session_id: simId, cwd, transcript_path: transcript, ...payload }),
+    });
+    expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+  };
+};
+const startStub = async (post, id, prompt) => {
+  await post({ hook_event_name: 'SessionStart', source: 'startup' });
+  await post({ hook_event_name: 'UserPromptSubmit', prompt });
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  return waitRecord(id, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), `the stub bound with its transcript after ${JSON.stringify(prompt)}`, 10000);
 };
 
 // M9 fix 714: a chat opens on Normal, its tool calls folded, so a read
@@ -240,6 +300,14 @@ let chipsId = null;
 let reviewId790 = null;
 // M9 fixes 774 and 775: the real Claude the mod-ask block asks with.
 let askId = null;
+// M9 fix 805: the notes stub, which fix 806's copy block reuses.
+let notesId = null;
+let notesPane = null;
+// M9 fix 804: the exited block's stub.
+let exitedId = null;
+// M9 fix 808: the real Claude at its folder's trust dialog, and the folder.
+let trustId = null;
+let trustDir = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -441,7 +509,7 @@ try {
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!${q(paneSel(stubPane) + ' .chat-fallback')}`, 'Escape closed the bar', 2000);
     await sendModel();
-    fs.appendFileSync(fixture, line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Kept model</local-command-stdout>', timestamp: at(80) }) + '\n');
+    fs.appendFileSync(fixture, line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>', timestamp: at(80) }) + '\n');
     await s.waitFor(`!${q(paneSel(stubPane) + ' .chat-fallback')}`, 'the transcript growing closed the bar', 5000);
     await sendModel();
     await s.evalJs(`${q(paneSel(stubPane) + ' .chat-fallback-show')}.click()`);
@@ -548,12 +616,14 @@ try {
       expect(box.menuBottom <= box.chipTop + 0.5, `the menu opens above the chip, got ${JSON.stringify(box)}`);
       expect(box.open !== null, 'the chip reads data-open while its menu shows');
     }
+    const t819 = Date.now();
     await pickRow(modeMenu, 'Plan');
     await waitRow((r) => r.startsWith('tabs 2'), 'two presses reached plan and the loop ended', 8000);
     await waitChip('mode', 'Plan', 3000);
-    // The pick's own read follows its press by a second, so the poll can
-    // show Plan first; the chip ignores a click until the pick settles.
+    // The pick's own read follows its press by a quarter second, so the poll
+    // can show Plan first; the chip ignores a click until the pick settles.
     await s.waitFor(`${q(foot('mode'))}?.dataset.busy === undefined`, 'the mode pick settled', 3000);
+    expect(Date.now() - t819 < 1500, `fix 819: Plan from Manual settles in under 1.5 s, got ${Date.now() - t819} ms`);
     expect((await hintNow()) !== 'Could not reach Plan', 'no miss when Plan was reached');
     await openMenu('mode', modeMenu);
     {
@@ -568,11 +638,26 @@ try {
     await sleep(500);
     await openMenu('mode', modeMenu);
     await pickRow(modeMenu, 'Auto');
+    const t819Auto = Date.now();
+    {
+      const r = await s.evalJs(`(() => { const c = ${q(foot('mode'))}; const k = c?.querySelector('.chat-chip-caret'); return { busy: c?.dataset.busy ?? null, word: c?.querySelector('.chat-chip-word')?.textContent ?? null, title: c?.title ?? null, ring: k === null || k === undefined ? null : getComputedStyle(k, '::after').animationName }; })()`);
+      expect(r.busy === 'true' && r.word === 'Auto' && r.title === 'Switching to Auto' && r.ring === 'usage-spin', `fix 819: while the pick presses the chip reads Auto, dimmed, titled Switching to Auto, with fix 783's ring on its caret, got ${JSON.stringify(r)}`);
+      // The paint read (fix 86's shape): two frames of the chip 300 ms apart
+      // while it presses, logged as the same or different.
+      const clip = { ...(await s.evalJs(`(() => { const { left, top, width, height } = ${q(foot('mode'))}.getBoundingClientRect(); return { x: left - 4, y: top - 4, width: width + 8, height: height + 8 }; })()`)), scale: 1 };
+      const f1 = (await s.send('Page.captureScreenshot', { format: 'png', clip })).data;
+      await sleep(300);
+      const f2 = (await s.send('Page.captureScreenshot', { format: 'png', clip })).data;
+      console.log(`[verify] fix 819 paint read: the chip's frames 300 ms apart are ${f1 === f2 ? 'the same (no ring painted)' : 'different (the ring turned)'}`);
+      fs.writeFileSync(path.join(os.tmpdir(), 'emerald-verify', 'm9-chat-mode-ring-1.png'), Buffer.from(f1, 'base64'));
+      fs.writeFileSync(path.join(os.tmpdir(), 'emerald-verify', 'm9-chat-mode-ring-2.png'), Buffer.from(f2, 'base64'));
+    }
     try {
       await s.waitFor(`${q(paneSel(stubPane) + ' .chat-hint')}?.textContent === 'Could not reach Auto'`, 'the miss in the hint', 12000);
     } catch (err) {
       throw new Error(`${err.message}: got ${JSON.stringify(await hintNow())}`);
     }
+    console.log(`[verify] note: fix 819 Auto pick to its miss in ${Date.now() - t819Auto} ms`);
     await waitRow((r) => r.startsWith('tabs 5'), 'five presses and no more', 3000);
     expect((await chipWord('mode')) === 'Plan', `the chip still reads Plan, got ${JSON.stringify(await chipWord('mode'))}`);
     await backOnChat();
@@ -584,7 +669,7 @@ try {
     } catch (err) {
       throw new Error(`${err.message}: got ${JSON.stringify(await hintNow())}`);
     }
-    step('fix 743: the mode chip opens the four modes with Claude Code\'s lines, a pick of Plan from Manual sends two Shift+Tabs and the tick moves, and Auto never reached reads Could not reach Auto after five');
+    step('fix 743: the mode chip opens the four modes with Claude Code\'s lines, a pick of Plan from Manual sends two Shift+Tabs and the tick moves, and Auto never reached reads Could not reach Auto after five, the chip showing the mode it is going to while it presses (fix 819)');
 
     // (c) M9 fix 744: the model off the status line, its effort off the
     // transcript, and the chip's menu of the models and the effort row. A
@@ -593,6 +678,26 @@ try {
     const modelMenu = '.menu.chat-model-menu';
     await post({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
     await waitChip('model', 'Opus 5.5');
+    // M9 fix 799: the effort off the status line, before any assistant
+    // line: the chip and the Effort row read it, a /model's line moves both
+    // at once, and a line with no effort shows the model alone, which
+    // leaves the chip as the fix 744 steps below were written for.
+    {
+      const lit = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modelMenu + ' [data-segments="Effort"] .menu-segment')})].filter((b) => b.dataset.active !== undefined).map((b) => b.textContent)`);
+      await post({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' }, effort: { level: 'high' } });
+      await waitChip('model', 'Opus 5.5 · high');
+      await openMenu('model', modelMenu);
+      expect(JSON.stringify(await lit()) === '["high"]', `fix 799: high active alone off the status line, got ${JSON.stringify(await lit())}`);
+      await escapeMenu(modelMenu);
+      await post({ hook_event_name: 'StatusLine', model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' }, effort: { level: 'medium' } });
+      await waitChip('model', 'Sonnet 5.5 · medium');
+      await openMenu('model', modelMenu);
+      expect(JSON.stringify(await lit()) === '["medium"]', `fix 799: medium active alone after the /model's line, got ${JSON.stringify(await lit())}`);
+      await escapeMenu(modelMenu);
+      await post({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
+      await waitChip('model', 'Opus 5.5');
+    }
+    step('fix 799: before any assistant line the chip reads Opus 5.5 · high and the Effort row lights high, off the status line; a status line for Sonnet 5.5 at medium moves both at once; a status line with no effort shows the model alone');
     fs.appendFileSync(fixture, asstLine([{ type: 'text', text: 'Effort noted.' }], 90, { effort: 'high' }) + '\n');
     await waitChip('model', 'Opus 5.5 · high', 5000);
     {
@@ -768,10 +873,10 @@ try {
       })()`);
     await waitView(stubPane, 'Normal');
     let r = await read();
-    expect(r.folds === 1 && r.foldText === '3 steps · Bash, Bash, Edit +6 −2 ›', `one fold row reading 3 steps · Bash, Bash, Edit +6 −2 ›, got ${JSON.stringify(r)}`);
+    expect(r.folds === 1 && r.foldText === 'Edited 1 file, ran 2 shell commands +6 −2 ›', `one fold row reading Edited 1 file, ran 2 shell commands +6 −2 › (fix 797), got ${JSON.stringify(r)}`);
     expect(r.thinking.length === 0 && r.tools === 0, `no thinking and no tool rows in Normal, got ${JSON.stringify(r)}`);
     expect(['Done.', 'Also done.', 'Effort noted.'].every((x) => r.replies.includes(x)), `the replies still drawn, got ${JSON.stringify(r.replies)}`);
-    step('fix 714: Normal folds the turn\'s three calls into one row and keeps the replies');
+    step('fix 714: Normal folds the turn\'s three calls into one row under Claude Code\'s sentence (fix 797) and keeps the replies');
 
     await ctrlO('Thinking');
     r = await read();
@@ -819,6 +924,82 @@ try {
     await s.waitFor(`${q(P)}.querySelectorAll('.chat-step[data-kind="tool"]').length === 0 && ${q(P + ' .chat-fold-caret')}?.textContent === '›'`, 'the fold closed', 3000);
     await s.waitFor(`document.activeElement === ${q(P + ' .chat-box')}`, 'the box holds the keyboard');
     step('fix 714: a click on the fold row opens the turn\'s calls and another folds them');
+  });
+
+  await block('story', async () => {
+    // M9 fix 797: the progress lines Claude Code writes as thinking parts
+    // on a thinkingDisplay "updates" line, read as replies; each stretch
+    // of calls between them folded under Claude Code's sentence; and a
+    // shell row's description over its command. Fix 798 adds the command
+    // notes at the end. It leaves the stub in Normal, its folds closed.
+    await toChat(stubPane);
+    if ((await viewWord(stubPane)) !== 'Normal') await pickView(stubPane, 'Normal');
+    const P = paneSel(stubPane);
+    fs.appendFileSync(
+      fixture,
+      [
+        userLine('tell the story', 150),
+        asstLine([{ type: 'thinking', thinking: 'Found the stub. Now listing its folder.\n\n', signature: 'x' }], 151, { thinkingDisplay: 'updates', thinkingDurationMs: 12 }),
+        asstLine([useOf('s1', 'Bash', { command: 'ls C:/sim', description: 'List the stub folder' })], 152),
+        resultOf('s1', 'fixture.jsonl', 153, { toolUseResult: { stdout: 'fixture.jsonl', stderr: '', interrupted: false } }),
+        asstLine([{ type: 'thinking', thinking: '', signature: 'x' }], 154, { thinkingDisplay: 'updates', thinkingDurationMs: 3000 }),
+        asstLine([{ type: 'thinking', thinking: 'Found the folder listed. Now running the check.\n\n', signature: 'x' }], 155, { thinkingDisplay: 'updates', thinkingDurationMs: 9 }),
+        asstLine([useOf('s2', 'Bash', { command: 'npm run verify:story', description: 'Run the story check' })], 156),
+        resultOf('s2', 'PASS', 160, { toolUseResult: { stdout: 'PASS', stderr: '', interrupted: false } }),
+        asstLine([{ type: 'text', text: 'Story told.' }], 162),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`[...${q(P)}.querySelectorAll('.chat-reply')].some((r) => r.textContent.trim() === 'Story told.')`, 'the story turn drawn', 5000);
+    const storyTurn = `[...${q(P)}.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent === 'tell the story')`;
+    const got = await s.evalJs(`[...${storyTurn}.querySelectorAll(':scope > .chat-rail > *')].map((e) => \`\${e.dataset.kind}:\${e.dataset.kind === 'fold' ? e.querySelector('.chat-fold-text').textContent : e.textContent.trim()}\`)`);
+    expect(
+      JSON.stringify(got) === JSON.stringify(['update:Found the stub. Now listing its folder.', 'fold:Listed 1 directory', 'update:Found the folder listed. Now running the check.', 'fold:Ran 1 shell command', 'text:Story told.']),
+      `fix 797: in Normal the turn reads update, fold, update, fold, reply under Claude Code's sentences, got ${JSON.stringify(got)}`,
+    );
+    await s.evalJs(`${storyTurn}.querySelector('.chat-fold').click()`);
+    await s.waitFor(`${storyTurn}.querySelectorAll('.chat-step[data-kind="tool"]').length === 2`, 'the story turn unfolded', 3000);
+    const rows = await s.evalJs(`[...${storyTurn}.querySelectorAll('.chat-step[data-kind="tool"]')].map((t) => [t.querySelector('.chat-tool-arg')?.textContent ?? null, t.querySelector('.chat-tool-command')?.textContent ?? null])`);
+    expect(
+      JSON.stringify(rows) === JSON.stringify([['List the stub folder', 'ls C:/sim'], ['Run the story check', 'npm run verify:story']]),
+      `fix 797: each shell row reads its description over its command, got ${JSON.stringify(rows)}`,
+    );
+    await s.evalJs(`${storyTurn}.querySelector('.chat-fold').click()`);
+    await s.waitFor(`${storyTurn}.querySelectorAll('.chat-step[data-kind="tool"]').length === 0`, 'the story turn folded again', 3000);
+    step('fix 797: the progress lines read as replies, each stretch of calls folds under Claude Code\'s sentence, and a shell row reads its description over its command');
+
+    // M9 fix 798: what a command printed, in the turn it lands in: the
+    // rename's line after the story turn, a dialog's leftover and an
+    // empty output dropped, and /effort's confirmation in its own turn.
+    fs.appendFileSync(
+      fixture,
+      [
+        line({ type: 'system', subtype: 'local_command', content: '<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>story time</command-args>', timestamp: at(170), commandRun: { command: 'rename', args: 'story time' } }),
+        line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Session renamed to: story time</local-command-stdout>', timestamp: at(171) }),
+        line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>', timestamp: at(172) }),
+        line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout></local-command-stdout>', timestamp: at(173) }),
+        userLine('<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>medium</command-args>', 174),
+        userLine('<local-command-stdout>Set effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing</local-command-stdout>', 175),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`[...${q(P)}.querySelectorAll('.chat-prompt')].some((e) => e.textContent === '/effort medium')`, 'the /effort turn drawn', 5000);
+    await s.waitFor(`${q(P)}.querySelectorAll('.chat-command-note').length >= 2`, 'the command notes drawn', 3000).catch(() => {});
+    const notes = await s.evalJs(`[...${q(P)}.querySelectorAll('.chat-command-note')].map((n) => [n.closest('.chat-turn')?.querySelector('.chat-prompt')?.textContent ?? null, n.querySelector('.chat-command-note-text')?.textContent ?? null])`);
+    expect(
+      JSON.stringify(notes) === JSON.stringify([['tell the story', 'Session renamed to: story time'], ['/effort medium', 'Set effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing']]),
+      `fix 798: the rename's and the effort's confirmations drawn in their turns, a dialog's leftover and an empty one not, got ${JSON.stringify(notes)}`,
+    );
+    const box = await s.evalJs(`(() => {
+      const rail = ${storyTurn}.querySelector(':scope > .chat-rail');
+      const last = rail?.lastElementChild ?? null;
+      const n = last?.getBoundingClientRect();
+      const t = last?.querySelector('.chat-command-note-text')?.getBoundingClientRect();
+      return { last: last?.className ?? null, note: n ? { left: n.left, right: n.right } : null, text: t ? { left: t.left, right: t.right } : null };
+    })()`);
+    expect(
+      box.last === 'chat-step chat-command-note' && box.note !== null && box.text !== null && Math.abs((box.text.left + box.text.right) / 2 - (box.note.left + box.note.right) / 2) <= 2,
+      `fix 798: the note centred on the rail, got ${JSON.stringify(box)}`,
+    );
+    step('fix 798: a command\'s printed line is a centred note in the turn it lands in; a dialog closed with no pick and an empty output print nothing');
   });
 
   await block('reply', async () => {
@@ -966,6 +1147,8 @@ try {
     await post({ hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: file }, cwd: folder });
     const card = q(paneSel(stubPane) + ' .chat-step[data-kind="ask"]');
     await s.waitFor(`!!${card}?.querySelector('.chat-ask-hunk')`, 'the edit card with its hunk', 5000);
+    // The hunk draws from the transcript at once; the options wait for the first screen read after the ask (SCREEN_READ_MS), so wait for them before the single read below (fix 822).
+    await s.waitFor(`!!${card}?.querySelector('.chat-ask-option[data-key="3"]')`, 'the edit card with its options', 5000);
     const lined = `[...${card}.querySelectorAll('.chat-hunk-num')].map((e) => e.textContent).join(',') === '2,3,3,4,5'`;
     try {
       await s.waitFor(lined, 'the hunk numbered off the file', 3000);
@@ -1020,6 +1203,24 @@ try {
     await sleep(2000);
     step(`fix 690: a real Claude started from the empty pane opens on the chat face (${realId.slice(0, 8)})`);
 
+    // M9 fix 809: what a fresh 2.1.30x session draws on its prompt row
+    // before the first prompt, logged and never judged.
+    const freshScreen = await screen(realId);
+    console.log(`[verify] note: fix 809: before the first prompt, the real screen's ghost ${JSON.stringify(freshScreen.ghost === undefined ? 'absent' : freshScreen.ghost)} on prompt row ${JSON.stringify(freshScreen.rows.filter((r) => r.trimStart().startsWith('❯')).at(-1) ?? null)}, box placeholder ${JSON.stringify(await s.evalJs(`${q(paneSel(pane.id) + ' .chat-box')}.placeholder`))}`);
+
+    // M9 fix 799: before any prompt, the real status line's effort on the
+    // record and on the model chip, which the transcript cannot say yet.
+    const realEffort = (await waitRecord(realId, (r) => ['low', 'medium', 'high', 'xhigh', 'max'].includes(r.effort), 'the real status line\'s effort on the record', 10000)).effort;
+    {
+      const chipNow = `${q(paneSel(pane.id) + ' .chat-chip[data-chip="model"] .chat-chip-word')}?.textContent ?? null`;
+      try {
+        await s.waitFor(`(${chipNow} ?? '').endsWith(${JSON.stringify(` · ${realEffort}`)})`, `the real model chip ending · ${realEffort}`, 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: got ${JSON.stringify(await s.evalJs(chipNow))}`);
+      }
+      step(`fix 799: the real session's chip reads ${await s.evalJs(chipNow)} before its first answer, the status line's ${realEffort}`);
+    }
+
     const hooksLog = path.join(emeraldHome, 'logs', 'hooks.jsonl');
     const eventsFor = (id) =>
       (fs.existsSync(hooksLog) ? fs.readFileSync(hooksLog, 'utf8') : '')
@@ -1066,7 +1267,7 @@ try {
       expect(log.includes(`mod submit for ${realId.slice(0, 8)}`), `the box's first prompt went in through the mod (fix 781); emmerd.log has mod channel up: ${log.includes(`mod channel up for ${realId.slice(0, 8)}`)}`);
       step('fix 781: a prompt from the box to the idle real Claude went in through the mod');
     }
-    const drawn =`(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => (t.querySelector('.chat-tool-arg')?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.querySelector('.chat-dot')?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
+    const drawn =`(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => ((t.querySelector('.chat-tool-command') ?? t.querySelector('.chat-tool-arg'))?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.querySelector('.chat-dot')?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
     const okDrawn = `(() => { const d = ${drawn}; return d.prompt && d.tone === 'done' && (d.result ?? '').startsWith('exit 0') && d.reply === ${JSON.stringify(marker)}; })()`;
     try {
       await s.waitFor(okDrawn, 'the real turn drawn', 5000);
@@ -1117,6 +1318,8 @@ try {
       expect(JSON.stringify(labels) === JSON.stringify(want), `the real model menu's rows, got ${JSON.stringify(labels)}`);
       const segs = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu [data-segments="Effort"] .menu-segment')].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
       expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the real effort row, got ${JSON.stringify(segs)}`);
+      // M9 fix 799: the lit segment is the status line's level.
+      expect(JSON.stringify(segs.filter((x) => x.active).map((x) => x.word)) === JSON.stringify([realEffort]), `fix 799: the real effort row lights ${realEffort} alone, got ${JSON.stringify(segs)}`);
       const checked = await realMenuChecked('.menu.chat-model-menu');
       console.log(`[verify] note: fix 744's real model menu ticks ${JSON.stringify(checked)} with ${JSON.stringify(segs.filter((x) => x.active).map((x) => x.word))} active, a Current model row ${JSON.stringify(rows.find((r) => r.line === 'Current model')?.label ?? null)} (the account's display name may name no row; logged, not judged)`);
     }
@@ -1314,7 +1517,8 @@ try {
     await s.type('/exit');
     await s.key('Enter', 'Enter', 13);
     await waitRecord(realId, (r) => r.state === 'exited' && r.exitCode === 0, 'the real Claude exited (0)', 30000);
-    step('fix 690: /exit from the box ends the session with exit code 0');
+    await waitShellOn(pane.id, realId, 'fix 813: /exit from the box dropped the pane to a shell');
+    step('fix 690: /exit from the box ends the session with exit code 0, and fix 813: the pane drops to a shell');
   });
 
   await block('fresh', async () => {
@@ -1351,18 +1555,23 @@ try {
     const pane = leaves(lay)[0];
     freshId = pane.sessionId;
     expect(freshId !== null, 'the pane holds the new session');
-    // The record, answering the trust dialog once if it shows after all.
+    // The record, answering the trust dialog once if it shows after all,
+    // by the card's Yes (M9 fix 808: the dialog has no digits since
+    // Claude Code 2.1.302, and the chat view draws it as a card).
     const idleBy = Date.now() + 30000;
     let trusted = false;
     let rec = null;
+    const trustYes = `${paneSel(pane.id)} .chat-ask-step[data-kind="trust"] [data-pick="yes"]`;
     while (Date.now() < idleBy) {
       rec = await record(freshId);
       if (rec !== undefined && rec.state === 'idle' && rec.claudeSessionId !== null && rec.transcriptPath) break;
-      if (!trusted && (await screen(freshId)).rows.some((r) => r.includes('trust this folder'))) {
+      if (!trusted && (await s.evalJs(`${q(trustYes)}?.disabled === false`))) {
         trusted = true;
-        await typeRaw(freshId, '1');
-        await typeRaw(freshId, '\r');
-        console.log('[verify] note: the trust dialog showed in the fresh folder; answered 1');
+        // The dialog refuses keys for a moment after it opens.
+        await sleep(1000);
+        await s.evalJs(`${q(trustYes)}.click()`);
+        await s.waitFor(`!${q(paneSel(pane.id) + ' .chat-ask-step[data-kind="trust"]')}`, 'the trust card gone after its Yes', 10000);
+        console.log("[verify] note: the trust dialog showed in the fresh folder; answered by the card's Yes");
       }
       await sleep(200);
     }
@@ -1835,6 +2044,42 @@ try {
     step('fix 747 (f): an image dropped on the chat face\'s timeline goes into Claude\'s prompt as an image, with a chip');
     await clearByX('f');
 
+    // (h) M9 fix 807: a drop in the moment the view still reads the session
+    // as asking, after Claude Code has closed its dialog. A posted
+    // PermissionRequest holds the record at needs-input while Claude's own
+    // prompt stays open, which is that moment held still.
+    const imageDaemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const imageRec = await record(imageId);
+    const postImage = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${imageDaemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': imageDaemon.hookToken, 'X-Emerald-Session': imageId },
+        body: JSON.stringify({ session_id: imageRec.claudeSessionId, cwd: imageRec.cwd, transcript_path: imageRec.transcriptPath, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name} (fix 807)`);
+    };
+    await postImage({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'x' } });
+    await s.waitFor(`${q(boxSel)}.disabled === true`, 'fix 807 (h): the view reads the session as asking', 5000);
+    await dropOn(attachPng, paneSel(imagePane) + ' .chat-timeline');
+    await waitPrompt((row) => row.includes('[Image #'), 'fix 807 (h): the image dropped while asking in Claude\'s prompt');
+    try {
+      await waitChips(1, 'a chip from a drop while the view reads asking');
+    } catch (err) {
+      throw new Error(`fix 807 (h): a drop while the view reads asking gets the prompt row's chip, chips ${JSON.stringify(await chipRead())}, row ${JSON.stringify(await promptRow())}: ${err.message}`);
+    }
+    const rowN807 = /\[Image #(\d+)\]/.exec(await promptRow())?.[1] ?? null;
+    const chip807 = (await chipRead())[0]?.label ?? null;
+    expect(rowN807 !== null && chip807 === `Image #${rowN807}`, `fix 807 (h): the chip's number is the prompt row's, chip ${JSON.stringify(chip807)}, row ${JSON.stringify(await promptRow())}`);
+    step(`fix 807 (h1): an image dropped while the view still reads asking gets its chip once Claude's prompt shows the marker (${chip807})`);
+    await s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:chat-image', { detail: { paneId: ${JSON.stringify(imagePane)}, path: ${JSON.stringify(attachPng)} } }))`);
+    await sleep(3500);
+    const chips807 = await chipRead();
+    expect(chips807.length === 1, `fix 807 (h): an image event with no new marker adds no chip, got ${JSON.stringify(chips807)}`);
+    step('fix 807 (h2): an image event with no new marker adds no chip while asking');
+    await postImage({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(imageId, (r) => r.state !== 'needs-input', 'fix 807 (h): the record left needs-input after the Stop', 5000);
+    await clearByX('h');
+
     // (g) The same on the terminal face, cleared there with one Ctrl+C on
     // the pty (the terminal face has no ×).
     await toggle();
@@ -1898,8 +2143,9 @@ try {
     await s.type('/exit');
     await s.key('Enter', 'Enter', 13);
     await waitRecord(imageId, (r) => r.state === 'exited' && r.exitCode === 0, 'the image Claude exited (0)', 30000);
+    await waitShellOn(imagePane, imageId, 'fix 813: /exit from the box dropped the pane to a shell');
     imageId = null;
-    step('fix 721 (h): /exit from the box ends the session with exit code 0');
+    step('fix 721 (h): /exit from the box ends the session with exit code 0, and fix 813: the pane drops to a shell');
   });
 
   await block('more', async () => {
@@ -1954,22 +2200,10 @@ try {
     turnsId = spawned.session.id;
     const lay = await getLayout(s);
     turnsPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === turnsPane ? { ...n, sessionId: turnsId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: turnsPane } });
+    await bindPane(turnsPane, turnsId);
     await s.waitFor(`!!${q(paneSel(turnsPane) + ' .term-host')}`, 'the turns stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    postTurns = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': turnsId },
-        body: JSON.stringify({ session_id: 'sim-chat-752', cwd: turnsDir, transcript_path: turnsFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postTurns({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postTurns({ hook_event_name: 'UserPromptSubmit', prompt: 'open the fold' });
-    await postTurns({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(turnsId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the turns stub bound with its transcript', 10000);
+    postTurns = hookPoster(turnsId, { simId: 'sim-chat-752', cwd: turnsDir, transcript: turnsFixture });
+    await startStub(postTurns, turnsId, 'open the fold');
     await s.waitFor(`!!${q(paneSel(turnsPane) + ' .pane-face-toggle')}`, 'the face button on the turns stub', 10000);
     await toChat(turnsPane);
     if ((await viewWord(turnsPane)) !== 'Normal') await pickView(turnsPane, 'Normal');
@@ -2274,7 +2508,14 @@ try {
     const tabRow = `('' + ${c('2190')} + ' ' + ${c('2612')} + ' Colour ' + ${c('2610')} + ' Size ' + ${c('2610')} + ' Shape ' + ${c('2713')} + ' Submit ' + ${c('2192')})`;
     const footer = `('Enter to select ' + ${c('00B7')} + ' Tab/Arrow keys to navigate ' + ${c('00B7')} + ' Esc to cancel')`;
     const rows = ['', 'Which size should the sample button be?', '', '  1. Small', '     Fits a dense toolbar', '> 2. Medium (Recommended)', '     Matches the other buttons', '  3. Large', '     Easy to hit on a touch screen', '  4. Type something.', '', '  5. Chat about this', ''];
-    await typeRaw(stubId, `cls; Write-Host ''; Write-Host ${tabRow}; ${rows.map((r) => `Write-Host '${r}'`).join('; ')}; Write-Host -NoNewline ${footer}; Read-Host | Out-Null\r`);
+    // M9 fix 801: after the first answer the stub draws the next tab, a
+    // second dialog the card must take a press for again; a key ends its
+    // ReadKey and redraws it with the pointer on Type something (fix 803).
+    const tabRow3 = `('' + ${c('2190')} + ' ' + ${c('2612')} + ' Colour ' + ${c('2612')} + ' Size ' + ${c('2610')} + ' Shape ' + ${c('2713')} + ' Submit ' + ${c('2192')})`;
+    const rows3 = ['', 'Which shape should the sample button be?', '', '> 1. Round', '     Soft corners all round', '  2. Square', '     Sharp corners', '  3. Pill', '     Fully rounded ends', '  4. Type something.', '', '  5. Chat about this', ''];
+    const rows3b = rows3.map((r) => (r === '> 1. Round' ? '  1. Round' : r === '  4. Type something.' ? '> 4. Type something.' : r));
+    const drawRows = (list) => list.map((r) => `Write-Host '${r}'`).join('; ');
+    await typeRaw(stubId, `cls; Write-Host ''; Write-Host ${tabRow}; ${drawRows(rows)}; Write-Host -NoNewline ${footer}; Read-Host | Out-Null; cls; Write-Host ''; Write-Host ${tabRow3}; ${drawRows(rows3)}; Write-Host -NoNewline ${footer}; $null = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRow3}; ${drawRows(rows3b)}; Write-Host -NoNewline ${footer}; Read-Host | Out-Null\r`);
     await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'the question drawn, the cursor on its footer');
     const drawn = (await screen(stubId)).rows.find((r) => r.includes('Colour')) ?? null;
     console.log(`[verify] the tab row reads ${JSON.stringify(drawn)}`);
@@ -2282,6 +2523,8 @@ try {
     await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
     const cardSel = paneSel(stubPane) + ' .chat-step[data-kind="ask"]';
     await s.waitFor(`!!${q(cardSel + ' .chat-ask-option[data-key="5"]')}`, 'the ask card with its five options', 10000);
+    // M9 fix 802: the record reads the AskUserQuestion as a question.
+    await waitRecord(stubId, (r) => r.needsInputReason === 'question', 'the AskUserQuestion reads as a question', 5000);
     const card = await s.evalJs(`(() => { const c = ${q(cardSel)}; const two = c.querySelector('.chat-ask-option[data-key="2"]'); return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, question: c.querySelector('.chat-ask-question')?.textContent ?? null, tabs: [...c.querySelectorAll('.chat-ask-tab')].map((t) => ({ name: t.textContent.replace(/^✓/, ''), state: t.dataset.state, current: t.dataset.current ?? null })), screen: !!c.querySelector('.chat-ask-screen'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), label: two?.querySelector('.chat-ask-label')?.textContent ?? null, desc: two?.querySelector('.chat-ask-desc')?.textContent ?? null, pointer: two?.dataset.pointer ?? null, input: !!c.querySelector('.chat-ask-input') }; })()`);
     expect(card.heading === 'Claude has a question', `the heading, got ${card.heading}`);
     expect(card.question === 'Which size should the sample button be?', `the question, got ${JSON.stringify(card.question)}`);
@@ -2293,15 +2536,81 @@ try {
     expect(card.label === 'Medium (Recommended)' && card.desc === 'Matches the other buttons' && card.pointer === 'true', `option 2 with its description and the pointer, got ${JSON.stringify(card)}`);
     expect(!card.input, 'no answer box for a question the card draws');
     await s.screenshot('m9-chat-question.png');
-    step('fix 777: the ask card draws an AskUserQuestion, its tabs, its question and each option\'s description');
+    step('fix 777: the ask card draws an AskUserQuestion, its tabs, its question and each option\'s description, and the row reads as a question');
     await s.waitFor(`document.activeElement === ${q(cardSel)}`, 'the card holds the keyboard');
     await s.key('2', 'Digit2', 50);
     await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel2'), 'the 2 key reached the session');
+    // M9 fix 801: a second press before the dialog moves sends nothing
+    // (a 1 typed into Claude Code's empty prompt, before it).
+    await s.key('2', 'Digit2', 50);
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="1"]')}.click()`);
+    await sleep(1500);
+    const twice = await cursorRow(stubId);
+    expect(twice.trim().endsWith('cancel2'), `fix 801: the second press sent nothing, the cursor row reads ${JSON.stringify(twice)}`);
+    const sent801 = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(cardSel + ' button.chat-ask-option')})].map((b) => b.dataset.sent ?? null)`);
+    expect(sent801.length > 0 && sent801.every((v) => v === 'true'), `fix 801: every option of the sent card is marked sent, got ${JSON.stringify(sent801)}`);
+    step('fix 801: a second press on an answered dialog sends nothing, and the card dims');
     await typeRaw(stubId, '\r');
+    await s.waitFor(`${q(cardSel + ' .chat-ask-question')}?.textContent === 'Which shape should the sample button be?' && !${q(cardSel + ' button.chat-ask-option[data-sent]')}`, 'fix 801: the next tab re-arms the card', 10000);
+    step('fix 801: the next tab re-arms the card');
+    // M9 fix 803: the Type something row is an input; Enter sends the
+    // row's digit (the stub's ReadKey takes it and redraws the pointer on
+    // row 4), then the text and the Enter, which end its Read-Host. A
+    // stray 4 would read cancel4Pill...
+    await s.evalJs(`${q(cardSel + ' .chat-ask-free-input')}.focus()`);
+    await s.type('Pill shaped please');
+    await s.key('Enter', 'Enter', 13);
+    const freeUntil = Date.now() + 10000;
+    let freeIn = false;
+    while (!freeIn && Date.now() < freeUntil) {
+      freeIn = (await screen(stubId)).rows.some((r) => r.trim().endsWith('cancelPill shaped please'));
+      if (!freeIn) await sleep(200);
+    }
+    expect(freeIn, `fix 803: the free answer reached the session after the row's digit, the rows read ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-4))}`);
+    step('fix 803: the Type something row takes a free answer, sent with the digit, the text and Enter');
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the Read-Host ended at the prompt', 10000);
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
     step('fix 777: the 2 key answers the question card, and the turn ending takes it away');
+  });
+
+  await block('ask-once', async () => {
+    // M9 fix 801: a Bash permission answered from the card, the stub
+    // clearing its dialog as Claude Code does once the key lands while the
+    // row is still needs-input. The stub is put back in the first pane
+    // first, as the question block does, so this also runs alone.
+    const lay = await getLayout(s);
+    const rec = (n) => (n.kind === 'pane' ? (n.id === stubPane ? { ...n, sessionId: stubId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: stubPane } });
+    await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the stub back in the first pane', 10000);
+    await toChat(stubPane);
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the probe' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ask-801' } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'the stub working', 5000);
+    await typeRaw(stubId, "cls; Write-Host ''; Write-Host ' Bash command'; Write-Host '  echo ask-801'; Write-Host ' Do you want to proceed?'; Write-Host ' > 1. Yes'; Write-Host '   2. No'; Write-Host -NoNewline ' Esc to cancel'; $null = [Console]::ReadKey($true); cls; Write-Host -NoNewline 'ran ask-801'; Read-Host | Out-Null\r");
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'the permission drawn, the cursor on its footer');
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'echo ask-801' } });
+    const cardSel = paneSel(stubPane) + ' .chat-step[data-kind="ask"]';
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-option[data-key="2"]')}`, 'the ask card with its two options', 10000);
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="1"]')}.click()`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('ran ask-801'), 'the stub took the key and cleared its dialog');
+    await sleep(2500);
+    const card = await s.evalJs(`(() => { const c = ${q(cardSel)}; if (!c) return null; return { keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), sent: [...c.querySelectorAll('button.chat-ask-option')].map((b) => b.dataset.sent ?? null), input: !!c.querySelector('.chat-ask-input'), excerpt: c.querySelector('.chat-ask-screen')?.textContent ?? null }; })()`);
+    console.log(`[verify] fix 801: the card after the dialog cleared reads ${JSON.stringify(card)}`);
+    expect(card !== null, 'fix 801: the card stays while the row is needs-input');
+    expect(card.keys.join(',') === '1,2,esc', `fix 801: the card keeps the options it answered, got ${JSON.stringify(card)}`);
+    expect(card.sent.every((v) => v === 'true'), `fix 801: every option of the sent card is marked sent, got ${JSON.stringify(card)}`);
+    expect(!card.input, `fix 801: no answer box opens under a card whose dialog went, got ${JSON.stringify(card)}`);
+    step('fix 801: a card whose dialog went keeps what it answered and opens no box');
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="2"]')}.click()`);
+    await sleep(1500);
+    const after = await cursorRow(stubId);
+    expect(after.trim().endsWith('ran ask-801'), `fix 801: a press on the sent card sends nothing, the cursor row reads ${JSON.stringify(after)}`);
+    step('fix 801: a press on the sent card sends nothing');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
   });
 
   await block('box', async () => {
@@ -2385,7 +2694,8 @@ try {
     await s.type(' now');
     await s.key('Enter', 'Enter', 13);
     await waitRows((rows) => rows.some((r) => r.includes('got Run the tests now')), 'the stub got the edited suggestion', 10000);
-    await s.waitFor(`${q(boxSel)}.placeholder.startsWith('Message ') && !${q(boxSel)}.hasAttribute('data-ghost')`, 'the placeholder back', 3000);
+    const wholePlaceholder = `Message session: "${(await record(boxId)).name}"\n/ for commands · @ for a file`;
+    await s.waitFor(`${q(boxSel)}.placeholder === ${JSON.stringify(wholePlaceholder)} && !${q(boxSel)}.hasAttribute('data-ghost')`, 'the placeholder back', 3000);
     step('fix 779 (c): the suggestion, edited, is sent as a prompt, and the placeholder comes back');
     await rebind('the Read-Host ended at the prompt');
 
@@ -2455,6 +2765,87 @@ try {
     expect(!(await fallbackShown()), 'no fallback bar after /model sonnet');
     step('fix 780 (g): /model with a model named sends with no fallback bar');
     await rebind('the stub back at its prompt after /model sonnet');
+
+    // M9 fix 809: Claude Code's stock Try "..." placeholder, its dim run
+    // broken by a plain space after Try, is not offered as the suggestion
+    // Try. (h) draws that shape and reads the box.
+    const DRAW_TRY = "cls; Write-Host ([char]0x276F + ' ' + [char]27 + '[7mT' + [char]27 + '[27m' + [char]27 + '[2mry' + [char]27 + '[22m' + ' ' + [char]27 + '[2m\"fix lint errors\"' + [char]27 + '[22m'); $a = Read-Host; cls; Write-Host ('got ' + $a)\r";
+    await typeRaw(boxId, DRAW_TRY);
+    // The typed command line carries the same words, so wait for the drawn
+    // row: the one that starts with the arrow.
+    await waitRows((rows) => rows.filter((r) => r.startsWith('❯') && r.includes('fix lint errors')).length === 1, 'the Try draw on one row', 5000);
+    const tryGhost = await s.evalJs(`window.emerald.request('pty.screen', { sessionId: ${JSON.stringify(boxId)} }).then((r) => JSON.stringify(r.ghost ?? null))`);
+    if (JSON.parse(tryGhost)?.text === 'Try') {
+      console.log(`[verify] fix 809: the stub's Try draw reaches the renderer cut, ghost ${tryGhost}`);
+    } else {
+      console.log(`[verify] note: fix 809: the stub's Try draw came whole, ghost ${tryGhost}`);
+    }
+    await sleep(1000);
+    const tryBox = await boxState();
+    expect(!tryBox.ghost && tryBox.placeholder.startsWith('Message '), `the Try placeholder is not ghosted, got ${JSON.stringify(tryBox)}`);
+    await typeRaw(boxId, '\r');
+    await waitRows((rows) => rows.some((r) => r.startsWith('got')), 'the Read-Host ended after the Try draw', 10000);
+    step('fix 809 (h): Claude Code\'s stock Try "..." placeholder, drawn with a plain space breaking its dim run, is not ghosted in the box');
+    await rebind('the stub back at its prompt after the Try draw');
+
+    // M9 fix 810: the placeholder names the session in quotes on its first
+    // line and keeps the hints on a second. (i) renames the stub to a long
+    // name, narrows the box and reads how many lines the placeholder takes
+    // in a mirror of the box's width and font.
+    const oldName = (await record(boxId)).name;
+    const longName = 'Batch 5514: workflow order, agent model and suite hygiene';
+    await zreq(s, 'session.rename', { sessionId: boxId, name: longName });
+    await s.waitFor(`${q(boxSel)}.placeholder.startsWith('Message session: "Batch 5514')`, 'the placeholder naming the long session', 3000);
+    await s.evalJs(`${q(paneSel(boxPane) + ' .chat-dock-inner')}.style.maxWidth = '340px'`);
+    // The first line is cut to the box's room once the observer has read the narrow box.
+    await s.waitFor(`${q(boxSel)}.placeholder.split('\\n')[0].endsWith('…"')`, 'the first line cut with an ellipsis at the narrow box', 3000);
+    await sleep(300);
+    const placeholderRead = await s.evalJs(`(() => {
+      const b = ${q(boxSel)};
+      const cs = getComputedStyle(b);
+      const m = document.createElement('div');
+      m.style.cssText = 'position: fixed; visibility: hidden; left: 0; top: 0; white-space: pre-wrap; overflow-wrap: break-word;';
+      m.style.width = (b.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + 'px';
+      m.style.font = cs.font;
+      m.style.lineHeight = cs.lineHeight;
+      m.textContent = b.placeholder;
+      document.body.appendChild(m);
+      const lines = Math.round(m.offsetHeight / 18);
+      m.remove();
+      return { lines, placeholder: b.placeholder, clientWidth: b.clientWidth, scrollHeight: b.scrollHeight, clientHeight: b.clientHeight };
+    })()`);
+    expect(placeholderRead.lines <= 2, `the placeholder takes at most 2 lines at the narrow box, got ${JSON.stringify(placeholderRead)}`);
+    expect(placeholderRead.placeholder.split('\n')[1] === '/ for commands · @ for a file', `the hints on the second line, got ${JSON.stringify(placeholderRead)}`);
+    expect(placeholderRead.placeholder.split('\n')[0].startsWith('Message session: "Batch 5514') && placeholderRead.placeholder.split('\n')[0].endsWith('…"'), `the first line cut inside its quotes, got ${JSON.stringify(placeholderRead)}`);
+    await s.screenshot('m9-chat-placeholder-long.png');
+    await s.evalJs(`${q(paneSel(boxPane) + ' .chat-dock-inner')}.style.maxWidth = ''`);
+    await zreq(s, 'session.rename', { sessionId: boxId, name: oldName });
+    const shortPlaceholder = `Message session: "${oldName}"\n/ for commands · @ for a file`;
+    await s.waitFor(`${q(boxSel)}.placeholder === ${JSON.stringify(shortPlaceholder)}`, 'the short placeholder back', 3000);
+    step(`fix 810 (i): the placeholder names a long-named session in quotes on its first line and keeps the hints on the second at a 340px dock (${JSON.stringify(placeholderRead)})`);
+
+    // M9 fix 811: /mcp's hint is 56 characters; it is cut with an ellipsis
+    // and the description keeps a third of the row. (j)
+    await s.type('/mcp');
+    try {
+      await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/mcp'`, 'the menu on /mcp', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await activeRow())}`);
+    }
+    const mcpRow = await s.evalJs(`(() => {
+      const r = document.querySelector('.chat-menu .chat-menu-row[data-active="true"]');
+      const h = r.querySelector('.chat-menu-hint');
+      const d = r.querySelector('.chat-menu-desc');
+      return { hintCut: h.scrollWidth > h.clientWidth, desc: d.clientWidth, row: r.clientWidth, inside: r.lastElementChild.getBoundingClientRect().right <= r.getBoundingClientRect().right + 0.5, title: r.title, hint: r.dataset.hint, descText: d.textContent };
+    })()`);
+    expect(mcpRow.hintCut, `the long hint is cut with an ellipsis, got ${JSON.stringify(mcpRow)}`);
+    expect(mcpRow.desc * 3 >= mcpRow.row, `the description keeps a third of the row, got ${JSON.stringify(mcpRow)}`);
+    expect(mcpRow.inside, `the row's last child stays inside the row, got ${JSON.stringify(mcpRow)}`);
+    expect(mcpRow.title === `${mcpRow.hint} · ${mcpRow.descText}`, `the row's tooltip reads hint · description, got ${JSON.stringify(mcpRow)}`);
+    await s.key('Escape', 'Escape', 27);
+    await setBoxText('');
+    await s.waitFor(`!document.querySelector('.chat-menu')`, 'the menu gone', 3000);
+    step(`fix 811 (j): /mcp's long hint is cut with an ellipsis, the description keeps a third of the row, and the row's tooltip reads hint · description (${JSON.stringify(mcpRow)})`);
   });
 
   await block('send', async () => {
@@ -2600,8 +2991,8 @@ try {
     // disabled for the settle time after the turn ends.
     const chipSel = SP + ' .chat-image-chip';
     const xSel = SP + ' .chat-image-chips-clear';
-    // The view drops an image event while it reads the session as asking,
-    // and the window's store can trail the daemon's record after 782 (c)'s
+    // The view waits for a marker before it chips an image event while it
+    // reads the session as asking, and the window's store can trail the daemon's record after 782 (c)'s
     // Stop, so the box enabled again is the view's own word that it is not.
     await s.waitFor(`${q(boxSel)}?.disabled === false`, 'the box enabled after the ask', 5000);
     // What the pane did from here, for a miss: the chips row and the box
@@ -2741,26 +3132,10 @@ try {
     fs.writeFileSync(chipsFixture, [userLine('say hello', 0), asstLine([{ type: 'text', text: 'Hello.' }], 1)].join('\n') + '\n');
     const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: chipsDir, cols: 120, rows: 30 });
     chipsId = spawned.session.id;
-    const bind = async (sessionId) => {
-      const cur = await getLayout(s);
-      const rec = (n) => (n.kind === 'pane' ? (n.id === chipsPane ? { ...n, sessionId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-      await zreq(s, 'layout.set', { layout: { ...cur, root: rec(cur.root), focusedPaneId: chipsPane } });
-    };
-    await bind(chipsId);
+    await bindPane(chipsPane, chipsId);
     await s.waitFor(`!!${q(paneSel(chipsPane) + ' .term-host')}`, 'the chips stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postChips = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': chipsId },
-        body: JSON.stringify({ session_id: 'sim-chat-785', cwd: chipsDir, transcript_path: chipsFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postChips({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postChips({ hook_event_name: 'UserPromptSubmit', prompt: 'say hello' });
-    await postChips({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(chipsId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the chips stub bound with its transcript', 10000);
+    const postChips = hookPoster(chipsId, { simId: 'sim-chat-785', cwd: chipsDir, transcript: chipsFixture });
+    await startStub(postChips, chipsId, 'say hello');
     await s.waitFor(`!!${q(paneSel(chipsPane) + ' .pane-face-toggle')}`, 'the face button on the chips stub', 10000);
     await toChat(chipsPane);
     await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(paneSel(chipsPane) + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Hello.')`, 'the reply drawn', 5000);
@@ -2774,10 +3149,15 @@ try {
     }
     await waitView(chipsPane, 'Thinking');
     expect((await s.evalJs(`!!${q(viewChip(chipsPane))}`)) === false, 'Ctrl+O cycles the mode with the chip hidden');
+    // M9 fix 797: an update line is a reply in every mode, so it brings no chip.
+    fs.appendFileSync(chipsFixture, asstLine([{ type: 'thinking', thinking: 'Found the reply. Now checking the chip.\n\n', signature: 'x' }], 1.5, { thinkingDisplay: 'updates', thinkingDurationMs: 9 }) + '\n');
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(paneSel(chipsPane) + ' .chat-reply[data-kind="update"]')})].some((r) => r.textContent.trim() === 'Found the reply. Now checking the chip.')`, 'the update line drawn as a reply', 5000);
+    await sleep(300);
+    expect((await s.evalJs(`!!${q(viewChip(chipsPane))}`)) === false, 'fix 797: an update line is a reply, so no view chip comes with it');
     fs.appendFileSync(chipsFixture, asstLine([{ type: 'thinking', thinking: '', signature: 'x' }], 2, { thinkingDurationMs: 2000 }) + '\n');
     await s.waitFor(`${q(viewChip(chipsPane) + ' .chat-chip-word')}?.textContent === 'Thinking'`, 'the view chip, reading the mode picked while it was hidden', 5000);
     await pickView(chipsPane, 'Normal');
-    step('fix 785: the view chip is absent on a prompt and a reply, Ctrl+O still cycles the mode, and a thinking step brings the chip reading the mode picked while it was hidden');
+    step('fix 785: the view chip is absent on a prompt and a reply, Ctrl+O still cycles the mode, and a thinking step brings the chip reading the mode picked while it was hidden; an update line (fix 797) brings none');
 
     // M9 fix 786: a model the list does not name is the menu's first row,
     // ticked and not pickable; a listed one ticks its own row.
@@ -2820,7 +3200,7 @@ try {
 
     // The layout as the block found it: the first pane on its earlier
     // session, which opens on its terminal face.
-    if (before !== null) await bind(before);
+    if (before !== null) await bindPane(chipsPane, before);
   });
 
   await block('review-base', async () => {
@@ -3000,6 +3380,428 @@ try {
     step(`fix 775: the answered ask read working ${ms} ms after the answer, before the call's PostToolUse (${bySpinner ? "off the daemon's spinner read" : "off the mod's ToolRunning"})`);
   });
 
+  await block('notes', async () => {
+    // M9 fix 805: a stub over a fixture holding a task notification, an
+    // agent's report, another session's message and a failed task, each
+    // drawn as one line in the turn they arrive in.
+    const notesDir = path.join(emeraldHome, 'chat-805');
+    fs.mkdirSync(notesDir, { recursive: true });
+    const notesFixture = path.join(notesDir, 'fixture.jsonl');
+    // The long form (the home may be named by its 8.3 short form), so the
+    // link's path, which keeps whatever form the line names, reads plain.
+    const outputFile = path.join(fs.realpathSync.native(notesDir), 'notes.output');
+    fs.writeFileSync(outputFile, 'fast gate output\n');
+    const handbackBody = '[Subagent hand-back] The text below is the final report of a subagent this session delegated to. The report follows:\n  Rehearsal finished.\n  Nothing broke.';
+    fs.writeFileSync(
+      notesFixture,
+      [
+        userLine('start the background check', 0),
+        asstLine([{ type: 'text', text: 'Started it.' }], 1),
+        userLine(
+          `<task-notification>\n<task-id>b0dgbzd9d</task-id>\n<tool-use-id>toolu_805</tool-use-id>\n<output-file>${outputFile}</output-file>\n<status>completed</status>\n<summary>Background command "Fast gate" completed (exit code 0)</summary>\n</task-notification>`,
+          30,
+          { origin: { kind: 'task-notification', producer: 'session-task', runId: 'r805' }, promptSource: 'system' },
+        ),
+        asstLine([{ type: 'text', text: 'Notes answered.' }], 31),
+        userLine(`Another Claude session sent a message:\n<agent-message from="a54489f352dea06c4">\n${handbackBody}\n</agent-message>\nThe note after the frame.`, 40, {
+          isMeta: true,
+          origin: { kind: 'peer', from: 'a54489f352dea06c4', senderTaskId: 'a54489f352dea06c4', name: 'general-purpose', body: handbackBody, handback: true },
+        }),
+        userLine('Another Claude session sent a message:\n<cross-session-message from="uds:verify-805" from-name="Plan batch B" from-mode="prompting">\nPlan batch B here: holding my write.\n</cross-session-message>', 50, {
+          isMeta: true,
+          origin: { kind: 'peer', from: 'uds:verify-805', name: 'Plan batch B', fromMode: 'prompting', body: 'Plan batch B here: holding my write.' },
+        }),
+        userLine('<task-notification>\n<task-id>b1slow</task-id>\n<tool-use-id>toolu_805b</tool-use-id>\n<status>failed</status>\n<summary>Background command "Slow gate" failed with exit code 1</summary>\n</task-notification>', 60, {
+          origin: { kind: 'task-notification', producer: 'session-task', runId: 'r805b' },
+          promptSource: 'system',
+        }),
+      ].join('\n') + '\n',
+    );
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: notesDir, cols: 120, rows: 30 });
+    notesId = spawned.session.id;
+    const lay = await getLayout(s);
+    notesPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === notesPane ? { ...n, sessionId: notesId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: notesPane } });
+    await s.waitFor(`!!${q(paneSel(notesPane) + ' .term-host')}`, 'the notes stub in the first pane', 10000);
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const postNotes = async (payload) => {
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': notesId },
+        body: JSON.stringify({ session_id: 'sim-chat-805', cwd: notesDir, transcript_path: notesFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postNotes({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postNotes({ hook_event_name: 'UserPromptSubmit', prompt: 'start the background check' });
+    await postNotes({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(notesId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the notes stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(notesPane) + ' .pane-face-toggle')}`, 'the face button on the notes stub', 10000);
+    await toChat(notesPane);
+    const NP = paneSel(notesPane);
+    const read = () =>
+      s.evalJs(`(() => {
+        const p = ${q(NP)};
+        if (!p) return null;
+        return {
+          prompts: [...p.querySelectorAll('.chat-prompt')].map((e) => e.textContent),
+          notes: [...p.querySelectorAll('.chat-notification')].map((e) => [e.dataset.source ?? null, e.dataset.tone ?? null, e.querySelector('.chat-notification-text')?.textContent ?? null, e.querySelector('.chat-notification-output')?.textContent ?? null]),
+          outputPath: p.querySelector('.chat-notification-output')?.dataset.path ?? null,
+          replies: [...p.querySelectorAll('.chat-reply')].map((e) => e.textContent.trim()),
+        };
+      })()`);
+    const want = [
+      ['task', 'quiet', 'Background command "Fast gate" completed (exit code 0)', 'output'],
+      ['agent', 'quiet', 'Report from general-purpose · Rehearsal finished.', null],
+      ['peer', 'quiet', 'Message from Plan batch B · Plan batch B here: holding my write.', null],
+      ['task', 'error', 'Background command "Slow gate" failed with exit code 1', null],
+    ];
+    const longOutput = fs.realpathSync.native(outputFile);
+    const good = (r) =>
+      r !== null &&
+      r.prompts.length === 1 &&
+      !r.prompts.some((x) => x.includes('<task-notification>')) &&
+      JSON.stringify(r.notes) === JSON.stringify(want) &&
+      r.outputPath === longOutput &&
+      JSON.stringify(r.replies) === JSON.stringify(['Started it.', 'Notes answered.']);
+    let got = await read();
+    const by = Date.now() + 10000;
+    while (Date.now() < by && !good(got)) {
+      await sleep(200);
+      got = await read();
+    }
+    expect(good(got), `fix 805: one turn, its four lines Claude Code wrote for itself drawn as one line each, got ${JSON.stringify({ ...got, want: longOutput })}`);
+    step('fix 805: a task notification, an agent report, another session\'s message and a failed task each drawn as one line in the one turn, the output a path link');
+  });
+
+  await block('copy', async () => {
+    // M9 fix 806: Copy on select in the chat view, on the notes stub idle
+    // on its chat face; every copy out of a pane shows a corner note.
+    const CP = paneSel(notesPane);
+    const clip = () => s.evalJs(`window.emerald.clipboard.read().then((c) => c.text)`);
+    const setClip = (text) => s.evalJs(`window.emerald.clipboard.write(${JSON.stringify(text)})`);
+    const note = () => s.evalJs(`document.querySelector('.corner-note')?.textContent ?? null`);
+    // The setting through the pane menu, as verify:keys turns it (a
+    // contextmenu on the pane element itself, the item found by its label).
+    const toggle = async () => {
+      await s.evalJs(`(() => { const el = ${q(CP)}; const r = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + 40 })); })()`);
+      await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(notesPane)}`, 'the pane menu');
+      const was = await s.evalJs(`(() => { const it = [...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === 'Copy on select'); if (!it) return null; const on = it.dataset.checked === 'true'; it.click(); return on; })()`);
+      expect(was !== null, 'fix 806: Copy on select is on the pane menu');
+      await s.evalJs(`document.querySelector('.pane-menu') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      await s.waitFor(`!document.querySelector('.pane-menu')`, 'the pane menu closed', 3000).catch(() => {});
+      return was;
+    };
+    // The reply's own text node selected, then the left button let go on it.
+    const selectReply = () =>
+      s.evalJs(`(() => {
+        const el = [...document.querySelectorAll(${JSON.stringify(CP + ' .chat-reply')})].find((e) => e.textContent.trim() === 'Notes answered.');
+        if (!el) return false;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node !== null && node.data.trim() !== 'Notes answered.') node = walker.nextNode();
+        if (node === null) return false;
+        const range = document.createRange();
+        range.setStart(node, node.data.indexOf('Notes answered.'));
+        range.setEnd(node, node.data.indexOf('Notes answered.') + 'Notes answered.'.length);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+        return true;
+      })()`);
+    const waitNoNote = () => s.waitFor(`!document.querySelector('.corner-note')`, 'the corner note gone', 4000);
+
+    await toChat(notesPane);
+    await setClip('before-806');
+    expect((await toggle()) === false, 'fix 806: Copy on select starts off');
+    // One line: counted in characters.
+    expect(await selectReply(), 'fix 806: the reply selected');
+    const oneBy = Date.now() + 3000;
+    while (Date.now() < oneBy && ((await clip()) !== 'Notes answered.' || (await note()) !== 'Copied 15 characters')) await sleep(100);
+    const one = { clip: await clip(), note: await note() };
+    expect(one.clip === 'Notes answered.' && one.note === 'Copied 15 characters', `fix 806: a selected reply in the chat view is copied as the mouse is let go, with its corner note, got ${JSON.stringify(one)}`);
+    step('fix 806: with Copy on select on, a selection in the chat view copies on release and the corner reads Copied 15 characters');
+
+    // Across the turn, from the prompt to its last reply: counted in lines.
+    await waitNoNote();
+    await s.evalJs(`(() => {
+      const p = ${q(CP)};
+      const replies = [...p.querySelectorAll('.chat-reply')];
+      const range = document.createRange();
+      range.setStartBefore(p.querySelector('.chat-prompt'));
+      range.setEndAfter(replies[replies.length - 1]);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      replies[replies.length - 1].dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    })()`);
+    await s.waitFor(`window.emerald.clipboard.read().then((c) => typeof c.text === 'string' && /\\n/.test(c.text))`, 'fix 806: the turn copied with its line breaks', 3000);
+    const many = await clip();
+    const lines = many.replace(/(\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/).length;
+    expect(lines >= 3, `fix 806: the turn's copy spans at least three lines, got ${lines}: ${JSON.stringify(many.slice(0, 200))}`);
+    await s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Copied ${lines} lines`)}`, `fix 806: the corner reads Copied ${lines} lines`, 3000);
+    step(`fix 806: a selection across the turn copies ${lines} lines and the corner says so`);
+
+    // The box is left out: a selection there is editing.
+    await s.evalJs(`${q(CP + ' .chat-box')}.focus()`);
+    await s.type('box text 806');
+    await s.evalJs(`(() => { const b = ${q(CP + ' .chat-box')}; b.setSelectionRange(0, 8); b.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 })); })()`);
+    await sleep(1000);
+    expect((await clip()) === many, `fix 806: a selection in the box is not copied, got ${JSON.stringify(await clip())}`);
+    await s.key('a', 'KeyA', 65, CTRL);
+    await s.key('Backspace', 'Backspace', 8);
+    await s.waitFor(`${q(CP + ' .chat-box')}.value === ''`, 'the box cleared', 3000);
+    step('fix 806: a selection in the chat box is left alone');
+
+    // Off again: nothing copied and no note.
+    expect((await toggle()) === true, 'fix 806: Copy on select was on, now off again');
+    await waitNoNote();
+    await setClip('after-806');
+    expect(await selectReply(), 'fix 806: the reply selected again');
+    await sleep(1000);
+    const off = { clip: await clip(), note: await note() };
+    expect(off.clip === 'after-806' && off.note === null, `fix 806: with Copy on select off a selection copies nothing and shows no note, got ${JSON.stringify(off)}`);
+    await s.evalJs('window.getSelection().removeAllRanges()');
+    step('fix 806: with Copy on select off the same selection copies nothing and shows no note');
+  });
+
+  // The daemon restarts in here, so this block stays the file's last.
+  await block('trust', async () => {
+    // M9 fix 808: a real Claude started from the empty pane on the chat
+    // face in a folder under %TEMP% that Claude Code has never seen. It
+    // stops at the folder trust dialog, which no hook reports; the daemon
+    // reads it off the screen as needs-input/trust and the view draws it
+    // as a card. The block never presses Yes, which would write a trusted
+    // folder into the person's own Claude config; it leaves by No, exit.
+    const before808 = await getLayout(s);
+    const firstPane = leaves(before808)[0].id;
+    const made = path.join(os.tmpdir(), 'emerald-verify', `trust-${Date.now()}`);
+    fs.mkdirSync(made, { recursive: true });
+    trustDir = fs.realpathSync.native(made);
+    const folder = path.basename(trustDir);
+    const empty = (n) => (n.kind === 'pane' ? (n.id === firstPane ? { ...n, sessionId: null } : n) : { ...n, first: empty(n.first), second: empty(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...before808, root: empty(before808.root), focusedPaneId: firstPane } });
+    await s.evalJs(`localStorage.setItem('emerald.recentFolders', ${JSON.stringify(JSON.stringify([trustDir]))})`);
+    await reload();
+    const FP = paneSel(firstPane);
+    await s.waitFor(`!!document.querySelector('.app-body') && !!${q(FP + ' .empty-folder')}`, 'fix 808: the empty pane with its folders', 15000);
+    const norm = (p) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    const picked = await s.evalJs(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(FP + ' .empty-folder')})].find((e) => e.dataset.folder.replace(/\\//g, '\\\\').replace(/\\\\+$/, '').toLowerCase() === ${JSON.stringify(norm(trustDir))}); if (!b) return null; b.click(); return b.dataset.folder; })()`);
+    expect(picked !== null, `fix 808: the trust folder's row among the folders, got ${JSON.stringify(await s.evalJs(`[...document.querySelectorAll('.empty-folder')].map((e) => e.dataset.folder)`))}`);
+    await s.evalJs(`${q(FP + ' .empty-pane .empty-kind[data-kind="claude"]')}.click()`);
+    await s.waitFor(`!!${q(FP + ' .empty-opens-chat')}`, 'fix 808: the pair');
+    await s.evalJs(`${q(FP + ' .empty-opens-chat')}.click()`);
+    await s.waitFor(`${q(FP + ' .empty-pane .empty-start')}?.disabled === false`, 'fix 808: Start ready');
+    // Every text the starting line shows, from before Start.
+    await s.evalJs(`(() => {
+      window.__starting808 = [];
+      const seen = () => {
+        for (const el of document.querySelectorAll('.chat-starting')) if (!window.__starting808.includes(el.textContent)) window.__starting808.push(el.textContent);
+      };
+      new MutationObserver(seen).observe(document.body, { subtree: true, childList: true, characterData: true });
+    })()`);
+    await s.evalJs(`${q(FP + ' .empty-pane .empty-start')}.click()`);
+    await s.waitFor(`${q(FP)}?.dataset.face === 'chat'`, 'fix 808: the new session on the chat face', 15000);
+    trustId = leaves(await getLayout(s)).find((p) => p.id === firstPane).sessionId;
+    expect(trustId !== null, 'fix 808: the pane holds the new session');
+
+    // (a) The starting line, before the dialog.
+    const asking808 = Date.now() + 20000;
+    let r808 = await record(trustId);
+    while (Date.now() < asking808 && !(r808.state === 'needs-input' && r808.needsInputReason === 'trust')) {
+      await sleep(200);
+      r808 = await record(trustId);
+    }
+    const startingSeen = await s.evalJs(`window.__starting808`);
+    expect(startingSeen.includes(`Starting Claude in ${folder}…`), `fix 808 (a): the chat view said Starting Claude in ${folder}…, saw ${JSON.stringify(startingSeen)}`);
+    step(`fix 808 (a): the chat view says Starting Claude in ${folder}… before the dialog`);
+
+    // (b) The dialog as an ask with its own reason, a card with its two
+    // answers in the drawn order, no box.
+    expect(r808.state === 'needs-input' && r808.needsInputReason === 'trust', `fix 808 (b): the record reads needs-input/trust within 20 s, got ${JSON.stringify({ state: r808.state, reason: r808.needsInputReason })}, rows ${JSON.stringify((await screen(trustId)).rows.filter((x) => x.trim() !== ''))}`);
+    const rowStateSel = `.sidebar-row[data-session-id=${JSON.stringify(trustId)}] .sidebar-row-state`;
+    await s.waitFor(`${q(rowStateSel)}?.textContent === 'needs input: folder trust'`, 'fix 808 (b): the row reads needs input: folder trust', 5000).catch(async (err) => {
+      throw new Error(`${err.message}, got ${JSON.stringify(await s.evalJs(`${q(rowStateSel)}?.textContent ?? null`))}`);
+    });
+    const cardSel = FP + ' .chat-ask-step[data-kind="trust"]';
+    await s.waitFor(`${q(cardSel)}?.querySelectorAll('[data-pick]').length === 2`, 'fix 808 (b): the trust card with its two answers', 5000);
+    const card808 = () => s.evalJs(`(() => { const c = ${q(cardSel)}; if (!c) return null; return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, labels: [...c.querySelectorAll('[data-pick] .chat-ask-label')].map((l) => l.textContent), picks: [...c.querySelectorAll('[data-pick]')].map((b) => b.dataset.pick), pointer: c.querySelector('[data-pointer="true"]')?.dataset.pick ?? null, input: !!c.querySelector('.chat-ask-input'), screen: c.querySelector('.chat-ask-screen')?.textContent ?? null }; })()`);
+    const c1 = await card808();
+    expect(c1.heading === 'Trust this folder?', `fix 808 (b): the card's heading, got ${JSON.stringify(c1.heading)}`);
+    expect(JSON.stringify(c1.labels) === JSON.stringify(['No, exit', 'Yes, I trust this folder']), `fix 808 (b): the two answers as drawn, got ${JSON.stringify(c1.labels)}`);
+    expect(c1.input === false, 'fix 808 (b): the trust card has no answer box');
+    expect(c1.pointer === 'no', `fix 808 (b): the pointer on No, exit as the dialog opens, got ${JSON.stringify(c1.pointer)}`);
+    expect((c1.screen ?? '').startsWith('Accessing workspace:'), `fix 808 (b): the card shows the dialog's text, got ${JSON.stringify(c1.screen)}`);
+    expect((await s.evalJs(`${q(FP + ' .chat-box')}?.disabled ?? null`)) === true, 'fix 808 (b): the chat box is disabled while the dialog is up');
+    step('fix 808 (b): the trust dialog reads needs input: folder trust, a card with its two answers and no box');
+
+    // (c) The card follows the dialog's pointer, moved in the terminal
+    // after the dialog's refuse window.
+    await sleep(1000);
+    await typeRaw(trustId, '\x1b[B');
+    await s.waitFor(`${q(cardSel + ' [data-pointer="true"]')}?.dataset.pick === 'yes'`, 'fix 808 (c): the card follows the pointer to Yes', 3000).catch(async (err) => {
+      throw new Error(`${err.message}: card ${JSON.stringify(await card808())}, rows ${JSON.stringify((await screen(trustId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+    });
+    // The sidebar's card under the badge: the same two answers, no box;
+    // Escape closes it and sends nothing to the session.
+    // After the whole script the sidebar holds every earlier block's rows,
+    // so the row is brought into view before its badge is clicked.
+    const badge = await s.evalJs(`(() => { const el = ${q(rowStateSel)}; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.click(badge.x, badge.y);
+    await s.waitFor(`document.querySelectorAll('.answer-popover.answer-popover-trust [data-pick]').length === 2`, 'fix 808 (c): the sidebar card with the two answers', 5000).catch(async (err) => {
+      const at = await s.evalJs(`(() => { const e = document.elementFromPoint(${badge.x}, ${badge.y}); return { at: e ? e.tagName + '.' + e.className : null, popovers: [...document.querySelectorAll('.answer-popover')].map((c) => c.className), window: [innerWidth, innerHeight] }; })()`);
+      throw new Error(`${err.message}: clicked ${JSON.stringify(badge)}, ${JSON.stringify(at)}`);
+    });
+    const pop = await s.evalJs(`(() => { const c = document.querySelector('.answer-popover.answer-popover-trust'); return { heading: c.querySelector('.answer-popover-heading')?.textContent ?? null, labels: [...c.querySelectorAll('[data-pick] .answer-popover-label')].map((l) => l.textContent), input: !!c.querySelector('.answer-popover-input'), pointer: c.querySelector('[data-pointer="true"]')?.dataset.pick ?? null }; })()`);
+    expect(JSON.stringify(pop.labels) === JSON.stringify(['No, exit', 'Yes, I trust this folder']) && pop.input === false && pop.heading === 'Trust this folder?', `fix 808 (c): the sidebar card's answers, got ${JSON.stringify(pop)}`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 808 (c): Escape closes the sidebar card', 3000);
+    await sleep(500);
+    const r808c = await record(trustId);
+    expect(r808c.state === 'needs-input' && r808c.needsInputReason === 'trust', `fix 808 (c): the Escape reached no session, got ${JSON.stringify({ state: r808c.state, reason: r808c.needsInputReason })}`);
+    step('fix 808 (c): the card follows the dialog\'s pointer and the sidebar card offers the same two answers');
+
+    // (d) No, exit from the card: an arrow up from Yes and Enter. The
+    // pointer is read once more first, since a press from a stale pointer
+    // would confirm Yes.
+    const c2 = await card808();
+    expect(c2.pointer === 'yes', `fix 808 (d): the pointer still on Yes before No is pressed, got ${JSON.stringify(c2)}`);
+    await s.waitFor(`${q(cardSel + ' [data-pick="no"]')}?.disabled === false`, 'fix 808 (d): No, exit enabled', 3000);
+    await s.evalJs(`${q(cardSel + ' [data-pick="no"]')}.click()`);
+    await waitRecord(trustId, (r) => r.state === 'exited', 'fix 808 (d): No, exit ended the session', 10000);
+    await s.waitFor(`!${q(cardSel)}`, 'fix 808 (d): the trust card gone', 5000);
+    step('fix 808 (d): No, exit from the card ends the session');
+
+    await zreq(s, 'session.kill', { sessionId: trustId }).catch(() => {});
+    await zreq(s, 'session.remove', { sessionId: trustId }).catch(() => {});
+    trustId = null;
+    // The pane back on the session it held, on the current revision.
+    const now808 = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...now808, root: before808.root, focusedPaneId: before808.focusedPaneId } });
+  });
+
+  await block('exited', async () => {
+    // M9 fix 804: (a) nothing else live, so the restart below stops no
+    // real Claude; then a stub on the chat face over a two-turn fixture.
+    for (const x of (await zreq(s, 'session.list', {})).sessions.filter((x) => x.state !== 'exited')) {
+      await zreq(s, 'session.kill', { sessionId: x.id }).catch(() => {});
+      await waitRecord(x.id, (r) => r.state === 'exited', `session ${x.id} exited before the restart`, 10000);
+    }
+    const exitedDir = path.join(emeraldHome, 'chat-804');
+    fs.mkdirSync(exitedDir, { recursive: true });
+    const exitedFixture = path.join(exitedDir, 'fixture.jsonl');
+    fs.writeFileSync(
+      exitedFixture,
+      [userLine('first exited turn', 0), asstLine([{ type: 'text', text: 'First kept reply.' }], 1), userLine('second exited turn', 10), asstLine([{ type: 'text', text: 'Second kept reply.' }], 11)].join('\n') + '\n',
+    );
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: exitedDir, cols: 120, rows: 30 });
+    exitedId = spawned.session.id;
+    const lay = await getLayout(s);
+    const exitedPane = leaves(lay)[0].id;
+    const rec = (n) => (n.kind === 'pane' ? (n.id === exitedPane ? { ...n, sessionId: exitedId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: exitedPane } });
+    await s.waitFor(`!!${q(paneSel(exitedPane) + ' .term-host')}`, 'the exited stub in the first pane', 10000);
+    const postExited = async (payload) => {
+      // Read each time: the restart below gives the sink a new port and token.
+      const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': exitedId },
+        body: JSON.stringify({ session_id: 'sim-chat-804', cwd: exitedDir, transcript_path: exitedFixture, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    await postExited({ hook_event_name: 'SessionStart', source: 'startup' });
+    await postExited({ hook_event_name: 'UserPromptSubmit', prompt: 'second exited turn' });
+    await postExited({ hook_event_name: 'Stop', stop_hook_active: false });
+    const bound = await waitRecord(exitedId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the exited stub bound with its transcript', 10000);
+    const boundPath = bound.transcriptPath;
+    await s.waitFor(`!!${q(paneSel(exitedPane) + ' .pane-face-toggle')}`, 'the face button on the exited stub', 10000);
+    await toChat(exitedPane);
+    const EP = paneSel(exitedPane);
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(EP + ' .chat-reply')}).length === 2`, 'both replies drawn on the live stub', 10000);
+    const read = () =>
+      s.evalJs(`(() => {
+        const p = ${q(EP)};
+        if (!p) return null;
+        const view = p.querySelector('.chat-view');
+        const timeline = p.querySelector('.chat-timeline');
+        return {
+          face: p.dataset.face ?? null,
+          prompts: p.querySelectorAll('.chat-prompt').length,
+          replies: [...p.querySelectorAll('.chat-reply')].map((e) => e.textContent.trim()),
+          exited: view?.dataset.exited === '',
+          opacity: timeline === null ? null : getComputedStyle(timeline).opacity,
+          dock: !!p.querySelector('.chat-dock'),
+          box: !!p.querySelector('.chat-box'),
+          notice: p.querySelector('[data-exited-notice] .pane-exited-notice-body')?.textContent ?? null,
+        };
+      })()`);
+    const keptRead = (r) =>
+      r !== null &&
+      r.face === 'chat' &&
+      r.prompts === 2 &&
+      JSON.stringify(r.replies) === JSON.stringify(['First kept reply.', 'Second kept reply.']) &&
+      r.exited &&
+      r.opacity === '0.55' &&
+      !r.dock &&
+      r.notice === "This session's process has ended; its conversation is kept.";
+    const waitKept = async (message) => {
+      const until = Date.now() + 5000;
+      let r = await read();
+      while (Date.now() < until && !keptRead(r)) {
+        await sleep(200);
+        r = await read();
+      }
+      expect(keptRead(r), `${message}, got ${JSON.stringify(r)}`);
+      return r;
+    };
+
+    // (b) Killed under a running daemon: the turns stay, dimmed, under the
+    // notice, with no box.
+    await zreq(s, 'session.kill', { sessionId: exitedId });
+    await waitRecord(exitedId, (r) => r.state === 'exited', 'the exited stub exited', 10000);
+    await waitKept('fix 804: a stub killed on the chat face keeps its two turns dimmed under the notice with no box');
+    step('fix 804 (b): a stub killed on the chat face keeps its two turns, dimmed to 0.55, under the notice, with no box');
+
+    // (c) After a daemon restart the restored record still names its
+    // transcript, so the face draws the same.
+    const oldPid = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8')).pid;
+    await s.evalJs('window.emerald.restartDaemon()');
+    await s.waitFor(`!!document.querySelector('.banner')`, 'disconnected while the daemon restarts');
+    await s.waitFor(`!document.querySelector('.banner')`, 'connected again', 15000);
+    const newPid = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8')).pid;
+    expect(newPid !== oldPid, `fix 804: a new daemon, pid ${oldPid} to ${newPid}`);
+    const restored = await waitRecord(exitedId, (r) => r.state === 'exited', 'the exited stub restored', 10000);
+    expect(restored.transcriptPath === boundPath, `fix 804: the restored record names its transcript, got ${JSON.stringify(restored.transcriptPath)} for ${JSON.stringify(boundPath)}`);
+    await s.waitFor(`${q(EP)}?.dataset.face === 'chat'`, 'the restored stub back on the chat face', 10000);
+    await waitKept("fix 804: after a daemon restart the restored stub's chat face draws its two turns dimmed under the notice");
+    step(`fix 804 (c): after a daemon restart (pid ${oldPid} to ${newPid}) the restored stub keeps its transcript and its chat face draws the two turns dimmed under the notice`);
+
+    // (d) Resume keeps the transcript until the new process names one, so
+    // the face carries on with no blank. The shell stub reads as a shell
+    // between the Resume and its SessionStart, so its pane shows the
+    // terminal for that moment; a real Claude stays claude throughout, and
+    // the read here is the record's path, not the frames.
+    await s.evalJs(`${q(EP + ' .pane-exited-notice-resume')}.click()`);
+    const resumed = await waitRecord(exitedId, (r) => r.state !== 'exited', 'the exited stub resumed', 10000);
+    expect(resumed.transcriptPath === boundPath, `fix 804: the resumed record keeps its transcript until the new process names one, got ${JSON.stringify(resumed.transcriptPath)}`);
+    await postExited({ hook_event_name: 'SessionStart', source: 'resume' });
+    await postExited({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(exitedId, (r) => r.transcriptPath === boundPath && ['idle', 'done'].includes(r.state), 'the resumed stub bound again', 10000);
+    const liveRead = (r) => r !== null && r.face === 'chat' && r.replies.length === 2 && !r.exited && r.box && r.notice === null;
+    let after = await read();
+    const liveBy = Date.now() + 10000;
+    while (Date.now() < liveBy && !liveRead(after)) {
+      await sleep(200);
+      after = await read();
+    }
+    expect(liveRead(after), `fix 804: after the Resume and its SessionStart the chat face is live again with both turns, the box and no notice, got ${JSON.stringify(after)}`);
+    step('fix 804 (d): Resume kept the transcript on the record, and once the new process started the face carried on live with both turns and its box');
+  });
+
   step(`PASS (${blocksRun()})`);
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -3020,9 +3822,22 @@ try {
   if (chipsId !== null) await zreq(s, 'session.kill', { sessionId: chipsId }).catch(() => {});
   if (reviewId790 !== null) await zreq(s, 'session.kill', { sessionId: reviewId790 }).catch(() => {});
   if (askId !== null) await zreq(s, 'session.kill', { sessionId: askId }).catch(() => {});
+  if (notesId !== null) await zreq(s, 'session.kill', { sessionId: notesId }).catch(() => {});
+  if (exitedId !== null) await zreq(s, 'session.kill', { sessionId: exitedId }).catch(() => {});
+  if (trustId !== null) await zreq(s, 'session.kill', { sessionId: trustId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();
+  // M9 fix 808's folder under %TEMP%, never trusted, so Claude Code made
+  // no project folder for it.
+  if (trustDir !== null) {
+    await sleep(500);
+    try {
+      fs.rmSync(trustDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (err) {
+      console.log(`[verify] note: left ${trustDir} (${err.message})`);
+    }
+  }
   // M9 fix 722's folders: the fresh folder under the checkout, and the
   // project folder Claude Code made for it, only when it is the run's own.
   if (freshDir !== null) {

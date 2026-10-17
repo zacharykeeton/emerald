@@ -37,7 +37,7 @@ const FIXTURE = [
 
 test('parseActivityLine reads the sink shape and skips a torn line', () => {
   const l = parseActivityLine(line(5, 'x', 'UserPromptSubmit', 'idle', 'working', 'hello\nthere'));
-  assert.deepEqual(l, { at: 5, sessionId: 'x', event: 'UserPromptSubmit', from: 'idle', to: 'working', prompt: 'hello', claudeSessionId: 'c-x', agentId: null, agentType: null, description: null, running: null, usage: null, usd: null, model: null, unhosted: false, cwd: null });
+  assert.deepEqual(l, { at: 5, sessionId: 'x', event: 'UserPromptSubmit', from: 'idle', to: 'working', prompt: 'hello', claudeSessionId: 'c-x', agentId: null, agentType: null, description: null, running: null, usage: null, usd: null, model: null, effort: null, unhosted: false, cwd: null });
   assert.equal(parseActivityLine('{"at": 17, "sessionId": "b", "event": "PreToo'), null);
   assert.equal(parseActivityLine('{"sessionId": "b"}'), null);
 });
@@ -269,8 +269,9 @@ test('an agent the parent\'s Stop still lists runs on: to now while the team say
 });
 
 // A status line as the wrapper posts it (M9 fix 217): the request's
-// input split and output, Claude Code's cost so far and the model.
-function statusLine(at: number, sessionId: string, usage: { fresh: number; cacheWrite: number; cacheRead: number; output: number }, usd: number | null, model = 'Opus 5'): string {
+// input split and output, Claude Code's cost so far and the model, and
+// the effort level when one is named (M9 fix 800).
+function statusLine(at: number, sessionId: string, usage: { fresh: number; cacheWrite: number; cacheRead: number; output: number }, usd: number | null, model = 'Opus 5', effort?: string): string {
   const payload: Record<string, unknown> = {
     hook_event_name: 'StatusLine',
     session_id: 'c-' + sessionId,
@@ -278,6 +279,7 @@ function statusLine(at: number, sessionId: string, usage: { fresh: number; cache
     context_window: { used_percentage: 12, current_usage: { input_tokens: usage.fresh, cache_creation_input_tokens: usage.cacheWrite, cache_read_input_tokens: usage.cacheRead, output_tokens: usage.output } },
   };
   if (usd !== null) payload['cost'] = { total_cost_usd: usd };
+  if (effort !== undefined) payload['effort'] = { level: effort };
   return JSON.stringify({ at, sessionId, event: 'StatusLine', outcome: 'applied', payload });
 }
 
@@ -303,9 +305,9 @@ test('status lines fold into request points: a streaming line updates the open p
   const now = T0 + 10 * MIN;
   const a = log.spans(T0, now, now, [session('a', { state: 'working', stateSince: T0 })]).find((s) => s.sessionId === 'a');
   assert.deepEqual(a?.requests, [
-    { at: T0 + 1 * MIN, fresh: 400, cacheWrite: 8000, cacheRead: 12000, output: 362, usd: 0.12, model: 'Opus 5' },
-    { at: T0 + 3 * MIN, fresh: 30, cacheWrite: 500, cacheRead: 20000, output: 90, usd: 0.2 - 0.12, model: 'Opus 5' },
-    { at: T0 + 4 * MIN, fresh: 10, cacheWrite: 0, cacheRead: 20500, output: 40, usd: null, model: 'Sonnet 5' },
+    { at: T0 + 1 * MIN, fresh: 400, cacheWrite: 8000, cacheRead: 12000, output: 362, usd: 0.12, model: 'Opus 5', effort: null },
+    { at: T0 + 3 * MIN, fresh: 30, cacheWrite: 500, cacheRead: 20000, output: 90, usd: 0.2 - 0.12, model: 'Opus 5', effort: null },
+    { at: T0 + 4 * MIN, fresh: 10, cacheWrite: 0, cacheRead: 20500, output: 40, usd: null, model: 'Sonnet 5', effort: null },
   ]);
   // Clipped to the window by the time the point opened.
   const late = log.spans(T0 + 3 * MIN + 1, now, now, [session('a', { state: 'working', stateSince: T0 })]).find((s) => s.sessionId === 'a');
@@ -319,6 +321,34 @@ test('status lines fold into request points: a streaming line updates the open p
   assert.deepEqual(later?.requests.map((r) => r.at), [T0 + 3 * MIN, T0 + 4 * MIN]);
   const none = log.spans(T0, now, now, [session('a', { state: 'working', stateSince: T0 })], T0 + 9 * MIN).find((s) => s.sessionId === 'a');
   assert.deepEqual(none?.requests, []);
+});
+
+test('a status line\'s effort rides on its line and its request point, the last one carried as the model is (M9 fix 800)', () => {
+  const at = (r: string) => {
+    const l = parseActivityLine(r);
+    assert.ok(l, r);
+    return l;
+  };
+  assert.equal(at(statusLine(T0, 'a', { fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1 }, null, 'Opus 5', 'high')).effort, 'high');
+  assert.equal(at(statusLine(T0, 'a', { fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1 }, null)).effort, null, 'a line without the block');
+  const log = new ActivityLog();
+  const raw = [
+    line(T0, 'a', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    // The first request streams: its first line has no effort, its last says high.
+    statusLine(T0 + 1 * MIN, 'a', { fresh: 400, cacheWrite: 8000, cacheRead: 12000, output: 2 }, 0.05),
+    statusLine(T0 + 2 * MIN, 'a', { fresh: 400, cacheWrite: 8000, cacheRead: 12000, output: 362 }, 0.12, 'Opus 5', 'high'),
+    // A second request after an /effort: medium.
+    statusLine(T0 + 3 * MIN, 'a', { fresh: 30, cacheWrite: 500, cacheRead: 20000, output: 90 }, 0.2, 'Opus 5', 'medium'),
+    // A streaming line without the block keeps the point's level.
+    statusLine(T0 + 4 * MIN, 'a', { fresh: 30, cacheWrite: 500, cacheRead: 20000, output: 120 }, 0.21),
+  ];
+  for (const r of raw) log.record(at(r));
+  const now = T0 + 10 * MIN;
+  const a = log.spans(T0, now, now, [session('a', { state: 'working', stateSince: T0 })]).find((s) => s.sessionId === 'a');
+  assert.deepEqual(a?.requests.map((r) => [r.at, r.output, r.effort]), [
+    [T0 + 1 * MIN, 362, 'high'],
+    [T0 + 3 * MIN, 120, 'medium'],
+  ]);
 });
 
 // M9 fix 462 (the ledger's L33 and L34): a track's first kept point prices
@@ -1150,6 +1180,7 @@ function slimFixture(): string[] {
     full(T0 + 3 * MIN, 'p', 'PreToolUse', null, null, { tool_name: 'Bash', tool_use_id: 'tu-1', tool_input: { command: 'x'.repeat(5000), description: 'a long command' } }),
     full(T0 + 4 * MIN, 'p', 'StatusLine', null, null, {
       model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' },
+      effort: { level: 'high' },
       context_window: { used_percentage: 12, context_window_size: 200000, total_input_tokens: 9000, current_usage: { input_tokens: 120, output_tokens: 340, cache_creation_input_tokens: 2000, cache_read_input_tokens: 7000 } },
       cost: { total_cost_usd: 0.4321, total_duration_ms: 99999, total_lines_added: 12 },
       prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3, hit_ratio: 0.9 },

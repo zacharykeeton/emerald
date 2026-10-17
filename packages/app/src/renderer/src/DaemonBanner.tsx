@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { daemonOutdated, otherHomeText, outdatedText } from './daemon-model.ts';
-import { useStore } from './store.ts';
+import { CRASHED_TEXT, crashedTitle, daemonOutdated, otherHomeText, outdatedText } from './daemon-model.ts';
+import { dismissCrash, useStore } from './store.ts';
 
 // Shown while the window is connected to a daemon older than itself, which
 // happens after every upgrade because the daemon survives on purpose.
@@ -11,8 +11,12 @@ import { useStore } from './store.ts';
 //
 // A daemon serving another home than the window's (M9 fix 495) is said
 // first, and has no Restart: that would stop another home's daemon.
+//
+// A daemon the window started that ended on a crash code (M9 fix 815) is
+// said after the home banner and before the level one, once the restarted
+// daemon is up; Not now clears it in the store.
 export function DaemonBanner() {
-  const { daemon } = useStore('daemon');
+  const { daemon, crashed } = useStore('daemon', 'crashed');
   // Both keyed by pid: the banner stays mounted across a restart when the
   // new daemon is old too (a script does that), and must not stay disabled
   // or dismissed for it. The dismissal names which banner it was, so
@@ -27,6 +31,18 @@ export function DaemonBanner() {
       <div className="daemon-banner" data-daemon-pid={daemon.pid} data-reason="home">
         <span className="daemon-banner-text">{otherHomeText(daemon)}</span>
         <button className="secondary daemon-dismiss" onClick={() => setDismissed(homeKey)}>
+          Not now
+        </button>
+      </div>
+    );
+  }
+  if (crashed !== null && crashed.pid !== daemon.pid) {
+    return (
+      <div className="daemon-banner" data-daemon-pid={daemon.pid} data-crashed-pid={crashed.pid} data-reason="crash">
+        <span className="daemon-banner-text" title={crashedTitle(crashed)}>
+          {CRASHED_TEXT}
+        </span>
+        <button className="secondary daemon-dismiss" onClick={dismissCrash}>
           Not now
         </button>
       </div>

@@ -83,7 +83,9 @@ test('readSkills: with no repository the walk stops before the home folder', asy
   ]);
 });
 
-test("readSkills: a worktree reads the main checkout's skills after its own", async () => {
+// A main checkout with batch and shared, a worktree wt1 with its own
+// shared, and a worktree wt2 with no .claude/skills (M9 fix 816).
+function worktreeFixture(): { root: string; claudeDir: string; home: string } {
   const root = mkTemp('emerald-skills-');
   fs.mkdirSync(path.join(root, 'main', '.git', 'worktrees', 'wt1'), { recursive: true });
   fs.mkdirSync(path.join(root, 'main', '.git', 'worktrees', 'wt2'), { recursive: true });
@@ -93,13 +95,20 @@ test("readSkills: a worktree reads the main checkout's skills after its own", as
   skill(path.join(root, 'wt1', '.claude', 'skills', 'shared', 'SKILL.md'), 'shared', "the worktree's");
   write(path.join(root, 'wt2', '.git'), 'gitdir: ../main/.git/worktrees/wt2\n');
   fs.mkdirSync(path.join(root, 'claude'), { recursive: true });
-  const home = path.join(root, 'home');
-  assert.deepEqual(await readSkills(path.join(root, 'claude'), path.join(root, 'wt1'), home), [
+  return { root, claudeDir: path.join(root, 'claude'), home: path.join(root, 'home') };
+}
+
+test('readSkills: a worktree with its own .claude/skills reads only its own', async () => {
+  const { root, claudeDir, home } = worktreeFixture();
+  assert.deepEqual(await readSkills(claudeDir, path.join(root, 'wt1'), home), [{ name: 'shared', description: "the worktree's", scope: 'project' }]);
+});
+
+test("readSkills: a worktree with no .claude/skills reads the main checkout's", async () => {
+  const { root, claudeDir, home } = worktreeFixture();
+  assert.deepEqual(await readSkills(claudeDir, path.join(root, 'wt2'), home), [
     { name: 'batch', description: '', scope: 'project' },
-    { name: 'shared', description: "the worktree's", scope: 'project' },
+    { name: 'shared', description: "main's", scope: 'project' },
   ]);
-  const second = await readSkills(path.join(root, 'claude'), path.join(root, 'wt2'), home);
-  assert.ok(second.some((s) => s.name === 'batch'));
 });
 
 test("readSkills: an enabled plugin's skills are named <plugin>:<skill>; a disabled one's are not read", async () => {

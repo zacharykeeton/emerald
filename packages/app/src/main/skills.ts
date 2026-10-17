@@ -7,7 +7,8 @@ import type { SkillEntry } from '../preload/api.ts';
 // M9 fixes 719 and 755: the skills the chat box's `/` menu offers, read off
 // disk as Claude Code finds them: every `.claude/skills` from the session
 // folder up to its repository root (never the home folder, whose skills are
-// the user's), the main checkout's when the folder is a git worktree, the
+// the user's), the main checkout's when the folder is a git worktree with no
+// .claude/skills at its root (as Claude Code 2.1.302 does, M9 fix 816), the
 // user's `<claude home>/skills`, and each enabled plugin's `skills`, named
 // `<plugin>:<skill>`. One SKILL.md per child folder, its name and
 // description from the frontmatter. Nothing here writes. No electron import,
@@ -90,7 +91,15 @@ async function projectLevels(folder: string, home: string): Promise<string[]> {
     level = up;
   }
   if (root !== null) {
-    const main = await mainCheckout(root);
+    // A worktree with skills of its own at its root reads no main checkout,
+    // as Claude Code does (M9 fix 816); any stat that answers counts.
+    let own = true;
+    try {
+      await fs.promises.stat(path.join(root, '.claude', 'skills'));
+    } catch {
+      own = false;
+    }
+    const main = own ? null : await mainCheckout(root);
     if (main !== null) levels.push(main);
   }
   return levels;

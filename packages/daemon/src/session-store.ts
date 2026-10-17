@@ -1,4 +1,7 @@
-import { folderName, isSessionColor, isSessionPhase, isShellId, pickSessionColor, readTask } from '@emerald/shared';
+import fs from 'node:fs';
+import path from 'node:path';
+import { encodeProjectDir, folderName, isSessionColor, isSessionId, isSessionPhase, isShellId, pickSessionColor, readTask } from '@emerald/shared';
+import { claudeHome } from '@emerald/shared/claude-home';
 import type { ContextWindow, KeptScreen, SessionCommit, SessionCommitAgent, SessionConversation, SessionInfo, SessionKind, SessionPhase, SessionSpan, SessionTask, SessionTokens, SessionTouched, ShellId } from '@emerald/shared';
 import type { Logger } from './log.ts';
 import { readFileRetried, setAsideBadFile, writeFileAtomic } from './store-file.ts';
@@ -30,6 +33,8 @@ export interface PersistedSession {
   // The last conversation hosted, so a resume after a daemon restart still
   // knows the folder and the id (M48).
   conversation: SessionConversation | null;
+  // The transcript the chat face draws (M9 fix 804), so an exited Claude still shows its conversation after a daemon restart.
+  transcriptPath: string | null;
   // The conversations hosted (M9 fix 185), so the graph's block per
   // span outlives a restart as the commits do.
   spans: SessionSpan[];
@@ -108,6 +113,7 @@ export function toPersisted(info: SessionInfo, lastScreen: KeptScreen | null = n
     remoteSessionId: info.remoteSessionId,
     startHead: info.startHead,
     conversation: info.conversation === null ? null : { ...info.conversation, args: [...info.conversation.args] },
+    transcriptPath: info.transcriptPath ?? null,
     spans: (info.spans ?? []).map((c) => ({ ...c })),
     commits: info.commits.map((c) => ({ ...c })),
     touched: (info.touched ?? []).map((t) => ({ ...t })),
@@ -246,6 +252,16 @@ function validateEntry(value: unknown, taken: string[]): PersistedSession | null
         ? null
         : { id: claudeSessionId, cwd: kind === 'claude' ? spawnCwd : cwd, args: kind === 'claude' ? [...args] : [] }
       : readConversation(value['conversation']);
+  // Files written before M9 fix 804 have no transcript path: a listed one
+  // finds it where Claude Code keeps it, from the id and folder a resume
+  // would use, when the file is there. A removed one derives nothing; it
+  // draws no face, and up to REMOVED_KEPT of them would each cost a stat.
+  const transcriptPath =
+    value['transcriptPath'] !== undefined
+      ? textOrNull(value['transcriptPath'])
+      : (value['removedAt'] ?? null) === null
+        ? derivedTranscript(conversation, claudeSessionId, spawnCwd)
+        : null;
   // Files written before M49 have no commits; a value of the wrong shape
   // reads as none rather than dropping the session over decoration.
   const commits = readCommits(value['commits']);
@@ -299,7 +315,18 @@ function validateEntry(value: unknown, taken: string[]): PersistedSession | null
   // Files written before M57 have no removed records.
   const removedAt = value['removedAt'] ?? null;
   if (removedAt !== null && typeof removedAt !== 'number') return null;
-  return { id, kind, name, autoName, spawnCwd, args, shell, cwd, groupCwd, claudeSessionId, remoteSessionId, startHead, conversation, spans, commits, touched, lastPrompt, lastReply, lastPromptAt, lastReplyAt, model, contextPercent, contextWindow, tokens, costUsd, tasks, lastScreen, comment, phase, color, scheme, keepWhole, createdAt, exitCode, exitedAt, removedAt };
+  return { id, kind, name, autoName, spawnCwd, args, shell, cwd, groupCwd, claudeSessionId, remoteSessionId, startHead, conversation, transcriptPath, spans, commits, touched, lastPrompt, lastReply, lastPromptAt, lastReplyAt, model, contextPercent, contextWindow, tokens, costUsd, tasks, lastScreen, comment, phase, color, scheme, keepWhole, createdAt, exitCode, exitedAt, removedAt };
+}
+
+// The transcript of the conversation resumePlan would resume (the first of
+// the conversation's id and the bound id that is a session id, in the
+// conversation's folder, else the spawn folder), when Claude Code has it.
+function derivedTranscript(conversation: SessionConversation | null, claudeSessionId: string | null, spawnCwd: string): string | null {
+  const id = [conversation?.id, claudeSessionId].find(isSessionId);
+  if (id === undefined) return null;
+  const cwd = conversation?.cwd ?? spawnCwd;
+  const file = path.join(claudeHome(), 'projects', encodeProjectDir(cwd), id + '.jsonl');
+  return fs.existsSync(file) ? file : null;
 }
 
 function textOrNull(v: unknown): string | null {

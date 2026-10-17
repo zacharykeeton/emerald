@@ -76,6 +76,7 @@ test('toPersisted keeps identity and records the exit only for exited sessions',
     remoteSessionId: null,
     startHead: null,
     conversation: { id: 'claude-1', cwd: 'C:\\work\\proj', args: ['--model', 'opus'] },
+    transcriptPath: null,
     spans: [],
     commits: [],
     touched: [],
@@ -296,6 +297,54 @@ test('the keep-whole mark round trips, loads as not marked for entries written b
       ['c', false],
     ],
   );
+});
+
+test('the transcript path round trips, an entry from before M9 fix 804 derives it from Claude Code\'s folder when the file is there, and a removed one does not', () => {
+  const file = tempFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const home = mkTemp('emerald-claude-home-804-');
+  const uuid = '0b0e6f4c-6a0e-4f1c-9d5e-8a3c2b1d0e9f';
+  const seeded = path.join(home, 'projects', 'C--work-proj', uuid + '.jsonl');
+  fs.mkdirSync(path.dirname(seeded), { recursive: true });
+  fs.writeFileSync(seeded, '');
+  const conversation = { id: uuid, cwd: 'C:\\work\\proj', args: [] };
+  const old = (id: string, over: Partial<SessionInfo> = {}) => {
+    const { transcriptPath: _t, ...rest } = toPersisted(info({ id, conversation, claudeSessionId: uuid, ...over }));
+    return rest;
+  };
+  const saved = process.env['EMERALD_CLAUDE_HOME'];
+  process.env['EMERALD_CLAUDE_HOME'] = home;
+  try {
+    assert.equal(toPersisted(info({ transcriptPath: 'C:\\t\\x.jsonl' })).transcriptPath, 'C:\\t\\x.jsonl');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          toPersisted(info({ id: 'a', transcriptPath: 'C:\\t\\x.jsonl' })),
+          old('b'),
+          old('c', { conversation: { ...conversation, cwd: 'C:\\work\\other' } }),
+          { ...old('d'), removedAt: 5 },
+          old('e', { conversation: { id: 'claude-1', cwd: 'C:\\work\\proj', args: [] }, claudeSessionId: 'claude-1' }),
+        ],
+      }),
+    );
+    const loaded = new SessionStore(file, silentLogger).load();
+    assert.deepEqual(
+      loaded.map((s) => [s.id, s.transcriptPath]),
+      [
+        ['a', 'C:\\t\\x.jsonl'],
+        ['b', seeded],
+        ['c', null],
+        ['d', null],
+        ['e', null],
+      ],
+      'a written path reads as itself, an old listed record finds the file resumePlan would resume when it is there, and none is derived for a missing file, a removed record or an id that is no session id',
+    );
+  } finally {
+    if (saved === undefined) delete process.env['EMERALD_CLAUDE_HOME'];
+    else process.env['EMERALD_CLAUDE_HOME'] = saved;
+  }
 });
 
 test('the shell round trips, and an entry with none or one of the wrong shape loads as none and is kept (M9 fix 624)', () => {

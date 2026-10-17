@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe } from './store.ts';
+import { dismissCrash, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe } from './store.ts';
 import { aSession } from './test-support.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
@@ -122,4 +122,18 @@ test('a sessions.load push appends to the rings in one notify (M9 fix 703)', () 
   assert.notEqual(getState().preview, null);
   endSessionColorPreview('l1', true);
   off();
+});
+
+// M9 fix 815: the crash is kept across the disconnect and the next hello,
+// and only Not now puts it away.
+test('a daemon.crashed push is kept across a reconnect until dismissCrash', () => {
+  const crash = { pid: 17500, code: 'C0000374' };
+  push({ type: 'daemon.crashed', crash });
+  assert.deepEqual(getState().crashed, crash);
+  push({ type: 'daemon.disconnected' });
+  assert.deepEqual(getState().crashed, crash, 'the disconnect leaves it');
+  push({ type: 'daemon.connected', daemon: { pid: 17600, version: '0.1.797', featureLevel: 66, otherHome: null } });
+  assert.deepEqual(getState().crashed, crash, 'the new hello leaves it');
+  dismissCrash();
+  assert.equal(getState().crashed, null);
 });

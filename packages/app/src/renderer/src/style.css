@@ -524,7 +524,10 @@ body,
 .file-view .file-header[data-squeeze="4"] .file-reveal,
 .file-view .file-header[data-squeeze="2"] .file-image-size,
 .file-view .file-header[data-squeeze="3"] .file-image-size,
-.file-view .file-header[data-squeeze="4"] .file-image-size {
+.file-view .file-header[data-squeeze="4"] .file-image-size,
+.file-view .file-header[data-squeeze="2"] .file-image-zoom,
+.file-view .file-header[data-squeeze="3"] .file-image-zoom,
+.file-view .file-header[data-squeeze="4"] .file-image-zoom {
   display: none;
 }
 
@@ -538,17 +541,37 @@ body,
   overflow: auto;
   display: flex;
 }
+/* M9 fix 820: fit shrinks a large picture and never grows a small one, so a
+   click changes the size only where the cursor says so (data-cursor);
+   Ctrl+wheel, + and - take it through the commit graph's steps (data-zoom
+   scaled sets an explicit size, so the fit caps go), and above 100 percent
+   the pixels show. */
 .file-image {
   margin: auto;
-  cursor: zoom-in;
 }
 .file-view[data-zoom="fit"] .file-image {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
 }
-.file-view[data-zoom="actual"] .file-image {
+.file-view[data-zoom="scaled"] .file-image {
+  max-width: none;
+  max-height: none;
+}
+.file-view[data-cursor="zoom-in"] .file-image {
+  cursor: zoom-in;
+}
+.file-view[data-cursor="zoom-out"] .file-image {
   cursor: zoom-out;
+}
+.file-view[data-pixelated] .file-image {
+  image-rendering: pixelated;
+}
+.file-image-host:focus {
+  outline: none;
+}
+.file-image-zoom {
+  flex: none;
 }
 .file-image-size {
   flex: none;
@@ -6410,7 +6433,7 @@ button:disabled {
 
 .agent-card-heading {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
   color: var(--lane, var(--folder));
 }
@@ -6425,9 +6448,8 @@ button:disabled {
   color: var(--text);
   font-size: 12.5px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .agent-card-state {
@@ -9103,6 +9125,14 @@ body.dragging-tab .tab {
   display: none;
 }
 
+/* M9 fix 817: a reading with no tokens has nothing to give at level 2,
+   so its dollars go there rather than at 3 with the splits, and the
+   percent keeps the room; a reading with tokens keeps fix 246's order,
+   the tokens at 2 and the dollars at 3. */
+.pane-title[data-squeeze="2"] .pane-context:not(:has(> .pane-tokens)) > .pane-cost {
+  display: none;
+}
+
 /* M9 fix 247, redrawn by fix 267: the wait as a big figure over the
    pulse. In the pane's top right corner over the terminal and over the
    shade face alike (the shade sits at z 1, this above it), the figure
@@ -11553,7 +11583,8 @@ button.files-root {
   container: empty-pane / inline-size;
 }
 
-@container empty-pane (max-width: 360px) {
+/* M9 fix 818: at 400px rather than 360, so "Claude session" stays whole in a 380px pane (it read "Claude ses…", 14px short); the subs, already ellipsed at that width, go with it. */
+@container empty-pane (max-width: 400px) {
   .empty-body {
     padding: 28px 16px 16px;
     gap: 16px;
@@ -12810,6 +12841,11 @@ body.dragging-session .browser-frame {
   text-overflow: ellipsis;
 }
 
+/* M9 fix 819: the mode a pick is pressing towards, dimmed until reached. */
+.chat-chip[data-busy] .chat-chip-word {
+  color: var(--muted);
+}
+
 .chat-chip-caret {
   color: var(--muted);
   display: inline-flex;
@@ -13417,9 +13453,15 @@ body.dragging-session .browser-frame {
   border-color: var(--blocked);
 }
 
-/* M9 fix 780: a command's argument hint after its name, as Claude Code's own menu shows it. */
+/* M9 fix 780: a command's argument hint after its name, as Claude Code's own menu shows it.
+   A long hint is held to 40 percent of the row and cut with an ellipsis, so the description keeps the rest (M9 fix 811). */
 .chat-menu-hint {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
 }
@@ -13468,16 +13510,20 @@ body.dragging-session .browser-frame {
 
 /* M9 fix 783: the image chips' × while it waits for Claude Code (the
    settle time, the Ctrl+C gap, the screen read): its glyph hidden under a
-   small ring that turns by transform alone, one compositor layer. */
-.chat-image-chips-clear {
+   small ring that turns by transform alone, one compositor layer. M9 fix
+   819: the mode chip's caret wears the same ring while a pick presses. */
+.chat-image-chips-clear,
+.chat-chip-caret {
   position: relative;
 }
 
-.chat-image-chips-clear[data-busy] {
+.chat-image-chips-clear[data-busy],
+.chat-chip[data-busy] .chat-chip-caret {
   color: transparent;
 }
 
-.chat-image-chips-clear[data-busy]::after {
+.chat-image-chips-clear[data-busy]::after,
+.chat-chip[data-busy] .chat-chip-caret::after {
   content: '';
   position: absolute;
   left: 50%;
@@ -13492,7 +13538,8 @@ body.dragging-session .browser-frame {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-image-chips-clear[data-busy]::after {
+  .chat-image-chips-clear[data-busy]::after,
+  .chat-chip[data-busy] .chat-chip-caret::after {
     animation: none;
   }
 }
@@ -13522,9 +13569,9 @@ body.dragging-session .browser-frame {
   height: 16px;
 }
 
-/* The 360 px rule above hides the box, but this block comes after it and
+/* The 400 px rule above hides the box, but this block comes after it and
    would win on order; so the hiding is repeated here. */
-@container empty-pane (max-width: 360px) {
+@container empty-pane (max-width: 400px) {
   .empty-kind-hint {
     display: none;
   }
@@ -13611,4 +13658,227 @@ body.dragging-session .browser-frame {
   .commits-agent-activity[data-working][data-offscreen]::after {
     animation: none;
   }
+}
+
+/* M9 fix 804: an exited Claude's conversation, dimmed as the terminal's kept frame is. */
+.chat-view[data-exited] .chat-timeline {
+  opacity: 0.55;
+}
+
+/* M9 fix 805: Claude Code's own lines as one line each, the text ellipsised; the whole is in its tooltip. */
+.chat-notification {
+  display: flex;
+  align-items: baseline;
+  white-space: pre;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-notification-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-notification[data-tone="error"] .chat-notification-text {
+  color: var(--error);
+}
+
+.chat-notification-output {
+  flex: none;
+  color: var(--path);
+  cursor: pointer;
+}
+
+.chat-notification-output:hover {
+  text-decoration: underline;
+}
+
+/* M9 fix 797: a shell call with a description reads as Claude Code draws it, the plain words on the row and the command dim under them. */
+.chat-step[data-kind="tool"][data-described] {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.chat-step[data-kind="tool"][data-described] .chat-tool-arg {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.chat-tool-command {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* M9 fix 798: a command's output, a centred dim line across the rail, as a timeline marker. Static: no animation. */
+.chat-command-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-command-note::before,
+.chat-command-note::after {
+  content: '';
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.chat-command-note-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* M9 fix 808: a starting Claude's line on the chat face, until its first
+   word or its folder trust dialog. */
+.chat-starting {
+  font-size: 12px;
+  color: var(--muted);
+  padding-left: calc(var(--rail-inset) + 1px);
+}
+
+/* The trust card's answers wait for the next screen read after a press. */
+.chat-ask-step[data-kind="trust"] .chat-ask-option:disabled,
+.answer-popover-trust .answer-popover-option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* M9 fix 801: an ask card takes one press per dialog; a sent card dims until the dialog moves. */
+.chat-ask-option[data-sent="true"],
+.answer-popover-option[data-sent="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.chat-ask-option[data-sent="true"]:hover,
+.answer-popover-option[data-sent="true"]:hover {
+  border-color: var(--line-strong);
+  background: none;
+}
+
+.chat-ask-option[data-sent="true"]:hover .chat-ask-key,
+.answer-popover-option[data-sent="true"]:hover .answer-popover-key {
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+/* M9 fix 803: the Type something row as an input. */
+.chat-ask-free,
+.answer-popover-free {
+  cursor: text;
+}
+
+.chat-ask-free-input,
+.answer-popover-free-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 1px 4px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line-strong);
+  font: inherit;
+}
+
+/* M9 fix 797: a shell call with a description reads as Claude Code draws it, the plain words on the row and the command dim under them. */
+.chat-step[data-kind="tool"][data-described] {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.chat-step[data-kind="tool"][data-described] .chat-tool-arg {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.chat-tool-command {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* M9 fix 798: a command's output, a centred dim line across the rail, as a timeline marker. Static: no animation. */
+.chat-command-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-command-note::before,
+.chat-command-note::after {
+  content: '';
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.chat-command-note-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* M9 fix 821: what the agent card says beyond the graph's first cut. The
+   name wraps whole (above), so the heading's mark and chips sit at the top
+   of it; the price sits beside the state, the commits under the branch, and
+   the checklist after the activity, a finished task dimmed. A shell's card
+   (data-kind) names its command in the branch line's monospace. */
+.agent-card-price {
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-card-commits {
+  margin-top: 3px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.agent-card-tasks {
+  margin-top: 5px;
+}
+.agent-card-task {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-card-task[data-status="completed"] {
+  color: var(--muted);
+}
+.agent-card-command {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 400;
+}
+/* The shade's member box holds its three text lines in one span so a hover
+   on them opens the card while the checklist strip beside keeps its own. */
+.pane-shade-member-body {
+  display: contents;
 }
