@@ -12,7 +12,7 @@ import { ContextReading } from './ContextPopover.tsx';
 import { useAgentsRunning, useAgentsRunningBeat } from './agents-running.ts';
 import { runningFigure } from './agents-running-model.ts';
 import { TasksReading } from './TasksPopover.tsx';
-import { folderLabelsSupported, otherShells, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { folderLabelsSupported, otherShells, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuItem } from './Menu.tsx';
 import { useFolderChangeCount } from './git-changes-hook.ts';
@@ -50,7 +50,7 @@ import { PanesIcon } from './icons.tsx';
 import { HushButton, SpeakerIcon } from './HushButton.tsx';
 import { RollingFigure } from './RollingFigure.tsx';
 import { plainKeyFor } from './keys-model.ts';
-import { PANES, commitsPath } from './tabs-model.ts';
+import { PANES, commitsPath, statsPath } from './tabs-model.ts';
 import { commitsQuery, commitsView, readRailCommits } from './view-state.ts';
 import { useChangedCount } from './ReviewTab.tsx';
 import { TokensText } from './TokensText.tsx';
@@ -332,6 +332,20 @@ export function Sidebar() {
                 openFileTab(commitsPath(addMenu.folder, commitsQuery(readRailCommits())));
               },
             },
+            // The folder's statistics as a tab (M9 fix 837), once the
+            // daemon folds its totals.
+            ...(statsSupported(daemon)
+              ? [
+                  {
+                    label: 'Statistics in a tab',
+                    title: `The totals, the yield and the API price of ${addMenu.folder} as a tab in the strip`,
+                    onClick: () => {
+                      setAddMenu(null);
+                      openFileTab(statsPath(addMenu.folder));
+                    },
+                  },
+                ]
+              : []),
           ]}
         />
       )}
@@ -996,6 +1010,25 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
       <span className="sidebar-row-reason">: {reason}</span>
     </>
   );
+  const resumeButton =
+    session.state === 'exited' ? (
+      <button
+        className="sidebar-row-resume"
+        data-action="resume"
+        title={resumeTitle(session)}
+        onClick={(ev) => {
+          ev.stopPropagation();
+          onResume(session.id);
+        }}
+        // Two quick clicks would also reach the row's double-click and
+        // ask for a second resume of a session already on its way.
+        onDoubleClick={(ev) => ev.stopPropagation()}
+      >
+        Resume
+      </button>
+    ) : null;
+  // M9 fix 843: an exited row's Resume at the right end of its agent line, where the load mark sits on a live row and nothing does on an exited one, so the main line's countdown never pushes it off a narrow sidebar; a row with no agent line (a shell, a commented or a prompting row) keeps it on the main line.
+  const resumeOnAgentLine = resumeButton !== null && !isPrompting && !isCommenting && session.comment === null && agentLine !== null;
   return (
     <div
       ref={rowRef}
@@ -1092,22 +1125,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
             neither an ack nor a hush of the rest), so the row goes on
             pulsing under it. A second press lets the chime through again. */}
         {hushable && wait === null && <HushButton sessionId={session.id} hushed={hushed === true} />}
-        {session.state === 'exited' && (
-          <button
-            className="sidebar-row-resume"
-            data-action="resume"
-            title={resumeTitle(session)}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onResume(session.id);
-            }}
-            // Two quick clicks would also reach the row's double-click and
-            // ask for a second resume of a session already on its way.
-            onDoubleClick={(ev) => ev.stopPropagation()}
-          >
-            Resume
-          </button>
-        )}
+        {!resumeOnAgentLine && resumeButton}
         <button
           className="sidebar-row-menu"
           title="Rename, set a comment, kill, resume or remove"
@@ -1215,6 +1233,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
             <LoadMark session={session} now={now} ceiling={loadCeiling} />
             {/* The conflict forecast's mark and pair count (M9 fix 320), after the load figure, on the agent line alone for the same reason. */}
             <ConflictMark session={session} now={now} />
+            {resumeOnAgentLine && resumeButton}
           </TurnLineAnchor>
         )
       )}
@@ -1344,14 +1363,14 @@ function RowMenu({ menu, session, onScreen, showOffscreen, onShowHere, onShowBes
   const changed = useChangedCount(session);
   if (session === undefined) return null;
   const exited = session.state === 'exited';
-  // Keep whole while idle (M9 fix 773): a Claude session emerald started
-  // carries the mod that asks the daemon before a compaction; a level 66
-  // daemon answers.
-  const keepable = session.kind === 'claude' && (daemon?.featureLevel ?? 0) >= 66;
+  // Keep whole while idle (M9 fix 773): a Claude session, or since fix 833 a shell with Claude running in it (whose claude loads the mod through the shell's CLAUDE_CODE_PLUGIN_DIRS, level 68), carries the mod that asks the daemon before a compaction.
+  const hosted = session.kind === 'shell' && session.claudeSessionId !== null;
+  const level = daemon?.featureLevel ?? 0;
+  const keepable = (session.kind === 'claude' && level >= 66) || (hosted && level >= 68);
   const keepTitle = keepable
     ? `Skip Claude Code's idle compaction for ${session.name}, so its conversation stays whole when its cache is about to go cold (emmer set --keep-whole)`
-    : session.kind !== 'claude'
-      ? 'Only a Claude session emerald started carries the mod that keeps it whole'
+    : session.kind !== 'claude' && !hosted
+      ? 'Only a session with Claude running in it carries the mod that keeps it whole; start claude in this shell first'
       : 'The daemon is older than this window; restart it to keep a session whole';
   // Mark unread (M14): back to pulsing, for a row to come back to later.
   const pulsing = attention.wanting.has(session.id);

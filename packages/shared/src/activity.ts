@@ -96,6 +96,45 @@ export interface ActivityCommit {
   merge: boolean;
 }
 
+// One part of a folder's totals (M9 fix 836): the whole window or one
+// local month of it. The figures are activityStats' over the folder's
+// rows (a row is the folder's when its groupCwd or its cwd is under it,
+// underFolder's rule); allUsd is the same price over every row of the
+// part, every folder's, so a renderer can share a plan out by spend.
+export interface ActivityTotalsPart {
+  // `2026-10` for a month's row, null for the total.
+  month: string | null;
+  from: number;
+  to: number;
+  requests: number;
+  up: number;
+  fresh: number;
+  cacheWrite: number;
+  cached: number;
+  down: number;
+  usd: number;
+  estimated: boolean;
+  agentMs: number;
+  commits: number;
+  merges: number;
+  allUsd: number;
+}
+
+export interface ActivityTotals {
+  folder: string;
+  from: number;
+  to: number;
+  total: ActivityTotalsPart;
+  // Oldest first, every local month the window touches from the later of
+  // its start and the log's first line, each cut to the window; a month
+  // with nothing in it reads zeros.
+  months: ActivityTotalsPart[];
+  // The earliest working span or request of the folder's own rows in the
+  // window, null when it has none.
+  firstAt: number | null;
+  historyFrom: number | null;
+}
+
 export interface ActivitySession {
   sessionId: string;
   // Null for a session no record names: one from before the daemon kept

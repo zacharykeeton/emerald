@@ -1,8 +1,13 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import type { SessionInfo } from '@emerald/shared';
+import { stdinText } from '../args.ts';
 import { CliError, EXIT } from '../cli-error.ts';
+import { captureOutput } from '../command.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
 import set, { sessionRefFor } from './set.ts';
 
@@ -132,4 +137,39 @@ test('--keep-whole takes on or off, sends the mark in its session.set, and anyth
   assert.equal(sets[0]!.keepWhole, true);
   await set.run(['--keep-whole', 'off', '--json']);
   assert.equal(sets[1]!.keepWhole, false);
+});
+
+// M9 fix 855: the comment from stdin or a file, verbatim.
+test('--comment-stdin and --comment-file write the comment verbatim, and any two comment options are refused', async () => {
+  process.env['EMERALD_SESSION_ID'] = OWN;
+  sets.length = 0;
+  const restoreOut = captureOutput(() => {});
+  try {
+    const restore = stdinText('reproduced 100%PATH%\n');
+    try {
+      await set.run(['--comment-stdin', '--json']);
+    } finally {
+      restore();
+    }
+    assert.deepEqual(sets.at(-1), { sessionId: OWN, comment: 'reproduced 100%PATH%' });
+    const file = path.join(os.tmpdir(), `emmer-set-comment-${process.pid}.txt`);
+    fs.writeFileSync(file, 'reproduced 100%PATH%\r\n');
+    try {
+      await set.run(['--comment-file', file, '--json']);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+    assert.deepEqual(sets.at(-1), { sessionId: OWN, comment: 'reproduced 100%PATH%' });
+  } finally {
+    restoreOut();
+  }
+  const before = sets.length;
+  for (const [argv, message] of [
+    [['--comment', 'x', '--comment-stdin'], '--comment and --comment-stdin together'],
+    [['--comment-stdin', '--clear-comment'], '--comment-stdin and --clear-comment together'],
+    [['--comment', 'x', '--clear-comment'], '--comment and --clear-comment together'],
+  ] as const) {
+    await assert.rejects(set.run([...argv]), (err: unknown) => err instanceof CliError && err.exitCode === EXIT.usage && err.message === message);
+  }
+  assert.equal(sets.length, before);
 });

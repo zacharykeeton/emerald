@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, enterSequence, formatChord, isCopyKey, isModifierKey, isPasteKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
+import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, enterSequence, formatChord, isCopyKey, isModifierKey, isPasteKey, matchPlain, matchPrefixed, parseKeySpec, plainKeyFor } from './keys-model.ts';
 import type { KeyLike } from './keys-model.ts';
 
 const key = (code: string, mods: Partial<Omit<KeyLike, 'code'>> = {}): KeyLike => ({
@@ -159,4 +159,19 @@ test("isCopyKey is Ctrl+Shift+C alone (M9 fix 441); Ctrl+C stays the program's ^
   assert.equal(isCopyKey(key('KeyC')), false);
   assert.equal(isCopyKey(key('KeyV', { ctrlKey: true, shiftKey: true })), false);
   assert.equal(matchPrefixed(key('KeyC')), 'new-layout-tab');
+});
+
+test('the shade chords: Ctrl+Shift+U and U after the prefix for Shade or lift all, Ctrl+Shift+K and K for the pane (M9 fix 844)', () => {
+  const cs = (code: string) => key(code, { ctrlKey: true, shiftKey: true });
+  assert.equal(matchPlain(cs('KeyU')), 'shade-all');
+  assert.equal(matchPlain(cs('KeyK')), 'shade-pane');
+  assert.equal(matchPrefixed(key('KeyU')), 'shade-all');
+  assert.equal(matchPrefixed(key('KeyK')), 'shade-pane');
+  for (const code of ['KeyU', 'KeyK']) {
+    assert.equal(isCopyKey(cs(code)), false);
+    assert.equal(isPasteKey(cs(code)), false);
+  }
+  assert.equal(matchPlain(key('KeyU', { ctrlKey: true })), null, "Ctrl+U alone stays the shell's ^U");
+  assert.equal(plainKeyFor('shade-all'), 'Ctrl+Shift+U');
+  assert.equal(plainKeyFor('shade-pane'), 'Ctrl+Shift+K');
 });

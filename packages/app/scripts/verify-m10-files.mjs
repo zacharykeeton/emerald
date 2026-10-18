@@ -1775,16 +1775,35 @@ try {
   // The text is read with LF line ends (getValue(1) is
   // EndOfLinePreference.LF), since a one-line file's model starts on
   // the platform's CRLF and the formatted text follows it.
-  const prettyRead = () => s.evalJs(`(() => { const v = document.querySelector('.file-view'); const e = ${editorJs}; const m = e?.getModel() ?? null; return { path: v?.dataset.path ?? null, view: v?.dataset.view ?? null, pretty: v?.dataset.pretty ?? null, dirty: v?.dataset.dirty ?? null, lines: m ? m.getLineCount() : null, scheme: m ? m.uri.scheme : null, readOnly: e ? e.getRawOptions().readOnly : null, text: m ? m.getValue(1) : null, tabSize: m ? m.getOptions().tabSize : null, format: !!v?.querySelector('.file-format'), switch: [...(v?.querySelectorAll('.file-view-switch button') ?? [])].map((b) => b.textContent.trim()).join(','), notice: v?.querySelector('.file-notice[data-kind="json"]')?.textContent ?? null }; })()`);
+  const prettyRead = () => s.evalJs(`(() => { const v = document.querySelector('.file-view'); const e = ${editorJs}; const m = e?.getModel() ?? null; return { path: v?.dataset.path ?? null, view: v?.dataset.view ?? null, pretty: v?.dataset.pretty ?? null, dirty: v?.dataset.dirty ?? null, lines: m ? m.getLineCount() : null, scheme: m ? m.uri.scheme : null, readOnly: e ? e.getRawOptions().readOnly : null, message: e ? (e.getRawOptions().readOnlyMessage?.value ?? null) : null, text: m ? m.getValue(1) : null, tabSize: m ? m.getOptions().tabSize : null, format: !!v?.querySelector('.file-format'), switch: [...(v?.querySelectorAll('.file-view-switch button') ?? [])].map((b) => b.textContent.trim()).join(','), notice: v?.querySelector('.file-notice[data-kind="json"]')?.textContent ?? null }; })()`);
   await s.waitFor(`(() => { const v = document.querySelector('.file-view'); const m = ${editorJs}?.getModel(); return v?.dataset.path === ${JSON.stringify(prettyFile)} && v?.dataset.view === 'pretty' && v?.dataset.pretty === 'ok' && !!m && m.getLineCount() > 1; })()`, 'pretty.json open on its Pretty view, formatted', 15000);
   const prettyOpen = await prettyRead();
   expect(prettyOpen.readOnly === true && prettyOpen.scheme === 'emerald-pretty' && prettyOpen.switch === 'Pretty,Raw' && !prettyOpen.format, `the Pretty view is read-only on the derived model, the switch reads Pretty | Raw and no Format button (${JSON.stringify(prettyOpen)})`);
   expect(prettyOpen.text.split('\n')[1] === '  "a": 1,' && prettyOpen.tabSize === 2, `a one-line file formats two-space (${JSON.stringify(prettyOpen.text)})`);
   await s.screenshot('m9-339-pretty.png');
+  // M9 fix 851: a key typed on Pretty says to switch to Raw, in the
+  // editor's own message widget (an overflow widget, so read off the whole
+  // document), and the Pretty text stays as it was.
+  const overlayText = `(document.querySelector('.monaco-editor-overlaymessage')?.textContent ?? '')`;
+  await s.evalJs(`${editorJs}.focus()`);
+  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'fix 851: the Pretty editor has the keyboard', 3000);
+  await s.type('x');
+  await s.waitFor(`${overlayText}.includes('Switch to Raw')`, 'fix 851: a key typed on Pretty shows the switch-to-Raw message', 3000);
+  expect(prettyOpen.message === 'Pretty is a formatted copy and does not take edits. Switch to Raw to edit the file.', `fix 851: the Pretty editor's read-only message is the sentence (${JSON.stringify(prettyOpen.message)})`);
+  expect((await prettyRead()).text === prettyOpen.text, 'fix 851: the key typed on Pretty changed nothing');
+  console.log('fix 851 Pretty message', JSON.stringify(await s.evalJs(overlayText)));
+  await s.screenshot('m9-851-pretty-message.png');
   await s.evalJs(`document.querySelector('.file-view-switch [data-view="raw"]').click()`);
   await s.waitFor(`(() => { const v = document.querySelector('.file-view'); const m = ${editorJs}?.getModel(); return v?.dataset.view === 'raw' && !!m && m.uri.scheme === 'file' && m.getLineCount() === 1; })()`, 'Raw is the file, one line', 5000);
   const rawOpen = await prettyRead();
   expect(rawOpen.readOnly === false && rawOpen.format && rawOpen.pretty === null, `the Raw editor takes edits and has the Format button (${JSON.stringify(rawOpen)})`);
+  // M9 fix 851: on Raw the message is gone (the model change closed it)
+  // and a typed key lands; one undo puts the file back for the Format read.
+  await s.waitFor(`!document.querySelector('.monaco-editor-overlaymessage')`, 'fix 851: the read-only message closes on the switch to Raw', 3000);
+  await s.type('x');
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true' && !document.querySelector('.monaco-editor-overlaymessage')`, 'fix 851: a key typed on Raw lands, with no message', 3000);
+  await s.evalJs(`${editorJs}.trigger('verify', 'undo', null)`);
+  await s.waitFor(`${editorJs}.getModel().getLineCount() === 1 && document.querySelector('.file-view')?.dataset.dirty === undefined`, 'fix 851: one undo takes the typed key back, clean', 5000);
   await s.evalJs(`document.querySelector('.file-view .file-format').click()`);
   await s.waitFor(`${editorJs}.getModel().getLineCount() > 1 && document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'Format formats the file in place and marks it dirty', 5000);
   const formatted = await prettyRead();
@@ -1828,7 +1847,7 @@ try {
   expect(indentOpen.tabSize === 4 && indentOpen.text.includes('\n        "b": 1'), `a four-space file formats four-space (${JSON.stringify(indentOpen.text)})`);
   await s.key('w', 'KeyW', 87, CTRL);
   await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'Ctrl+W back to the panes');
-  step('M9 fix 339: a .json file opens in a read-only Pretty view formatted in its own indent, Raw has a Format button that formats in place as one undo step, a Raw edit shows in Pretty, and a file that does not parse shows the Raw editor under a notice');
+  step('M9 fix 339: a .json file opens in a read-only Pretty view formatted in its own indent, Raw has a Format button that formats in place as one undo step, a Raw edit shows in Pretty, and a file that does not parse shows the Raw editor under a notice, a key typed on Pretty says to switch to Raw and one typed on Raw lands');
 
   // M9 fix 420: Format JSON selection, the file menu's item beside
   // Format JSON, runs the range formatter over the selection alone. A
@@ -2568,7 +2587,9 @@ try {
   );
   await s.waitFor(`!!document.querySelector('[data-pane-id=${JSON.stringify(rootMenuPaneId)}] .xterm-helper-textarea')`, 'the shell drawn');
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(rootMenuPaneId)}] .xterm-helper-textarea').focus(); window.__ae588 = document.activeElement; true`);
-  const rootLabels = 'New file,New folder,Find in folder,Open in Explorer,Reveal in Explorer,Copy path,Insert path into pane';
+  // M9 fix 837: Statistics in a tab after Find in folder, on the root's
+  // menu alone, under this script's daemon at level 70 or later.
+  const rootLabels = 'New file,New folder,Find in folder,Statistics in a tab,Open in Explorer,Reveal in Explorer,Copy path,Insert path into pane';
   const rootMenuRead = async (what, p) => {
     await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(p)} && document.querySelector('.files-menu')?.dataset.from === 'root'`, `the folder's own menu ${what}`);
     return s.evalJs(`({ labels: [...document.querySelectorAll('.files-menu .menu-label')].map((b) => b.textContent).join(','), kept: document.activeElement === window.__ae588 })`);

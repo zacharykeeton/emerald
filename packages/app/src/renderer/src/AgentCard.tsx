@@ -38,6 +38,14 @@ import { SessionMark } from './session-mark.tsx';
 // the model by its full name (`Opus 5`), the price the box prints, the
 // commits the member made and its checklist. A shell member's card is the
 // same card with its command for a name and none of those lines.
+//
+// M9 fix 834: every heading is two lines, the mark and the name on the
+// first and the rest as chips under the name, so the name keeps its width
+// however many chips a member carries.
+//
+// M9 fix 835: a subagent's card also says the first lines it was asked,
+// its calls before the latest above the activity line, and the model its
+// Agent call resolved until its own transcript names one.
 
 interface Props extends CardProps {
   member: TeamMember | null;
@@ -74,7 +82,9 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
         <div className="agent-card-heading" style={style}>
           <SessionMark kind={markKind(session)} tone={label.tone} working={working} size="unit" className="agent-card-mark" />
           <span className="agent-card-name">{session.name}</span>
-          <span className="agent-card-state">{label.text}</span>
+          <span className="agent-card-chips">
+            <span className="agent-card-state">{label.text}</span>
+          </span>
         </div>
         {session.branch !== null && <div className="agent-card-branch">⑂ {session.branch}</div>}
         <div className="agent-card-session">
@@ -87,7 +97,10 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
   const working = member.outcome === 'running';
   const elapsed = working ? formatDuration(member.startedAt, now) : `returned after ${formatDuration(member.startedAt, member.endedAt ?? now)}`;
   const answer = running.get(conversationId ?? '');
-  const word = modelName(answer?.models[member.id] ?? null);
+  // The transcript's model once a request has landed, else the one the
+  // Agent call resolved (M9 fix 835), so a member names its model from
+  // its launch.
+  const word = modelName(answer?.models[member.id] ?? member.model ?? null);
   const usd = answer?.spend?.[member.id] ?? null;
   const messages = conversationId === null ? null : (lists.get(conversationId) ?? null);
   const slice = messages === null ? null : sliceUsage(messages, member.startedAt, member.endedAt ?? now);
@@ -99,8 +112,10 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
         <div className="agent-card-heading" style={style}>
           <SessionMark kind="shell" working={working} size="unit" className="agent-card-mark" />
           <span className="agent-card-name agent-card-command">{member.command ?? 'shell'}</span>
-          <span className="agent-card-role">shell</span>
-          <span className="agent-card-state">{working ? 'running' : 'finished'}</span>
+          <span className="agent-card-chips">
+            <span className="agent-card-role">shell</span>
+            <span className="agent-card-state">{working ? 'running' : 'finished'}</span>
+          </span>
         </div>
         <div className="agent-card-session">
           session {session.name} · {parts.elapsed}
@@ -115,16 +130,24 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
       <div className="agent-card-heading" style={style}>
         <SessionMark kind="claude" working={working} size="unit" className="agent-card-mark" />
         <span className="agent-card-name">{agentLabel(member)}</span>
-        <span className="agent-card-role" data-type={member.type ?? undefined}>{agentRole(member)}</span>
-        {word !== null && <span className="agent-card-model">{word}</span>}
-        <span className="agent-card-state">{working ? 'working' : 'idle'}</span>
-        {usd !== null && <span className="agent-card-price">{formatUsd(usd)}</span>}
+        <span className="agent-card-chips">
+          <span className="agent-card-role" data-type={member.type ?? undefined}>{agentRole(member)}</span>
+          {word !== null && <span className="agent-card-model">{word}</span>}
+          <span className="agent-card-state">{working ? 'working' : 'idle'}</span>
+          {usd !== null && <span className="agent-card-price">{formatUsd(usd)}</span>}
+        </span>
       </div>
       {member.branch !== null ? <div className="agent-card-branch">⑂ {member.branch}</div> : <div className="agent-card-branch" data-folder="">in the session's folder</div>}
       {commits !== null && <div className="agent-card-commits">{commits}</div>}
       <div className="agent-card-session">
         session {session.name} · {elapsed}
       </div>
+      {member.prompt !== undefined && <div className="agent-card-prompt">{member.prompt}</div>}
+      {(member.recent ?? []).slice(0, -1).map((phrase, i) => (
+        <div key={i} className="agent-card-earlier">
+          {phrase}
+        </div>
+      ))}
       {member.activity !== null && <div className="agent-card-activity">{member.activity}</div>}
       {tasks.length > 0 && (
         <div className="agent-card-tasks">

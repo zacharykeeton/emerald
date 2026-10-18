@@ -483,14 +483,16 @@ function validateView(value: unknown, where: string): PaneView | null {
   }
   if (value['kind'] === 'browser') {
     // M9 fix 659: a page's address held as browserUrl writes it, or ''
-    // for a pane whose address bar is still empty; nothing else is kept.
+    // for a pane whose address bar is still empty; profile (fix 673) and toolbar (fix 839) are kept, nothing else.
     const url = value['url'];
     if (typeof url !== 'string' || (url !== '' && browserUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, or empty`);
     // M9 fix 673: a profile's name, kept when BROWSER_PROFILE takes it.
     const profile = value['profile'];
-    if (profile === undefined) return { kind: 'browser', url };
-    if (typeof profile !== 'string' || !BROWSER_PROFILE.test(profile)) throw new LayoutError(`${where}.profile must be lowercase letters, digits and hyphens, up to 32`);
-    return { kind: 'browser', url, profile };
+    if (profile !== undefined && (typeof profile !== 'string' || !BROWSER_PROFILE.test(profile))) throw new LayoutError(`${where}.profile must be lowercase letters, digits and hyphens, up to 32`);
+    // M9 fix 839: the toolbar flag, kept only when false, as chrome is.
+    const toolbar = value['toolbar'];
+    if (toolbar !== undefined && toolbar !== null && typeof toolbar !== 'boolean') throw new LayoutError(`${where}.toolbar must be a boolean`);
+    return { kind: 'browser', url, ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}) };
   }
   if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
   const folder = value['folder'];

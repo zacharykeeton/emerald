@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ActivitySession } from '@emerald/shared';
+import type { ActivityRequest, ActivitySession } from '@emerald/shared';
 import { CROSS_CARD_GAP, NOTHING_HERE, crossCard, crossCardSize, crossLane, readoutHasRoom, trackAt } from './activity-cross-model.ts';
+import { effortWords, spanTitle } from './activity-titles.ts';
 import { anActivitySession } from './test-support.ts';
 
 const box = { width: 600, height: 400 };
@@ -108,4 +109,21 @@ test('an agent reads as a subagent of its parent, a waiting stretch by its kind,
   // A packed track: the session at the instant wins, whichever it is.
   const later = session('later', [[at(12, 0), at(13, 0), 'p']]);
   assert.equal(crossLane([asked, later], at(12, 30), new Map()).sessionId, 'later');
+});
+
+test("the span's hover names the model and effort its points ran at, each pair once (M9 fix 852)", () => {
+  const req = (t: number, model: string | null, effort?: string | null): ActivityRequest => ({ at: t, fresh: 0, cacheWrite: 0, cacheRead: 0, output: 0, usd: null, model, ...(effort === undefined ? {} : { effort }) });
+  const span = { from: at(14, 2), prompt: null };
+  const title = (requests: ActivityRequest[], extra: Partial<ActivitySession> = {}) => spanTitle(session('alpha', [[at(14, 2), at(14, 40), null]], { requests, ...extra }), span, at(14, 40));
+  const high = [req(at(14, 5), 'Opus 5.5', 'high'), req(at(14, 10), 'Opus 5.5', 'high')];
+  assert.equal(title(high), 'alpha · 14:02 to 14:40 · Opus 5.5 · high');
+  assert.equal(crossLane([session('alpha', [[at(14, 2), at(14, 40), null]], { requests: high })], at(14, 10), new Map()).text, 'alpha · 14:02 to 14:40 · Opus 5.5 · high');
+  assert.equal(title([req(at(14, 5), 'Opus 5.5', 'high'), req(at(14, 10), 'Opus 5.5', 'medium'), req(at(14, 15), 'Opus 5.5', 'high')]), 'alpha · 14:02 to 14:40 · Opus 5.5 · high, then medium');
+  assert.equal(title([req(at(14, 5), 'Opus 5.5', 'high'), req(at(14, 20), 'Fable 2 (1M context)', 'medium')]), 'alpha · 14:02 to 14:40 · Opus 5.5 · high, then Fable 2 · medium');
+  // No effort on a point, or a point outside the span, reads as before.
+  assert.equal(title([req(at(14, 5), 'Opus 5.5', null), req(at(14, 10), 'Opus 5.5')]), 'alpha · 14:02 to 14:40');
+  assert.equal(title([req(at(13, 0), 'Opus 5.5', 'high'), req(at(15, 0), 'Opus 5.5', 'high')]), 'alpha · 14:02 to 14:40');
+  assert.equal(effortWords({ requests: [] }, at(14, 2), at(14, 40)), null);
+  // An agent row reads as today.
+  assert.equal(title(high, { kind: 'agent', agentId: 'ag1', agentType: 'Explore' }), 'alpha (Explore) · 14:02 to 14:40\na subagent');
 });

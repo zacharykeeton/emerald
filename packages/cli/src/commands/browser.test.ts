@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { BrowserAnswer, Layout } from '@emerald/shared';
 import { currentTab, listPanes } from '@emerald/shared';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
+import { stdinText } from '../args.ts';
 import { CliError, EXIT } from '../cli-error.ts';
 import { captureOutput } from '../command.ts';
 import { runBrowser } from './browser.ts';
@@ -151,12 +152,56 @@ test('the usage errors: --timeout out of range or on another verb, a missing tex
     [['navigate', 'example.com'], 'example.com is not a URL the browser pane opens: http://, https:// or host:port'],
     [['frob'], 'unknown verb "frob"; emmer help browser lists them'],
     [[], 'missing verb'],
+    [['snapshot', '--stdin'], '--stdin is for fill and eval'],
+    [['click', 'e1', '--file', 'x'], '--file is for fill and eval'],
+    [['eval', '--clear'], '--clear is for fill'],
+    [['fill', 'e1', '--clear', '--stdin'], '--clear and --stdin together'],
+    [['fill', 'e1', '--stdin', '--file', 'x'], '--stdin and --file together'],
+    [['fill', 'e1', 'hello', '--stdin'], 'unexpected argument "hello"'],
   ] as const) {
     const err = await failure(runBrowser([...argv]));
     assert.equal(err.exitCode, EXIT.usage, argv.join(' '));
     assert.equal(err.message, message);
   }
   assert.deepEqual(runs, []);
+});
+
+// M9 fix 854: fill and eval take their text verbatim from --stdin or --file.
+test('fill and eval read --stdin and --file verbatim, fill drops one trailing newline and eval keeps it, and an empty fill clears', async () => {
+  const fed = async (input: string, argv: string[]): Promise<void> => {
+    const restore = stdinText(input);
+    try {
+      await capture(() => runBrowser(argv));
+    } finally {
+      restore();
+    }
+  };
+  await fed('a\nb "c" 100%PATH%\r\n', ['fill', 'e1', '--stdin']);
+  assert.deepEqual(runs.at(-1)!['args'], ['e1', 'a\nb "c" 100%PATH%']);
+  await fed('1 +\n2\n', ['eval', '--stdin']);
+  assert.deepEqual(runs.at(-1)!['args'], ['1 +\n2\n']);
+  await fed('', ['fill', 'e1', '--stdin']);
+  assert.deepEqual(runs.at(-1)!['args'], ['e1', '']);
+  await capture(() => runBrowser(['fill', 'e1', '--clear']));
+  assert.deepEqual(runs.at(-1)!['args'], ['e1', '']);
+  const before = runs.length;
+  const restore = stdinText('');
+  try {
+    const err = await failure(runBrowser(['eval', '--stdin']));
+    assert.equal(err.exitCode, EXIT.usage);
+    assert.equal(err.message, 'the expression from --stdin is empty');
+  } finally {
+    restore();
+  }
+  assert.equal(runs.length, before);
+  const file = path.join(os.tmpdir(), `emmer-eval-${process.pid}.js`);
+  fs.writeFileSync(file, '﻿document.title');
+  try {
+    await capture(() => runBrowser(['eval', '--file', file]));
+    assert.deepEqual(runs.at(-1)!['args'], ['document.title']);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 });
 
 test('anything after a bare -- is a positional, so eval -- -1 sends -1', async () => {

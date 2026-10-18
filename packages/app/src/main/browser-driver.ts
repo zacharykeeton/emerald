@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ipcMain, webContents, type DownloadItem, type WebContents } from 'electron';
 import { browserUrl } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb, Requests, ServerMessage } from '@emerald/shared';
-import { BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, keySpec, parseRef, pauseFor, screenshotName, snapshotOf, type AxNode, type BrowserEvent, type SnapshotRow } from './browser-drive-model.ts';
+import { BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, fromElectron, keySpec, parseRef, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type SnapshotRow } from './browser-drive-model.ts';
 
 // The pane's driven mark, pushed to the window as emerald:browser-drive.
 export type DriveState = { by: string; running: boolean; paused: boolean } | null;
@@ -92,6 +92,8 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   };
   // Listeners go on a guest once, whichever pane holds it now.
   const wired = new WeakSet<WebContents>();
+  // The guests whose first Electron console error main.log has (M9 fix 857).
+  const electronNoted = new WeakSet<WebContents>();
 
   const register = (paneId: string, contents: WebContents) => {
     // A guest is one pane's: a frame handed to a new pane id (a move,
@@ -121,6 +123,13 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     });
     contents.on('console-message', (e) => {
       if (e.level !== 'error') return;
+      if (fromElectron(e.sourceId)) {
+        if (!electronNoted.has(contents)) {
+          electronNoted.add(contents);
+          opts.log(`browser: guest ${contents.id} logged Electron's own console error, left out of events: ${e.message} (${e.sourceId}:${e.lineNumber})`);
+        }
+        return;
+      }
       holder()?.[1].events.add({ at: Date.now(), kind: 'console', text: e.message, source: e.sourceId, line: e.lineNumber });
     });
     // The takeover (M9 fix 673): the person's press in a driven page.
@@ -343,9 +352,12 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       case 'hover': {
         const r = resolveRef(p, a);
         const { x, y } = await boxCentre(send, r);
-        // A click is a press and a release with no move first: in this
-        // Electron a synthetic move can take seconds to be acknowledged
-        // (cdp.mjs's click says the same), and the press moves the pointer.
+        // A click is a press and a release with no move first. The press
+        // moves the pointer itself: verify-m9-browser-drive.mjs's (h3)
+        // reads a control shown on hover clicked and a never-hovered button
+        // seeing pointerenter and :hover before its click. The seconds-long
+        // acknowledgement of a move is the main window's (cdp.mjs's click);
+        // a guest answers one in milliseconds (fix 692's hover line).
         if (v === 'hover') {
           await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
           return { ok: true, text: `hovering over ${described(r)}` };
@@ -417,14 +429,20 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
         const what = r === null ? JSON.stringify(a) : `@${r.ref}`;
         for (;;) {
           let there = false;
+          let where: unknown = null;
           if (r !== null) {
             there = await send('DOM.getBoxModel', { backendNodeId: r.id }).then(() => true, () => false);
           } else {
-            const res = await send('Runtime.evaluate', { expression: `document.body !== null && document.body.innerText.includes(${JSON.stringify(a)})`, returnByValue: true });
-            there = (res['result'] as { value?: unknown }).value === true;
+            const res = await send('Runtime.evaluate', { expression: waitExpression(a), returnByValue: true });
+            where = (res['result'] as { value?: unknown }).value;
+            there = where === 'text' || where === 'field' || where === 'label';
           }
           const took = Date.now() - started;
-          if (there) return { ok: true, text: r === null ? `${what} is on the page (after ${took} ms)` : `${what} is on screen (after ${took} ms)` };
+          if (there) {
+            if (r !== null) return { ok: true, text: `${what} is on screen (after ${took} ms)` };
+            const place = where === 'field' ? 'in a field on the page' : where === 'label' ? 'in a label on the page' : 'on the page';
+            return { ok: true, text: `${what} is ${place} (after ${took} ms)` };
+          }
           if (Date.now() + BROWSER_WAIT_POLL_MS > deadline) return { ok: false, reason: 'timeout', text: `gave up after ${Math.round(req.timeoutMs / 1000)} s waiting for ${what}` };
           await new Promise((resolve) => setTimeout(resolve, BROWSER_WAIT_POLL_MS));
         }

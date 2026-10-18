@@ -43,6 +43,12 @@ function session(kind: SessionKind, state: SessionState, claudeSessionId: string
   };
 }
 
+test('describeState: an exited row with no exit code says the code is unknown, either way it came (M9 fix 831)', () => {
+  const got = describeState({ ...session('claude', 'exited'), exitCode: null });
+  assert.equal(got.text, 'exited');
+  assert.equal(got.detail, 'The exit code is unknown: the process gave none, or it ended while emmerd was down. Resume to start it again.');
+});
+
 test('hasState: a Claude session always has one, whatever the state', () => {
   for (const state of ALL_STATES) assert.equal(hasState(session('claude', state)), true, state);
 });

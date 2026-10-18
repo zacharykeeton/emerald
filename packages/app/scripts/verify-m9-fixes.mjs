@@ -134,10 +134,23 @@ const document_dragging = (bodyClass) => /dragging-(col|row)/.test(bodyClass);
 // window is this step's alone and goes with its daemon and its profile.
 step('M9 fix 115: two harness windows launched together each get a profile of their own');
 const firstPort = freshPort();
-const twin = { home: path.join(os.tmpdir(), 'emerald-verify', 'm9-twin-home'), pipe: '\\\\.\\pipe\\emmerd-verify-m9-twin' };
+// M9 fix 825: the twin's pair is the run's own with a suffix, the home inside the run's home, so two seats never share one and seat-verify.ps1's rename of a used home to .run<N> takes the last run's twin with it.
+const twin = { home: path.join(process.env['EMERALD_HOME'], 'm9-twin'), pipe: `${process.env['EMERALD_PIPE']}-twin` };
 // M9 fix 355: the inspect port asked for on the first window, which the
 // harness argument on the command line refuses (the step reads the line).
-const [s, twinApp] = await Promise.all([launch(firstPort, { freshState: true, env: { EMERALD_INSPECT_PORT: String(firstPort) } }), launch(firstPort + 7, { freshState: true, pair: twin })]);
+const launched = await Promise.allSettled([launch(firstPort, { freshState: true, env: { EMERALD_INSPECT_PORT: String(firstPort) } }), launch(firstPort + 7, { freshState: true, pair: twin })]);
+const failedLaunch = launched.find((r) => r.status === 'rejected');
+if (failedLaunch !== undefined) {
+  // M9 fix 825: a launch that dies here is thrown past the try below, so
+  // the window that came up and both daemons are ended before it is:
+  // they held the shared twin pair and failed the next seat's prelude.
+  for (const r of launched) if (r.status === 'fulfilled') killTree(r.value.child);
+  stopDaemon(twin.home);
+  stopDaemon();
+  await sleep(500);
+  throw failedLaunch.reason;
+}
+const [s, twinApp] = launched.map((r) => r.value);
 app = s;
 try {
   expect(fs.existsSync(profileOf(process.env['EMERALD_HOME'])) && fs.existsSync(profileOf(twin.home)), 'each window has a profile folder under its own home');
@@ -870,6 +883,10 @@ try {
   const rowResumeTitle = await s.evalJs(`${rowResume}?.title ?? null`);
   expect(rowResumeTitle !== null && rowResumeTitle.startsWith('Start ') && rowResumeTitle.includes(' again in '), `the exited row's Resume button says where it goes, got ${rowResumeTitle}`);
   expect((await s.evalJs(`document.querySelectorAll('.sidebar-row:not([data-state="exited"]) .sidebar-row-resume').length`)) === 0, 'no Resume button on a row that is not exited');
+  // M9 fix 843: Resume moves to the agent line's right end when the row has one; a shell with no prompt keeps it on the main line.
+  const lastShellPrompt = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === lastShell)?.lastPrompt ?? null;
+  const resumeOnMain = await s.evalJs(`${rowResume}.closest('.sidebar-row-main') !== null`);
+  expect(resumeOnMain === (lastShellPrompt === null), `fix 843: a row with no agent line keeps Resume on its main line, got ${JSON.stringify({ lastShellPrompt, resumeOnMain })}`);
   await s.evalJs(`${rowResume}.click()`);
   await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(lastShell)}]')?.dataset.state === 'idle'`, 'and resumes under the new daemon');
   expect((await s.evalJs(`!!${rowResume}`)) === false, 'the button leaves with the exited state');
@@ -1600,7 +1617,7 @@ try {
       expect(r.level !== null && level >= lastTitleLevel, `the title's level never falls as the pane narrows, got ${JSON.stringify(titleReadings.map((x) => [Math.round(x.width), x.level]))}`);
       lastTitleLevel = level;
       if (level === 0) expect(r.rosters === 1 && JSON.stringify(r.units) === JSON.stringify({ out: 1, returned: 1, shells: 1 }) && !r.totalShown, `at ${Math.round(r.width)}px the title shows its three units and no total, got ${JSON.stringify(r)}`);
-      // From fix 237's sixth level the total goes with the name; the walk ends at 300px, which stays under that.
+      // From fix 237's sixth level the total goes with the name; the walk ends at 300px, which can reach it now that the buttons hold to the eighth (fix 840).
       else if (level >= 6) expect(r.rosters === 0, `at ${Math.round(r.width)}px level ${level} the roster is gone with the name (fix 237), got ${JSON.stringify(r)}`);
       else {
         expect(r.rosters === 1 && JSON.stringify(r.units) === JSON.stringify({ total: 3 }) && r.totalShown, `at ${Math.round(r.width)}px the title folds its roster to a total of 3, got ${JSON.stringify(r)}`);
@@ -1627,11 +1644,15 @@ try {
     const backTitle = await titleRead();
     expect(backTitle.level === initialTitle.level && JSON.stringify(backTitle.units) === JSON.stringify(initialTitle.units), `back at ${Math.round(backTitle.width)}px the title reads as it did, level ${initialTitle.level}, got ${JSON.stringify(backTitle)}`);
     step(`fix 77: the title's roster folded to a total of 3 from ${Math.round(foldedAt.width)}px with waiting (2) whole there, the units whole at ${Math.round(titleReadings[0].width)}px, the tokens whole down to ${Math.round(tokensGoneAt.width) + 20}px and gone from ${Math.round(tokensGoneAt.width)}px (fix 146), and back at level ${backTitle.level} at ${Math.round(backTitle.width)}px`);
-    // M9 fix 237: narrower still, the same pane walked from 300px down to
+    // M9 fix 237: narrower still, the same pane walked from 520px down to
     // 80 by the root ratio (the splitter's path, set as state): the state
     // word goes at the fifth level, the name at the sixth with the folded
-    // roster and the reading, hide and close at the seventh, and the
-    // zoom and the shade stay to the end, inside the title's box; from
+    // roster and the reading, and only then the buttons (M9 fix 840): the
+    // chat button and the splits at the eighth, hide and close at the
+    // ninth, the zoom and the shade staying to the end, inside the
+    // title's box. The walk starts at 520px since fix 840 (300 before),
+    // as the held buttons take about 65px more through the seventh
+    // level and the state word was already gone at 420; from
     // the narrowest width the zoom gives the pane the tab and back, and
     // the shade pulls and lifts. The level never falls on the way down
     // and the ratio put back brings the title back where it was.
@@ -1647,35 +1668,37 @@ try {
         width: Math.round(box.width),
         level: Number(title.dataset.squeeze ?? 0),
         state: shown('.pane-state'), name: shown('.pane-name'), roster: shown('.roster'), context: shown('.pane-context'),
-        splits: shown('.pane-split-right') || shown('.pane-split-down'), hide: shown('.pane-hide'), close: shown('.pane-close'),
+        splits: shown('.pane-split-right') || shown('.pane-split-down'), face: shown('.pane-face-toggle'), hide: shown('.pane-hide'), close: shown('.pane-close'),
         zoom: shown('.pane-zoom'), shade: shown('.pane-shade-toggle'), mark: shown('.pane-mark'),
         zoomInside: inside('.pane-zoom'), shadeInside: inside('.pane-shade-toggle'),
       };
     })()`);
     const floorReadings = [];
     // The floor is about 75px (the mark, the two buttons and the tightened paddings), so the walk ends at 80.
-    for (let target = 300; target >= 80; target -= 20) {
+    for (let target = 520; target >= 80; target -= 20) {
       await paneTo(target);
       floorReadings.push(await floorRead());
     }
     let lastFloorLevel = -1;
     let stateGoneAt = null;
     let nameGoneAt = null;
+    let splitsGoneAt = null;
     let closeGoneAt = null;
     for (const r of floorReadings) {
       expect(r.level >= lastFloorLevel, `fix 237: the level never falls as the pane narrows, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
       lastFloorLevel = r.level;
       expect(r.state === (r.level < 5) && r.name === (r.level < 6) && r.roster === (r.level < 6) && r.context === (r.level < 6), `fix 237: at ${r.width}px level ${r.level} the state shows below 5 and the name, the roster and the reading below 6, got ${JSON.stringify(r)}`);
-      expect(r.splits === (r.level < 3) && r.hide === (r.level < 7) && r.close === (r.level < 7), `fix 237: at ${r.width}px level ${r.level} the splits show below 3 and hide and close below 7, got ${JSON.stringify(r)}`);
+      expect(r.splits === (r.level < 8) && r.face === (r.level < 8) && r.hide === (r.level < 9) && r.close === (r.level < 9), `fix 840: at ${r.width}px level ${r.level} the chat button and the splits show below 8 and hide and close below 9, got ${JSON.stringify(r)}`);
       expect(r.mark && r.zoom && r.shade && r.zoomInside && r.shadeInside, `fix 237: at ${r.width}px level ${r.level} the mark, the zoom and the shade show inside the title, got ${JSON.stringify(r)}`);
       if (!r.state && stateGoneAt === null) stateGoneAt = r;
       if (!r.name && nameGoneAt === null) nameGoneAt = r;
+      if (!r.splits && splitsGoneAt === null) splitsGoneAt = r;
       if (!r.close && closeGoneAt === null) closeGoneAt = r;
     }
-    expect(stateGoneAt !== null && nameGoneAt !== null && closeGoneAt !== null, `fix 237: the walk saw the state, then the name, then hide and close go, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
-    expect(stateGoneAt.width >= nameGoneAt.width && nameGoneAt.width >= closeGoneAt.width && stateGoneAt.level < nameGoneAt.level && nameGoneAt.level < closeGoneAt.level, `fix 237: the state goes before the name and the name before hide and close, got ${JSON.stringify({ stateGoneAt, nameGoneAt, closeGoneAt })}`);
+    expect(stateGoneAt !== null && nameGoneAt !== null && splitsGoneAt !== null && closeGoneAt !== null, `fix 840: the walk saw the state, then the name, then the splits, then hide and close go, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
+    expect(stateGoneAt.width >= nameGoneAt.width && nameGoneAt.width >= splitsGoneAt.width && splitsGoneAt.width >= closeGoneAt.width && stateGoneAt.level < nameGoneAt.level && nameGoneAt.level < splitsGoneAt.level && splitsGoneAt.level < closeGoneAt.level, `fix 840: the state goes before the name, the name before the splits and the splits before hide and close, got ${JSON.stringify({ stateGoneAt, nameGoneAt, splitsGoneAt, closeGoneAt })}`);
     const narrowestFloor = floorReadings[floorReadings.length - 1];
-    expect(narrowestFloor.level === 7 && narrowestFloor.width <= 84, `fix 237: at the narrowest the title is at its last level, got ${JSON.stringify(narrowestFloor)}`);
+    expect(narrowestFloor.level === 9 && narrowestFloor.width <= 84, `fix 237: at the narrowest the title is at its last level, got ${JSON.stringify(narrowestFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-zoom')}).click()`);
     await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the zoom button zoomed the sliver');
     const zoomedFloor = await floorRead();
@@ -1683,11 +1706,11 @@ try {
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-zoom')}).click()`);
     await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'the zoom button unzoomed');
     const unzoomedFloor = await floorRead();
-    expect(unzoomedFloor.level === 7 && unzoomedFloor.width === narrowestFloor.width, `fix 237: unzoomed, the sliver is back at its last level, got ${JSON.stringify(unzoomedFloor)}`);
+    expect(unzoomedFloor.level === 9 && unzoomedFloor.width === narrowestFloor.width, `fix 237: unzoomed, the sliver is back at its last level, got ${JSON.stringify(unzoomedFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-shade-toggle')}).click()`);
     await s.waitFor(`!!document.querySelector(${JSON.stringify(floorSel + ' .pane-shade')})`, 'the shade button shaded the sliver');
     const shadedFloor = await floorRead();
-    expect(shadedFloor.level === 7 && shadedFloor.zoom && shadedFloor.shade, `fix 237: the shaded sliver's title keeps the zoom and the shade at its last level, got ${JSON.stringify(shadedFloor)}`);
+    expect(shadedFloor.level === 9 && shadedFloor.zoom && shadedFloor.shade, `fix 237: the shaded sliver's title keeps the zoom and the shade at its last level, got ${JSON.stringify(shadedFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-shade-toggle')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(floorSel + ' .pane-shade')})`, 'the shade button lifted it');
     await s.screenshot('m9-fix237-floor.png');
@@ -1696,7 +1719,7 @@ try {
     await s.waitFor(`Math.abs(document.querySelector(${JSON.stringify(sqTitleSel)}).getBoundingClientRect().width - ${initialTitle.width}) < 4`, 'the left pane back at its width after the floor walk');
     const backFloor = await titleRead();
     expect(backFloor.level === initialTitle.level, `back at ${Math.round(backFloor.width)}px the title is at level ${initialTitle.level} again, got ${JSON.stringify(backFloor)}`);
-    step(`M9 fix 237: the state gone from ${stateGoneAt.width}px (level ${stateGoneAt.level}), the name from ${nameGoneAt.width}px (level ${nameGoneAt.level}), hide and close from ${closeGoneAt.width}px (level ${closeGoneAt.level}); at ${narrowestFloor.width}px the mark, the zoom and the shade stay, the zoom gives the pane the tab and back, the shade pulls and lifts`);
+    step(`M9 fix 237 and 840: the state gone from ${stateGoneAt.width}px (level ${stateGoneAt.level}), the name from ${nameGoneAt.width}px (level ${nameGoneAt.level}), the chat button and the splits from ${splitsGoneAt.width}px (level ${splitsGoneAt.level}), hide and close from ${closeGoneAt.width}px (level ${closeGoneAt.level}); at ${narrowestFloor.width}px the mark, the zoom and the shade stay, the zoom gives the pane the tab and back, the shade pulls and lifts`);
     layout = await getLayout(s);
     await zreq(s, 'layout.set', { layout: { ...layout, root: withSession(layout.root, dropPane, parkedInDrop) } });
     await zreq(s, 'session.kill', { sessionId: squeezed.id, remove: true });
@@ -3107,9 +3130,10 @@ try {
       contextMin: getComputedStyle(context).minWidth,
     };
   })()`);
-    expect(thinTitle.level !== null && Number(thinTitle.level) <= 7, `the thin title has a level with a tokens span, got ${JSON.stringify(thinTitle)}`);
+    expect(thinTitle.level !== null && Number(thinTitle.level) <= 9, `the thin title has a level with a tokens span, got ${JSON.stringify(thinTitle)}`);
     expect(thinTitle.tokens === (Number(thinTitle.level) < 2) && (Number(thinTitle.level) >= 2 || thinTitle.tokensWhole) && thinTitle.stateShown === (Number(thinTitle.level) < 5) && (!thinTitle.stateShown || thinTitle.stateWhole), `at ${thinTitle.width}px level ${thinTitle.level} the title's tokens are ${Number(thinTitle.level) < 2 ? 'whole' : 'gone'} and the state word ${Number(thinTitle.level) < 5 ? 'whole' : 'gone'} (fix 237), got ${JSON.stringify(thinTitle)}`);
-    expect((Number(thinTitle.level) < 2) === (thinTitle.contextMin !== '11px'), `the reading's box holds its content only while the tokens show, got ${JSON.stringify(thinTitle)}`);
+    // Fix 146's 11px floor is levels 2 to 5; from the sixth the reading is hidden with the name (fix 237), which the held buttons (fix 840) can bring a thin pane to.
+    expect((Number(thinTitle.level) < 2 || Number(thinTitle.level) >= 6) === (thinTitle.contextMin !== '11px'), `the reading's box holds its content only while the tokens show, got ${JSON.stringify(thinTitle)}`);
     layout = await getLayout(s);
     await zreq(s, 'layout.set', { layout: { ...layout, root: withSession(layout.root, thin.id, parkedInThin) } });
     step(`M9 fix 146: the counted row on screen with main keeps \u2191113.4k \u21932.8k whole at ${defaultSidebar}px (level ${atDefault.level}), ${tokensGone === null ? 'and down to 180px' : `gone from ${tokensGone.width}px at level ${tokensGone.level}`}; the ${thinTitle.width}px title at level ${thinTitle.level} with the tokens ${thinTitle.tokens ? 'whole' : 'gone'} and the state whole`);
@@ -4013,10 +4037,17 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     const atE = await place787(e.id);
     await post813(e.id, { hook_event_name: 'SessionStart', source: 'startup' });
     await s.waitFor(`document.querySelector(${JSON.stringify(row787(e.id))})?.dataset.state === 'idle'`, 'the /exit stub idle', 8000);
+    // M9 fix 843: a turn, so the row has an agent line for Resume to sit on.
+    await post813(e.id, { hook_event_name: 'UserPromptSubmit', prompt: 'the corner for Resume' });
+    await post813(e.id, { hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-agent')})`, 'the /exit stub row has an agent line', 8000);
     await exit813(e.id, 'prompt_input_exit');
     const shellE = await waitShell813(atE.P, e.id);
     const countingE = shellE !== null && (await isCounting813(e.id));
     expect(shellE !== null && countingE, `fix 813: an /exit drops the pane to a shell and the Claude row counts down, got shell ${shellE} counting ${countingE}`);
+    const resume843 = await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}); const side = document.querySelector('.sidebar').getBoundingClientRect(); if (b === null) return null; const r = b.getBoundingClientRect(); return { onAgentLine: b.closest('.sidebar-row-turn') !== null, onMain: b.closest('.sidebar-row-main') !== null, width: r.width, right: r.right, sideRight: side.right, sidebar: Math.round(side.width) }; })()`);
+    expect(resume843 !== null && resume843.onAgentLine && !resume843.onMain && resume843.width > 0 && resume843.right <= resume843.sideRight + 0.5, `fix 843: the counting Claude row's Resume is at the end of its agent line, inside the ${resume843?.sidebar}px sidebar, got ${JSON.stringify(resume843)}`);
+    step(`M9 fix 843: the counting Claude row's Resume sits at the end of its agent line, inside the ${resume843.sidebar}px sidebar`);
     // Resume during the count.
     await s.evalJs(`document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}).click()`);
     let paneE2 = null;
@@ -4132,9 +4163,20 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       got815.text === 'emmerd stopped unexpectedly and was restarted. The sessions it held have ended.' && got815.title === `emmerd pid ${crashed815} exited with code 0xC0000374` && got815.pid === String(newPid815) && newPid815 !== crashed815,
       `fix 815: the crash banner after the restart, got ${JSON.stringify({ text: got815.text, title: got815.title, pid: got815.pid, daemon: newPid815 })}`,
     );
+    // M9 fix 832: the main process holds the crash, so a reload of the
+    // window brings the banner back until Not now.
+    await s.send('Page.reload');
+    const back832 = await s
+      .waitFor(`!!document.querySelector(${JSON.stringify(bannerSel815)})`, 'fix 832: the crash banner after a reload', 15_000)
+      .then(() => true, () => false);
+    expect(back832, 'fix 832: the crash banner is back after a reload');
     await s.evalJs(`document.querySelector(${JSON.stringify(bannerSel815 + ' .daemon-dismiss')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(crashSel815)})`, 'the crash banner put away by Not now', 3000);
-    step('M9 fix 815: a daemon the window started that crashed (0xC0000374) brings the crash banner after the restart, its code in the tooltip, and Not now puts it away; a restart brings none');
+    await s.send('Page.reload');
+    await s.waitFor(`document.querySelector('.daemon-banner') === null && !!document.querySelector('.sidebar')`, 'fix 832: the window back after the second reload with no banner', 15_000);
+    await sleep(2000);
+    expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(crashSel815)})`)), 'fix 832: after Not now a reload brings no crash banner');
+    step('M9 fix 815: a daemon the window started that crashed (0xC0000374) brings the crash banner after the restart, its code in the tooltip, and Not now puts it away; a restart brings none; a reload keeps it until Not now (fix 832)');
   });
   step(blocksRun());
   step('PASS');

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { BrowserPaneView, PaneView } from '@emerald/shared';
 
 // The browser layer's model (M9 fix 669). Every browser pane's page lives
 // in one window-level layer (BrowserLayer.tsx) rather than inside its
@@ -31,8 +32,28 @@ export interface WebviewLike extends HTMLElement {
 // The pane's focus ring is `.pane::after`'s 3px border (style.css), at
 // z-index 3 inside the pane; the layer sits above every pane, so a frame
 // laid over the whole slot would cover the ring's left, right and bottom
-// edges. The slot starts under the toolbar, so the top needs no inset.
+// edges. The slot starts under the toolbar, or under the title bar with the toolbar hidden (M9 fix 839), so the top needs no inset.
 export const RING_PX = 3;
+
+// Whether the toolbar row is drawn (M9 fix 839): the record's flag, or
+// the row's own reasons to come back unasked, an empty address bar, Design
+// Mode (its toggle lives in the row) and an open notes tray (the Notes
+// button there is the only way to close it with the mode off).
+export function toolbarShown(toolbar: boolean, pageOn: boolean, designOn: boolean, trayOpen: boolean): boolean {
+  return toolbar || !pageOn || designOn || trayOpen;
+}
+
+// A navigation or an address edit writes the url and keeps the record's
+// other fields (profile, toolbar), which a bare { kind, url } dropped.
+export function withPageUrl(view: PaneView | null | undefined, url: string): BrowserPaneView {
+  return view?.kind === 'browser' ? { ...view, url } : { kind: 'browser', url };
+}
+
+// The toolbar flag is kept only when false.
+export function withToolbar(view: BrowserPaneView, shown: boolean): BrowserPaneView {
+  const { toolbar: _toolbar, ...rest } = view;
+  return shown ? rest : { ...rest, toolbar: false };
+}
 
 export interface FrameBox {
   left: number;

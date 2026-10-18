@@ -6,6 +6,7 @@ import type { EmptyKind } from './empty-pane-model.ts';
 import { acknowledge, emptyAttention, hushAll, isAttentionSound, markUnread, nextSound, observe, setHushed } from './attention-model.ts';
 import type { AttentionModel, AttentionSound } from './attention-model.ts';
 import type { DropZone, TabDropTarget } from './drop-zone-model.ts';
+import type { CornerNote } from './copy-note.ts';
 import { emptyFocusHistory, recordFocus, stepFocus } from './focus-history-model.ts';
 import type { FocusEntry, FocusHistory } from './focus-history-model.ts';
 import type { ChimeMode } from '../../preload/api.ts';
@@ -28,6 +29,8 @@ import { isShowOffscreen } from './show-model.ts';
 import type { ShowOffscreen } from './show-model.ts';
 import { WHATS_NEW_SEEN_KEY, shouldOpenWhatsNew, whatsNewStamp } from './whats-new-model.ts';
 import { parseChatModes, parseChatPanes, serializeChatPanes } from './chat-model.ts';
+import { parsePlan } from './plan-model.ts';
+import type { PlanEntry } from './plan-model.ts';
 import type { ChatMode } from './chat-model.ts';
 
 // Renderer-only state that the daemon has no business knowing: which pane has
@@ -91,8 +94,9 @@ export interface UiState {
   prefixArmed: boolean;
   // A line for the prefix indicator's corner when no prefix is armed (M9
   // fix 201: "Nothing is waiting" after the jump key found nothing), gone
-  // after a moment; null is the usual state.
-  cornerNote: string | null;
+  // after a moment; null is the usual state. With the pane a copy came
+  // from, or null for a note of the window's (M9 fix 849).
+  cornerNote: CornerNote | null;
   cheatSheetOpen: boolean;
   // Design Mode (M9 fix 674): the browser pane in the mode, one per
   // window. Fix 675: each browser pane's tray of notes, by pane id, and
@@ -177,6 +181,8 @@ export interface UiState {
   stalled: ReadonlySet<string>;
   // M9 fix 787: the Exited rows counting down to their removal after a close, by session id. Not persisted: a reload or a closed window leaves the row under Exited, which fails safe.
   removing: ReadonlyMap<string, RemovalCount>;
+  // M9 fix 842: Claude sessions whose pane is dropping to a shell after /exit (fix 813), from before the shell's spawn to the end of the drop; a pane on one hides its terminal meanwhile. Not persisted.
+  dropping: ReadonlySet<string>;
   // Panes with the shade pulled over them (M63): the terminal hidden
   // behind one calm face. By pane id, kept in localStorage so a reload
   // finds the wall as calm as it was left; pruned as panes close.
@@ -214,6 +220,10 @@ export interface UiState {
   // one setting per window, on by default, kept in localStorage; Alt+Z
   // in the editor, the header's Wrap button and the file menu flip it.
   wrapLines: boolean;
+  // The person's Claude plan over time (M9 fix 838), for the Statistics
+  // tab's subscription line; the window's, not a folder's. Kept in
+  // localStorage.
+  plan: PlanEntry[];
 }
 
 export type RailTab = 'files' | 'timeline' | 'history';
@@ -313,6 +323,7 @@ const SPLIT_KIND_KEY = 'emerald.splitKind';
 const EMPTY_PANE_KIND_KEY = 'emerald.emptyPaneKind';
 const EMPTY_PANE_SHELL_KEY = 'emerald.emptyPaneShell';
 const WRAP_LINES_KEY = 'emerald.wrapLines';
+const PLAN_KEY = 'emerald.plan';
 
 let state: UiState = {
   pickerPaneId: null,
@@ -345,6 +356,7 @@ let state: UiState = {
   findOpen: new Map(),
   stalled: new Set(),
   removing: new Map(),
+  dropping: new Set(),
   railTab: loadRailTab(),
   filesChanged: loadFilesChanged(),
   activityFolded: loadActivityFolded(),
@@ -362,6 +374,7 @@ let state: UiState = {
   splitKind: loadSplitKind(),
   splitFolder: new Map(),
   wrapLines: loadWrapLines(),
+  plan: loadPlan(),
   ...loadSidebar(),
   ...loadFiles(),
 };
@@ -430,9 +443,9 @@ export function setPrefixArmed(armed: boolean): void {
 let cornerTimer: ReturnType<typeof setTimeout> | null = null;
 export const CORNER_NOTE_MS = 2000;
 
-export function flashCornerNote(text: string): void {
+export function flashCornerNote(text: string, paneId: string | null = null): void {
   if (cornerTimer !== null) clearTimeout(cornerTimer);
-  setState({ ...state, cornerNote: text });
+  setState({ ...state, cornerNote: { text, paneId } });
   cornerTimer = setTimeout(() => {
     cornerTimer = null;
     if (state.cornerNote !== null) setState({ ...state, cornerNote: null });
@@ -901,6 +914,24 @@ function loadWrapLines(): boolean {
     return localStorage.getItem(WRAP_LINES_KEY) !== 'off';
   } catch {
     return true;
+  }
+}
+
+// The plan list (M9 fix 838), set from the Statistics tab.
+export function setPlan(plan: readonly PlanEntry[]): void {
+  setState({ ...state, plan: [...plan] });
+  try {
+    localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
+  } catch {
+    // The plan just will not survive the restart.
+  }
+}
+
+function loadPlan(): PlanEntry[] {
+  try {
+    return parsePlan(localStorage.getItem(PLAN_KEY));
+  } catch {
+    return [];
   }
 }
 
@@ -1503,6 +1534,14 @@ export function setRemoval(sessionId: string, count: RemovalCount | null): void 
   if (count === null) removing.delete(sessionId);
   else removing.set(sessionId, count);
   setState({ ...state, removing });
+}
+
+export function setDropping(sessionId: string, on: boolean): void {
+  if (state.dropping.has(sessionId) === on) return;
+  const dropping = new Set(state.dropping);
+  if (on) dropping.add(sessionId);
+  else dropping.delete(sessionId);
+  setState({ ...state, dropping });
 }
 
 export function cycleAttentionSound(): void {

@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { parseRunning, summarize } from '@emerald/shared';
+import { activityTotals, parseRunning, summarize } from '@emerald/shared';
 import { DEBT_GRACE_MS } from '@emerald/shared';
 import { DROPPING_NAME, HOOK_LOG_BUDGET_BYTES, ROTATING_NAME, SLIMMING_NAME, generationNumber, generationPaths, isFullPayloadLine, rotatedPath, slimHookLine } from '@emerald/shared/hook-log';
-import type { ActivityCommit, ActivityRequest, ActivitySession, ActivitySpan, CappedSpan, DebtKind, DebtSpan, HookPayload, PresenceKind, SessionCommit, SessionInfo, SessionState } from '@emerald/shared';
+import type { ActivityCommit, ActivityRequest, ActivitySession, ActivitySpan, ActivityTotals, CappedSpan, DebtKind, DebtSpan, HookPayload, PresenceKind, SessionCommit, SessionInfo, SessionState } from '@emerald/shared';
 import type { Logger } from './log.ts';
 
 // The day's activity (M54): which stretches each session spent working,
@@ -1091,6 +1091,15 @@ export class ActivityLog {
   // (the renderer names the track from the transcript). A track outside
   // emerald whose conversation a record lists (it was resumed in a pane)
   // folds into that record's row.
+  // One folder's totals (M9 fix 836): the rows of the window, from the
+  // log's first line when no start is given, folded by activityTotals, so
+  // a whole life goes over the pipe as a total and a row per month.
+  totals(folder: string, from: number | null, to: number | null, now: number, sessions: SessionInfo[], unhosted: SessionInfo[] = []): ActivityTotals {
+    const a = from ?? this.historyFrom ?? now;
+    const b = to ?? now;
+    return activityTotals(this.spans(a, b, now, sessions, null, unhosted), folder, a, b, this.historyFrom);
+  }
+
   spans(from: number, to: number, now: number, sessions: SessionInfo[], requestsSince: number | null = null, unhosted: SessionInfo[] = []): ActivitySession[] {
     const listed = new Map(sessions.map((s) => [s.id, s]));
     const outsideInfos = new Map(unhosted.map((s) => [s.id, s]));

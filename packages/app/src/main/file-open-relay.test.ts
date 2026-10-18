@@ -137,3 +137,14 @@ test('a page from emmer open rides the relay with url set (M9 fix 659)', () => {
   ]);
   assert.equal('url' in delivered[1]!, false);
 });
+
+test('a folder from a launch rides with its kind, and a push never carries one (M9 fix 853)', () => {
+  const { client, delivered, relay, log } = setup();
+  relay.ready();
+  relay.open({ path: 'C:\\work', pane: false, launch: true, kind: 'shell' });
+  assert.equal(delivered[0]!.kind, 'shell');
+  assert.equal(openExtraOf(delivered[0]!).kind, 'shell');
+  assert.ok(log.includes('open: C:\\work, a shell in a new tab'), log.join('\n'));
+  client.emit('message', { type: 'file.open.requested', path: 'C:\\x', pane: false, kind: 'claude' });
+  assert.equal('kind' in delivered[1]!, false);
+});

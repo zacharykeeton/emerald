@@ -86,7 +86,17 @@ try {
   await s.key('C', 'KeyC', 67, CTRL | SHIFT);
   await s.waitFor(`window.emerald.clipboard.read().then((c) => c.text === ${JSON.stringify(copyLine441)})`, 'Ctrl+Shift+C copies the selection', 3000);
   await s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Copied ${[...copyLine441].length} characters`)}`, "fix 806: the terminal's copy shows the corner note", 3000);
-  step('Ctrl+Shift+C copied the selected line to the clipboard');
+  // M9 fix 849: the note sits in the pane the copy came from, its bottom right.
+  const note849 = await s.evalJs(`(() => {
+    const p = document.querySelector(${JSON.stringify(`[data-pane-id="${p2.id}"]`)});
+    const n = p?.querySelector('.corner-note.in-pane');
+    const box = (e) => { const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+    return { pane: p ? box(p) : null, note: n ? box(n) : null, count: document.querySelectorAll('.corner-note').length };
+  })()`);
+  const inside849 = (n, p) => n.left >= p.left && n.right <= p.right && n.top >= p.top && n.bottom <= p.bottom;
+  expect(note849.pane !== null && note849.note !== null && note849.count === 1, `fix 849: one note, in the pane, got ${JSON.stringify(note849)}`);
+  expect(inside849(note849.note, note849.pane) && note849.note.right > note849.pane.left + note849.pane.width / 2 && note849.note.bottom > note849.pane.top + note849.pane.height / 2, `fix 849: the note in the pane's bottom right, got ${JSON.stringify(note849)}`);
+  step('Ctrl+Shift+C copied the selected line to the clipboard, its note in the pane\'s bottom right (fix 849)');
 
   await setClip441('before-441');
   const mid441 = await s.evalJs(`(() => { const { x, y, width, height } = ${hostOf441}.getBoundingClientRect(); return { x: x + width / 2, y: y + height / 2 }; })()`);

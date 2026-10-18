@@ -267,8 +267,9 @@ try {
   await s.waitFor(`!document.querySelector(${q(inPane('.design-hint'))})`, 'the hint bar gone');
   const frameTall = () => s.evalJs(`(() => { const r = document.querySelector('.browser-frame[data-browser-pane="${webPaneId}"]')?.getBoundingClientRect(); return r ? r.height : null; })()`);
   const bodyTall = () => s.evalJs(`(() => { const r = document.querySelector(${q(inPane('.browser-body'))})?.getBoundingClientRect(); return r ? r.height : null; })()`);
-  // The body reads 3 px more than the page and its frame on this box at
-  // rest (663 against 660, on every run), so the settled pair is within 4.
+  // The frame, and the page in it, sit RING_PX (3 px, browser-layer.ts) short
+  // of the body, clear of the pane's focus ring along the bottom edge, on any
+  // box, so the settled pair is within 4.
   until = Date.now() + 3000;
   while (Math.abs((await ev('innerHeight')) - ((await bodyTall()) ?? 0)) > 4 && Date.now() < until) await sleep(100);
   console.log(`[757] before the tray: innerHeight ${await ev('innerHeight')}, body ${await bodyTall()} px, frame ${await frameTall()} px`);

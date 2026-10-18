@@ -56,6 +56,8 @@ export interface FeedDeps {
   onLayout: (fn: () => void) => () => void;
   ringBytes?: number;
   detachMs?: number;
+  // The session's process id now (M9 fix 842), so a handle opened on an attachment held for another process starts over; absent in tests that do not care.
+  pidOf?: (sessionId: string) => number | null;
 }
 
 interface Handle {
@@ -76,6 +78,8 @@ interface Attachment {
   reattaching: boolean;
   chosen: Chosen | null;
   detachTimer: ReturnType<typeof setTimeout> | null;
+  // The pid pidOf read when the attach went out (M9 fix 842).
+  pid: number | null;
 }
 
 // The last handle's close detaches after this, so a session shown again
@@ -121,7 +125,7 @@ export class TerminalFeed {
     this.listen();
     let a = this.attachments.get(sessionId);
     if (a === undefined) {
-      a = { sessionId, ring: new MirrorRing(this.deps.ringBytes ?? Limits.ringBufferBytes), handles: [], attached: false, reattaching: false, chosen: null, detachTimer: null };
+      a = { sessionId, ring: new MirrorRing(this.deps.ringBytes ?? Limits.ringBufferBytes), handles: [], attached: false, reattaching: false, chosen: null, detachTimer: null, pid: null };
       this.attachments.set(sessionId, a);
     }
     if (a.detachTimer !== null) {
@@ -133,10 +137,21 @@ export class TerminalFeed {
     a.handles.push(handle);
     this.decide(a);
     if (late) {
-      // Resized to the chosen size first: a TUI replayed at another width
-      // does not redraw when the size changes afterwards.
-      if (a.chosen !== null) term.resize(a.chosen.fit.cols, a.chosen.fit.rows);
-      if (a.ring.size > 0) term.write(a.ring.readAll());
+      // M9 fix 842: an attachment still held from before a resume carries
+      // the old process's last screen, which a pane the resumed session
+      // lands in within the detach delay would be written; a process
+      // that changed starts every terminal over from the new one. An
+      // exited session reads null, so one moved between panes inside the
+      // hold keeps its kept ring.
+      const now = this.deps.pidOf?.(sessionId) ?? null;
+      if (now !== null && now !== a.pid) {
+        this.reattach(sessionId);
+      } else {
+        // Resized to the chosen size first: a TUI replayed at another width
+        // does not redraw when the size changes afterwards.
+        if (a.chosen !== null) term.resize(a.chosen.fit.cols, a.chosen.fit.rows);
+        if (a.ring.size > 0) term.write(a.ring.readAll());
+      }
       this.scale(a, handle);
     }
     return {
@@ -217,6 +232,7 @@ export class TerminalFeed {
   private attach(a: Attachment): Promise<void> {
     const { sessionId } = a;
     a.attached = true;
+    a.pid = this.deps.pidOf?.(sessionId) ?? null;
     this.stats.attaches += 1;
     if (a.chosen !== null) this.deps.emerald.send({ type: 'pty.resize', sessionId, cols: a.chosen.fit.cols, rows: a.chosen.fit.rows });
     return this.deps.emerald.request('pty.attach', { sessionId }).then(
@@ -295,6 +311,7 @@ export function feed(): TerminalFeed {
         return layout === null ? null : currentTab(layout).focusedPaneId;
       },
       onLayout: subscribe,
+      pidOf: (id) => getState().sessions.get(id)?.pid ?? null,
     });
     // Reachable from a verify script, like the emeraldTerm tag on a host.
     (window as Window & { emeraldFeed?: TerminalFeed }).emeraldFeed = shared;

@@ -1153,7 +1153,9 @@ img.sidebar-group-icon {
 .pane-title[data-squeeze="4"] .roster:not([data-folded]),
 .pane-title[data-squeeze="5"] .roster:not([data-folded]),
 .pane-title[data-squeeze="6"] .roster:not([data-folded]),
-.pane-title[data-squeeze="7"] .roster:not([data-folded]) {
+.pane-title[data-squeeze="7"] .roster:not([data-folded]),
+.pane-title[data-squeeze="8"] .roster:not([data-folded]),
+.pane-title[data-squeeze="9"] .roster:not([data-folded]) {
   display: none;
 }
 
@@ -5524,6 +5526,11 @@ button:disabled {
   visibility: hidden;
 }
 
+/* M9 fix 842: the exited Claude's terminal is hidden while its pane drops to a shell, so the pane shows its plain ground until the shell takes it; visibility keeps the terminal at its size. */
+.term-wrap[data-dropping] .term-host {
+  visibility: hidden;
+}
+
 .pane-shade {
   position: absolute;
   inset: 0;
@@ -6431,11 +6438,26 @@ button:disabled {
   cursor: default;
 }
 
+/* M9 fix 834: two lines always, the mark and the name on the first and the
+   chips under the name, indented to its start by the grid's first column
+   (the mark's own width), so the name never gives its width to the chips. */
 .agent-card-heading {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 7px;
+  row-gap: 2px;
+  align-items: start;
   color: var(--lane, var(--folder));
+}
+
+.agent-card-chips {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 7px;
+  row-gap: 1px;
+  min-width: 0;
 }
 
 .agent-card-mark {
@@ -6443,7 +6465,6 @@ button:disabled {
 }
 
 .agent-card-name {
-  flex: 1 1 auto;
   min-width: 0;
   color: var(--text);
   font-size: 12.5px;
@@ -6472,8 +6493,8 @@ button:disabled {
 /* M9 fix 445: the session line and the activity line wrap to at most
    three lines instead of clipping to one, since a long command or
    session name is worth reading over the card's width; the heading's
-   name above keeps its single-line ellipsis (it already sits beside the
-   state word and the model word, which need the room). */
+   name above has a line of its own since fix 834, the state word and the
+   model word under it. */
 .agent-card-session {
   margin-top: 3px;
   display: -webkit-box;
@@ -6852,6 +6873,8 @@ button:disabled {
 .pane-title[data-squeeze="5"] .pane-tokens,
 .pane-title[data-squeeze="6"] .pane-tokens,
 .pane-title[data-squeeze="7"] .pane-tokens,
+.pane-title[data-squeeze="8"] .pane-tokens,
+.pane-title[data-squeeze="9"] .pane-tokens,
 .pane-title[data-squeeze="2"] .roster:not([data-folded]) {
   display: none;
 }
@@ -6864,7 +6887,9 @@ button:disabled {
 .pane-title[data-squeeze="4"] .pane-context-percent,
 .pane-title[data-squeeze="5"] .pane-context-percent,
 .pane-title[data-squeeze="6"] .pane-context-percent,
-.pane-title[data-squeeze="7"] .pane-context-percent {
+.pane-title[data-squeeze="7"] .pane-context-percent,
+.pane-title[data-squeeze="8"] .pane-context-percent,
+.pane-title[data-squeeze="9"] .pane-context-percent {
   display: none;
 }
 
@@ -7250,7 +7275,9 @@ button:disabled {
 .pane-title[data-squeeze="4"] .pane-tasks,
 .pane-title[data-squeeze="5"] .pane-tasks,
 .pane-title[data-squeeze="6"] .pane-tasks,
-.pane-title[data-squeeze="7"] .pane-tasks {
+.pane-title[data-squeeze="7"] .pane-tasks,
+.pane-title[data-squeeze="8"] .pane-tasks,
+.pane-title[data-squeeze="9"] .pane-tasks {
   display: none;
 }
 
@@ -8008,35 +8035,25 @@ body.dragging-tab .tab {
   background: color-mix(in srgb, currentColor 18%, transparent);
 }
 
-/* M9 fix 208 (was fix 181's rule, which hid the zoom at the first level):
-   the title's buttons give after the roster, the tokens and the count,
-   in the order of what a narrow pane needs least. The splits go at the
-   third level, since a pane too narrow for its own title is not one to
-   split and the chord and the menu still do; the chat button goes with
-   them (M9 fix 724), since Ctrl+Shift+M and the pane menu still flip the
-   face; the zoom never gives. The
-   zoom is the one a narrow pane needs most: it gives the pane the whole
-   tab without resizing the window, and hiding it first (fix 181) had a
-   person widen the window to reach it. Fix 237 took the shade off the
-   fourth level and made it the zoom's equal, the last two things a
-   title keeps (the levels past the fourth are at the tail); hide and
-   close give at the seventh there. Fix 77's fold and fix 146's tokens
-   stay given at these levels through their own rules. */
-.pane-title[data-squeeze="3"] .pane-face-toggle,
-.pane-title[data-squeeze="4"] .pane-face-toggle,
-.pane-title[data-squeeze="5"] .pane-face-toggle,
-.pane-title[data-squeeze="6"] .pane-face-toggle,
-.pane-title[data-squeeze="7"] .pane-face-toggle,
-.pane-title[data-squeeze="3"] .pane-split-right,
-.pane-title[data-squeeze="3"] .pane-split-down,
-.pane-title[data-squeeze="4"] .pane-split-right,
-.pane-title[data-squeeze="4"] .pane-split-down,
-.pane-title[data-squeeze="5"] .pane-split-right,
-.pane-title[data-squeeze="5"] .pane-split-down,
-.pane-title[data-squeeze="6"] .pane-split-right,
-.pane-title[data-squeeze="6"] .pane-split-down,
-.pane-title[data-squeeze="7"] .pane-split-right,
-.pane-title[data-squeeze="7"] .pane-split-down {
+/* M9 fix 840 (was fix 208's rule, and fix 181's before it): the title's
+   buttons give only once every word and figure on the line has, the
+   user's rule of 2026-10-17, since a button that goes while a word is
+   still drawn trades the thing a person acts with for a thing they can
+   read on the row. The chat button and both splits go at the eighth
+   level (a pane that narrow is not one to split or flip, and the chords
+   and the pane menu still do; fix 724), hide and close at the ninth
+   (the rule at the tail), the zoom and the shade never: the zoom is the
+   one a narrow pane needs most, since it gives the pane the whole tab
+   without resizing the window (hiding it first, fix 181, had a person
+   widen the window to reach it), and the shade is the other thing a
+   person does to a sliver of a pane (fix 237). Fix 77's fold and fix
+   146's tokens give at their own levels through their own rules. */
+.pane-title[data-squeeze="8"] .pane-face-toggle,
+.pane-title[data-squeeze="9"] .pane-face-toggle,
+.pane-title[data-squeeze="8"] .pane-split-right,
+.pane-title[data-squeeze="8"] .pane-split-down,
+.pane-title[data-squeeze="9"] .pane-split-right,
+.pane-title[data-squeeze="9"] .pane-split-down {
   display: none;
 }
 
@@ -9027,40 +9044,55 @@ body.dragging-tab .tab {
 }
 
 /* M9 fix 237: the zoom and the shade are the last things a narrowing
-   pane title gives up. After fix 208's fourth level the line itself
+   pane title gives up. After the reading's words the line itself
    gives, in the order of what a sliver of a pane needs least: the
    state word at the fifth (the row and the shade face still say it,
    and the mark's colour and motion carry it on the title), the name at
    the sixth with the reading, the folded roster, the seam and the cwd
-   (a pane too narrow to name has no room for a figure either), hide and
-   close at the seventh (a pane that narrow is one to zoom or shade, not
-   close, and the keys and the menu still close it). What stays is the
-   mark, the zoom and the shade, about 75px with the title's own room
-   tightened at that level (the 10px paddings and the 9px gap to 6), so
-   a very narrow pane can still be given the tab or pulled shut; Resume
-   stays too, since an exited pane's one act is to come back. squeeze.ts
-   measures the state word while it shows and the title's own overflow
-   from the fifth level, the buttons' box being the last thing on the
-   line. */
+   (a pane too narrow to name has no room for a figure either). Only
+   then do the buttons give (M9 fix 840): the chat button and the splits
+   at the eighth, hide and close at the ninth (a pane that narrow is one
+   to zoom or shade, not close, and the keys and the menu still close
+   it). What stays is the mark, the zoom and the shade, about 75px with
+   the title's own room tightened from the seventh level (the 10px
+   paddings and the 9px gap to 6), so a very narrow pane can still be
+   given the tab or pulled shut; Resume stays too, since an exited
+   pane's one act is to come back. squeeze.ts measures the state word
+   while it shows and the title's own overflow from the fifth level,
+   the buttons' box being the last thing on the line. */
 .pane-title[data-squeeze="5"] .pane-state,
 .pane-title[data-squeeze="6"] .pane-state,
 .pane-title[data-squeeze="7"] .pane-state,
+.pane-title[data-squeeze="8"] .pane-state,
+.pane-title[data-squeeze="9"] .pane-state,
 .pane-title[data-squeeze="6"] .pane-name,
 .pane-title[data-squeeze="7"] .pane-name,
+.pane-title[data-squeeze="8"] .pane-name,
+.pane-title[data-squeeze="9"] .pane-name,
 .pane-title[data-squeeze="6"] .pane-context,
 .pane-title[data-squeeze="7"] .pane-context,
+.pane-title[data-squeeze="8"] .pane-context,
+.pane-title[data-squeeze="9"] .pane-context,
 .pane-title[data-squeeze="6"] .pane-cwd,
 .pane-title[data-squeeze="7"] .pane-cwd,
+.pane-title[data-squeeze="8"] .pane-cwd,
+.pane-title[data-squeeze="9"] .pane-cwd,
 .pane-title[data-squeeze="6"] .pane-title-divider,
 .pane-title[data-squeeze="7"] .pane-title-divider,
+.pane-title[data-squeeze="8"] .pane-title-divider,
+.pane-title[data-squeeze="9"] .pane-title-divider,
 .pane-title[data-squeeze="6"] .roster[data-folded],
 .pane-title[data-squeeze="7"] .roster[data-folded],
-.pane-title[data-squeeze="7"] .pane-hide,
-.pane-title[data-squeeze="7"] .pane-close {
+.pane-title[data-squeeze="8"] .roster[data-folded],
+.pane-title[data-squeeze="9"] .roster[data-folded],
+.pane-title[data-squeeze="9"] .pane-hide,
+.pane-title[data-squeeze="9"] .pane-close {
   display: none;
 }
 
-.pane-title[data-squeeze="7"] {
+.pane-title[data-squeeze="7"],
+.pane-title[data-squeeze="8"],
+.pane-title[data-squeeze="9"] {
   padding: 0 6px;
   gap: 6px;
 }
@@ -9121,7 +9153,9 @@ body.dragging-tab .tab {
 .pane-title[data-squeeze="4"] .pane-cost,
 .pane-title[data-squeeze="5"] .pane-cost,
 .pane-title[data-squeeze="6"] .pane-cost,
-.pane-title[data-squeeze="7"] .pane-cost {
+.pane-title[data-squeeze="7"] .pane-cost,
+.pane-title[data-squeeze="8"] .pane-cost,
+.pane-title[data-squeeze="9"] .pane-cost {
   display: none;
 }
 
@@ -10313,12 +10347,26 @@ body.dragging-tab .tab {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   padding: 16px;
-  text-align: center;
   /* The click that dismisses this (outside the button) is read by
      .term-wrap underneath, which the terminal itself would take the
      same click for if this were in the way. */
+  pointer-events: none;
+}
+
+/* M9 fix 841: the notice on a card as the dialogs are, so its words never sit on the timeline's or the kept screen's; the card takes no click either, so a click on it still reaches .term-wrap and dismisses the notice on the terminal face, and Resume alone takes the pointer. */
+.pane-exited-notice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 14px 20px;
+  text-align: center;
+  background: var(--title-bg);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   pointer-events: none;
 }
 
@@ -13598,7 +13646,9 @@ body.dragging-session .browser-frame {
 .pane-title[data-squeeze="4"] .pane-idle-clock,
 .pane-title[data-squeeze="5"] .pane-idle-clock,
 .pane-title[data-squeeze="6"] .pane-idle-clock,
-.pane-title[data-squeeze="7"] .pane-idle-clock {
+.pane-title[data-squeeze="7"] .pane-idle-clock,
+.pane-title[data-squeeze="8"] .pane-idle-clock,
+.pane-title[data-squeeze="9"] .pane-idle-clock {
   display: none;
 }
 
@@ -13846,8 +13896,8 @@ body.dragging-session .browser-frame {
 }
 
 /* M9 fix 821: what the agent card says beyond the graph's first cut. The
-   name wraps whole (above), so the heading's mark and chips sit at the top
-   of it; the price sits beside the state, the commits under the branch, and
+   name wraps whole (above), and since fix 834 the heading's chips sit under
+   it; the price sits beside the state, the commits under the branch, and
    the checklist after the activity, a finished task dimmed. A shell's card
    (data-kind) names its command in the branch line's monospace. */
 .agent-card-price {
@@ -13877,8 +13927,163 @@ body.dragging-session .browser-frame {
   font-size: 11.5px;
   font-weight: 400;
 }
+/* M9 fix 835: the first lines of what the member was asked, kept in their own line breaks and cut at six drawn lines, and its calls before the latest, one line each above the activity line in the muted tone. */
+.agent-card-prompt {
+  margin-top: 5px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  overflow: hidden;
+}
+.agent-card-earlier {
+  margin-top: 5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-card-earlier + .agent-card-earlier,
+.agent-card-earlier + .agent-card-activity {
+  margin-top: 1px;
+}
 /* The shade's member box holds its three text lines in one span so a hover
    on them opens the card while the checklist strip beside keeps its own. */
 .pane-shade-member-body {
   display: contents;
+}
+
+/* M9 fix 837: the Statistics tab, a folder's whole history as figures, a
+   yield line and a row per month, in the activity view's type. */
+.stats-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stats-message {
+  color: var(--fg);
+}
+.stats-span {
+  margin-bottom: 10px;
+  color: var(--fg);
+}
+.stats-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+.stats-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.stats-figure-value {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 18px;
+  color: var(--fg);
+}
+.stats-figure-note {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.stats-yield {
+  margin-bottom: 12px;
+  color: var(--fg);
+}
+.stats-months {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-bottom: 10px;
+}
+.stats-months th,
+.stats-months td {
+  padding: 2px 12px 2px 0;
+  text-align: right;
+  white-space: nowrap;
+}
+.stats-months th:first-child,
+.stats-months td:first-child {
+  text-align: left;
+}
+.stats-months th {
+  font-weight: 400;
+  border-bottom: 1px solid var(--gutter);
+}
+.stats-months td {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  color: var(--fg);
+}
+/* M9 fix 838: the plan under the months, the subscription line under the
+   yield. */
+.stats-paid {
+  margin-bottom: 12px;
+  color: var(--fg);
+}
+.stats-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.stats-plan-heading {
+  color: var(--fg);
+}
+.stats-plan-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+}
+.stats-plan-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+}
+.stats-plan-remove:hover {
+  color: var(--fg);
+}
+.stats-plan-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.stats-plan-price {
+  width: 80px;
+}
+.stats-plan-note {
+  font-size: 11px;
+}
+
+/* M9 fix 847: the trust card's folder on a line of its own, cut from the left so the folder's own name stays in view, the whole path in its tooltip (the .unsaved-dialog-path rule's shape, style.css:9260). */
+.chat-ask-path,
+.answer-popover-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* M9 fix 849: a copy out of a session pane shows its note in that pane's bottom right, left of the scrollbar and, on the chat face, above the box; every other note keeps the window corner. */
+.corner-note.in-pane {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+}
+
+.chat-note-row {
+  position: relative;
+  flex: none;
+  height: 0;
 }

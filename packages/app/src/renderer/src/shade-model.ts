@@ -58,6 +58,14 @@ export function shadeablePanes(tab: LayoutTab): string[] {
     .map((p) => p.id);
 }
 
+// What the one Shade all chord does to a tab's panes (M9 fix 844):
+// nothing with none to shade, lift them when every one is already shaded,
+// and shade them otherwise, as the menus' Shade all does.
+export function shadeAllNext(panes: readonly string[], shaded: ReadonlySet<string>): 'shade' | 'lift' | null {
+  if (panes.length === 0) return null;
+  return panes.every((p) => shaded.has(p)) ? 'lift' : 'shade';
+}
+
 // The lid's live wait row (M9 fix 231, redrawn by fix 434): a
 // needs-input session always draws it, off the record's own state as
 // fix 231 had it, so the row does not depend on whether this pane's

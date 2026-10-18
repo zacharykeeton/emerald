@@ -20,7 +20,7 @@ Download the installer from the latest release at https://github.com/zacharykeet
 
 The installer is not signed, so Windows SmartScreen stops it the first time with "Windows protected your PC". Click **More info**, then **Run anyway**. That happens once per download. Your browser may also warn that the file is not commonly downloaded; keep it.
 
-The install is per user and needs no admin rights. It goes to `%LOCALAPPDATA%\Programs\emerald`, adds the `emmer` command to your PATH for any terminal opened afterwards, puts Emerald in the Start menu and on the desktop, and starts it.
+The install is per user and needs no admin rights. It goes to `%LOCALAPPDATA%\Programs\emerald`, adds the `emmer` command to your PATH for any terminal opened afterwards, puts Emerald in the Start menu and on the desktop, and starts it. It also adds **Open in Emerald (Claude)** and **Open in Emerald (shell)** to Explorer's right-click menu on a folder and on a folder's empty space (under **Show more options** on Windows 11); either opens a new tab in Emerald with a Claude session or a shell started in that folder.
 
 ## First launch
 
@@ -36,7 +36,7 @@ Emerald checks the releases every few hours. When a new one is out it downloads 
 
 ## Uninstall
 
-1. Remove Emerald in Settings, Apps, Installed apps. That removes the program, the PATH entry, the "Open with" entries for `.md` and `.json`, and Emerald's hooks in `~/.claude/settings.json`, putting your previous status line back and removing the `emmer-cli` skill. An Emerald older than 0.1.620 leaves the hooks behind: there, run `emmer hooks uninstall` in a terminal first.
+1. Remove Emerald in Settings, Apps, Installed apps. That removes the program, the PATH entry, the "Open with" entries for `.md` and `.json`, the two **Open in Emerald** items, and Emerald's hooks in `~/.claude/settings.json`, putting your previous status line back and removing the `emmer-cli` skill. An Emerald older than 0.1.620 leaves the hooks behind: there, run `emmer hooks uninstall` in a terminal first.
 2. What stays, for you to delete if you want it gone: `~/.emerald` (your layouts, the session list and the logs), `%APPDATA%\emerald` (the window's own settings) and `%LOCALAPPDATA%\emerald-updater` (downloaded installers).
 
 ## Build from source

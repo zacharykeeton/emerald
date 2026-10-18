@@ -162,12 +162,14 @@ interface PopoverCardProps extends CardProps {
   id: string;
   className: string;
   data?: Record<string, string> | undefined;
+  // M9 fix 848: Escape closes the card and goes no further.
+  holdEscape?: boolean | undefined;
   children: ReactNode;
 }
 
 // The card: a portal to the body, placed under its anchor, closed by
 // Escape or a press outside it and its anchor.
-export function PopoverCard({ id, className, data, anchor, onClose, onEnter, onLeave, children }: PopoverCardProps) {
+export function PopoverCard({ id, className, data, anchor, onClose, onEnter, onLeave, holdEscape, children }: PopoverCardProps) {
   const ref = useRef<HTMLDivElement>(null);
   // Under the reading, left edges aligned, nudged inside the window once
   // measured; above it when there is no room below (a row near the
@@ -206,9 +208,19 @@ export function PopoverCard({ id, className, data, anchor, onClose, onEnter, onL
   // phase acknowledge can re-render the caller before this runs.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const holdRef = useRef(holdEscape === true);
+  holdRef.current = holdEscape === true;
   useEffect(() => {
+    // An answer card (holdEscape) keeps its Escape from the focused
+    // terminal too: there Escape means close, and the session's Escape is
+    // the Cancel button (M9 fix 848).
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') onCloseRef.current();
+      if (ev.key !== 'Escape') return;
+      if (holdRef.current) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      onCloseRef.current();
     };
     const onDown = (ev: MouseEvent) => {
       if (ref.current !== null && ev.target instanceof Node && ref.current.contains(ev.target)) return;

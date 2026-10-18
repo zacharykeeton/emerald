@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { findOnPath } from './find-on-path.ts';
 import type { ShellOption } from '@emerald/shared';
 import type { LaunchCommand, SessionLauncher } from './types.ts';
@@ -163,6 +165,34 @@ export function cmdPrompt(inherited: string | undefined): string {
   return CMD_MARKS + (rest === '' ? '$P$G' : rest);
 }
 
+// Whether a folder is an emerald mod (M9 fix 833), read off its plugin
+// manifest's name, as the mod's own .claude-plugin/plugin.json gives it;
+// false on any read or parse error.
+export function isEmeraldMod(dir: string): boolean {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), 'utf8')) as { name?: unknown };
+    return manifest.name === 'emerald';
+  } catch {
+    return false;
+  }
+}
+
+// The CLAUDE_CODE_PLUGIN_DIRS a shell gets (M9 fix 833): this daemon's mod
+// first, then the inherited folders less any emerald mod among them. An
+// inherited emerald mod is dropped for the reason isStrippedEnvKey drops
+// EMERALD_*: a daemon started from inside an Emerald shell inherits the
+// installed mod's folder, and its sessions would load two copies, both
+// posting under the mod's one header, which the sink does not fold, so
+// every mod event would land twice.
+export function pluginDirs(modDir: string | null, inherited: string | undefined, isMod: (dir: string) => boolean = isEmeraldMod): string {
+  const own = modDir === null ? null : path.resolve(modDir).toLowerCase();
+  const kept = (inherited ?? '')
+    .split(';')
+    .filter((dir) => dir !== '')
+    .filter((dir) => path.resolve(dir).toLowerCase() !== own && !isMod(dir));
+  return (modDir === null ? kept : [modDir, ...kept]).join(';');
+}
+
 // A plain shell session (M9 fix 624: the shell picked among the ones the
 // daemon found at its start). PowerShell, pwsh or Windows PowerShell: with
 // no args of its own the shell gets the prompt wrapper; -Command cannot be
@@ -172,26 +202,45 @@ export function cmdPrompt(inherited: string | undefined): string {
 // (fix 505's Enter handler is PowerShell's alone), and with args runs them
 // alone, as PowerShell keeps its; CHERE_INVOKING keeps an MSYS2 profile from
 // moving to the home folder. cmd gets the PROMPT above with or without
-// args, since a variable collides with no argument.
+// args, since a variable collides with no argument. Every shell names the
+// emerald mod first in CLAUDE_CODE_PLUGIN_DIRS (M9 fix 833), so a claude
+// typed into it loads the mod however it was typed.
 export class ShellLauncher implements SessionLauncher {
   private readonly bashrcPath: string;
+  private readonly modDir: string | null;
+  private readonly env: NodeJS.ProcessEnv;
 
-  constructor(opts: { bashrcPath: string }) {
+  constructor(opts: { bashrcPath: string; modDir?: string | null; env?: NodeJS.ProcessEnv }) {
     this.bashrcPath = opts.bashrcPath;
+    this.modDir = opts.modDir ?? null;
+    this.env = opts.env ?? process.env;
+  }
+
+  // The mod's variable for a launch, or nothing with no mod.
+  private modEnv(): Record<string, string> {
+    return this.modDir === null ? {} : { CLAUDE_CODE_PLUGIN_DIRS: pluginDirs(this.modDir, this.env['CLAUDE_CODE_PLUGIN_DIRS']) };
   }
 
   command(extraArgs: string[], shell?: ShellOption | null): LaunchCommand {
     switch (shell?.id) {
       case 'gitbash':
-        if (extraArgs.length > 0) return { file: shell.file, args: extraArgs };
-        return { file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } };
+        if (extraArgs.length > 0) return this.withMod({ file: shell.file, args: extraArgs });
+        return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } });
       case 'cmd':
-        return { file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(process.env['PROMPT']) } };
+        return this.withMod({ file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(process.env['PROMPT']) } });
       default: {
         const file = shell?.file ?? findOnPath('pwsh.exe') ?? 'powershell.exe';
         const args = extraArgs.length === 0 ? ['-NoExit', '-Command', PROMPT_WRAPPER] : extraArgs;
-        return { file, args: ['-NoLogo', ...args] };
+        return this.withMod({ file, args: ['-NoLogo', ...args] });
       }
     }
+  }
+
+  // With no mod the command is as it was, so a launch's whole-object
+  // compare holds.
+  private withMod(cmd: LaunchCommand): LaunchCommand {
+    const mod = this.modEnv();
+    if (Object.keys(mod).length === 0) return cmd;
+    return { ...cmd, env: { ...cmd.env, ...mod } };
   }
 }

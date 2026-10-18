@@ -3,7 +3,7 @@
 // met EPERM, the poster never wrote its log and the daemon took 5.2 s.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { daemonProcessIs, parseCache, parseMainLog, parseStamps, parseWindowProcesses, posterForm, posterLogFindings, whatsNewHeading } from '../../scripts/install-check.mjs';
+import { daemonProcessIs, daemonStartFindings, parseCache, parseMainLog, parseStamps, parseWindowProcesses, posterForm, posterLogFindings, whatsNewHeading } from '../../scripts/install-check.mjs';
 
 const lines = (...ls: string[]): string => ls.join('\n') + '\n';
 
@@ -235,4 +235,22 @@ test('the poster logs: this install ok, an older install a look, gap-poster.log 
   // Fix 413's reads when install-poster.log is missing are unchanged.
   assert.deepEqual(texts(posterLogFindings(noGap, null, null, ip, gp)), ["look: fix 385's worker (pid 10) did not reach its log"]);
   assert.deepEqual(texts(posterLogFindings(null, null, null, ip, gp)), ['look: C:\\h\\install-poster.log does not exist: the poster never ran to its log']);
+});
+
+test("the daemon's start warnings: none is ok, a skipped sessions entry is named, an older start's are not read", () => {
+  const startedAt = Date.parse('2026-10-17T14:35:46.789Z');
+  const log = lines(
+    '2026-10-16T13:39:56.797Z WARN skipping unusable sessions file entry {"id":"ac7901b7-0000","name":"an older start","removedAt":null}',
+    '2026-10-17T14:35:46.900Z INFO emmerd starting',
+    '2026-10-17T14:35:47.979Z WARN skipping unusable sessions file entry {"id":"44882470-6594","name":"Install 769","removedAt":1792171445752}',
+    '2026-10-17T14:35:47.982Z WARN skipping unusable sessions file entry {"id":"9361ba41-0474","name":"Batch 797","removedAt":null}',
+    '2026-10-17T14:36:01.000Z ERROR feed: could not serve',
+  );
+  assert.deepEqual(texts(daemonStartFindings(log, startedAt)), [
+    'look: the daemon\'s start dropped 2 sessions file entries: 44882470 "Install 769" (removed); 9361ba41 "Batch 797" (on the sidebar)',
+    'look: 2026-10-17T14:36:01.000Z ERROR feed: could not serve',
+  ]);
+  assert.deepEqual(texts(daemonStartFindings(lines('2026-10-17T14:35:46.900Z INFO emmerd starting'), startedAt)), ['ok: no WARN or ERROR line in emmerd.log since the daemon started (2026-10-17T14:35:46.789Z)']);
+  assert.deepEqual(texts(daemonStartFindings(null, startedAt)), ['look: no emmerd.log under the home']);
+  assert.deepEqual(texts(daemonStartFindings(log, undefined)), ['look: daemon.json has no startedAt, so the start warnings are not read']);
 });

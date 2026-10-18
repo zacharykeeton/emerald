@@ -286,12 +286,12 @@ try {
   const pic = path.join(seed, 'pic.png');
   const svgWide = path.join(seed, 'wide.svg');
   fs.writeFileSync(pic, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==', 'base64'));
-  fs.writeFileSync(svgWide, '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="40"><rect width="3000" height="40" fill="#3a7"/></svg>');
+  fs.writeFileSync(svgWide, '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="40"><rect width="3000" height="40" fill="#3a7"/><circle cx="20" cy="20" r="16" fill="#fff"/></svg>');
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(pic))}) && !!document.querySelector(${JSON.stringify(rowSel(svgWide))})`, 'pic.png and wide.svg listed');
   await clickRow(s, pic);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'image' && document.querySelector('img.file-image')?.complete && document.querySelector('img.file-image')?.naturalWidth === 1`, 'the PNG shown as a picture');
-  const png1 = await s.evalJs(`({ sw: !!document.querySelector('.file-view-switch'), zoom: document.querySelector('.file-view').dataset.zoom, size: document.querySelector('.file-image-size')?.textContent, pause: !!document.querySelector('.file-image-pause') })`);
-  expect(!png1.sw && !png1.pause && png1.zoom === 'fit' && png1.size === '1 \u00d7 1', `the PNG has no view switch, no Pause button, is fitted and says its size, got ${JSON.stringify(png1)}`);
+  const png1 = await s.evalJs(`({ sw: !!document.querySelector('.file-view-switch'), zoom: document.querySelector('.file-view').dataset.zoom, size: document.querySelector('.file-image-size')?.textContent, pause: !!document.querySelector('.file-image-pause'), chip: document.querySelector('.file-image-zoom')?.textContent ?? null, cursor: document.querySelector('.file-view').dataset.cursor ?? null })`);
+  expect(!png1.sw && !png1.pause && png1.zoom === 'fit' && png1.size === '1 \u00d7 1' && png1.chip === '100%' && png1.cursor === null, `the PNG has no view switch, no Pause button, is fitted, says its size and (fix 850) its chip reads 100% at a fit that is actual size, got ${JSON.stringify(png1)}`);
   await s.screenshot('m11-image.png');
   fs.writeFileSync(pic, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAAAAADRSSBWAAAAC0lEQVR4nGNgYAAAAAMAAbitOmMAAAAASUVORK5CYII=', 'base64'));
   await s.waitFor(`document.querySelector('img.file-image')?.naturalWidth === 2 && document.querySelector('.file-image-size')?.textContent === '2 \u00d7 1'`, 'the rewritten PNG shown', 3000);
@@ -309,27 +309,43 @@ try {
   expect(Math.round(actual.w) === actual.nat && actual.scroll > actual.client, `actual size scrolls, got ${JSON.stringify(actual)}`);
   await s.evalJs(`document.querySelector('img.file-image').click()`);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'a second click fits again');
-  // M9 fix 820: Ctrl+wheel steps the picture through the commit graph's
-  // zoom steps about the pointer; 0 and = and the chip are the keys' side.
+  // M9 fix 820: Ctrl+wheel steps the picture through its own zoom steps
+  // (fix 850) about the pointer; 0 and = and the chip are the keys' side.
   const zoomRead = () => s.evalJs(`(() => { const v = document.querySelector('.file-view'); const i = document.querySelector('img.file-image'); const r = i.getBoundingClientRect(); return { zoom: v.dataset.zoom, scale: v.dataset.scale, cursor: v.dataset.cursor ?? null, w: r.width, chip: document.querySelector('.file-image-zoom')?.textContent ?? null }; })()`);
   const z0 = await zoomRead();
-  expect(+z0.scale < 0.5 && z0.cursor === 'zoom-in' && z0.chip === 'Fit', `fix 820: the SVG at fit is under 50 percent with a zoom-in cursor and the chip Fit, got ${JSON.stringify(z0)}`);
+  expect(+z0.scale < 0.25 && z0.cursor === 'zoom-in' && z0.chip === 'Fit', `fix 820: the SVG at fit is under 25 percent with a zoom-in cursor and the chip Fit, got ${JSON.stringify(z0)}`);
   const wheelAt = await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
-  for (const want of ['0.5', '0.67']) {
+  for (const want of ['0.25', '0.33']) {
     await s.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheelAt.x, y: wheelAt.y, deltaX: 0, deltaY: -120, modifiers: 2 });
     await s.waitFor(`document.querySelector('.file-view').dataset.scale === ${JSON.stringify(want)}`, `Ctrl+wheel steps the picture to ${want}`, 4000);
   }
   const z1 = await zoomRead();
-  expect(z1.zoom === 'scaled' && z1.scale === '0.67' && Math.round(z1.w) === 2010 && z1.chip === '67%', `fix 820: two Ctrl+wheel steps from fit take the picture to 67 percent about the pointer, got ${JSON.stringify(z1)}`);
+  // Within a pixel of 990 (M9 fix 850): the flex host shrinks the picture
+  // to its height's 13.2 px snapped down to 13.1875 times the 75 to 1
+  // ratio, 989.06 px wide.
+  expect(z1.zoom === 'scaled' && z1.scale === '0.33' && Math.abs(z1.w - 990) <= 1 && z1.chip === '33%', `fix 820: two Ctrl+wheel steps from fit take the picture to 33 percent about the pointer, got ${JSON.stringify(z1)}`);
   console.log('fix 820 picture point under the pointer after the wheel', JSON.stringify(await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { x: ${wheelAt.x}, imageLeft: Math.round(r.left), width: Math.round(r.width) }; })()`)));
   await s.evalJs(`document.querySelector('.file-image-host').focus()`);
   await s.key('0', 'Digit0', 48);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit' && document.querySelector('.file-image-zoom').textContent === 'Fit'`, '0 goes back to fit and the chip reads Fit', 4000);
   await s.key('=', 'Equal', 187);
-  await s.waitFor(`document.querySelector('.file-view').dataset.scale === '0.5'`, '= steps the picture in from fit to 50 percent', 4000);
+  await s.waitFor(`document.querySelector('.file-view').dataset.scale === '0.25'`, '= steps the picture in from fit to 25 percent', 4000);
   await s.evalJs(`document.querySelector('.file-image-zoom').click()`);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'the chip goes back to fit', 4000);
-  step('fix 820: Ctrl+wheel takes a picture through the commit graph zoom steps about the pointer, = steps it, 0 and the chip go back to fit, and the cursor shows a magnifier at fit');
+  // M9 fix 850: = from fit runs past the graph's 200 percent to 300, one
+  // press and one rendered scale at a time.
+  for (const want of ['0.25', '0.33', '0.5', '0.67', '0.8', '1', '1.25', '1.5', '2', '3']) {
+    await s.key('=', 'Equal', 187);
+    await s.waitFor(`document.querySelector('.file-view').dataset.scale === ${JSON.stringify(want)}`, `fix 850: = steps the SVG to ${want}`, 4000);
+  }
+  const svg300 = await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { chip: document.querySelector('.file-image-zoom')?.textContent ?? null, w: r.width, pixelated: document.querySelector('.file-view').hasAttribute('data-pixelated') }; })()`);
+  expect(svg300.chip === '300%' && Math.round(svg300.w) === 9000, `fix 850: = takes the SVG past 200 percent to 300, got ${JSON.stringify(svg300)}`);
+  await s.evalJs(`(() => { const h = document.querySelector('.file-image-host'); h.scrollLeft = 0; h.scrollTop = 0; })()`);
+  await s.screenshot('m11-svg-300.png');
+  console.log(`fix 850 SVG at 300 percent, data-pixelated ${svg300.pixelated}`);
+  await s.key('0', 'Digit0', 48);
+  await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'fix 850: 0 goes back to fit from 300 percent', 4000);
+  step('fix 820: Ctrl+wheel takes a picture through its own zoom steps about the pointer, = steps it, 0 and the chip go back to fit, and the cursor shows a magnifier at fit; fix 850: the steps run a tenth to eight times, = takes a wide SVG to 300 percent, and a 1 by 1 PNG\'s chip reads 100%');
   await s.evalJs(`document.querySelector('.file-view-switch [data-view="raw"]').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'text'`, 'Raw is the editor');
   expect((await s.evalJs(`document.querySelector('.file-view').dataset.view`)) === 'raw', 'the SVG is on Raw');
@@ -1377,6 +1393,68 @@ try {
   await pickAttention700('Usage record: on');
   await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the usage switch off again', 5000);
   step('fix 342 and 700: a second launch with a file exits 0, the file opens as a pinned tab in the running window, and the record names it file-launch');
+
+  // M9 fix 853: Explorer's Open in Emerald (shell) is a second launch with
+  // --open-shell before the folder. Two of them on this window's profile:
+  // one as a plain spawn, and one with the folder quoted as Explorer's
+  // "%V" quotes a drive root, a backslash before the closing quote, which
+  // Chromium's own parse hands the main process as <folder>" (the quote
+  // read back as the backslash it was). Each exits 0 at once and the
+  // running window opens a new tab with a shell in the folder.
+  const folder853 = path.join(seed, 'src');
+  const mainLog853 = path.join(emeraldHome, 'logs', 'main.log');
+  const logFrom853 = (() => {
+    try {
+      return fs.statSync(mainLog853).size;
+    } catch {
+      return 0;
+    }
+  })();
+  const electron853 = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
+  const mainJs853 = path.join(repoRoot, 'packages', 'app', 'out', 'main', 'index.js');
+  const launch853 = async (label, args, opts) => {
+    const tabsBefore = await getTabs(s);
+    const idsBefore = tabsBefore.tabs.map((t) => t.id);
+    const child = spawn(electron853, args, { stdio: ['ignore', 'pipe', 'pipe'], env: secondEnv, ...opts });
+    const logs = [];
+    child.stdout.on('data', (d) => logs.push(d.toString()));
+    child.stderr.on('data', (d) => logs.push(d.toString()));
+    const tail = () => logs.join('').trim().split(/\r?\n/).slice(-3).join(' | ');
+    const code = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve('timeout'), 10000);
+      child.on('exit', (c) => {
+        clearTimeout(timer);
+        resolve(c);
+      });
+    });
+    if (code === 'timeout') killTree(child);
+    expect(code === 0, `${label}: the launch exited 0 within ten seconds, got ${code} (${tail()})`);
+    expect(logs.join('').includes(`${folder853} (shell) handed to the running window; quitting`), `${label}: the launch said it handed the folder over as a shell (${tail()})`);
+    let tab = null;
+    for (const end = Date.now() + 10000; Date.now() < end; await sleep(100)) {
+      const t = await getTabs(s);
+      const cur = t.tabs.find((x) => x.id === t.currentTabId);
+      if (cur !== undefined && !idsBefore.includes(cur.id) && cur.root.kind === 'pane' && cur.root.sessionId !== null) {
+        tab = cur;
+        break;
+      }
+    }
+    expect(tab !== null, `${label}: a new tab in front with a session in its pane, got ${JSON.stringify((await getTabs(s)).currentTabId)} against ${JSON.stringify(idsBefore)}`);
+    const { sessions } = await zreq(s, 'session.list', {});
+    const sess = sessions.find((x) => x.id === tab.root.sessionId);
+    expect(sess !== undefined && sess.kind === 'shell' && sess.spawnCwd.toLowerCase() === folder853.toLowerCase(), `${label}: the new tab's session is a shell in ${folder853}, got ${JSON.stringify(sess === undefined ? null : { kind: sess.kind, spawnCwd: sess.spawnCwd })}`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab.id)}] .tab-close`)}).click()`);
+    await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${tabsBefore.tabs.length}`, `${label}: the new tab closed`, 5000);
+    await zreq(s, 'session.kill', { sessionId: sess.id, remove: true });
+  };
+  await launch853('the plain launch', [`--user-data-dir=${profileOf(emeraldHome)}`, mainJs853, '--open-shell', folder853], {});
+  await launch853('the drive-root quoting', [`"--user-data-dir=${profileOf(emeraldHome)}"`, `"${mainJs853}"`, '--open-shell', `"${folder853}\\"`], { windowsVerbatimArguments: true });
+  const log853 = fs.readFileSync(mainLog853).subarray(logFrom853).toString('utf8').split(/\r?\n/);
+  const holders853 = log853.filter((l) => l.includes('single-instance lock held'));
+  const fromSecond853 = log853.filter((l) => l.trimEnd().endsWith(`${folder853} (shell) from a second launch`));
+  expect(holders853.length === 0, `no second lock holder in main.log (a second window), got ${JSON.stringify(holders853)}`);
+  expect(fromSecond853.length === 2, `main.log has the running window take both folders, got ${JSON.stringify(fromSecond853)}`);
+  step('fix 853: a second launch with --open-shell and a folder, and one with the folder quoted as Explorer quotes a drive root, each exits 0 and opens a new tab with a shell in the folder in the running window, one lock holder in main.log');
 
   // M9 fix 627: a layout tab's mark says what it holds and whether any of
   // it is active. Four new tabs with a session each, made after every

@@ -22,3 +22,18 @@ export function isFolderLabelEntry(v: unknown): v is FolderLabel {
   const o = v as Record<string, unknown>;
   return typeof o['folder'] === 'string' && o['folder'].length > 0 && isFolderLabel(o['label']);
 }
+
+// Equal to the folder or inside it, whichever way the slashes lean and
+// whatever the case, since both spellings reach the store. In shared
+// since M9 fix 836, so the activity view's folder scope and the daemon's
+// folder totals keep the same rows.
+export function underFolder(path: string, folder: string): boolean {
+  const a = fold(path);
+  const b = fold(folder);
+  return a === b || a.startsWith(`${b}\\`);
+}
+
+function fold(p: string): string {
+  const out = p.replace(/[\\/]+/g, '\\').toLowerCase();
+  return out.length > 3 && out.endsWith('\\') ? out.slice(0, -1) : out;
+}

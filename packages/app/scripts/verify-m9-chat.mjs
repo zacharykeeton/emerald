@@ -66,10 +66,10 @@ process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m9-chat';
 const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 const { block, blocksRun, partial } = blockRunner([
-  { name: 'stub', fixes: ['689'], needs: [] },
+  { name: 'stub', fixes: ['689', '830'], needs: [] },
   { name: 'ask', fixes: ['690'], needs: ['stub'] },
   { name: 'footer', fixes: ['713', '715', '743', '744', '745', '799'], needs: ['stub'] },
-  { name: 'views', fixes: ['714'], needs: ['stub'] },
+  { name: 'views', fixes: ['714'], needs: ['footer'] },
   { name: 'story', fixes: ['797', '798'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
@@ -84,18 +84,18 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
   { name: 'mod-feed', fixes: ['769'], needs: [] },
   { name: 'tail', fixes: ['770'], needs: [] },
-  { name: 'question', fixes: ['777', '801', '802', '803'], needs: ['stub'] },
+  { name: 'question', fixes: ['777', '801', '802', '803', '845'], needs: ['stub'] },
   { name: 'ask-once', fixes: ['801'], needs: ['stub'] },
-  { name: 'box', fixes: ['779', '780', '809', '810', '811'], needs: [] },
+  { name: 'box', fixes: ['779', '780', '809', '810', '811', '846'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
   { name: 'notes', fixes: ['805'], needs: [] },
-  { name: 'copy', fixes: ['806'], needs: ['notes'] },
-  { name: 'trust', fixes: ['808'], needs: [] },
+  { name: 'copy', fixes: ['806', '849'], needs: ['notes'] },
+  { name: 'trust', fixes: ['808', '847'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
-  { name: 'exited', fixes: ['804'], needs: [] },
+  { name: 'exited', fixes: ['804', '846'], needs: [] },
 ]);
 
 let app = null;
@@ -401,6 +401,23 @@ try {
     await s.waitFor(`!${q(paneSel(stubPane) + ' .chat-stop')}`, 'Stop gone after the turn');
     step('fix 689 (g): Stop and the hint while the session works, gone when it stops');
 
+    // (g2) M9 fix 830: a prompt sent inside the second between a turn's
+    // Stop and its TurnComplete is a new turn the late TurnComplete leaves
+    // alone, read against the id the turn's TurnStart opened.
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'first turn of 830' });
+    await post({ hook_event_name: 'TurnStart', turn_id: 'sim-830-a' });
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(stubId, (r) => ['done', 'idle'].includes(r.state), 'fix 830: the first turn done', 5000);
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'second turn of 830' });
+    await post({ hook_event_name: 'TurnComplete', turn_id: 'sim-830-a', is_aborted: false, reason: 'completed', duration_ms: 37324 });
+    await sleep(1000);
+    const late830 = { state: (await record(stubId)).state, stop: await s.evalJs(`!!${q(paneSel(stubPane) + ' .chat-stop')}`) };
+    expect(late830.state === 'working' && late830.stop === true, `fix 830: a late TurnComplete of the turn before leaves the new turn working with Stop drawn, got ${JSON.stringify(late830)}`);
+    await post({ hook_event_name: 'TurnStart', turn_id: 'sim-830-b' });
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(paneSel(stubPane) + ' .chat-stop')}`, 'fix 830: Stop gone after the second turn');
+    step('fix 830: a late TurnComplete of the turn before, landing after the next prompt, leaves the new turn working with Stop drawn');
+
     // (h) The chord flips the face both ways, the keyboard following.
     await s.key('M', 'KeyM', 77, CTRL | SHIFT);
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === undefined`, 'the chord back to the terminal');
@@ -634,8 +651,9 @@ try {
     await backOnChat();
     // The cap: a mode the cycle never reaches reads a miss after five
     // presses. This loop prints no mode row, so the plan row stays lowest.
-    await typeRaw(stubId, `$n = 0; while ($n -lt 5) { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); if ($k.VirtualKeyCode -eq 9) { $n += 1 } }; Write-Host ('tabs ' + $n)\r`);
-    await sleep(500);
+    // M9 fix 827: the loop prints a ready row before its first ReadKey and the pick waits for it, in place of a fixed half second; the words are joined so the echoed command cannot pass the wait.
+    await typeRaw(stubId, `Write-Host ('cap' + ' ready'); $n = 0; while ($n -lt 5) { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); if ($k.VirtualKeyCode -eq 9) { $n += 1 } }; Write-Host ('tabs ' + $n)\r`);
+    await waitRow((r) => r.trim() === 'cap ready', 'the cap loop reading keys', 10000);
     await openMenu('mode', modeMenu);
     await pickRow(modeMenu, 'Auto');
     const t819Auto = Date.now();
@@ -2572,6 +2590,40 @@ try {
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
     step('fix 777: the 2 key answers the question card, and the turn ending takes it away');
+    // M9 fix 845: a multi-select as the capture of 2.1.302 draws it, the
+    // pointer on option 3. The stub's four ReadKeys take the click on 2
+    // (a toggle, redrawn ticked), the two Downs the Submit button sends in
+    // one write (redrawn one row on each) and its Enter.
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'pick the checks' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'fix 845: the stub working', 5000);
+    const tabRowM = `(' ' + ${c('2610')} + ' Checks')`;
+    const tick = (row) => row.replace('[x]', `[' + ${c('2714')} + ']`);
+    const rowsM = ['', 'Which checks should the sample run?', '', '  1. [ ] Lint', '     Style only', '  2. [ ] Types', '     The compiler', '> 3. [ ] Tests', '     The unit suites', '  4. [ ] Type something', '     Submit', '', '  5. Chat about this', ''];
+    const rowsM1 = rowsM.map((r) => (r === '  2. [ ] Types' ? '  2. [x] Types' : r));
+    const rowsM2 = rowsM1.map((r) => (r === '> 3. [ ] Tests' ? '  3. [ ] Tests' : r === '  4. [ ] Type something' ? '> 4. [ ] Type something' : r));
+    const rowsM3 = rowsM2.map((r) => (r === '> 4. [ ] Type something' ? '  4. [ ] Type something' : r === '     Submit' ? '>    Submit' : r));
+    const drawM = (list) => `cls; Write-Host ''; Write-Host ${tabRowM}; ${list.map((r) => `Write-Host ('${tick(r)}')`).join('; ')}; Write-Host -NoNewline ${footer}`;
+    await typeRaw(stubId, `${drawM(rowsM)}; $a = [Console]::ReadKey($true); ${drawM(rowsM1)}; $b = [Console]::ReadKey($true); ${drawM(rowsM2)}; $c = [Console]::ReadKey($true); ${drawM(rowsM3)}; $d = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.KeyChar + ' ' + $b.Key + ' ' + $c.Key + ' ' + $d.Key); Read-Host | Out-Null\r`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 845: the multi-select drawn, the cursor on its footer');
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+    await s.waitFor(`!!${q(cardSel + ' [data-key="submit"]')}`, 'fix 845: the multi-select card with its Submit button', 10000);
+    const cardM = await s.evalJs(`(() => { const c = ${q(cardSel)}; return { keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), submit: c.querySelector('[data-key="submit"] .chat-ask-label')?.textContent ?? null, free: c.querySelector('.chat-ask-free-input')?.value ?? null, descs: [...c.querySelectorAll('.chat-ask-desc')].map((d) => d.textContent) }; })()`);
+    expect(cardM.keys.join(',') === '1,2,3,4,5,submit,esc', `fix 845: five options, Submit and Esc, got ${JSON.stringify(cardM)}`);
+    expect(cardM.submit === 'Submit', `fix 845: the button reads Submit, got ${JSON.stringify(cardM)}`);
+    expect(cardM.free === '', `fix 845: the free row's field is empty, got ${JSON.stringify(cardM)}`);
+    expect(!cardM.descs.includes('Submit'), `fix 845: no option's description reads Submit, got ${JSON.stringify(cardM)}`);
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="2"]')}.click()`);
+    await s.waitFor(`${q(cardSel + ' .chat-ask-option[data-key="2"] .chat-ask-label')}?.textContent === '[✔] Types' && !${q(cardSel + ' button.chat-ask-option[data-sent]')}`, 'fix 845: option 2 ticked and the card taking a press again', 5000);
+    await s.screenshot('m9-chat-multi-select.png');
+    await s.evalJs(`${q(cardSel + ' [data-key="submit"]')}.click()`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('got 2 DownArrow DownArrow Enter'), 'fix 845: the toggle, the two Downs and the Enter reached the session');
+    step('fix 845: a multi-select ask card ticks by click and submits with its Submit button, the Downs to the Submit row and Enter');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 845: the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 845: the card gone and the box back');
   });
 
   await block('ask-once', async () => {
@@ -2817,6 +2869,7 @@ try {
     expect(placeholderRead.lines <= 2, `the placeholder takes at most 2 lines at the narrow box, got ${JSON.stringify(placeholderRead)}`);
     expect(placeholderRead.placeholder.split('\n')[1] === '/ for commands · @ for a file', `the hints on the second line, got ${JSON.stringify(placeholderRead)}`);
     expect(placeholderRead.placeholder.split('\n')[0].startsWith('Message session: "Batch 5514') && placeholderRead.placeholder.split('\n')[0].endsWith('…"'), `the first line cut inside its quotes, got ${JSON.stringify(placeholderRead)}`);
+    expect(placeholderRead.scrollHeight <= placeholderRead.clientHeight, `fix 846: the empty box shows no scrollbar, got ${JSON.stringify(placeholderRead)}`);
     await s.screenshot('m9-chat-placeholder-long.png');
     await s.evalJs(`${q(paneSel(boxPane) + ' .chat-dock-inner')}.style.maxWidth = ''`);
     await zreq(s, 'session.rename', { sessionId: boxId, name: oldName });
@@ -3351,8 +3404,12 @@ try {
     // gives past 2000 ms and the mod posts ToolRunning off it. A bare
     // ping's output reaches Claude Code only at its end (the probe of fix
     // 775: the pill at 11 s of ping -n 11), so the loop echoes a line a
-    // second, and its ping makes it ask; it is working within four
-    // seconds of the answer, before its PostToolUse.
+    // second, and its ping makes it ask; it is working before its
+    // PostToolUse. The daemon's spinner read moves it, mostly inside 4 s
+    // of the answer (223 to 3770 ms over the kept logs of 2026-10-16), and
+    // the mod's ToolRunning lands about 12 s in, so the wait runs until
+    // the row reads working or the PostToolUse lands, up to 20 s (M9 fix
+    // 826).
     await sendBox('Use the Bash tool to run this exact command in the foreground, not in the background: for i in 1 2 3 4 5 6 7 8 9 10; do ping -n 2 127.0.0.1 > /dev/null; echo tick$i; done. Then reply with exactly the word ran775 and nothing else.');
     await waitAsk(null, 'fix 775: the long ping asks');
     await sleep(1000);
@@ -3362,13 +3419,14 @@ try {
     const answeredAt = Date.now();
     let state = (await record(askId)).state;
     let posts = postsBefore;
-    while (Date.now() - answeredAt < 4000 && state !== 'working') {
+    while (Date.now() - answeredAt < 20000 && state !== 'working' && posts === postsBefore) {
       await sleep(200);
       state = (await record(askId)).state;
       posts = countOf('PostToolUse');
     }
     const ms = Date.now() - answeredAt;
     expect(state === 'working' && posts === postsBefore, `fix 775: working ${ms} ms after the answer and before the ping's PostToolUse, got ${JSON.stringify({ state, posts: posts - postsBefore })}`);
+    if (ms > 4000) console.log(`[verify] note: fix 775: working read ${ms} ms after the answer, past the 4 s the spinner read usually takes`);
     const turnBy = Date.now() + 90000;
     while (Date.now() < turnBy && countOf('Stop') === stops775) await sleep(250);
     expect(countOf('Stop') > stops775, 'fix 775: the ping turn ended with its Stop');
@@ -3376,7 +3434,8 @@ try {
     // Windows comes near the run's end, so it is read once the turn is
     // over; the move itself came off the daemon's spinner read.
     expect(eventsFor(askId).some((e) => e.event === 'ToolRunning' && e.mod === true), "fix 775: the mod's ToolRunning is in the log");
-    const bySpinner = fs.readFileSync(path.join(emeraldHome, 'logs', 'emmerd.log'), 'utf8').includes('permission answered: the spinner drew again');
+    // Only this answer's lines: a reused home carries an earlier run's log (M9 fix 826).
+    const bySpinner = fs.readFileSync(path.join(emeraldHome, 'logs', 'emmerd.log'), 'utf8').split('\n').some((l) => l.includes('permission answered: the spinner drew again') && Date.parse(l.slice(0, 24)) >= answeredAt);
     step(`fix 775: the answered ask read working ${ms} ms after the answer, before the call's PostToolUse (${bySpinner ? "off the daemon's spinner read" : "off the mod's ToolRunning"})`);
   });
 
@@ -3522,7 +3581,22 @@ try {
     while (Date.now() < oneBy && ((await clip()) !== 'Notes answered.' || (await note()) !== 'Copied 15 characters')) await sleep(100);
     const one = { clip: await clip(), note: await note() };
     expect(one.clip === 'Notes answered.' && one.note === 'Copied 15 characters', `fix 806: a selected reply in the chat view is copied as the mouse is let go, with its corner note, got ${JSON.stringify(one)}`);
-    step('fix 806: with Copy on select on, a selection in the chat view copies on release and the corner reads Copied 15 characters');
+    // M9 fix 849: the note in the pane's bottom right, above the box and
+    // left of the timeline's scrollbar.
+    const note849 = await s.evalJs(`(() => {
+      const p = ${q(CP)};
+      const box = (e) => { const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+      const n = p.querySelector('.corner-note.in-pane');
+      const t = p.querySelector('.chat-timeline');
+      const tr = t.getBoundingClientRect();
+      return { pane: box(p), note: n ? box(n) : null, box: box(p.querySelector('.chat-box')), scrollbarLeft: tr.right - (t.offsetWidth - t.clientWidth), count: document.querySelectorAll('.corner-note').length };
+    })()`);
+    const n849 = note849.note;
+    const p849 = note849.pane;
+    expect(n849 !== null && note849.count === 1, `fix 849: one note, in the pane, got ${JSON.stringify(note849)}`);
+    expect(n849.left >= p849.left && n849.right <= p849.right && n849.top >= p849.top && n849.bottom <= p849.bottom && n849.right > p849.left + p849.width / 2 && n849.bottom > p849.top + p849.height / 2, `fix 849: the note in the pane's bottom right, got ${JSON.stringify(note849)}`);
+    expect(n849.bottom <= note849.box.top + 0.5 && n849.right <= note849.scrollbarLeft + 0.5, `fix 849: the note above the box and left of the scrollbar, got ${JSON.stringify(note849)}`);
+    step('fix 806: with Copy on select on, a selection in the chat view copies on release and the corner reads Copied 15 characters, the note in the pane\'s bottom right above the box (fix 849)');
 
     // Across the turn, from the prompt to its last reply: counted in lines.
     await waitNoNote();
@@ -3565,6 +3639,26 @@ try {
     expect(off.clip === 'after-806' && off.note === null, `fix 806: with Copy on select off a selection copies nothing and shows no note, got ${JSON.stringify(off)}`);
     await s.evalJs('window.getSelection().removeAllRanges()');
     step('fix 806: with Copy on select off the same selection copies nothing and shows no note');
+
+    // M9 fix 849: Ctrl+C on a selection, the Copy command the Edit menu's
+    // item runs, sent over CDP. A document copy listener, which runs after
+    // React's root listener, records whether the view took the copy and
+    // cancels the browser's own, so no read here writes the person's
+    // clipboard whatever the view did.
+    await setClip('before-849');
+    await s.evalJs('document.activeElement?.blur()');
+    expect(await selectReply(), 'fix 849: the reply selected, Copy on select off');
+    await sleep(300);
+    await s.evalJs(`document.addEventListener('copy', (e) => { window.__copy849 = { handled: e.defaultPrevented }; e.preventDefault(); }, { once: true })`);
+    await s.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67, nativeVirtualKeyCode: 67, modifiers: CTRL, commands: ['copy'] });
+    await s.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67, nativeVirtualKeyCode: 67, modifiers: CTRL });
+    const copyBy849 = Date.now() + 3000;
+    const inPane849 = () => s.evalJs(`${q(CP + ' .corner-note.in-pane')}?.textContent ?? null`);
+    while (Date.now() < copyBy849 && ((await clip()) !== 'Notes answered.' || (await inPane849()) !== 'Copied 15 characters')) await sleep(100);
+    const ctrlC849 = { clip: await clip(), note: await inPane849(), copy: await s.evalJs('window.__copy849 ?? null') };
+    expect(ctrlC849.copy?.handled === true && ctrlC849.clip === 'Notes answered.' && ctrlC849.note === 'Copied 15 characters', `fix 849: Ctrl+C on the selection copied through the window's clipboard with the note in the pane, got ${JSON.stringify(ctrlC849)}`);
+    await s.evalJs('window.getSelection().removeAllRanges()');
+    step('fix 849: Ctrl+C on a selection in the chat view copies through the window\'s clipboard with its note in the pane');
   });
 
   // The daemon restarts in here, so this block stays the file's last.
@@ -3636,6 +3730,31 @@ try {
     expect((c1.screen ?? '').startsWith('Accessing workspace:'), `fix 808 (b): the card shows the dialog's text, got ${JSON.stringify(c1.screen)}`);
     expect((await s.evalJs(`${q(FP + ' .chat-box')}?.disabled ?? null`)) === true, 'fix 808 (b): the chat box is disabled while the dialog is up');
     step('fix 808 (b): the trust dialog reads needs input: folder trust, a card with its two answers and no box');
+    // M9 fix 847: (1) the box names the trust question; (2) the folder on a
+    // line of its own, the session's own path, cut from the left at a
+    // narrow card; (3) where a click in the timeline leaves focus, logged;
+    // (4) the view's Escape leaves the dialog up.
+    const ph847 = await s.evalJs(`${q(FP + ' .chat-box')}?.placeholder ?? null`);
+    expect(ph847 === 'Answer the trust question above', `fix 847: the box's placeholder names the trust question, got ${JSON.stringify(ph847)}`);
+    const pathSel847 = cardSel + ' .chat-ask-path';
+    const path847 = await s.evalJs(`(() => { const el = ${q(pathSel847)}; return el === null ? null : { title: el.title, text: el.textContent, white: getComputedStyle(el).whiteSpace }; })()`);
+    expect(path847 !== null, `fix 847: the card draws the folder on a line of its own, the card reads ${JSON.stringify(await card808())}`);
+    expect(norm(path847.title) === norm(trustDir) && path847.text === path847.title, `fix 847: the folder line is the session's folder with the whole path in its title, got ${JSON.stringify(path847)} for ${JSON.stringify(trustDir)}`);
+    await s.evalJs(`${q(cardSel)}.style.maxWidth = '260px'`);
+    await sleep(300);
+    const cut847 = await s.evalJs(`(() => { const el = ${q(pathSel847)}; return { sw: el.scrollWidth, cw: el.clientWidth, h: el.getBoundingClientRect().height, lh: parseFloat(getComputedStyle(el).lineHeight) }; })()`);
+    expect(cut847.sw > cut847.cw && cut847.h < 2 * cut847.lh, `fix 847: at a 260 px card the folder is cut on one line, got ${JSON.stringify(cut847)}`);
+    await s.screenshot('m9-chat-trust-path.png');
+    await s.evalJs(`${q(cardSel)}.style.maxWidth = ''`);
+    const tl847 = await s.evalJs(`(() => { const r = ${q(FP + ' .chat-timeline')}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 20 }; })()`);
+    await s.click(tl847.x, tl847.y);
+    await sleep(300);
+    console.log(`[verify] fix 847: a click in the timeline leaves focus on ${JSON.stringify(await s.evalJs(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: a?.className ?? null, inView: !!a?.closest('.chat-view') }; })()`))}`);
+    await s.evalJs(`${q(FP + ' .chat-timeline')}.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+    await sleep(1000);
+    const after847 = await record(trustId);
+    expect(after847.state === 'needs-input' && after847.needsInputReason === 'trust', `fix 847: the view's Escape left the trust dialog up, got ${JSON.stringify({ state: after847.state, reason: after847.needsInputReason })}`);
+    step('fix 847: the trust card\'s box reads Answer the trust question above, its folder sits on one line cut from the left with the whole path in its title, and the view\'s Escape leaves the dialog up');
 
     // (c) The card follows the dialog's pointer, moved in the terminal
     // after the dialog's refuse window.
@@ -3722,6 +3841,10 @@ try {
     await toChat(exitedPane);
     const EP = paneSel(exitedPane);
     await s.waitFor(`document.querySelectorAll(${JSON.stringify(EP + ' .chat-reply')}).length === 2`, 'both replies drawn on the live stub', 10000);
+    // M9 fix 846: the box names the session before the kill, and again
+    // after the Resume below.
+    const line846 = `Message session: "${(await record(exitedId)).name}"`;
+    await s.waitFor(`${q(EP + ' .chat-box')}?.placeholder.split('\\n')[0] === ${JSON.stringify(line846)}`, 'fix 846: the live box names the session', 3000);
     const read = () =>
       s.evalJs(`(() => {
         const p = ${q(EP)};
@@ -3737,6 +3860,8 @@ try {
           dock: !!p.querySelector('.chat-dock'),
           box: !!p.querySelector('.chat-box'),
           notice: p.querySelector('[data-exited-notice] .pane-exited-notice-body')?.textContent ?? null,
+          // M9 fix 841: the notice's parts on one opaque card inside the pane.
+          card: (() => { const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') }; })(),
         };
       })()`);
     const keptRead = (r) =>
@@ -3747,7 +3872,11 @@ try {
       r.exited &&
       r.opacity === '0.55' &&
       !r.dock &&
-      r.notice === "This session's process has ended; its conversation is kept.";
+      r.notice === "This session's process has ended; its conversation is kept." &&
+      r.card !== null &&
+      /^rgb\(\d+, \d+, \d+\)$/.test(r.card.bg) &&
+      r.card.inside &&
+      r.card.parts;
     const waitKept = async (message) => {
       const until = Date.now() + 5000;
       let r = await read();
@@ -3764,7 +3893,8 @@ try {
     await zreq(s, 'session.kill', { sessionId: exitedId });
     await waitRecord(exitedId, (r) => r.state === 'exited', 'the exited stub exited', 10000);
     await waitKept('fix 804: a stub killed on the chat face keeps its two turns dimmed under the notice with no box');
-    step('fix 804 (b): a stub killed on the chat face keeps its two turns, dimmed to 0.55, under the notice, with no box');
+    await s.screenshot('m9-chat-fix841-card.png');
+    step('fix 804 (b): a stub killed on the chat face keeps its two turns, dimmed to 0.55, under the notice, with no box, on a solid card (fix 841)');
 
     // (c) After a daemon restart the restored record still names its
     // transcript, so the face draws the same.
@@ -3800,6 +3930,16 @@ try {
     }
     expect(liveRead(after), `fix 804: after the Resume and its SessionStart the chat face is live again with both turns, the box and no notice, got ${JSON.stringify(after)}`);
     step('fix 804 (d): Resume kept the transcript on the record, and once the new process started the face carried on live with both turns and its box');
+    const box846 = () => s.evalJs(`(() => { const b = ${q(EP + ' .chat-box')}; return b === null ? null : { first: b.placeholder.split('\\n')[0], scrollHeight: b.scrollHeight, clientHeight: b.clientHeight }; })()`);
+    const by846 = Date.now() + 3000;
+    let r846 = await box846();
+    while (Date.now() < by846 && (r846 === null || r846.first !== line846)) {
+      await sleep(200);
+      r846 = await box846();
+    }
+    expect(r846 !== null && r846.first === line846, `fix 846: after the kill and the Resume the box names the session again, want ${JSON.stringify(line846)}, got ${JSON.stringify(r846)}`);
+    expect(r846.scrollHeight <= r846.clientHeight, `fix 846: the box shows no scrollbar after the Resume, got ${JSON.stringify(r846)}`);
+    step('fix 846: after the kill and the Resume the box names the session again, and shows no scrollbar');
   });
 
   step(`PASS (${blocksRun()})`);

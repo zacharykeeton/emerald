@@ -1,5 +1,5 @@
 import { MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
-import { parse } from '../args.ts';
+import { parse, readText } from '../args.ts';
 import { CliError, usageError } from '../cli-error.ts';
 import { println } from '../command.ts';
 import type { Command } from '../command.ts';
@@ -15,6 +15,9 @@ const options = {
   interrupt: { type: 'boolean', default: false },
   // Refuse a session that is working (M9 fix 741), exit 1.
   'if-idle': { type: 'boolean', default: false },
+  // M9 fix 855: the text read verbatim from stdin or a file.
+  stdin: { type: 'boolean', default: false },
+  file: { type: 'string' },
 } as const;
 
 // Claude Code's paste detection holds a line that arrived in one chunk open
@@ -30,13 +33,16 @@ const INTERRUPT = '\x03';
 const command: Command = {
   name: 'send',
   summary: 'type text into a session',
-  usage: 'emmer send <session> [text...] [--enter] [--interrupt] [--if-idle]\nraw keys, typed whatever the input already holds; emmer prompt refuses an input holding a prompt given back after an interrupt',
+  usage: 'emmer send <session> [text...|--stdin|--file <path>] [--enter] [--interrupt] [--if-idle]\nraw keys, typed whatever the input already holds; emmer prompt refuses an input holding a prompt given back after an interrupt\n--stdin or --file <path> reads the text verbatim, for text holding a newline, a % or a double quote, which emmer.cmd and Windows PowerShell 5.1 change on the command line',
   async run(argv) {
     const parsed = parse(argv, options);
     const [ref, ...words] = parsed.positionals;
     if (ref === undefined) throw usageError('missing session');
-    if (words.length === 0 && !parsed.values.enter && !parsed.values.interrupt) throw usageError('missing text (or pass --enter alone to press Enter, --interrupt for Ctrl+C)');
-    const text = words.join(' ');
+    const v = parsed.values;
+    if (words.length > 0 && v.stdin) throw usageError('text and --stdin together');
+    if (words.length > 0 && v.file !== undefined) throw usageError('text and --file together');
+    const text = (await readText({ stdin: v.stdin, file: v.file }, { stdin: '--stdin', file: '--file' }, false)) ?? words.join(' ');
+    if (text === '' && !v.enter && !v.interrupt) throw usageError('missing text (or pass --enter alone to press Enter, --interrupt for Ctrl+C)');
     const { client, hello } = await connectHello();
     try {
       const found = await findSession(client, ref);

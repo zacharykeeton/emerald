@@ -100,6 +100,19 @@ test('stampEnv adds identity and strips inherited supervisor markers', () => {
   assert.equal('EMERALD_PIPE' in stampEnv({ EMERALD_PIPE: '' }, { sessionId: 's' }), false);
 });
 
+test('stampEnv drops an inherited emerald mod from CLAUDE_CODE_PLUGIN_DIRS and keeps the rest (M9 fix 833)', () => {
+  const root = mkTemp('emerald-833-');
+  const mod = path.join(root, 'mod');
+  const other = path.join(root, 'other');
+  for (const [dir, name] of [[mod, 'emerald'], [other, 'other']] as const) {
+    fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
+  }
+  assert.equal(stampEnv({ PATH: 'x', CLAUDE_CODE_PLUGIN_DIRS: `${mod};${other}` }, { sessionId: 's' })['CLAUDE_CODE_PLUGIN_DIRS'], other);
+  const alone = stampEnv({ PATH: 'x', claude_code_plugin_dirs: mod }, { sessionId: 's' });
+  assert.deepEqual(Object.keys(alone).filter((k) => k.toUpperCase() === 'CLAUDE_CODE_PLUGIN_DIRS'), [], 'no such key in any case');
+});
+
 test('stampEnv strips the terminal the daemon was born in and says what the pane is', () => {
   const env = stampEnv(
     {

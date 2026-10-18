@@ -21,7 +21,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm54-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m54';
-const { daemonPid, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, pickSplitDefault, repoRoot, shotsDir, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { daemonPid, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, pickSplitDefault, repoRoot, setInput, shotsDir, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 300 s since the batch of fixes 329 to 351 (180 before): the run is about
@@ -156,6 +156,45 @@ const seedPresence = (at, kind) => seed.push(JSON.stringify({ at, presence: kind
   seed.push(JSON.stringify({ at: hm(A, 11, 0), freed: { window: 'five_hour' } }));
   seedLine(hm(A, 11, 30), 'spent', 'UserPromptSubmit', 'done', 'working');
   seedLine(hm(A, 11, 40), 'spent', 'Stop', 'working', 'done');
+}
+// M9 fix 837: a folder of its own for the Statistics tab, a repository
+// whose first commit is twenty days back and whose second, on the wall
+// clock, carries the one tag, and three unhosted conversations seven
+// days back, a day no other step reads (this week is the week's, the
+// debt and away days are eight to ten back, the generations eleven to
+// thirteen): stats-a in the folder, two requests, the second with no
+// cost so the sum is an estimate; stats-wt in a worktree beside it and
+// stats-other in a sibling folder, each one request the folder's figures
+// must leave out.
+const statsRepo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-verify-837-')));
+const statsFirstCommitAt = hm(dayAgo(20).getTime(), 9, 0);
+{
+  const git837 = (args, env = {}) => execFileSync('git', args, { cwd: statsRepo, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } }).toString();
+  git837(['init', '-q', '-b', 'main']);
+  git837(['config', 'user.name', 'verify']);
+  git837(['config', 'user.email', 'verify@example.invalid']);
+  git837(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(statsRepo, 'base.txt'), 'base');
+  git837(['add', 'base.txt']);
+  const first = `${Math.floor(statsFirstCommitAt / 1000)} +0000`;
+  git837(['commit', '-q', '-m', 'first'], { GIT_AUTHOR_DATE: first, GIT_COMMITTER_DATE: first });
+  fs.writeFileSync(path.join(statsRepo, 'two.txt'), 'two');
+  git837(['add', 'two.txt']);
+  git837(['commit', '-q', '-m', 'second']);
+  git837(['tag', 'v0.1.0']);
+  const D7 = dayAgo(7).getTime();
+  const conv = (at, id, cwd, event, extra = {}) => seed.push(JSON.stringify({ at, sessionId: id, event, unhosted: true, outcome: 'applied', ...extra.edge, payload: { hook_event_name: event, session_id: id, cwd, ...extra.payload } }));
+  const status = (at, id, cwd, split, output, usd, model = 'Opus 5') =>
+    conv(at, id, cwd, 'StatusLine', { payload: { model: { display_name: model }, ...(usd === null ? {} : { cost: { total_cost_usd: usd } }), context_window: { used_percentage: 10, current_usage: { input_tokens: split[0], cache_creation_input_tokens: split[1], cache_read_input_tokens: split[2], output_tokens: output } } } });
+  conv(hm(D7, 15, 0), 'stats-a', statsRepo, 'UserPromptSubmit', { edge: { from: 'idle', to: 'working' } });
+  status(hm(D7, 15, 1), 'stats-a', statsRepo, [4000, 8000, 12000], 500, 0.25);
+  status(hm(D7, 15, 2), 'stats-a', statsRepo, [300, 0, 24000], 90, null);
+  conv(hm(D7, 15, 30), 'stats-a', statsRepo, 'Stop', { edge: { from: 'working', to: 'done' } });
+  for (const [id, cwd, usd] of [['stats-wt', `${statsRepo}-wt\\fix-1`, 0.1], ['stats-other', `${statsRepo}-other`, 0.1]]) {
+    conv(hm(D7, 16, 0), id, cwd, 'UserPromptSubmit', { edge: { from: 'idle', to: 'working' } });
+    status(hm(D7, 16, 1), id, cwd, [10, 0, 0], 10, usd);
+    conv(hm(D7, 16, 5), id, cwd, 'Stop', { edge: { from: 'working', to: 'done' } });
+  }
 }
 seed.sort((x, y) => JSON.parse(x).at - JSON.parse(y).at);
 fs.mkdirSync(path.join(process.env['EMERALD_HOME'], 'logs'), { recursive: true });
@@ -1207,8 +1246,9 @@ try {
   expect(BUCKET_MS === 1000 && BAR_COUNT === 24 && FULL_TOKENS === 400, `a 1 s bucket, 24 across, 400 tokens a full bar (M9 fix 229), got ${JSON.stringify({ BUCKET_MS, BAR_COUNT, FULL_TOKENS })}`);
   // The status line as the wrapper posts it: one input split (the same
   // split is one request streaming, M9 fix 217), the output so far and
-  // Claude Code's cost so far; null leaves the cost block out.
-  const statusLine = (id, output, usd, split = [4000, 8000, 12000]) => post(id, { hook_event_name: 'StatusLine', model: { display_name: 'Opus 5' }, context_window: { used_percentage: 12, context_window_size: 200000, total_input_tokens: split[0] + split[1] + split[2], current_usage: { input_tokens: split[0], cache_creation_input_tokens: split[1], cache_read_input_tokens: split[2], output_tokens: output } }, ...(usd === null ? {} : { cost: { total_cost_usd: usd } }) });
+  // Claude Code's cost so far; null leaves the cost block out. extra is
+  // spread last (M9 fix 852's effort).
+  const statusLine = (id, output, usd, split = [4000, 8000, 12000], extra = {}) => post(id, { hook_event_name: 'StatusLine', model: { display_name: 'Opus 5' }, context_window: { used_percentage: 12, context_window_size: 200000, total_input_tokens: split[0] + split[1] + split[2], current_usage: { input_tokens: split[0], cache_creation_input_tokens: split[1], cache_read_input_tokens: split[2], output_tokens: output } }, ...(usd === null ? {} : { cost: { total_cost_usd: usd } }), ...extra });
   // A post lands a set way into a bucket, so a delta's share of the
   // newest bar is known: 500 ms in, half of one second's worth.
   const alignBucket = async (into = 500) => {
@@ -1401,7 +1441,22 @@ try {
   const gReq = cliJson217.sessions.find((x) => x.sessionId === g && x.agentId === null)?.requests ?? [];
   expect(gReq.length === 3 && gReq[0].output === 950 && gReq[0].usd === 0.15 && Math.abs(gReq[1].usd - 0.2) < 1e-9 && gReq[2].usd === null && gReq[2].model === 'Opus 5', `the JSON carries gamma's three points folded (${JSON.stringify(gReq)})`);
   expect(Math.abs(cliJson217.stats.usd - 0.85175) < 1e-6 && cliJson217.stats.estimated === true && cliJson217.stats.requests === 5, `the CLI's stats carry the sum (${JSON.stringify(cliJson217.stats)})`);
-  step("M9 fix 217: the window's tokens and cost after the peak on the card, the tab and emmer activity, the cost the sum of the deltas, a costless request priced from the rates and marked");
+  // M9 fix 852: alpha works again and a status line with an effort opens
+  // a point in the new span (a new split of nothing, its total alpha's
+  // last, so the sums above and fix 218's reads below stay as they are);
+  // the span's hover names the model and the effort. Stopped again, so
+  // fix 218 starts from alpha done.
+  await post(a, { hook_event_name: 'UserPromptSubmit', prompt: 'say the effort' });
+  await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(a)}]')?.dataset.state === 'working'`, 'fix 852: alpha working again');
+  await statusLine(a, 0, 0.45, [0, 0, 0], { effort: { level: 'high' } });
+  const lastSpan852 = `[...document.querySelectorAll(${JSON.stringify(`.activity-card .activity-span[data-session-id=${JSON.stringify(a)}]`)})].pop()`;
+  await s.waitFor(`(${lastSpan852}?.title ?? '').split('\\n')[0].endsWith(' · Opus 5 · high')`, "fix 852: alpha's new span names the model and the effort", 10000).catch(async (err) => {
+    throw new Error(`${err.message}; the last span reads ${JSON.stringify(await s.evalJs(`${lastSpan852}?.title ?? null`))}`);
+  });
+  console.log('fix 852 span title', JSON.stringify(await s.evalJs(`${lastSpan852}.title`)));
+  await post(a, { hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(a)}]')?.dataset.state === 'done'`, 'fix 852: alpha done again');
+  step("M9 fix 217: the window's tokens and cost after the peak on the card, the tab and emmer activity, the cost the sum of the deltas, a costless request priced from the rates and marked, and a span's hover names the model and effort it ran at (M9 fix 852)");
 
   // M9 fix 218: the commits and merges landed over the window, off the
   // records' credited commits. alpha commits in a scratch repo through
@@ -2251,6 +2306,71 @@ try {
   await s.click(activityBox.x, activityBox.y);
   await s.waitFor(`document.querySelector('.pane[data-view="activity"]')?.classList.contains('focused')`, 'the activity pane focused again', 10000);
   step("M9 fix 261: the pane's pill cycles on to this tab, the strip holds the sessions on the panes of the pane's own tab alone and follows a session put on it, the word, the tooltip and the record carry it");
+
+  // M9 fix 837: the Statistics tab, before the relaunch below puts the
+  // daemon at level 31, where the item is hidden. A shell in the seeded
+  // folder gives it a heading (a shell with no hooks is a lifetime row,
+  // drawn nowhere); its + menu opens the tab, whose figures are read
+  // against the daemon's own totals and the repository's two commits and
+  // one tag. The worktree's and the other folder's requests must be left
+  // out: three or four requests would mean one was counted.
+  {
+    const { spanText, tokensText, usdText } = await import('../src/renderer/src/stats-model.ts');
+    const { session: statsShell } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: statsRepo, name: 'stats-shell', cols: 100, rows: 30 });
+    const groupSel = `[...document.querySelectorAll('.sidebar-group')].find((g) => (g.dataset.group ?? '').toLowerCase() === ${JSON.stringify(statsRepo.toLowerCase())})`;
+    await s.waitFor(`!!(${groupSel})?.querySelector('.sidebar-group-add')`, "the stats folder's heading", 10000);
+    const plus837 = await s.evalJs(`(() => { const r = (${groupSel}).querySelector('.sidebar-group-add').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.rightClick(plus837.x, plus837.y);
+    await s.waitFor(`(document.querySelector('.group-menu')?.dataset.folder ?? '').toLowerCase() === ${JSON.stringify(statsRepo.toLowerCase())}`, "the stats folder's + menu");
+    await s.evalJs(`[...document.querySelectorAll('.group-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Statistics in a tab').click()`);
+    await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready'`, 'the Statistics tab ready', 15000);
+    const t = await zreq(s, 'activity.totals', { folder: statsRepo });
+    expect(t.total.requests === 2 && t.total.estimated === true && t.total.agentMs === 30 * MINUTE && t.firstAt === hm(dayAgo(7).getTime(), 15, 0), `activity.totals counts stats-a's two requests alone, estimated, its half hour and its first line (${JSON.stringify({ requests: t.total.requests, estimated: t.total.estimated, agentMs: t.total.agentMs, firstAt: t.firstAt })})`);
+    const view837 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); return { now: Number(v.dataset.now), figures: [...v.querySelectorAll('.stats-figure')].map((f) => [f.querySelector('.stats-figure-label')?.textContent ?? '', f.querySelector('.stats-figure-value')?.textContent ?? '', f.querySelector('.stats-figure-note')?.textContent ?? ''].join('|')), span: v.querySelector('.stats-span')?.textContent ?? null, history: v.querySelector('.stats-history')?.textContent ?? null, tab: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.querySelector('.tab-name')?.textContent ?? null, key: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.dataset.key ?? null }; })()`);
+    const want837 = ['Commits|2|', 'Releases|1|tags on main', 'Requests|2|', `Tokens in|${tokensText(t.total.up)}|`, `Tokens out|${tokensText(t.total.down)}|`, `At API prices|${usdText(t.total.usd, true)}|`, 'Agent time|30m|'];
+    expect(JSON.stringify(view837.figures) === JSON.stringify(want837), `the tab's figures (wanted ${JSON.stringify(want837)}, read ${JSON.stringify(view837.figures)})`);
+    const spanWant = spanText(statsFirstCommitAt, t.firstAt, view837.now);
+    expect(view837.span === spanWant && spanWant.startsWith('21 days, '), `the span runs from the first commit, 21 days (wanted ${spanWant}, read ${view837.span})`);
+    expect(view837.history !== null && view837.history.startsWith(historyWant()) && view837.history.endsWith('; the requests, tokens, price and agent time before it are not in the log'), `the history line names the log's start and says what it leaves out (${view837.history})`);
+    expect(view837.tab === `Statistics · ${path.basename(statsRepo)}`, `the strip's tab is named for the folder (${view837.tab})`);
+    await s.screenshot('m9-fix837-stats-tab.png');
+    step('M9 fix 837: Statistics in a tab from the + menu reads the folder\'s commits, its tag as the release, its two requests with the estimate, the tokens, the price and the agent time, the worktree and the other folder left out, and the span from the first commit');
+
+    // M9 fix 838: a Max 20x plan entered in the tab, read against the
+    // pure sums, kept across a reload (emerald.plan) and removed again.
+    const { paidOver, paidText } = await import('../src/renderer/src/plan-model.ts');
+    const noPlan = 'No plan entered. Add the plan below to set what was paid against the API price.';
+    expect((await s.evalJs(`document.querySelector('.stats-paid')?.textContent ?? null`)) === noPlan, 'the subscription line says no plan');
+    await s.evalJs(`(() => { const sel = document.querySelector('select.stats-plan-kind'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'Max 20x'); sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await s.waitFor(`document.querySelector('input.stats-plan-price')?.value === '200'`, 'the Max 20x price filled');
+    const planDay = dayKeyOf(dayAgo(20));
+    await setInput(s, 'input.stats-plan-from', planDay);
+    await s.waitFor(`document.querySelector('input.stats-plan-from')?.value === ${JSON.stringify(planDay)} && !document.querySelector('button.stats-plan-add').disabled`, 'the day set and Add enabled');
+    await s.evalJs(`document.querySelector('button.stats-plan-add').click()`);
+    const entryWant = `Max 20x · $200.00 a month from ${planDay}`;
+    await s.waitFor(`document.querySelectorAll('.stats-plan-entry').length === 1 && document.querySelector('.stats-plan-entry-text')?.textContent === ${JSON.stringify(entryWant)} && !!document.querySelector('.stats-paid')?.dataset.paid`, 'the plan entry listed and the line priced');
+    const paid838 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); const p = v.querySelector('.stats-paid'); return { paid: Number(p.dataset.paid), text: p.textContent, from: Number(v.querySelector('.stats-span').dataset.from), now: Number(v.dataset.now) }; })()`);
+    const plan838 = [{ plan: 'Max 20x', monthlyUsd: 200, from: planDay }];
+    const paidWant = paidOver(plan838, paid838.from, paid838.now);
+    const textWant = paidText(t.total.usd, t.total.estimated, paid838.paid, Number(spanWant.split(' ')[0]));
+    expect(Math.abs(paid838.paid - paidWant) < 0.005 && paid838.text === textWant, `the line pays the plan over the span (wanted ${paidWant} and ${JSON.stringify(textWant)}, read ${JSON.stringify(paid838)})`);
+    await s.send('Page.reload');
+    await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready' && document.querySelectorAll('.stats-plan-entry').length === 1`, 'the tab back after a reload with the plan kept', 20000);
+    await s.evalJs(`document.querySelector('.stats-plan-remove').click()`);
+    await s.waitFor(`document.querySelectorAll('.stats-plan-entry').length === 0 && document.querySelector('.stats-paid')?.textContent === ${JSON.stringify(noPlan)}`, 'the entry removed and the line back to no plan');
+    step('M9 fix 838: a Max 20x plan entered in the tab sets what it paid over the span against the API price, kept across a reload and removed again');
+
+    await s.evalJs(`document.querySelector('.tab.tab-file[data-key=' +${JSON.stringify(JSON.stringify(view837.key))} + '] .tab-close').click()`);
+    await s.waitFor(`!document.querySelector('.stats-view')`, 'the Statistics tab closed');
+    await zreq(s, 'session.kill', { sessionId: statsShell.id, remove: true });
+    // The killed shell can hold the folder as its cwd for a moment (EPERM
+    // on the first run); a temp folder left behind costs nothing.
+    try {
+      fs.rmSync(statsRepo, { recursive: true, force: true });
+    } catch {
+      console.log(`[verify] note: ${statsRepo} left in place`);
+    }
+  }
 
   // M9 fix 128: folded once more, for the relaunch below to read the
   // choice kept.

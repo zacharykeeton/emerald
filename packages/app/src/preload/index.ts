@@ -68,6 +68,7 @@ const api: EmeraldApi = {
     gitReview: (dir, base) => ipcRenderer.invoke('emerald:files-git-review', dir, base),
     gitShow: (dir, hash, rel) => ipcRenderer.invoke('emerald:files-git-show', dir, hash, rel),
     gitRevert: (dir, rel) => ipcRenderer.invoke('emerald:files-git-revert', dir, rel),
+    gitProjectCounts: (dir) => ipcRenderer.invoke('emerald:files-git-project-counts', dir),
     onOpen: (handler) => {
       const listener = (_event: IpcRendererEvent, path: string, pane: boolean, extra?: OpenExtra) => handler(path, pane, extra ?? {});
       ipcRenderer.on('emerald:open-file', listener);
@@ -150,6 +151,8 @@ const api: EmeraldApi = {
   },
   restartDaemon: () => ipcRenderer.invoke('emerald:daemon-restart'),
   daemonInfo: () => ipcRenderer.invoke('emerald:daemon-info'),
+  daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
+  dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),
   request: (type, body) => ipcRenderer.invoke('emerald:request', type, body),
   send: (msg: FireAndForget) => ipcRenderer.send('emerald:send', msg),
   on: (handler) => {

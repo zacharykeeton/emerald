@@ -1,7 +1,7 @@
 import type { Layout, SingleTree } from './layout.ts';
 import type { SavedPrompt } from './prompts.ts';
 import type { FolderLabel } from './folders.ts';
-import type { ActivitySession, CappedSpan } from './activity.ts';
+import type { ActivitySession, ActivityTotals, CappedSpan } from './activity.ts';
 import type { LoadSample, SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
 import type { UpdateState } from './update.ts';
 import type { ConflictReport } from './conflicts.ts';
@@ -107,7 +107,12 @@ export const PROTOCOL_VERSION = 1;
 //  67: M9 fixes 812 and 813, compactFrom on SessionInfo, the state an idle compaction found, which its PostCompact puts the row back to, and endReason, the reason a Claude session's SessionEnd gave, by which an /exit drops its pane to a shell
 //  67: M9 fix 808, needs-input with the reason trust on SessionInfo, a Claude session at its folder's trust dialog read off its screen while starting
 //  67: M9 fix 802, needsInputReason question for an AskUserQuestion's PermissionRequest, which a permission_prompt Notification no longer turns back to permission
-export const DAEMON_FEATURE_LEVEL = 67;
+//  68: M9 fix 830, turn on SessionInfo, the open turn's id off the emerald mod's TurnStart and whether its Stop has landed, by which a late TurnComplete of the turn before ends nothing
+//  68: M9 fix 833, session.set taking keepWhole on a shell with Claude running in it, and CLAUDE_CODE_PLUGIN_DIRS on every shell naming the emerald mod first, so a claude typed into an Emerald shell loads the mod
+//  69: M9 fix 835, prompt, recent and model on a team member, the first lines of the Agent call's prompt, its last three tool phrases and the model its PostToolUse resolved
+//  70: M9 fix 836, activity.totals, one folder's whole-history totals folded on the daemon's side, a total and a row per month with every folder's price beside it, for the Statistics tab
+//  71: M9 fix 839, toolbar on a browser view, kept only when false, the pane's toolbar row hidden from its menu
+export const DAEMON_FEATURE_LEVEL = 71;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -237,6 +242,12 @@ export interface Requests {
   // log holds, null when it holds none; absent from a daemon older than
   // level 59, which reads as null.
   'activity.spans': { req: { from: number; to: number; requestsSince?: number };           res: { sessions: ActivitySession[]; capped: CappedSpan[]; historyFrom: number | null } };
+  // One folder's totals over a window (M9 fix 836), folded on the daemon's
+  // side so a whole life is one small answer: the total and a row per
+  // local month, with every folder's price beside each. from defaults to
+  // the log's first line, to to now. Absent from a daemon older than
+  // level 70, which answers bad-request.
+  'activity.totals': { req: { folder: string; from?: number; to?: number }; res: ActivityTotals };
   // activity: pty.activity pushes, at most one per session every
   // Limits.activityIntervalMs while it writes. Its own topic so the app,
   // which only wants sessions and layout, is not woken by them.

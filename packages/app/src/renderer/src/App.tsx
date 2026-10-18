@@ -5,10 +5,11 @@ import { BrowserLayer } from './BrowserLayer.tsx';
 import { CheatSheet, PrefixIndicator } from './CheatSheet.tsx';
 import { DaemonBanner } from './DaemonBanner.tsx';
 import { installExplorerDrop } from './explorer-drop.ts';
-import { installExitToShell, openFileFromOutside } from './actions.ts';
+import { installExitToShell, openFileFromOutside, openFolderFromOutside } from './actions.ts';
 import { FilesRail } from './FilesRail.tsx';
 import { ActivityTab } from './ActivityView.tsx';
 import { CommitsView } from './CommitsView.tsx';
+import { StatsView } from './StatsView.tsx';
 import { FileView } from './FileView.tsx';
 import { ReviewTab } from './ReviewTab.tsx';
 import { reviewFolder, reviewSessionId } from './review-model.ts';
@@ -25,7 +26,7 @@ import { Sidebar } from './Sidebar.tsx';
 import { SplitView } from './SplitView.tsx';
 import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
-import { PANES, commitsFolder, isDocument, isWhatsNew } from './tabs-model.ts';
+import { PANES, commitsFolder, isDocument, isWhatsNew, statsFolder } from './tabs-model.ts';
 import { start, useStore } from './store.ts';
 import { clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
@@ -51,11 +52,11 @@ export function App() {
     const uninstallKeys = installKeybindings();
     const uninstallUseRecord = installUseRecord();
     const uninstallDrop = installExplorerDrop();
-    // A file from outside (M9 fix 341): emmer open, or a launch with one, recorded apart (fix 700).
+    // A file from outside (M9 fix 341): emmer open, or a launch with one, recorded apart (fix 700), or a folder from Explorer's menu (fix 853).
     const uninstallOpen = window.emerald.files.onOpen((path, pane, extra) => {
       const use = outsideOpenUse(extra);
       recordUse(use.name, use.from);
-      void openFileFromOutside(path, pane, extra).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
+      void (extra.kind === undefined ? openFileFromOutside(path, pane, extra) : openFolderFromOutside(path, extra.kind)).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
     });
     return () => {
       uninstallKeys();
@@ -142,7 +143,7 @@ export function App() {
                 and a folder's can be open side by side, and one component
                 switching between them kept the first's pinned base, its
                 selection and its Sent banner for the second. */}
-            {fileTab !== null && (reviewSessionId(fileTab) !== null || reviewFolder(fileTab) !== null ? <ReviewTab key={fileTab} path={fileTab} /> : commitsFolder(fileTab) !== null ? <CommitsView path={fileTab} /> : isWhatsNew(fileTab) ? <WhatsNewView path={fileTab} /> : isDocument(fileTab) ? <ActivityTab path={fileTab} /> : <FileView path={fileTab} />)}
+            {fileTab !== null && (reviewSessionId(fileTab) !== null || reviewFolder(fileTab) !== null ? <ReviewTab key={fileTab} path={fileTab} /> : commitsFolder(fileTab) !== null ? <CommitsView path={fileTab} /> : statsFolder(fileTab) !== null ? <StatsView key={fileTab} path={fileTab} /> : isWhatsNew(fileTab) ? <WhatsNewView path={fileTab} /> : isDocument(fileTab) ? <ActivityTab path={fileTab} /> : <FileView path={fileTab} />)}
           </div>
         </div>
         <FilesRail />

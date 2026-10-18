@@ -21,6 +21,7 @@ export interface ProcessRead {
 export function daemonProcessIs(proc: ProcessRead | null, startedAt: number | undefined): boolean;
 export function parseStamps(installedText: string | null, daemonText: string | null, readProcess: (pid: number) => ProcessRead | null): Finding[];
 export function parseCache(entries: CacheEntry[]): Finding[];
+export function daemonStartFindings(text: string | null, startedAt: number | undefined): Finding[];
 export interface WindowProcess {
   pid: number;
   commandLine: string;

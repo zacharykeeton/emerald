@@ -30,8 +30,13 @@ import {
   toggleSidebar,
   toggleZoom,
   setChatFace,
+  liftPanes,
+  shadePane,
+  shadePanes,
 } from './ui.ts';
 import { markKind } from '@emerald/shared';
+import { shadeAllNext, shadeablePanes } from './shade-model.ts';
+import { liftByPerson } from './shade-touch.ts';
 import { faceOf } from './chat-model.ts';
 
 // Keybindings: the plain chords from M2 to M4 plus a tmux-style prefix.
@@ -252,6 +257,32 @@ export function runAction(action: Action, from: UseFrom = 'key'): Promise<unknow
     case 'design-mode':
       toggleDesignMode();
       return Promise.resolve();
+    // Shade all, or Lift all once every shade is down (M9 fix 844), on the
+    // panes the menus' rows act on.
+    case 'shade-all': {
+      const tab = shownTab();
+      if (tab === null) return Promise.resolve();
+      const panes = shadeablePanes(tab);
+      const next = shadeAllNext(panes, getUiState().shadedPanes);
+      if (next === 'shade') shadePanes(panes);
+      else if (next === 'lift') liftPanes(panes);
+      return Promise.resolve();
+    }
+    // The focused pane's shade (M9 fix 844), lifted as a person's click
+    // lifts it, so the idle shade leaves it up.
+    case 'shade-pane': {
+      const tab = shownTab();
+      if (tab === null) return Promise.resolve();
+      const paneId = tab.focusedPaneId;
+      if (!shadeablePanes(tab).includes(paneId)) return Promise.resolve();
+      if (getUiState().shadedPanes.has(paneId)) {
+        const sessionId = findPane(tab, paneId)?.sessionId ?? null;
+        liftByPerson(paneId, sessionId === null ? undefined : getState().sessions.get(sessionId));
+      } else {
+        shadePane(paneId);
+      }
+      return Promise.resolve();
+    }
     default:
       return Promise.resolve();
   }

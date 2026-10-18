@@ -16,7 +16,8 @@
 // launch's own poster line and gap-poster.log (fix 447, both logs read
 // against the install's time since they are appended across installs),
 // and the seconds from `starting emmerd` to `connected to emmerd`);
-// installed.json and daemon.json; the
+// installed.json and daemon.json; emmerd.log's WARN and ERROR lines since
+// the daemon's start; the
 // Emerald.exe window process under the install and the taskkill line to
 // paste to close it (fix 411); the updater cache's root files and its
 // pending folder; and the What's New heading the installed build ships.
@@ -278,6 +279,44 @@ export function parseStamps(installedText, daemonText, readProcess) {
   return out;
 }
 
+// The daemon's own WARN and ERROR lines from its start on (emmerd.log,
+// stamped in UTC by the daemon's log.ts). The install of fixes 797 to 824
+// found 37 `skipping unusable sessions file entry` lines over eleven starts,
+// sessions dropped at each start for a missing exitCode, that no install
+// had read; so every start warning is a look here, a skipped entry named
+// by its id and name. startedAt is daemon.json's, in epoch ms; a line up to
+// 2 s before it counts, since the file is written after the start's reads.
+export function daemonStartFindings(text, startedAt) {
+  if (text === null) return [look('no emmerd.log under the home')];
+  if (typeof startedAt !== 'number') return [look('daemon.json has no startedAt, so the start warnings are not read')];
+  const from = startedAt - 2000;
+  const found = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^(\S+) (WARN|ERROR) (.*)$/.exec(line);
+    if (m === null) continue;
+    const at = Date.parse(m[1]);
+    if (Number.isNaN(at) || at < from) continue;
+    found.push({ at: m[1], level: m[2], msg: m[3] });
+  }
+  if (found.length === 0) return [ok(`no WARN or ERROR line in emmerd.log since the daemon started (${new Date(startedAt).toISOString()})`)];
+  const tag = 'skipping unusable sessions file entry';
+  const skipped = found.filter((f) => f.msg.startsWith(tag));
+  const out = [];
+  if (skipped.length > 0) {
+    const named = skipped.map((f) => {
+      try {
+        const e = JSON.parse(f.msg.slice(tag.length).trim());
+        return `${String(e.id).slice(0, 8)} ${JSON.stringify(e.name ?? null)}${e.removedAt == null ? ' (on the sidebar)' : ' (removed)'}`;
+      } catch {
+        return '(unreadable entry)';
+      }
+    });
+    out.push(look(`the daemon's start dropped ${skipped.length} sessions file entr${skipped.length === 1 ? 'y' : 'ies'}: ${named.join('; ')}`));
+  }
+  for (const f of found.filter((x) => !x.msg.startsWith(tag))) out.push(look(`${f.at} ${f.level} ${f.msg.slice(0, 200)}`));
+  return out;
+}
+
 // The updater cache's root files and pending folder, as names with
 // sizes and mtimes; entries is [{ name, size, mtime, dir }] one level deep.
 export function parseCache(entries) {
@@ -447,7 +486,17 @@ function main() {
   const gapLog = path.join(home, 'gap-poster.log');
   for (const f of posterLogFindings(mainLog, readText(posterLog), readText(gapLog), posterLog, gapLog)) say(f);
 
-  for (const f of parseStamps(readText(path.join(home, 'installed.json')), readText(path.join(home, 'daemon.json')), readProcess)) say(f);
+  const daemonText = readText(path.join(home, 'daemon.json'));
+  for (const f of parseStamps(readText(path.join(home, 'installed.json')), daemonText, readProcess)) say(f);
+  let startedAt;
+  try {
+    startedAt = daemonText === null ? undefined : JSON.parse(daemonText).startedAt;
+  } catch {
+    startedAt = undefined;
+  }
+  // emmerd.log moves aside to emmerd.1.log like main.log, so both are read.
+  const daemonLogs = [readText(path.join(home, 'logs', 'emmerd.1.log')), readText(path.join(home, 'logs', 'emmerd.log'))].filter((t) => t !== null);
+  for (const f of daemonStartFindings(daemonLogs.length === 0 ? null : daemonLogs.join('\n'), startedAt)) say(f);
   for (const f of parseWindowProcesses(listInstalledEmeraldProcesses(installDir), mainLog)) say(f);
   for (const f of parseCache(listCache(cacheDir))) say(f);
 

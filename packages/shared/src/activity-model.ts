@@ -1,5 +1,6 @@
 import { activityRowKey } from './activity.ts';
-import type { ActivityRequest, ActivitySession, ActivitySpan, CappedSpan, DebtKind, DebtSpan } from './activity.ts';
+import type { ActivityRequest, ActivitySession, ActivitySpan, ActivityTotals, ActivityTotalsPart, CappedSpan, DebtKind, DebtSpan } from './activity.ts';
+import { underFolder } from './folders.ts';
 import { costParts, formatUsd, ratesFor } from './rates.ts';
 import { formatTokens } from './session-label.ts';
 
@@ -545,6 +546,54 @@ export function dayBounds(key: string): { from: number; to: number } | null {
   const to = new Date(y, mo - 1, d + 1).getTime();
   if (Number.isNaN(from) || dayKey(from) !== key) return null;
   return { from, to };
+}
+
+// The local month a time falls in, as `YYYY-MM`, and the bounds of a
+// month named that way: local midnight on the 1st to the next 1st (M9
+// fix 836, the Statistics tab's rows).
+export function monthKey(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+export function monthBounds(key: string): { from: number; to: number } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(key);
+  if (m === null) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return null;
+  return { from: new Date(y, mo - 1, 1).getTime(), to: new Date(y, mo, 1).getTime() };
+}
+
+// One folder's totals over a window (M9 fix 836): activityStats over the
+// rows started in the folder or under it, the whole window and each local
+// month of it, every folder's price beside each part. Pure and in shared
+// so the daemon folds a whole life into one small answer. The months
+// start at the later of the window's start and the log's first line, so a
+// caller asking from 0 gets the log's months rather than 1970's.
+export function activityTotals(rows: readonly ActivitySession[], folder: string, from: number, to: number, historyFrom: number | null): ActivityTotals {
+  const scoped = rows.filter((s) => (s.groupCwd != null && underFolder(s.groupCwd, folder)) || (s.cwd != null && underFolder(s.cwd, folder)));
+  const part = (month: string | null, a: number, b: number): ActivityTotalsPart => {
+    const st = activityStats(scoped, a, b);
+    return { month, from: a, to: b, requests: st.requests, up: st.up, fresh: st.fresh, cacheWrite: st.cacheWrite, cached: st.cached, down: st.down, usd: st.usd, estimated: st.estimated, agentMs: st.agentMs, commits: st.commits, merges: st.merges, allUsd: activityStats(rows, a, b).usd };
+  };
+  const months: ActivityTotalsPart[] = [];
+  if (to > from) {
+    let key = monthKey(Math.max(from, historyFrom ?? to));
+    const last = monthKey(to - 1);
+    while (key <= last) {
+      const bounds = monthBounds(key)!;
+      months.push(part(key, Math.max(bounds.from, from), Math.min(bounds.to, to)));
+      key = monthKey(bounds.to);
+    }
+  }
+  let firstAt: number | null = null;
+  for (const s of drawnSessions(scoped)) {
+    for (const at of [s.spans[0]?.from, s.requests?.[0]?.at]) {
+      if (at !== undefined && (firstAt === null || at < firstAt)) firstAt = at;
+    }
+  }
+  return { folder, from, to, total: part(null, from, to), months, firstAt, historyFrom };
 }
 
 // The clock time of an instant, `09:12`, local.

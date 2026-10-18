@@ -310,17 +310,25 @@ try {
   // M9 fix 813: the pane drops to a shell, and the Claude row counts down.
   const dropDeadline = Date.now() + 10000;
   let dropped813 = null;
+  // M9 fix 842: each read that finds pane 2 still on the exited Claude with
+  // the row counting is inside the drop, where the terminal is hidden.
+  const gap = [];
+  const wrapSel = JSON.stringify(`[data-pane-id=${JSON.stringify(p2.id)}] .term-wrap`);
+  const wrapRead = () => s.evalJs(`(() => { const w = document.querySelector(${wrapSel}); const h = w?.querySelector('.term-host'); return { dropping: w?.dataset.dropping !== undefined, visibility: h ? getComputedStyle(h).visibility : null }; })()`);
   while (Date.now() < dropDeadline) {
     const onPane = leaves(await getLayout(s)).find((p) => p.id === p2.id)?.sessionId ?? null;
     const listed = onPane === null || onPane === claudeId ? null : (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === onPane);
     const counting = await s.evalJs(`document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(claudeId)}]`)})?.dataset.removing !== undefined`);
     dropped813 = { onPane, kind: listed?.kind ?? null, counting };
+    if (onPane === claudeId && counting === true) gap.push(await wrapRead());
     if (listed?.kind === 'shell' && counting === true) break;
     await sleep(200);
   }
   expect(dropped813?.kind === 'shell' && dropped813.counting === true, `fix 813: /exit dropped pane 2 to a shell and the Claude row counts down, got ${JSON.stringify(dropped813)}`);
+  expect(gap.every((g) => g.dropping && g.visibility === 'hidden'), `fix 842: while pane 2 drops to a shell its terminal is hidden, got ${JSON.stringify(gap)}`);
+  expect(!(await wrapRead()).dropping, 'fix 842: once the shell is on pane 2 its terminal carries no data-dropping');
   names = eventsFor(claudeId).map((e) => e.event);
-  step(`exit code ${exited.exitCode}; SessionEnd logged: ${names.includes('SessionEnd')}`);
+  step(`exit code ${exited.exitCode}; SessionEnd logged: ${names.includes('SessionEnd')}, ${gap.length} reads in the drop (fix 842)`);
 
   // The control shell and Orca were never involved.
   const control = await stateOf(s, controlId);

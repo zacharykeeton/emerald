@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { defaultLayout } from '@emerald/shared';
 import type { SessionInfo } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { dismissCrash, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe } from './store.ts';
+import { dismissCrash, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
 import { aSession } from './test-support.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
@@ -127,6 +128,9 @@ test('a sessions.load push appends to the rings in one notify (M9 fix 703)', () 
 // M9 fix 815: the crash is kept across the disconnect and the next hello,
 // and only Not now puts it away.
 test('a daemon.crashed push is kept across a reconnect until dismissCrash', () => {
+  // Not now tells the main process (M9 fix 832); no request, so the
+  // hello's sync fails at once as it did before the stub.
+  (globalThis as { window?: unknown }).window = { emerald: { dismissCrash: () => undefined } };
   const crash = { pid: 17500, code: 'C0000374' };
   push({ type: 'daemon.crashed', crash });
   assert.deepEqual(getState().crashed, crash);
@@ -136,4 +140,71 @@ test('a daemon.crashed push is kept across a reconnect until dismissCrash', () =
   assert.deepEqual(getState().crashed, crash, 'the new hello leaves it');
   dismissCrash();
   assert.equal(getState().crashed, null);
+});
+
+// M9 fix 832: the main process holds the crash, so the sync after a
+// reload reads it back, and Not now tells the main process to forget it.
+function stubCrashWindow(held: { pid: number; code: string } | null): { dismissed: () => number } {
+  let dismissed = 0;
+  const request = async (type: string) => {
+    if (type === 'layout.get') return { layout: { tabs: [{ id: 't1', name: 'Panes', root: { kind: 'pane', id: 'p1', sessionId: null } }], currentTabId: 't1', revision: 1 } };
+    if (type === 'session.list') return { sessions: [] };
+    return {};
+  };
+  (globalThis as { window?: unknown }).window = {
+    emerald: {
+      request,
+      daemonInfo: async () => ({ pid: 17600, version: '0.1.825', featureLevel: 1, otherHome: null }),
+      daemonCrash: async () => held,
+      dismissCrash: () => (dismissed += 1),
+    },
+  };
+  return { dismissed: () => dismissed };
+}
+const turns = async (n: number) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+test('a crash the main process holds is read at the sync after a reload, and Not now tells it (M9 fix 832)', async () => {
+  const crash = { pid: 17500, code: 'C0000374' };
+  const win = stubCrashWindow(crash);
+  dismissCrash();
+  assert.equal(getState().crashed, null);
+  push({ type: 'daemon.connected', daemon: { pid: 17600, version: '0.1.825', featureLevel: 1, otherHome: null } });
+  await turns(2);
+  assert.deepEqual(getState().crashed, crash, 'the sync read the held crash');
+  const before = win.dismissed();
+  dismissCrash();
+  assert.equal(getState().crashed, null);
+  assert.equal(win.dismissed() - before, 1, 'Not now told the main process');
+});
+
+test('a crash push that lands while the sync\'s reads are out is kept (M9 fix 832)', async () => {
+  stubCrashWindow(null);
+  dismissCrash();
+  const crash = { pid: 17501, code: 'C0000005' };
+  push({ type: 'daemon.connected', daemon: { pid: 17600, version: '0.1.825', featureLevel: 1, otherHome: null } });
+  push({ type: 'daemon.crashed', crash });
+  await turns(2);
+  assert.deepEqual(getState().crashed, crash);
+});
+
+test('whenSynced waits for the daemon and the layout, and gives up after its time (M9 fix 853)', async () => {
+  // No window: fix 832's stub above answers the resync a connected push
+  // starts, which then lands after the disconnected push and puts the
+  // daemon back, so the give-up below would never come.
+  delete (globalThis as { window?: unknown }).window;
+  push({ type: 'layout.changed', layout: defaultLayout() });
+  push({ type: 'daemon.disconnected' });
+  let done = false;
+  const waiting = whenSynced(1000).then(() => {
+    done = true;
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(done, false, 'still waiting with no daemon');
+  push({ type: 'daemon.connected', daemon: { pid: 17600, version: '0.1.825', featureLevel: 67, otherHome: null } });
+  await waiting;
+  assert.equal(done, true);
+  push({ type: 'daemon.disconnected' });
+  await assert.rejects(whenSynced(30), /the daemon did not come up/);
 });

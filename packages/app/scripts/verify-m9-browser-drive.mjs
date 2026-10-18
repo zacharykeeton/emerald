@@ -54,6 +54,11 @@ server = http.createServer((req, res) => {
         '<style>#hov:hover { background: rgb(0, 128, 0); }</style>',
         `<button id="hov" onmouseover="document.getElementById('hovlog').textContent = 'over'" onmouseenter="this.dataset.entered = 'yes'">Hover me</button>`,
         '<p id="hovlog"></p>',
+        '<textarea id="notes" aria-label="Notes" rows="3"></textarea>',
+        `<button id="gate" onpointerenter="this.dataset.entered = 'yes'" onclick="document.getElementById('gatelog').textContent = this.dataset.entered === 'yes' && this.matches(':hover') ? 'entered first' : 'entered ' + (this.dataset.entered === 'yes') + ', hover ' + this.matches(':hover')">Gate</button>`,
+        '<p id="gatelog"></p>',
+        `<div id="menuwrap" onpointerleave="document.getElementById('item').style.visibility = 'hidden'"><button id="menu" onpointerenter="document.getElementById('item').style.visibility = 'visible'">Menu</button> <button id="item" style="visibility: hidden" onclick="document.getElementById('menulog').textContent = 'item clicked'">Item</button></div>`,
+        '<p id="menulog"></p>',
       ].join('\n'),
     );
   } else if (pathname === '/two') page('Drive fixture two', '<p>two</p>');
@@ -96,6 +101,17 @@ const cli = (...args) =>
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('close', (code) => resolve({ code, out: out.replace(/\r?\n$/, ''), err: err.replace(/\r?\n$/, '') }));
+  });
+// The same with text piped to its stdin (M9 fix 854's --stdin).
+const cliIn = (input, ...args) =>
+  new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliMain, 'browser', ...args], { env: { ...process.env, EMERALD_SESSION_ID: ownId }, windowsHide: true });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('close', (code) => resolve({ code, out: out.replace(/\r?\n$/, ''), err: err.replace(/\r?\n$/, '') }));
+    child.stdin.end(input);
   });
 const said = (r) => `${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`;
 
@@ -159,7 +175,10 @@ try {
   const g1 = await guestFor(origin + '/');
   await g1.cdp.send('Runtime.enable');
   const deadline = Date.now() + 10000;
-  while ((await inGuest(g1, `document.readyState`)) !== 'complete' && Date.now() < deadline) await sleep(100);
+  // A guest caught before its page's context exists answers "Cannot find
+  // default execution context" (a run of fixes 854 to 858 died on it here);
+  // that is a not-yet, read again.
+  while ((await inGuest(g1, `document.readyState`).catch(() => '')) !== 'complete' && Date.now() < deadline) await sleep(100);
   r = await cli('snapshot');
   expect(r.code === 0, `snapshot exits 0 (${said(r)})`);
   const lines = r.out.split(/\r?\n/);
@@ -197,6 +216,29 @@ try {
   expect(await activeIsShell(), 'the window keeps the shell textarea focused after the fill and the key');
   step('M9 fix 672: a fill and a key reach the field with the window focus never moved');
 
+  // (d2) M9 fix 854: fill and eval read their text verbatim from --file
+  // and --stdin, a newline, a double quote and a % included.
+  const notesRef = refOf(/^@e\d+ textbox "Notes"$/);
+  const notesFile = path.join(os.tmpdir(), 'notes-854.txt');
+  fs.writeFileSync(notesFile, 'line one\nline "two" at 100%PATH%\nline three\n');
+  r = await cli('fill', notesRef, '--file', notesFile);
+  expect(r.code === 0 && (r.out === `filled ${notesRef} textbox "Notes" with 43 characters` || r.out === `filled ${notesRef} textbox "Notes" with 43 characters (set directly)`), `fill --file (${said(r)})`);
+  r = await cliIn("document.getElementById('notes').value\n", 'eval', '--stdin');
+  expect(r.code === 0 && r.out === JSON.stringify('line one\nline "two" at 100%PATH%\nline three'), `eval --stdin reads the field back verbatim (${said(r)})`);
+  const evalFile = path.join(os.tmpdir(), 'eval-854.js');
+  fs.writeFileSync(evalFile, "document.getElementById('notes').value.split('\\n').length");
+  r = await cli('eval', '--file', evalFile);
+  expect(r.code === 0 && r.out === '3', `eval --file (${said(r)})`);
+  r = await cli('fill', notesRef, '--clear');
+  expect(r.code === 0, `fill --clear (${said(r)})`);
+  expect((await inGuest(g1, `document.getElementById('notes').value`)) === '', 'fill --clear emptied the field');
+  r = await cliIn('hello\r\n', 'fill', notesRef, '--stdin');
+  expect(r.code === 0 && (await inGuest(g1, `document.getElementById('notes').value`)) === 'hello', `fill --stdin drops the one trailing newline (${said(r)})`);
+  r = await cliIn('', 'fill', notesRef, '--stdin');
+  expect(r.code === 0 && (await inGuest(g1, `document.getElementById('notes').value`)) === '', `an empty --stdin empties the field (${said(r)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the text fills');
+  step('M9 fix 854: fill and eval take their text verbatim from --file and --stdin, and fill --clear and an empty --stdin empty the field');
+
   // (e) eval.
   r = await cli('eval', '1+2');
   expect(r.code === 0 && r.out === '3', `eval 1+2 (${said(r)})`);
@@ -219,7 +261,16 @@ try {
   expect(r.code === 0 && /^"Clicked" is on the page \(after \d+ ms\)$/.test(r.out), `wait Clicked (${said(r)})`);
   r = await cli('wait', 'never here', '--timeout', '1');
   expect(r.code === 2 && r.err === 'emmer: gave up after 1 s waiting for "never here"', `wait never here (${said(r)})`);
-  step('M9 fix 672: wait finds text on the page and gives up at its timeout with exit 2');
+  // M9 fix 856: a text in a field's value (#name, empty since (d)'s
+  // Escape) and in an aria-label (the #notes textarea's; no page text
+  // holds Notes).
+  r = await cli('eval', "document.getElementById('name').value = 'Feature Implementation'");
+  expect(r.code === 0, `set #name's value (${said(r)})`);
+  r = await cli('wait', 'Feature Implementation', '--timeout', '3');
+  expect(r.code === 0 && /^"Feature Implementation" is in a field on the page \(after \d+ ms\)$/.test(r.out), `wait finds a field's value (${said(r)})`);
+  r = await cli('wait', 'Notes', '--timeout', '3');
+  expect(r.code === 0 && /^"Notes" is in a label on the page \(after \d+ ms\)$/.test(r.out), `wait finds an aria-label (${said(r)})`);
+  step('M9 fixes 672 and 856: wait finds text on the page, in a field\'s value and in an aria-label, and gives up at its timeout with exit 2');
 
   // (h) navigate, and a ref from before it.
   r = await cli('navigate', origin + '/two');
@@ -267,6 +318,36 @@ try {
   expect(hovered.bg === 'rgb(0, 128, 0)' && hovered.log === 'over' && hovered.entered === 'yes', `the page reads hovered: its :hover style, mouseover and mouseenter (${JSON.stringify(hovered)})`);
   expect(await activeIsShell(), 'the window keeps the shell textarea focused after the hover');
   step('M9 fix 692: hover answers within 3 s and the page reads hovered: its :hover style, mouseover and mouseenter');
+
+  // (h3) M9 fix 858: a click on a control shown only while its menu is
+  // hovered, and on a never-hovered button that reads its pointerenter and
+  // :hover in its click. Its snapshot goes to menuLines, never lines, and
+  // everything it adds sits after #hovlog, so (i) to (k)'s refs from (h)
+  // keep their numbers.
+  const menuRef = refOf(/^@e\d+ button "Menu"$/);
+  r = await cli('hover', menuRef);
+  expect(r.code === 0, `hover Menu (${said(r)})`);
+  r = await cli('snapshot');
+  expect(r.code === 0, `the snapshot with the menu open (${said(r)})`);
+  const menuLines = r.out.split(/\r?\n/);
+  const menuRefOf = (re) => {
+    const line = menuLines.find((l) => re.test(l));
+    expect(line !== undefined, `a row matching ${re} with the menu open (${r.out})`);
+    return line.split(' ')[0];
+  };
+  const itemRef = menuRefOf(/^@e\d+ button "Item"$/);
+  const gateRef = menuRefOf(/^@e\d+ button "Gate"$/);
+  r = await cli('click', itemRef);
+  const itemClick = said(r);
+  const itemLog = await inGuest(g1, "document.getElementById('menulog').textContent");
+  r = await cli('click', gateRef);
+  const gateClick = said(r);
+  const gateLog = await inGuest(g1, "document.getElementById('gatelog').textContent");
+  console.log(`[858] item ${JSON.stringify(itemLog)}, gate ${JSON.stringify(gateLog)} (clicks ${itemClick}; ${gateClick})`);
+  expect(itemLog === 'item clicked', `the item shown on hover takes the click (${itemClick}, ${JSON.stringify(itemLog)})`);
+  expect(gateLog === 'entered first', `the gate reads its pointerenter and :hover in its click (${gateClick}, ${JSON.stringify(gateLog)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the hover-menu click');
+  step('M9 fix 858: a click lands on a control shown on hover, and the clicked control reads its pointerenter and :hover first');
 
   // (i) A target=_blank link and a console error, read in events.
   r = await cli('click', blank);

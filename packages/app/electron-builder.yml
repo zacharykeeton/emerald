@@ -74,7 +74,8 @@ nsis:
   deleteAppDataOnUninstall: false
   # build/installer.nsh puts resources\bin on the user PATH and takes it off
   # again on uninstall, and writes the .md and .json Open with entries (M9
-  # fixes 342 and 381). The app is not launched at the end of the install so
+  # fixes 342 and 381), and the Open in Emerald items on a folder's menu
+  # (fix 853). The app is not launched at the end of the install so
   # a silent install (verify:install) leaves nothing running.
   include: build/installer.nsh
   # M9 fix 410: this holds for a plain silent install (verify:install's

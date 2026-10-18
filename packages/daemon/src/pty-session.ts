@@ -3,6 +3,7 @@ import { spawn as ptySpawn } from 'node-pty';
 // A CommonJS bundle, so under ESM only the default import carries anything.
 import xtermHeadless from '@xterm/headless';
 import { Limits } from '@emerald/shared';
+import { pluginDirs } from './launchers/shell.ts';
 import { RingBuffer } from './ring-buffer.ts';
 
 // The slice of node-pty's IPty that PtySession needs. Narrowed so tests can
@@ -100,6 +101,14 @@ export function stampEnv(base: NodeJS.ProcessEnv, stamp: EnvStamp): Record<strin
     if (value === undefined) continue;
     if (isStrippedEnvKey(key)) continue;
     env[key] = value;
+  }
+  // A parent's emerald mod is identity too (M9 fix 833): the launch names
+  // this daemon's own.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() !== 'CLAUDE_CODE_PLUGIN_DIRS') continue;
+    const rest = pluginDirs(null, env[key]);
+    if (rest === '') delete env[key];
+    else env[key] = rest;
   }
   Object.assign(env, PANE_TERMINAL_ENV);
   // Our own home and pipe are identity too, not stale: an `emerald` command

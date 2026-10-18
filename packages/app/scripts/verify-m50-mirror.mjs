@@ -164,7 +164,11 @@ try {
   // A pane dragged by its title onto the centre of the other pane moves:
   // the other already shows the session, so nothing changes there and the
   // pane it came from goes, leaving one, still attached.
-  const title = await centerOf(`[data-pane-id=${JSON.stringify(second)}] .pane-name`);
+  // M9 fix 840: the narrow pane's title is about 200 px, where its words
+  // give before its buttons and the name is hidden, so the press is on the
+  // session mark, drawn at every level; the bar's drag takes a press
+  // anywhere but a button, the rename box and the context reading.
+  const title = await centerOf(`[data-pane-id=${JSON.stringify(second)}] .pane-mark`);
   await s.mouse('mousePressed', title.x, title.y);
   await move({ x: title.x + 10, y: title.y });
   await move(wideMiddle);

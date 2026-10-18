@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { contextWords, describeState, effortFold, effortState, folderName, formatDuration, markKind, queueFold, queueList, queueState, resultText, stepFold, stepState, teamCounts } from '@emerald/shared';
 import type { EffortState, QueueState, SessionInfo, SessionState, Step, StepState, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendCtrlC, sendPrompt, typeInto } from './actions.ts';
-import { sendFreeAnswer } from './actions.ts';
+import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
 import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
@@ -25,11 +25,12 @@ import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
 import { answerOptions, askQuestion, ghostSuggestion, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
-import { dialogKey, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
+import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
 import { askBoxShown } from './chat-model.ts';
 import { SessionMark } from './session-mark.tsx';
 import { copyAndNote } from './actions.ts';
+import { PaneNote } from './CheatSheet.tsx';
 import { TrustCard } from './TrustCard.tsx';
 import { acknowledgeAttention, getUiState, openReviewTab, setChatFace, setChatMode, useUi } from './ui.ts';
 import { getState } from './store.ts';
@@ -288,23 +289,31 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   useEffect(() => {
     if (FALLBACK_ON_GROWTH && fallback !== null && fed.size > fallback.size) setFallback(null);
   }, [fed, fallback]);
-  // Two rows growing to eight, from what the text needs.
+  // Two rows growing to eight, from what the text needs. scrollHeight
+  // leaves out the border a border-box height counts, so it is added back,
+  // or the box is 2 px short and shows a scrollbar with nothing to scroll
+  // (M9 fix 846).
   useLayoutEffect(() => {
     const el = boxRef.current;
     if (el === null) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, BOX_MAX_LINES * BOX_LINE_PX + 14)}px`;
+    const border = el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(el.scrollHeight + border, BOX_MAX_LINES * BOX_LINE_PX + 14)}px`;
   }, [box]);
 
   // M9 fix 810: the placeholder's first line is cut with an ellipsis inside
   // its quotes when the session's name would wrap it onto a second line and
   // push the hints past the box's two rows. The box's room and font are held
-  // in state by a ResizeObserver; the line is measured with a canvas.
+  // in state by a ResizeObserver; the line is measured with a canvas. Since
+  // fix 846 the observer follows the box element itself through its ref, so
+  // the box an exit unmounts and a Resume brings back is measured again, and
+  // a read of a box with no width is skipped.
   const [boxGeom, setBoxGeom] = useState<{ room: number; font: string } | null>(null);
-  useLayoutEffect(() => {
-    const el = boxRef.current;
+  const boxObserve = useCallback((el: HTMLTextAreaElement | null) => {
+    boxRef.current = el;
     if (el === null) return;
     const read = (): void => {
+      if (el.clientWidth === 0) return;
       const cs = getComputedStyle(el);
       const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       setBoxGeom((prev) => (prev !== null && prev.room === room && prev.font === cs.font ? prev : { room, font: cs.font }));
@@ -312,7 +321,10 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     read();
     const ro = new ResizeObserver(read);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      boxRef.current = null;
+    };
   }, []);
   const placeholderFirst = useMemo(() => {
     if (boxGeom === null) return `Message session: "${session.name}"`;
@@ -1045,6 +1057,12 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           return;
         }
         if (ev.key !== 'Escape') return;
+        // M9 fix 847: a trust dialog takes Escape as No, exit, so the view
+        // sends none while one is up; its answers are the card's buttons.
+        if (asking && session.needsInputReason === 'trust') {
+          ev.preventDefault();
+          return;
+        }
         ev.preventDefault();
         setFallback(null);
         stop();
@@ -1066,8 +1084,22 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             if (sel === null || sel.isCollapsed || sel.rangeCount === 0) return;
             if (!timeline.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
             const text = sel.toString();
-            if (text !== '') copyAndNote(text);
+            if (text !== '') copyAndNote(text, paneId);
           }, 0);
+        }}
+        // M9 fix 849: Ctrl+C (the Edit menu's Copy) on a selection in the
+        // conversation, through the window's clipboard and with its note,
+        // as every copy out of a pane; the browser's own copy would write
+        // the person's clipboard under a private home and say nothing.
+        onCopy={(ev) => {
+          if (ev.target instanceof Element && ev.target.closest('input, textarea') !== null) return;
+          const sel = window.getSelection();
+          if (sel === null || sel.isCollapsed || sel.rangeCount === 0) return;
+          if (!ev.currentTarget.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
+          const text = sel.toString();
+          if (text === '') return;
+          ev.preventDefault();
+          copyAndNote(text, paneId);
         }}
       >
         <div className="chat-column">
@@ -1132,6 +1164,10 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           )}
         </div>
       </div>
+      {/* M9 fix 849: a copy's note in the pane's bottom right, above the box. */}
+      <div className="chat-note-row">
+        <PaneNote paneId={paneId} />
+      </div>
       {/* M9 fix 804: an exited session has no process to type to, so no box, chips or footer; the notice over the pane says how to resume. */}
       {!exited && (
       <div className="chat-dock">
@@ -1174,12 +1210,12 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             </div>
           )}
           <textarea
-            ref={boxRef}
+            ref={boxObserve}
             className="chat-box"
             rows={2}
             value={box}
             disabled={asking}
-            placeholder={asking ? 'Answer the ask above, or press Esc to cancel' : ghost ?? `${placeholderFirst}\n/ for commands · @ for a file`}
+            placeholder={asking ? (session.needsInputReason === 'trust' ? 'Answer the trust question above' : 'Answer the ask above, or press Esc to cancel') : ghost ?? `${placeholderFirst}\n/ for commands · @ for a file`}
             data-ghost={ghost === null ? undefined : ''}
             onChange={(ev) => {
               setBox(ev.target.value);
@@ -1431,7 +1467,9 @@ interface Screen {
 // Since fix 801 it takes one press per dialog: a sent card dims and keeps
 // what it answered until a read after the press shows another dialog, or
 // the same one ASK_PRESS_RETRY_MS on, and never opens its box after a
-// press.
+// press. Since fix 845 a multi-select has a Submit button (Enter on the
+// card presses it), which sends the Downs to Claude Code's Submit row and
+// Enter.
 function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionInfo; screen: (Screen & { sentAt: number }) | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null }) {
   // M9 fix 717: a permission for the Edit the transcript wrote last is the
   // edit card, its file a path link like any other.
@@ -1499,6 +1537,21 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
       },
     );
   };
+  // M9 fix 845: a multi-select's Submit button, a press in sendFree's shape.
+  const submitShown = ask !== null && ask.multi && ask.submit !== null;
+  const pressSubmit = () => {
+    if (pressed !== null) return;
+    setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
+    acknowledgeAttention(session.id);
+    void ackIfDone(session.id);
+    sendAskSubmit(session.id).then(
+      (r) => setPressed((p) => (r === 'not-moved' ? null : p === null ? p : { ...p, at: Date.now() })),
+      (err: unknown) => {
+        console.warn('[emerald] ask submit failed', err);
+        setPressed(null);
+      },
+    );
+  };
   // A question wants words, so its box takes the keyboard, as the
   // sidebar card's does.
   useEffect(() => {
@@ -1518,13 +1571,16 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
           ev.preventDefault();
           ev.stopPropagation();
           press('\x1b');
+        } else if (ev.key === 'Enter' && submitShown) {
+          ev.preventDefault();
+          pressSubmit();
         } else if (/^[1-9]$/.test(ev.key) && freeOpt !== null && freeOpt.key === ev.key) {
           // The free row's digit takes the keyboard to its input.
           ev.preventDefault();
           freeRef.current?.focus();
         } else if (/^[1-9]$/.test(ev.key) && options.some((o) => o.key === ev.key)) {
           ev.preventDefault();
-          press(ev.key);
+          press(optionKeys(ask, ev.key));
         }
       }}
     >
@@ -1585,13 +1641,17 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                     } else if (ev.key === 'Enter') {
                       ev.preventDefault();
                       ev.stopPropagation();
-                      sendFree();
+                      // In a multi-select the first Enter types the text
+                      // (which ticks the row) and the next one, the field
+                      // already reading it, submits (fix 845).
+                      if (submitShown && freeOpt !== null && freeText(freeOpt) === free) pressSubmit();
+                      else sendFree();
                     }
                   }}
                 />
               </div>
             ) : (
-              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(o.key)}>
+              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(optionKeys(ask, o.key))}>
                 <span className="chat-ask-key">{o.key}</span>
                 <span className="chat-ask-text">
                   <span className="chat-ask-label">{o.label}</span>
@@ -1599,6 +1659,12 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                 </span>
               </button>
             ),
+          )}
+          {submitShown && ask.submit !== null && (
+            <button type="button" className="chat-ask-option chat-ask-submit" data-key="submit" data-pointer={ask.submit.pointer ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
+              <span className="chat-ask-key">Enter</span>
+              <span className="chat-ask-label">{ask.submit.label}</span>
+            </button>
           )}
           <button type="button" className="chat-ask-option chat-ask-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
             <span className="chat-ask-key">Esc</span>

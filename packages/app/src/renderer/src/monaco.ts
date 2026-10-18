@@ -61,6 +61,8 @@ import 'monaco-editor/features/suggest/register.js';
 // M9 fix 634: the suggest controller, its widget, suggest.css and the widget's colours, statically, so they land in the main chunk and the colours register before the first setTheme below; inside the JSON chunk alone they came late, the box had no ground (the theme service writes variables only for colours registered at its last theme change) and before any .json no box at all.
 import 'monaco-editor/editor/contrib/suggest/browser/suggestController.js';
 import 'monaco-editor/features/codeAction/register.js';
+// M9 fix 851: the read-only message, so a typed key on a read-only editor (the Pretty view, a transcript, a review diff) says why from the first editor on; before, it came only with the JSON worker manager's chain (internal/common/workers.js), after the first .json view.
+import 'monaco-editor/features/readOnlyMessage/register.js';
 import { getWorker as getJsonWorker, jsonDefaults } from 'monaco-editor/languages/features/json/register.js';
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import JsonWorker from 'monaco-editor/languages/features/json/json.worker.js?worker';

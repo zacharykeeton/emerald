@@ -127,3 +127,17 @@ test('others add a New <shell> here item each after New shell here, none without
   assert.deepEqual(sessionPaneMenu(base).map((i) => i.label), sessionPaneMenu({ ...base, others: [] }).map((i) => i.label));
   assert.equal(sessionPaneMenu(base).some((i) => i.shell !== undefined), false);
 });
+
+test('a browser pane on a daemon at level 71 leads with Hide browser chrome, and Show once hidden (M9 fix 839)', () => {
+  const facts = { kind: 'browser', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' } as const;
+  const page = viewPaneMenu({ ...facts, toolbarKept: true });
+  assert.deepEqual(page.map((i) => i.label), ['Hide browser chrome', 'Split right', 'Split down', 'Focus', 'Show a session here', 'Close pane']);
+  assert.equal(page[0]!.run, 'toggle-toolbar');
+  assert.equal(page[0]!.title, "Hide the toolbar row (Back, Forward, Reload, the address and the rest); the pane's header stays");
+  assert.ok(paneOnlyItems(page).some((i) => i.run === 'toggle-toolbar'));
+  const hidden = viewPaneMenu({ ...facts, toolbarKept: true, toolbar: false });
+  assert.equal(hidden[0]!.label, 'Show browser chrome');
+  assert.equal(hidden[0]!.title, 'The toolbar row back');
+  const commits = viewPaneMenu({ kind: 'commits', folder: 'C:/r', zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell', toolbarKept: true });
+  assert.equal(commits.some((i) => i.run === 'toggle-toolbar'), false);
+});

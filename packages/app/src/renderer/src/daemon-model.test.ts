@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, ShellOption } from '@emerald/shared';
-import { BROWSER_VIEW_LEVEL, CRASHED_TEXT, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserViewSupported, crashedTitle, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
+import { BROWSER_TOOLBAR_LEVEL, BROWSER_VIEW_LEVEL, CRASHED_TEXT, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserToolbarSupported, browserViewSupported, crashedTitle, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
+import { STATS_LEVEL, statsSupported } from './daemon-model.ts';
 
 test('a daemon with no feature level is level 1 and counts as outdated against 2', () => {
   const old = { pid: 7, version: '0.1.0', featureLevel: null, otherHome: null };
@@ -128,6 +129,22 @@ test('the usage flag is kept from level 65 on (M9 fix 766)', () => {
   assert.equal(usageFlagSupported(older), false);
   assert.equal(usageFlagSupported({ ...older, featureLevel: USAGE_FLAG_LEVEL }), true);
   assert.equal(usageFlagSupported(null), false);
+});
+
+test('the Statistics tab is offered from level 70 on (M9 fix 836)', () => {
+  const older = { pid: 7, version: '0.1.0', featureLevel: 69, otherHome: null };
+  assert.equal(STATS_LEVEL, 70);
+  assert.equal(statsSupported(older), false);
+  assert.equal(statsSupported({ ...older, featureLevel: 70 }), true);
+  assert.equal(statsSupported(null), false);
+});
+
+test('the browser toolbar flag is kept from level 71 on (M9 fix 839)', () => {
+  const older = { pid: 7, version: '0.1.0', featureLevel: BROWSER_TOOLBAR_LEVEL - 1, otherHome: null };
+  assert.equal(BROWSER_TOOLBAR_LEVEL, 71);
+  assert.equal(browserToolbarSupported(older), false);
+  assert.equal(browserToolbarSupported({ ...older, featureLevel: BROWSER_TOOLBAR_LEVEL }), true);
+  assert.equal(browserToolbarSupported(null), false);
 });
 
 test('the installed shells are all the reported ones, on a daemon at level 61 alone (M9 fix 647)', () => {

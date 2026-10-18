@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { GitChanges, GitGraph, GitGraphOptions, GitInit, GitLog, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
+import type { GitChanges, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
 import { gitBytes, gitPipe, gitText } from './git-runner.ts';
 import { defaultBranchOf, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, twinGroups } from '../renderer/src/git-changes-model.ts';
 import type { GitStatusResult } from '../renderer/src/git-status-model.ts';
@@ -388,6 +388,75 @@ export function gitRevert(dir: string, rel: string, run: (args: string[], cwd: s
   // `--literal-pathspecs` (M9 fix 473): a pathspec is a glob, so without
   // it `[ab].txt` reverts `a.txt` and `b.txt` as well and `*` the tree.
   return run([LITERAL, 'reset', '-q', 'HEAD', '--', target], root).then((reset) => (reset === null ? false : run([LITERAL, 'checkout', 'HEAD', '--', target], root).then((out) => out !== null)));
+}
+
+// A repository's counts for the Statistics tab (M9 fix 836): the commits
+// on HEAD, the first commit's time, the tags on the default branch and
+// the version bumps of a package.json on it, which stand in for releases
+// in a repository with no tags. Never rejects; a folder outside any repo
+// answers zeros and runs nothing. `run` is the worker's gitText unless a
+// test hands in its own.
+export async function gitProjectCounts(dir: string, run: (args: string[], cwd: string) => Promise<string | null> = gitText): Promise<GitProjectCounts> {
+  const none: GitProjectCounts = { root: null, branch: null, commits: 0, firstCommitAt: null, tags: 0, bumps: 0, bumpsFile: null };
+  if (typeof dir !== 'string' || !path.isAbsolute(dir)) return none;
+  const root = findRepoRoot(dir);
+  if (root === null) return none;
+  const heads = await run([NO_LOCKS, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/main', 'refs/heads/master'], root);
+  const listed = (heads ?? '').split(/\r?\n/).map((l) => l.trim());
+  const branch = listed.includes('main') ? 'main' : listed.includes('master') ? 'master' : 'HEAD';
+  const [count, roots, tagged, patch] = await Promise.all([
+    run([NO_LOCKS, 'rev-list', '--count', 'HEAD'], root),
+    run([NO_LOCKS, 'log', '--max-parents=0', '--format=%at', 'HEAD'], root),
+    run([NO_LOCKS, 'tag', '--merged', branch], root),
+    // The quotes and the star reach git as written (no shell): the regex
+    // is the key with its quotes, and the pathspec any package.json.
+    run([NO_LOCKS, 'log', '-G"version"', '-p', '-U0', '--format=%x1e%H', branch, '--', '*package.json'], root),
+  ]);
+  const commits = count === null ? 0 : Number.parseInt(count.trim(), 10);
+  const firsts = (roots ?? '').split(/\r?\n/).map((l) => Number.parseInt(l.trim(), 10)).filter((n) => Number.isFinite(n));
+  const tags = (tagged ?? '').split(/\r?\n/).filter((l) => l.trim() !== '').length;
+  const bumped = patch === null ? null : versionBumps(patch);
+  return {
+    root,
+    branch,
+    commits: Number.isFinite(commits) ? commits : 0,
+    firstCommitAt: firsts.length === 0 ? null : Math.min(...firsts) * 1000,
+    tags,
+    bumps: bumped === null ? null : bumped.bumps,
+    bumpsFile: bumped === null ? null : bumped.file,
+  };
+}
+
+// The version bumps in a `log -p -U0` over the package.json files (M9 fix
+// 836): per file, the distinct values its version line took, less one,
+// since the first is where the file started rather than a release. The
+// answer is the file with the most, ties to the shorter path and then the
+// alphabetically first.
+export function versionBumps(patch: string): { bumps: number; file: string | null } {
+  const values = new Map<string, Set<string>>();
+  for (const chunk of patch.split('\x1e')) {
+    let file: string | null = null;
+    for (const line of chunk.split(/\r?\n/)) {
+      if (line.startsWith('+++ ')) {
+        file = line.startsWith('+++ b/') ? line.slice(6) : null;
+        continue;
+      }
+      if (file === null) continue;
+      const m = /^\+\s{0,2}"version"\s*:\s*"([^"]+)"/.exec(line);
+      if (m === null) continue;
+      let set = values.get(file);
+      if (set === undefined) values.set(file, (set = new Set()));
+      set.add(m[1]!);
+    }
+  }
+  let best: { bumps: number; file: string | null } = { bumps: 0, file: null };
+  for (const [file, set] of values) {
+    const bumps = set.size - 1;
+    if (bumps <= 0) continue;
+    const b = best.file;
+    if (bumps > best.bumps || (bumps === best.bumps && b !== null && (file.length < b.length || (file.length === b.length && file < b)))) best = { bumps, file };
+  }
+  return best;
 }
 
 // The path git is handed for a revert (M9 fix 310), or null when it is

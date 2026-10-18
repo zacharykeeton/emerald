@@ -29,11 +29,13 @@ export interface OpenRequest {
   url?: boolean;
   // M9 fix 700: a launch with a file (a double-click in Explorer, or a second launch handing its file over), never set by the daemon's push.
   launch?: true;
+  // M9 fix 853: path is a folder from Explorer's Open in Emerald items, to open in a new tab with a Claude or a shell started there; a launch only, never set by the daemon's push.
+  kind?: 'claude' | 'shell';
 }
 
 // What rides the open to the renderer beside the path and the pane flag.
-export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; launch?: boolean | undefined } {
-  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, launch: req.launch };
+export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; launch?: boolean | undefined; kind?: 'claude' | 'shell' | undefined } {
+  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, launch: req.launch, kind: req.kind };
 }
 
 export interface OpenRelayClient {
@@ -67,7 +69,7 @@ export function wireFileOpenRelay(client: OpenRelayClient, sink: OpenRelaySink, 
       log(`open: ${req.path} held until the window is listening`);
       return;
     }
-    log(`open: ${req.path}${req.pane ? ' in a pane' : ''}${req.beside === undefined ? '' : ` beside ${req.beside}`}${req.scheme === undefined ? '' : req.scheme === null ? ', its scheme cleared' : ` in ${req.scheme}`}`);
+    log(`open: ${req.path}${req.kind === undefined ? '' : `, a ${req.kind === 'claude' ? 'Claude' : 'shell'} in a new tab`}${req.pane ? ' in a pane' : ''}${req.beside === undefined ? '' : ` beside ${req.beside}`}${req.scheme === undefined ? '' : req.scheme === null ? ', its scheme cleared' : ` in ${req.scheme}`}`);
     sink.lift();
   };
   client.on('message', (msg) => {

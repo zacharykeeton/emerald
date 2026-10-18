@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb } from '@emerald/shared';
-import { integerOption, parse, positionals } from '../args.ts';
+import { integerOption, parse, positionals, readText } from '../args.ts';
 import { browserTarget } from '../browser-target.ts';
 import { CliError, EXIT, NO_WINDOW, usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
@@ -22,6 +22,9 @@ const options = {
   timeout: { type: 'string' },
   json: { type: 'boolean', default: false },
   profile: { type: 'string' },
+  stdin: { type: 'boolean', default: false },
+  file: { type: 'string' },
+  clear: { type: 'boolean', default: false },
 } as const;
 
 // The first daemon that relays browser.run (M9 fix 672).
@@ -33,17 +36,18 @@ const USAGE = [
   "  snapshot                      the page's controls, each with a ref (@e1), its role, name, value and state",
   "  click <ref>                   a click at the control's centre",
   '  hover <ref>                   the pointer moved over the control',
-  '  fill <ref> <text>             the text typed into a field, in place of what it held',
+  '  fill <ref> <text>|--stdin|--file <path>|--clear  the text typed into a field, in place of what it held; --clear empties it',
   '  key <key>                     one key: Enter, Escape, Tab, an arrow, a letter, with Ctrl+, Shift+ or Alt+ before it',
-  '  eval <js>                     an expression run in the page; prints its value as JSON',
+  '  eval <js>|--stdin|--file <path>  an expression run in the page; prints its value as JSON',
   '  screenshot                    a PNG of the page under the emerald home; prints its path',
-  '  wait <text|ref> [--timeout <s>]  until the text is on the page or the control is on screen (10 s by default)',
+  '  wait <text|ref> [--timeout <s>]  until the text is on the page, in a field\'s value or an aria-label, or the control is on screen (10 s by default)',
   '  navigate <url> [--timeout <s>]   the page loaded at that URL (http://, https:// or host:port)',
   '  upload <ref> <path>           a file set on a file input',
   '  events                        what happened since the last read: a window the page tried to open, a download, a console error',
   "  resume                        drive the pane again after the person's click or key paused it",
   "the target is the one browser pane on the layout tab holding this session's pane (else the tab in front); --pane <id> names one when there are several",
   "a click or a key of the person's in a driven page pauses every command but events and resume (exit 77)",
+  'a newline, a % or a double quote in <text> or <js> does not survive emmer.cmd or Windows PowerShell 5.1 on the command line; --stdin or --file <path> reads it verbatim',
 ].join('\n');
 
 // Each verb's positionals, under names that make its own messages.
@@ -78,10 +82,26 @@ export async function runBrowser(argv: string[]): Promise<number> {
   const verb = words[0];
   if (verb === undefined) throw usageError('missing verb');
   if (!Object.hasOwn(ARGS, verb)) throw usageError(`unknown verb ${JSON.stringify(verb)}; emmer help browser lists them`);
-  const names = ARGS[verb as keyof typeof ARGS];
+  const v = parsed.values;
+  // M9 fix 854: fill's text or eval's expression read verbatim from stdin
+  // or a file, or --clear for an empty fill; the verb's last positional is
+  // then not on the line.
+  const textVerb = verb === 'fill' || verb === 'eval';
+  if (v.stdin && !textVerb) throw usageError('--stdin is for fill and eval');
+  if (v.file !== undefined && !textVerb) throw usageError('--file is for fill and eval');
+  if (v.clear && verb !== 'fill') throw usageError('--clear is for fill');
+  if (v.clear && v.stdin) throw usageError('--clear and --stdin together');
+  if (v.clear && v.file !== undefined) throw usageError('--clear and --file together');
+  const fromText = v.stdin || v.file !== undefined || v.clear;
+  const all = ARGS[verb as keyof typeof ARGS];
+  const names = fromText ? all.slice(0, -1) : all;
   const got = positionals({ positionals: words.slice(1) }, names);
   const args = names.map((n) => (got as Record<string, string>)[n]!);
-  const v = parsed.values;
+  if (fromText) {
+    const text = v.clear ? '' : ((await readText({ stdin: v.stdin, file: v.file }, { stdin: '--stdin', file: '--file' }, verb === 'eval')) ?? '');
+    if (verb === 'eval' && text === '') throw usageError(`the expression from ${v.stdin ? '--stdin' : '--file'} is empty`);
+    args.push(text);
+  }
   let timeoutMs = BROWSER_TIMEOUT_MS;
   if (v.timeout !== undefined) {
     if (verb !== 'wait' && verb !== 'navigate') throw usageError('--timeout is for wait and navigate');

@@ -8,6 +8,8 @@
 export interface TrustDialog {
   lines: string[];
   options: { label: string; pick: 'yes' | 'no'; pointer: boolean }[];
+  // The dialog drew a folder path under its Accessing workspace heading, left out of lines; the cards draw the session's own folder in its place, after lines[0] (M9 fix 847).
+  pathDropped: boolean;
 }
 
 const YES = 'Yes, I trust this folder';
@@ -53,6 +55,7 @@ export function trustDialog(rows: readonly string[]): TrustDialog | null {
       break;
     }
   }
+  const heading = start;
   if (start < 0) {
     // No heading: the rows above the options up to the frame's top or a
     // rule, whichever comes first.
@@ -64,13 +67,26 @@ export function trustDialog(rows: readonly string[]): TrustDialog | null {
     }
   }
   const lines: string[] = [];
+  // Under the heading, the first run of rows after its blanks is the
+  // folder's path, one row or several where the TUI wrapped a long one;
+  // the cards draw the session's own folder there instead (M9 fix 847).
+  let path: 'before' | 'in' | 'past' = heading < 0 ? 'past' : 'before';
+  let pathDropped = false;
   for (let i = start; i < first; i++) {
     const text = unframed(rows[i]!);
+    if (i > heading && path !== 'past') {
+      if (text !== '') {
+        path = 'in';
+        pathDropped = true;
+        continue;
+      }
+      if (path === 'in') path = 'past';
+    }
     if (text === '' && (lines.length === 0 || lines[lines.length - 1] === '')) continue;
     lines.push(text);
   }
   while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return { lines, options };
+  return { lines, options, pathDropped };
 }
 
 // The keys that move the pointer to the picked option and confirm it; null

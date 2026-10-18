@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomStep } from './image-zoom-model.ts';
+import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomChip, zoomStep } from './image-zoom-model.ts';
 
 test('fitScale: shrinks a large picture, never grows a small one', () => {
   assert.equal(fitScale({ w: 3000, h: 40 }, { w: 700, h: 500 }), 700 / 3000);
@@ -9,13 +9,24 @@ test('fitScale: shrinks a large picture, never grows a small one', () => {
   assert.equal(fitScale({ w: 100, h: 100 }, { w: 0, h: 0 }), 1);
 });
 
-test('zoomStep: the commit graph steps from any scale', () => {
-  assert.equal(zoomStep(0.23, 1), 0.5);
-  assert.equal(zoomStep(0.5, 1), 0.67);
+test("zoomStep: the picture's own steps from any scale", () => {
+  assert.equal(zoomStep(0.23, 1), 0.25);
+  assert.equal(zoomStep(0.25, 1), 0.33);
   assert.equal(zoomStep(0.6700001, 1), 0.8);
-  assert.equal(zoomStep(2, 1), 2);
-  assert.equal(zoomStep(0.4, -1), 0.4);
+  assert.equal(zoomStep(2, 1), 3);
+  assert.equal(zoomStep(8, 1), 8);
+  assert.equal(zoomStep(0.4, -1), 0.33);
   assert.equal(zoomStep(1, -1), 0.8);
+  assert.equal(zoomStep(0.1, -1), 0.1);
+  assert.equal(zoomStep(0.05, 1), 0.1);
+});
+
+test('zoomChip: 100% when the fit is actual size', () => {
+  assert.equal(zoomChip('fit', 1), '100%');
+  assert.equal(zoomChip('fit', 0.9995), '100%');
+  assert.equal(zoomChip('fit', 0.23), 'Fit');
+  assert.equal(zoomChip(0.33, 0.23), '33%');
+  assert.equal(zoomChip(3, 1), '300%');
 });
 
 test('clickTarget and clickCursor: a magnifier only where a click changes the size', () => {

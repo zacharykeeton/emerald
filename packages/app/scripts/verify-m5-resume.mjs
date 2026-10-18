@@ -161,6 +161,12 @@ try {
   expect(notice?.title === 'exited', `notice's first line, got ${JSON.stringify(notice)}`);
   expect(notice?.body === "This session's process has ended; its last screen is kept.", `notice's body line, got ${JSON.stringify(notice)}`);
   expect(notice?.resume === true, 'notice carries its own Resume button');
+  // M9 fix 841: on the terminal face too the notice sits on an opaque card inside the pane.
+  const card = await s.evalJs(
+    `(() => { const p = document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}]'); const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') }; })()`,
+  );
+  expect(card !== null && /^rgb\(\d+, \d+, \d+\)$/.test(card.bg) && card.inside && card.parts, `fix 841: the notice sits on an opaque card inside the pane, got ${JSON.stringify(card)}`);
+  await s.screenshot('m5-resume-fix841-card.png');
   expect((await termText(s, p2.id)).includes('[killed from emerald]'), 'the key did not reach the pty; the kept screen is unchanged');
   step('typing into the exited pane sends nothing and shows the notice instead');
 

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { allPanes, browserPartition, browserUrl, focusPane, guestNavigationAllowed, setPaneView } from '@emerald/shared';
-import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, paneOfWebContents, patchPageState, setFrameElement, setPaneFrames, subscribeSlots, useFramePage } from './browser-layer.ts';
+import { allPanes, browserPartition, browserUrl, findPane, focusPane, guestNavigationAllowed, setPaneView } from '@emerald/shared';
+import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, paneOfWebContents, patchPageState, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
 import type { WebviewLike } from './browser-layer.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
 import { editTab, useStore } from './store.ts';
@@ -181,7 +181,7 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
       nav();
       if (e.url !== urlRef.current && browserUrl(e.url) === e.url) {
         const target = paneRef.current;
-        void editTab((t) => setPaneView(t, target, { kind: 'browser', url: e.url }), target).catch(warn('browser url'));
+        void editTab((t) => setPaneView(t, target, withPageUrl(findPane(t, target)?.view, e.url)), target).catch(warn('browser url'));
       }
     };
     const listeners: Array<[string, (ev: Event) => void]> = [

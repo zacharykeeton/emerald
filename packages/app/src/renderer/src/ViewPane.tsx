@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { focusPane, folderTitle, setPaneView } from '@emerald/shared';
+import { findPane, focusPane, folderTitle, setPaneView } from '@emerald/shared';
 import type { PaneView } from '@emerald/shared';
 import { hidePaneHere, splitHere } from './actions.ts';
 import { readScope } from './activity-scope.ts';
 import { ActivityView } from './ActivityView.tsx';
 import { BrowserView } from './BrowserView.tsx';
-import { useBrowserPage } from './browser-layer.ts';
+import { useBrowserPage, withPageUrl, withToolbar } from './browser-layer.ts';
 import { driveMark, useBrowserDrive } from './browser-drive-store.ts';
 import { designTargetOf } from './design.ts';
 import { FileView } from './FileView.tsx';
@@ -24,7 +24,7 @@ import { PaneActions } from './Pane.tsx';
 import { startDrag } from './pane-drag.ts';
 import { viewName } from './show-model.ts';
 import { editTab, useStore } from './store.ts';
-import { graphRemotesSupported, graphScaleSupported, hereScopeSupported, panesScopeSupported, rowsFlagSupported, usageFlagSupported, viewStateSupported } from './daemon-model.ts';
+import { browserToolbarSupported, graphRemotesSupported, graphScaleSupported, hereScopeSupported, panesScopeSupported, rowsFlagSupported, usageFlagSupported, viewStateSupported } from './daemon-model.ts';
 import { activityView } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
 import { closePicker, openFileTab, openPicker, toggleZoom, useUi } from './ui.ts';
@@ -98,6 +98,15 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
     const { chrome: _chrome, ...rest } = view;
     void editTab((t) => setPaneView(t, paneId, shown ? rest : { ...rest, chrome: false }), paneId).catch(warn('chrome'));
   };
+  // M9 fix 839: a browser pane's toolbar row. The pane is read at edit time
+  // so a navigation's url written a moment before is not undone.
+  const toolbar = view.kind !== 'browser' || view.toolbar !== false;
+  const setToolbar = (shown: boolean) => {
+    void editTab((t) => {
+      const v = findPane(t, paneId)?.view;
+      return v?.kind === 'browser' ? setPaneView(t, paneId, withToolbar(v, shown)) : t;
+    }, paneId).catch(warn('toolbar'));
+  };
   const pickerOpen = pickerPaneId === paneId;
   const zoomed = zoomedPaneId === paneId;
   const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
@@ -124,6 +133,7 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   // older daemon, whose validator drops the field, the pane keeps it in
   // its own state for its life.
   const usageKept = usageFlagSupported(daemon);
+  const toolbarKept = browserToolbarSupported(daemon);
   const [ownUsage, setOwnUsage] = useState(true);
   // The scope read through readScope (M9 fix 250), so a record holding
   // M66's tab reads as panes.
@@ -163,6 +173,8 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         return file === null ? undefined : openFileTab(file.path);
       case 'toggle-chrome':
         return setChrome(!chrome);
+      case 'toggle-toolbar':
+        return setToolbar(!toolbar);
       case 'split-right':
         return splitHere(paneId, 'row');
       case 'split-down':
@@ -179,7 +191,7 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         return;
     }
   };
-  const menuItems = viewPaneMenu({ kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind });
+  const menuItems = viewPaneMenu({ kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar, toolbarKept });
   const menuHandle = useRef({ menuItems, runMenuItem, name: viewName(view) });
   menuHandle.current = { menuItems, runMenuItem, name: viewName(view) };
   useEffect(
@@ -360,7 +372,7 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         // M9 fix 659: the page and its toolbar; the address bar writes the
         // record, so the pane comes back on its page after a reload.
         <div className="pane-view" tabIndex={-1} data-view={view.kind}>
-          <BrowserView paneId={paneId} url={view.url} onUrl={(url) => void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url }), paneId).catch(warn('browser url'))} />
+          <BrowserView paneId={paneId} url={view.url} toolbar={view.toolbar !== false} onUrl={(url) => void editTab((t) => setPaneView(t, paneId, withPageUrl(view, url)), paneId).catch(warn('browser url'))} />
         </div>
       ) : (
         // Focusable so a click here takes the keyboard from the terminal

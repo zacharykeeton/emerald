@@ -542,7 +542,14 @@ try {
   // hovers the word, reads the card's state line and closes it.
   const paneStateSel = `[data-pane-id=${JSON.stringify(p2)}] .pane-state`;
   const stateTextSel = `.turn-popover[data-session-id=${JSON.stringify(target)}] [data-part="state"] .turn-card-text`;
+  // M9 fix 840: p2 is half the harness window, about 338 px, where the
+  // title's words give before its buttons and the state word is hidden at
+  // level 5; the read takes a 1500 px viewport so the word is drawn, and
+  // clears it after.
   const paneTitle = async () => {
+    const viewportH = await s.evalJs('window.innerHeight');
+    await s.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: viewportH, deviceScaleFactor: 0, mobile: false });
+    await s.waitFor(`document.querySelector(${JSON.stringify(paneStateSel)})?.getBoundingClientRect().width > 0`, 'the state word drawn in the wide viewport', 5000);
     const stateAt = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(paneStateSel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stateAt.x, y: stateAt.y });
     await s.waitFor(`!!document.querySelector(${JSON.stringify(stateTextSel)})`, 'the state word opens its card on hover', 3000);
@@ -550,6 +557,7 @@ try {
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!document.querySelector('.turn-popover')`, 'Escape closes the card');
     await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
+    await s.send('Emulation.clearDeviceMetricsOverride');
     return text;
   };
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(paneStateSel)}).getAttribute('title')`)) === null, 'the pane state word carries no tooltip');

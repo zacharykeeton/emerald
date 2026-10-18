@@ -161,7 +161,9 @@ export function answerOptions(rows: readonly string[]): AnswerOption[] {
 // off the plain rows: a tab row (`←  ☒ Colour  ☐ Size  ✔ Submit  →`, a
 // lone ` ☐ Colour` for one question), the question, the options each
 // with its description row under it, `Type something.`, a divider,
-// `Chat about this`, and the footer.
+// `Chat about this`, and the footer. Since fix 845 a multi-select (each
+// label behind a [ ] or [✔] box) reads its unnumbered Submit row, Next on
+// all but the last tab, as the dialog's button, never as a description.
 export interface AskTab {
   name: string;
   state: 'answered' | 'open' | 'submit';
@@ -176,6 +178,11 @@ export interface AskQuestion {
   tabs: AskTab[];
   question: string;
   options: AskOption[];
+  // M9 fix 845: a multi-select, its labels behind tick boxes.
+  multi: boolean;
+  // Its button row under the last list option, Submit or Next, and whether
+  // the TUI's pointer is on it; null on a single-select.
+  submit: { label: string; pointer: boolean } | null;
 }
 
 // Fifteen other dialogs use an `Enter to select` chord, so the footer
@@ -184,6 +191,15 @@ export interface AskQuestion {
 const ASK_FOOTER = /(?:^|· )Enter to select · (?:\S+ to navigate|Tab\/Arrow keys to navigate)/;
 const TAB_MARK = /☒|☐|\[×\]|\[ \]/;
 const TAB_SPLIT = /(☒|☐|\[×\]|\[ \]|✓|✔)/;
+// M9 fix 845: a multi-select option's box, and its button row. The capture
+// of 2.1.302 (2026-10-18) drew a tick as [✔]; [✓] and [×] are kept for the
+// other glyphs the TUI has used.
+const TICK_BOX = /^(?:\[[ ✓✔×]\]|[☐☒])\s*/;
+const SUBMIT_ROW = /^(?:[❯>]\s*)?(Submit|Next)$/;
+
+function unboxed(label: string): string {
+  return label.replace(TICK_BOX, '');
+}
 
 function askTabs(row: string): AskTab[] {
   const text = row.replace(/[←→]/g, ' ').trim();
@@ -235,11 +251,18 @@ export function askQuestion(rows: readonly string[]): AskQuestion | null {
   // to no option.
   const options: AskOption[] = [];
   let open: AskOption | null = null;
+  let submit: { label: string; pointer: boolean } | null = null;
   for (let i = one; i < footer; i++) {
     const m = NUMBERED.exec(b[i]!);
+    const button = open !== null && TICK_BOX.test(open.label) ? SUBMIT_ROW.exec(b[i]!) : null;
     if (m !== null) {
       open = { key: m[1] ?? '', label: m[2] ?? '', description: '', pointer: /^[❯>]/.test(b[i]!) };
       options.push(open);
+    } else if (button !== null) {
+      // A multi-select draws its button right under the last list option,
+      // with no blank between (fix 845).
+      submit = { label: button[1]!, pointer: /^[❯>]/.test(b[i]!) };
+      open = null;
     } else if (b[i] === '') {
       open = null;
     } else if (open !== null) {
@@ -263,8 +286,9 @@ export function askQuestion(rows: readonly string[]): AskQuestion | null {
     run.unshift(b[i]!);
     i -= 1;
   }
-  if (tabRow < 0 && !options.some((o) => o.label.startsWith('Type something'))) return null;
-  return { tabs: tabRow < 0 ? [] : askTabs(b[tabRow]!), question: run.join(' '), options };
+  if (tabRow < 0 && !options.some((o) => unboxed(o.label).startsWith('Type something'))) return null;
+  const multi = options.some((o) => TICK_BOX.test(o.label));
+  return { tabs: tabRow < 0 ? [] : askTabs(b[tabRow]!), question: run.join(' '), options, multi, submit: multi ? submit : null };
 }
 
 export function isQuestionDialog(rows: readonly string[]): boolean {
@@ -277,7 +301,7 @@ export function isQuestionDialog(rows: readonly string[]): boolean {
 // it is found as the option before Chat about this when the placeholder
 // is gone.
 export function freeOption(ask: AskQuestion): AskOption | null {
-  const typeSomething = ask.options.find((o) => o.label.startsWith('Type something'));
+  const typeSomething = ask.options.find((o) => unboxed(o.label).startsWith('Type something'));
   if (typeSomething !== undefined) return typeSomething;
   const chat = ask.options.find((o) => o.label === 'Chat about this');
   if (chat === undefined) return null;
@@ -288,17 +312,49 @@ export function freeOption(ask: AskQuestion): AskOption | null {
 // else the label, with the rows a long text wraps onto (read as the
 // option's description) joined back on.
 export function freeText(o: AskOption): string {
-  if (o.label.startsWith('Type something')) return '';
-  return o.description === '' ? o.label : `${o.label} ${o.description}`;
+  const label = unboxed(o.label);
+  if (label.startsWith('Type something')) return '';
+  return o.description === '' ? label : `${label} ${o.description}`;
 }
 
 // The keys a free answer takes: the row's digit when the pointer is not on
 // it (with the pointer there a digit would be typed into the field), then
-// one DEL per character the field holds and the text.
+// one DEL per character the field holds and the text. In a multi-select a
+// digit toggles its option and moves no pointer, so the move is arrows: Up
+// from the Submit row, Downs from a list option above (fix 845).
 export function freeAnswerKeys(ask: AskQuestion, text: string): { move: string | null; text: string } {
   const o = freeOption(ask);
   if (o === null) return { move: null, text };
-  return { move: o.pointer ? null : o.key, text: '\x7f'.repeat([...freeText(o)].length) + text };
+  const typed = '\x7f'.repeat([...freeText(o)].length) + text;
+  if (o.pointer) return { move: null, text: typed };
+  if (ask.multi) {
+    if (ask.submit?.pointer === true) return { move: '\x1b[A', text: typed };
+    const free = ask.options.indexOf(o);
+    const at = ask.options.findIndex((x) => x.pointer);
+    if (at >= 0 && at < free) return { move: '\x1b[B'.repeat(free - at), text: typed };
+  }
+  return { move: o.key, text: typed };
+}
+
+// M9 fix 845: how many Downs take a multi-select's pointer to its Submit
+// (or Next) row. The list options are those above Chat about this, the
+// last of them the free row, and Down on that row reaches the button.
+// Null on a single-select, with no button, or with no pointer to count from.
+export function submitMoves(ask: AskQuestion): number | null {
+  if (!ask.multi || ask.submit === null) return null;
+  if (ask.submit.pointer) return 0;
+  const chat = ask.options.findIndex((o) => o.label === 'Chat about this');
+  const list = chat < 0 ? ask.options : ask.options.slice(0, chat);
+  const p = list.findIndex((o) => o.pointer);
+  return p < 0 ? null : list.length - p;
+}
+
+// M9 fix 845: the keys an option's press sends. In a multi-select with the
+// pointer on the free row a digit is typed into the field (the capture's
+// free-m1), so the pointer leaves it first.
+export function optionKeys(ask: AskQuestion | null, key: string): string {
+  if (ask?.multi === true && freeOption(ask)?.pointer === true) return '\x1b[A' + key;
+  return key;
 }
 
 // How long the pointer has to reach the Type something row after its digit.

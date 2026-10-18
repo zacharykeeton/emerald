@@ -394,26 +394,26 @@ try {
   expect(rootSplit.kind === 'split' && rootSplit.first.kind === 'pane' && rootSplit.first.id === p1, 'pane 1 is the first leaf of the root split');
   const splitWidth = await s.evalJs(`document.querySelector('[data-split-id=${JSON.stringify(rootSplit.id)}]').getBoundingClientRect().width`);
   const paneWidth = () => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width`);
-  layout = await getLayout(s);
-  await zreq(s, 'layout.set', { layout: { ...layout, root: { ...layout.root, ratio: 330 / splitWidth } } });
-  await s.waitFor(`Math.abs(document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width - 330) < 3`, 'pane 1 at 330px');
-  await sleep(300);
   const titleProbe = () =>
     s.evalJs(
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left - box.left), right: Math.round(b.right - box.left), width: Math.round(b.width) }; }; const name = t.querySelector('.pane-name'); const nameFloor = parseFloat(getComputedStyle(name).minWidth); const text = t.querySelector('.pane-context-model'); const state = t.querySelector('.pane-state'); const stateShown = getComputedStyle(state).display !== 'none'; const cwd = t.querySelector('.pane-cwd'); return { box: Math.round(box.width), name: { ...r(name), scroll: name.scrollWidth, client: name.clientWidth }, nameFloor, state: { ...r(state), scroll: state.scrollWidth, client: state.clientWidth, shown: stateShown }, cwd: cwd === null ? { width: 0, absent: true } : r(cwd), context: r(t.querySelector('.pane-context')), dial: r(t.querySelector('.context-dial')), text: { ...r(text), scroll: text.scrollWidth, client: text.clientWidth }, resume: r(t.querySelector('.pane-resume')), buttons: [...t.querySelectorAll('.pane-title-actions button')].map(r) }; })()`,
     );
-  const narrowTitle = await titleProbe();
   // Seven buttons since M9 fix 689 (the face button first on a Claude
-  // pane; six since M9 fix 181), giving in M9 fix 208's order: the two
-  // splits and the face button at the third squeeze level (M9 fix 724),
-  // then (M9 fix 237) hide and close at the seventh, after the state word and the name; the
-  // zoom and the shade never. Whatever level 330px lands on, the buttons shown are
-  // that level's and every one ends inside the box.
+  // pane; six since M9 fix 181), held while any word or figure is on the
+  // line (M9 fix 840): the face button and the two splits give at the
+  // eighth squeeze level, hide and close at the ninth, after the state
+  // word and the name; the zoom and the shade never. Whatever level the
+  // title lands on, the buttons shown are that level's and every one
+  // ends inside the box. With the seven held and Resume beside them an
+  // exited title at 330px can be past its sixth level, where the name,
+  // the dial and the words are gone, so the step walks pane 1 up in 30px
+  // steps until the title reads below the sixth and makes the fix 50
+  // reads there.
   const buttonsProbe = () =>
     s.evalJs(
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const pct = t.querySelector('.pane-context-percent'); const ctx = t.querySelector('.pane-context'); const percent = pct === null ? null : (() => { const pr = pct.getBoundingClientRect(); const cr = ctx.getBoundingClientRect(); return { shown: getComputedStyle(pct).display !== 'none' && pr.width > 0, whole: pr.left >= cr.left - 0.5 && pr.right <= cr.right + 0.5 && pct.scrollWidth <= pct.clientWidth + 1, text: pct.textContent }; })(); return { level: Number(t.dataset.squeeze ?? 0), box: Math.round(box.width), percent, buttons: [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const r = b.getBoundingClientRect(); return { cls: b.className, shown: getComputedStyle(b).display !== 'none', right: Math.round(r.right - box.left) }; }) }; })()`,
     );
-  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 3 && (c.startsWith('pane-split') || c === 'pane-face-toggle')) && !(level >= 7 && (c === 'pane-hide' || c === 'pane-close')));
+  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 8 && (c.startsWith('pane-split') || c === 'pane-face-toggle')) && !(level >= 9 && (c === 'pane-hide' || c === 'pane-close')));
   const buttonsAt = (read, where) => {
     const shown = read.buttons.filter((b) => b.shown).map((b) => b.cls.split(' ')[0]);
     expect(read.buttons.length === 7 && JSON.stringify(shown) === JSON.stringify(expectedShown(read.level)), `fix 208: the buttons shown ${where} are level ${read.level}'s, got ${JSON.stringify(read.buttons)}`);
@@ -423,8 +423,20 @@ try {
     expect(read.percent !== null && (read.percent.shown ? read.percent.whole && read.level < 3 : read.level >= 3), `fix 222: the percent is ${read.level >= 3 ? 'gone' : 'whole'} at level ${read.level} ${where}, got ${JSON.stringify(read.percent)}`);
     return shown;
   };
-  const narrowButtons = await buttonsProbe();
-  const shownAt330 = buttonsAt(narrowButtons, 'at 330px');
+  let narrowButtons = null;
+  let narrowWidth = 330;
+  for (; narrowWidth <= 480; narrowWidth += 30) {
+    layout = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...layout, root: { ...layout.root, ratio: narrowWidth / splitWidth } } });
+    await s.waitFor(`Math.abs(document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width - ${narrowWidth}) < 3`, `pane 1 at ${narrowWidth}px`);
+    await sleep(300);
+    narrowButtons = await buttonsProbe();
+    console.log(`[840] exited title at ${narrowWidth}px: level ${narrowButtons.level}`);
+    if (narrowButtons.level < 6) break;
+  }
+  expect(narrowButtons !== null && narrowButtons.level < 6, `fix 840: some width of 330 to 480px puts the exited title below its sixth level, got level ${narrowButtons?.level} at ${narrowWidth}px`);
+  const narrowTitle = await titleProbe();
+  const shownAt330 = buttonsAt(narrowButtons, `at ${narrowWidth}px`);
   const shownButtons = narrowTitle.buttons.filter((b) => b.width > 0);
   expect(narrowTitle.resume.right <= narrowTitle.box && narrowTitle.resume.left < shownButtons[0].left, `Resume is inside the title before the buttons, got ${JSON.stringify(narrowTitle.resume)}`);
   expect(narrowTitle.name.width >= narrowTitle.nameFloor - 0.5 && narrowTitle.nameFloor > 40, `the name keeps its floor, got ${JSON.stringify({ name: narrowTitle.name, floor: narrowTitle.nameFloor })}`);
@@ -437,26 +449,26 @@ try {
   await s.screenshot('m16-context-narrowTitle-title.png');
   step(`fix 50: at ${Math.round(await paneWidth())}px the exited title keeps Resume and its buttons in the box (${JSON.stringify({ name: narrowTitle.name.width, state: narrowTitle.state.width, cwd: narrowTitle.cwd.width, context: narrowTitle.context.width })}); fix 208: level ${narrowButtons.level} shows ${shownAt330.length} of seven`);
 
-  // M9 fix 208: narrower still, until the fourth level (330px is often
-  // enough, since an exited title with Resume has little room), the
-  // splits have given and the zoom and the shade are still there (fix
-  // 237 keeps the shade to the end, and takes the state word, the name
-  // and then hide and close at the levels past this one; verify:m9's
-  // fix 237 step walks those); a click on the zoom from there zooms the
-  // pane, which brings every button back, and a second click unzooms.
+  // M9 fix 208, moved by fix 840: narrower still, until the eighth level
+  // (about 240px for an exited title with Resume), the chat button and
+  // the splits have given and the zoom and the shade are still there
+  // (fix 237 keeps the shade to the end; hide and close go at the ninth;
+  // verify:m9's fix 237 step walks those); a click on the zoom from there
+  // zooms the pane, which brings every button back, and a second click
+  // unzooms.
   let narrowest = narrowButtons;
   for (const width of [280, 240, 200, 160]) {
-    if (narrowest.level >= 4) break;
+    if (narrowest.level >= 8) break;
     layout = await getLayout(s);
     await zreq(s, 'layout.set', { layout: { ...layout, root: { ...layout.root, ratio: width / splitWidth } } });
     await s.waitFor(`Math.abs(document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width - ${width}) < 3`, `pane 1 at ${width}px`);
     await sleep(300);
     narrowest = await buttonsProbe();
-    if (narrowest.level >= 4) break;
+    if (narrowest.level >= 8) break;
   }
-  expect(narrowest.level >= 4, `fix 208: the title reaches its fourth level once narrow enough, got level ${narrowest.level} at ${narrowest.box}px`);
+  expect(narrowest.level >= 8, `fix 840: the title reaches its eighth level once narrow enough, got level ${narrowest.level} at ${narrowest.box}px`);
   const shownNarrowest = buttonsAt(narrowest, `at ${narrowest.box}px`);
-  expect(shownNarrowest.includes('pane-shade-toggle') && !shownNarrowest.includes('pane-split-right') && !shownNarrowest.includes('pane-split-down'), `fix 208: the splits have given at ${narrowest.box}px, the zoom and the shade stayed (fix 237), got ${JSON.stringify(shownNarrowest)}`);
+  expect(shownNarrowest.includes('pane-zoom') && shownNarrowest.includes('pane-shade-toggle') && !shownNarrowest.includes('pane-face-toggle') && !shownNarrowest.includes('pane-split-right') && !shownNarrowest.includes('pane-split-down'), `fix 840: the chat button and the splits have given at ${narrowest.box}px, the zoom and the shade stayed (fix 237), got ${JSON.stringify(shownNarrowest)}`);
   await s.screenshot('m16-context-fix208-narrowest.png');
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-zoom').click()`);
   await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the zoom button zoomed pane 1 from the narrowest title');
@@ -469,7 +481,7 @@ try {
   await sleep(300);
   const unzoomedButtons = await buttonsProbe();
   expect(unzoomedButtons.level === narrowest.level && unzoomedButtons.box === narrowest.box, `fix 208: unzoomed, the title is back at its level and width, got level ${unzoomedButtons.level} at ${unzoomedButtons.box}px`);
-  step(`fix 208: at ${narrowest.box}px (level ${narrowest.level}) the splits have given and the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its seven buttons, and back`);
+  step(`fix 840: at ${narrowest.box}px (level ${narrowest.level}, the eighth or past) the chat button and the splits have given and the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its seven buttons, and back`);
 
   // A wider pane (the default split is the 330px case itself, since the
   // sidebar and the rail leave the two panes about that) gives the words
@@ -658,7 +670,7 @@ try {
   const gutter = splitWidth - (await paneW(p1)) - (await paneW(p2));
   const cutRead = () =>
     s.evalJs(
-      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; return { width: Math.round(t.getBoundingClientRect().width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost') }; })()`,
+      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; const tb = t.getBoundingClientRect(); const st = t.querySelector('.pane-state'); const state = st === null || getComputedStyle(st).display === 'none' ? 'hidden' : st.scrollWidth > st.clientWidth + 1 ? 'cut' : 'whole'; const buttons = [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const e = b.getBoundingClientRect(); return { cls: b.className.split(' ')[0], shown: getComputedStyle(b).display !== 'none', inside: e.right <= tb.right + 0.5 && e.left >= tb.left - 0.5 }; }); return { width: Math.round(tb.width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost'), state, buttons }; })()`,
     );
   const walk795 = [];
   for (const width of [480, 450, 420, 380, 340, 310, 280, 250, 220, 200, 180, 160]) {
@@ -680,10 +692,17 @@ try {
       if (same) break;
     }
     walk795.push(r);
-    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}`);
+    const shownButtons = r.buttons.filter((b) => b.shown);
+    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}, state ${r.state}, buttons ${shownButtons.length}/${r.buttons.length}`);
+    // M9 fix 840: no button gives while a word is on the line; the chat
+    // button and the splits go at the eighth level, hide and close at the
+    // ninth, the zoom and the shade never, and every shown button ends
+    // inside the title.
+    const wantShown = r.buttons.map((b) => b.cls).filter((c) => !(r.level >= 8 && (c === 'pane-face-toggle' || c.startsWith('pane-split'))) && !(r.level >= 9 && (c === 'pane-hide' || c === 'pane-close')));
+    expect(JSON.stringify(shownButtons.map((b) => b.cls)) === JSON.stringify(wantShown) && wantShown.includes('pane-zoom') && wantShown.includes('pane-shade-toggle') && shownButtons.every((b) => b.inside), `fix 840: at ${r.width}px level ${r.level} the buttons shown are the level's, the zoom and the shade among them, each inside the title, got ${JSON.stringify(r.buttons)}`);
     expect(!/(percent|cost) [^,]*(CUT|OUT)/.test(r.cut), `fix 817: at ${r.width}px level ${r.level} the percent and the cost are whole inside the reading's box or hidden, got ${r.cut}`);
   }
-  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden at every width: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden and every button held to its level (fix 840) at every width: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
 
   // M9 fix 772: the idle countdown. A real claude (it sits at the trust
   // dialog of the fresh fixture folder and makes no request) on pane 1,
@@ -824,6 +843,62 @@ try {
   await postLive(cacheLine(250000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 11 }));
   await waitClock(reads('compacts in 44m', 'compact'), 'fix 773: unmarked, the clocks count to the compaction again');
   step('M9 fix 773: Keep whole while idle on the row menu marks the session, the title reads kept whole · cache cold in 50m and the row kept whole · 50m with the full words in its tooltip, and the sink tells the mod to skip an auto compaction at idle and done, never a manual one or one mid-turn, and none once unmarked');
+
+  // M9 fix 833: a shell names the emerald mod first in
+  // CLAUDE_CODE_PLUGIN_DIRS, so a claude typed into it loads the mod, and
+  // its row offers Keep whole while idle once a Claude reports in.
+  {
+    const { session: hosted } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: fixture, name: 'hosted', cols: 160, rows: 24 });
+    const hostedRecord = async () => (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === hosted.id);
+    for (const end = Date.now() + 15000; Date.now() < end && ((await hostedRecord())?.shellCwd ?? null) === null; ) await sleep(200);
+    expect(((await hostedRecord())?.shellCwd ?? null) !== null, 'fix 833: the hosted shell reached its prompt');
+    await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(hosted.id)}, data: ${JSON.stringify('Write-Host ("plugin-dirs=" + $env:CLAUDE_CODE_PLUGIN_DIRS)\r')} })`);
+    const dirsRow = /^plugin-dirs=[^;]*\\packages\\cli\\mod(;|$)/i;
+    let rows833 = [];
+    for (const end = Date.now() + 10000; Date.now() < end; await sleep(200)) {
+      rows833 = (await zreq(s, 'pty.screen', { sessionId: hosted.id })).rows.map((r) => r.trim());
+      if (rows833.some((r) => dirsRow.test(r))) break;
+    }
+    expect(rows833.some((r) => dirsRow.test(r)), `fix 833: the shell names the emerald mod first in CLAUDE_CODE_PLUGIN_DIRS, got ${JSON.stringify(rows833.filter((r) => r !== ''))}`);
+    const hostedRow = `.sidebar-row[data-session-id=${JSON.stringify(hosted.id)}]`;
+    const hostedItem = () =>
+      s.evalJs(
+        `(() => { const m = document.querySelector('.row-menu'); if (!m || m.dataset.sessionId !== ${JSON.stringify(hosted.id)}) return null; const b = [...m.querySelectorAll('.menu-item')].find((x) => (x.querySelector('.menu-label')?.textContent ?? '').endsWith(${JSON.stringify(keepLabel)})); return b ? { disabled: b.disabled, checked: b.dataset.checked ?? null, title: b.title } : 'missing'; })()`,
+      );
+    const openHostedMenu = async () => {
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(`${hostedRow} .sidebar-row-menu`)})`, 'fix 833: the hosted shell row', 5000);
+      await s.evalJs(`document.querySelector(${JSON.stringify(`${hostedRow} .sidebar-row-menu`)}).click()`);
+      await s.waitFor(`document.querySelector('.row-menu')?.dataset.sessionId === ${JSON.stringify(hosted.id)}`, 'fix 833: the hosted row menu', 5000);
+    };
+    const closeMenu = async () => {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`!document.querySelector('.row-menu')`, 'fix 833: the row menu closed', 3000);
+    };
+    await openHostedMenu();
+    const plain833 = await hostedItem();
+    expect(plain833 !== null && plain833 !== 'missing' && plain833.disabled === true && plain833.title === 'Only a session with Claude running in it carries the mod that keeps it whole; start claude in this shell first', `fix 833: a plain shell's item is disabled with the reason, got ${JSON.stringify(plain833)}`);
+    await closeMenu();
+    await post(hosted.id, { session_id: 'sim-m16-833', hook_event_name: 'SessionStart', source: 'startup' });
+    for (const end = Date.now() + 5000; Date.now() < end && (await hostedRecord())?.claudeSessionId !== 'sim-m16-833'; ) await sleep(200);
+    expect((await hostedRecord())?.claudeSessionId === 'sim-m16-833', 'fix 833: the shell bound to its Claude');
+    await openHostedMenu();
+    const offered833 = await hostedItem();
+    expect(offered833 !== null && offered833 !== 'missing' && offered833.disabled === false && offered833.checked === 'false', `fix 833: a shell with Claude running in it offers Keep whole while idle, unchecked, got ${JSON.stringify(offered833)}`);
+    await s.evalJs(`[...document.querySelectorAll('.row-menu .menu-item')].find((x) => (x.querySelector('.menu-label')?.textContent ?? '').endsWith(${JSON.stringify(keepLabel)})).click()`);
+    for (const end = Date.now() + 5000; Date.now() < end && (await hostedRecord())?.keepWhole !== true; ) await sleep(200);
+    expect((await hostedRecord())?.keepWhole === true, 'fix 833: the hosted shell marked on the record');
+    const d833 = daemonInfo();
+    const asked833 = await fetch(`http://127.0.0.1:${d833.hookPort}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': d833.hookToken, 'X-Emerald-Session': hosted.id }, body: JSON.stringify({ trigger: 'auto' }) });
+    expect(asked833.status === 200, `fix 833: the sink answered /compact with 200, got ${asked833.status}`);
+    const skip833 = (await asked833.json()).skip;
+    expect(skip833 === SKIP, `fix 833: an auto compaction at idle of the hosted Claude is skipped, got ${JSON.stringify(skip833)}`);
+    await post(hosted.id, { session_id: 'sim-m16-833', hook_event_name: 'SessionEnd', reason: 'prompt_input_exit' });
+    for (const end = Date.now() + 5000; Date.now() < end && (await hostedRecord())?.keepWhole !== false; ) await sleep(200);
+    expect((await hostedRecord())?.keepWhole === false, `fix 833: the mark goes when the shell's Claude leaves, got ${(await hostedRecord())?.keepWhole}`);
+    await zreq(s, 'session.kill', { sessionId: hosted.id, remove: true });
+    await s.waitFor(`!document.querySelector(${JSON.stringify(hostedRow)})`, 'fix 833: the hosted shell row is gone', 8000);
+  }
+  step('M9 fix 833: a shell names the emerald mod in CLAUDE_CODE_PLUGIN_DIRS, its row offers Keep whole while idle once a Claude reports in, the mark skips an auto compaction at idle, and it goes when that Claude leaves');
 
   await zreq(s, 'session.kill', { sessionId: live.id, remove: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(liveRow)})`, 'the live claude row is gone', 8000);

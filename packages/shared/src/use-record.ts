@@ -27,6 +27,7 @@ export const USE_VIEWS = [
   'review-tab',
   'activity-tab',
   'commits-tab',
+  'stats-tab',
   'whats-new-tab',
   'other-tab',
   'cheat-sheet',
@@ -82,6 +83,8 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'open-file', label: 'Open a file…', group: 'keys' },
   { name: 'design-mode', label: 'Design Mode', group: 'keys' },
   { name: 'toggle-chat', label: 'Chat or terminal', group: 'keys' },
+  { name: 'shade-all', label: 'Shade or lift all', group: 'keys' },
+  { name: 'shade-pane', label: 'Shade or lift pane', group: 'keys' },
   { name: 'pane-split-right', label: 'Split right', group: 'pane-menu' },
   { name: 'pane-split-down', label: 'Split down', group: 'pane-menu' },
   { name: 'pane-zoom', label: 'Focus', group: 'pane-menu' },
@@ -96,6 +99,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'pane-close-session', label: 'Close session', group: 'pane-menu' },
   { name: 'pane-open-as-tab', label: 'Open as a tab', group: 'pane-menu' },
   { name: 'pane-toggle-chrome', label: 'Hide the chrome', group: 'pane-menu' },
+  { name: 'pane-toggle-toolbar', label: 'Hide browser chrome', group: 'pane-menu' },
   { name: 'pane-set-folder', label: 'Set folder…', group: 'pane-menu' },
   { name: 'show-beside', label: 'Show a session beside', group: 'clicks' },
   { name: 'show-in-new-tab', label: 'Show a session in a new layout tab', group: 'clicks' },
@@ -131,6 +135,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'toggle-skin', label: 'Switch the skin', group: 'clicks' },
   { name: 'check-updates', label: 'Check for updates', group: 'clicks' },
   { name: 'file-launch', label: 'Open a file from Explorer', group: 'clicks' },
+  { name: 'folder-launch', label: 'Open a folder from Explorer', group: 'clicks' },
   { name: 'cli-open', label: 'emmer open', group: 'cli' },
 ];
 

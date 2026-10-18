@@ -1,7 +1,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -1111,6 +1111,21 @@ class ClientConnection {
           // The capped bands (M9 fix 285) ride beside the rows.
           return { sessions: activity.spans(from, to, now, this.manager.list({ removed: true }), requestsSince, this.opts.unhosted?.list() ?? []), capped: activity.cappedSpans(from, to, now), historyFrom: activity.historyFrom };
         });
+      }
+      case 'activity.totals': {
+        // M9 fix 836: one folder's whole-history totals, folded here so
+        // the Statistics tab never ships every request point of a life.
+        const folder = expectString(req, 'folder');
+        if (folder === '') throw new SessionError('bad-request', 'folder must not be empty');
+        const from = 'from' in req && req.from !== undefined ? expectNumber(req, 'from') : null;
+        const to = 'to' in req && req.to !== undefined ? expectNumber(req, 'to') : null;
+        if (from !== null && to !== null && to < from) throw new SessionError('bad-request', 'to must not be before from');
+        const activity = this.opts.activity;
+        if (activity === undefined) {
+          const now = Date.now();
+          return activityTotals([], folder, from ?? now, to ?? now, null);
+        }
+        return activity.loaded.then(() => activity.totals(folder, from, to, Date.now(), this.manager.list({ removed: true }), this.opts.unhosted?.list() ?? []));
       }
       default:
         throw new SessionError('bad-request', `unknown request type ${(req as { type: string }).type}`);

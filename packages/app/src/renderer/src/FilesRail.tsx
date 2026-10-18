@@ -24,11 +24,11 @@ import { CommitsPanel } from './CommitsPanel.tsx';
 import { BranchIcon } from './Sidebar.tsx';
 import { ActivitySection, useRailScope, useRailUnit } from './ActivitySection.tsx';
 import { openViewBeside, typeInto } from './actions.ts';
-import { fileViewSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { fileViewSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
 import { startDrag } from './pane-drag.ts';
 import { useFocusedSession, useFocusedView } from './shown-sessions.ts';
 import { graphFolder } from './graph-folder.ts';
-import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, renameFilePanes } from './tabs-model.ts';
+import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, renameFilePanes, statsPath } from './tabs-model.ts';
 import { commitsQuery, commitsView } from './view-state.ts';
 import { editLayout, getState, useStore } from './store.ts';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, clearRevealFile, closeFileTabsUnder, flashCornerNote, keepSearchScopeUnder, openFileTab, openFolderReviewTab, openPreviewTab, openReviewTab, pinFileTab, renameFileTabs, setFilesChanged, setFilesWidth, setRailTab, setSearchMode, setSearchScope, toggleFiles, useUi } from './ui.ts';
@@ -862,6 +862,7 @@ export function FilesRail() {
           }}
           onOpenInPane={filesDrag ? (path) => void openViewBeside({ kind: 'file', path: normalizePath(path) }).catch((err: unknown) => console.warn('[emerald] file in a pane failed', err)) : undefined}
           onShowDiff={menu.kind === 'file' ? diffOf(menu.path) : undefined}
+          statsOffered={statsSupported(daemon)}
           revert={menu.kind === 'file' ? revertOf(menu.path) : undefined}
           trash={canEditFrom(menu.from) ? trashOf(menu.path, menu.kind) : undefined}
         />
@@ -1287,6 +1288,9 @@ interface EntryMenuProps {
   revert?: RevertItem | undefined;
   // Delete (M9 fix 617), the menu's last item, wherever Rename shows.
   trash?: TrashItem | undefined;
+  // Statistics in a tab (M9 fix 837), on the root's menu alone, once the
+  // daemon answers activity.totals.
+  statsOffered?: boolean;
 }
 
 // What the menu's Delete has (M9 fix 617), in RevertItem's shape: the
@@ -1303,7 +1307,7 @@ interface RevertItem {
   revert: (() => void) | null;
 }
 
-function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDiff, onNew, onRename, revert, trash }: EntryMenuProps) {
+function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDiff, onNew, onRename, revert, trash, statsOffered }: EntryMenuProps) {
   // Revert changes asks twice (M9 fix 310): the first click turns the
   // label into the question and keeps the menu open, the second reverts.
   const [revertArmed, setRevertArmed] = useState(false);
@@ -1370,6 +1374,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDi
                 title: `Search the lines of the files under ${atRoot ? pathLabel(menu.path) : rel || folderName(menu.path)}`,
                 onClick: done(() => onFindInFolder(atRoot ? null : menu.path)),
               },
+              ...(atRoot && statsOffered === true ? [{ label: 'Statistics in a tab', title: `The totals, the yield and the API price of ${menu.path} as a tab in the strip`, onClick: done(() => openFileTab(statsPath(menu.path))) }] : []),
             ]),
         {
           label: menu.kind === 'dir' ? 'Open in Explorer' : 'Open with Windows',

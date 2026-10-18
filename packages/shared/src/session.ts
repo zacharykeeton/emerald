@@ -328,6 +328,10 @@ export interface TeamMember {
   // PreToolUse, kept past its return so the row still says what it last
   // did; null for a shell member and an agent that has called no tool.
   activity: string | null;
+  // M9 fix 835: what the agent card says beyond the line above, each absent until known, so a fixture, a shell and a team from an older daemon read as before: the first Limits.memberPromptLines lines of the Agent call's prompt (promptHead), the member's last Limits.memberPhrases tool phrases oldest first with the last equal to activity, and the model the Agent call's PostToolUse resolved (tool_response.resolvedModel, a full id such as claude-opus-5-5), which the card names until the member's own transcript does.
+  prompt?: string;
+  recent?: string[];
+  model?: string;
 }
 
 // The context window's token counts from Claude Code's status line (M42):
@@ -653,6 +657,12 @@ export interface SessionInfo {
   // and cleared by the reducer; not persisted. Optional so a record or a
   // fixture from before the field reads as none.
   compactFrom?: { state: 'idle' | 'waiting' | 'done'; since: number } | null;
+  // M9 fix 830: the turn the emerald mod's TurnStart opened, and whether its
+  // Stop (or StopFailure) has landed, so a TurnComplete for another turn, or
+  // for one already stopped, moves nothing. Set by the reducer; not
+  // persisted. Optional so a record or a fixture from before the field reads
+  // as none.
+  turn?: { id: string; stopped: boolean } | null;
   // The terminal title the process last set through OSC 0 or 2, as
   // written, glyph and all; null for a process that never set one or
   // cleared it. Claude Code puts a spinner glyph and the conversation's

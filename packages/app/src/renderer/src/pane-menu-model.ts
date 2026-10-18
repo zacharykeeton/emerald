@@ -25,6 +25,7 @@ export type PaneMenuRun =
   | 'close-session'
   | 'open-as-tab'
   | 'toggle-chrome'
+  | 'toggle-toolbar'
   | 'set-folder';
 
 // What a split gives (M9 fix 537): an empty pane unless the person picked a
@@ -121,18 +122,30 @@ export interface ViewPaneFacts {
   // keeps that flag (only then is the item offered).
   chrome: boolean;
   stateKept: boolean;
+  // A browser pane's toolbar row (M9 fix 839): whether the record shows it
+  // (default true) and whether the daemon keeps the flag (default false).
+  toolbar?: boolean | undefined;
+  toolbarKept?: boolean | undefined;
   // What a split gives by default (M9 fix 343): the title says the kind.
   splitKind: SplitKind;
 }
 
-export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind }: ViewPaneFacts): PaneMenuItem[] {
+export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar = true, toolbarKept = false }: ViewPaneFacts): PaneMenuItem[] {
   const items: PaneMenuItem[] = [];
   // A file pane has no controls rows to fold; its header is the tab's,
   // and the same file as a tab is what it offers instead. Only a daemon
   // that keeps the flag gets the chrome item; on an older one the chrome
   // stays.
-  // A browser pane (M9 fix 659) has neither: its toolbar is the pane.
-  if (kind === 'file') items.push({ run: 'open-as-tab', label: 'Open as a tab', action: null, title: 'The same file on the tab strip; the pane stays' });
+  // A browser pane (M9 fix 659) has neither; its toolbar row hides with its
+  // own item (fix 839), on a daemon that keeps the flag.
+  if (kind === 'browser' && toolbarKept) {
+    items.push({
+      run: 'toggle-toolbar',
+      label: toolbar ? 'Hide browser chrome' : 'Show browser chrome',
+      action: null,
+      title: toolbar ? "Hide the toolbar row (Back, Forward, Reload, the address and the rest); the pane's header stays" : 'The toolbar row back',
+    });
+  } else if (kind === 'file') items.push({ run: 'open-as-tab', label: 'Open as a tab', action: null, title: 'The same file on the tab strip; the pane stays' });
   else if (kind !== 'browser' && stateKept) {
     items.push({
       run: 'toggle-chrome',

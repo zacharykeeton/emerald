@@ -11,7 +11,7 @@
 // still refused (fix 477's guarded case), a menu over the page reads on
 // top, a hidden layout tab keeps the page, a split, a zoom, a close and
 // a move beside it keep it too (fix 669), the app's chords and Ctrl+R
-// pressed in the page reach the app and not the page (fix 670), the record survives a
+// pressed in the page reach the app and not the page (fix 670), the toolbar row hides from the pane menu and stays hidden across a link and the reload (fix 839), the record survives a
 // renderer reload, and `emmer open <host:port>` opens a second browser
 // pane. Uses a private home and pipe unless the environment names them.
 // Run: npm run verify:browser -w @emerald/app
@@ -494,6 +494,45 @@ try {
   await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'back to the browser pane alone');
   step('(j3) Ctrl+Shift+E, the prefix and Ctrl+R pressed in the page reach the app and not the page; a plain key still reaches the page');
 
+  // (j4) M9 fix 839: Hide browser chrome hides the toolbar row alone.
+  const boxes = () => s.evalJs(`(() => {
+    const q = (sel) => { const e = document.querySelector(${JSON.stringify(browserPane)} + ' ' + sel); if (e === null) return null; const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+    return { title: q('.pane-title'), bar: q('.browser-toolbar'), body: q('.browser-body') };
+  })()`);
+  const hbBefore = await boxes();
+  console.log(`[839] before: title bottom ${hbBefore.title.bottom}, toolbar top ${hbBefore.bar.top} (${hbBefore.bar.height} px), body top ${hbBefore.body.top}, body height ${hbBefore.body.height}`);
+  const viewOf = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser').view;
+  const titleMenu = async () => {
+    const c = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(browserPane + ' .pane-title')}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(browserPane + ' .pane-title')}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${c.x}, clientY: ${c.y} }))`);
+    await s.waitFor(`!!document.querySelector('.pane-menu')`, 'the pane menu opened');
+  };
+  const clickMenu = (label) => s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+  await titleMenu();
+  expect((await s.evalJs(`document.querySelector('.pane-menu .menu-label')?.textContent`)) === 'Hide browser chrome', 'the menu leads with Hide browser chrome');
+  await clickMenu('Hide browser chrome');
+  await s.waitFor(`!document.querySelector(${JSON.stringify(browserPane + ' .browser-toolbar')}) && !document.querySelector('.pane-menu')`, 'the toolbar row is gone and the menu closed');
+  const hbAfter = await boxes();
+  const bodyRef = Math.abs(hbBefore.bar.top - hbBefore.title.bottom) > 1 ? hbBefore.bar.top : hbBefore.title.bottom;
+  expect(Math.abs(hbAfter.body.top - hbAfter.title.bottom) <= 1 || Math.abs(hbAfter.body.top - bodyRef) <= 1, `the body starts under the title (${hbAfter.body.top} against ${hbAfter.title.bottom})`);
+  expect(Math.abs(hbAfter.body.height - (hbBefore.body.height + hbBefore.bar.height)) <= 1, `the body took the row's height (${hbBefore.body.height} + ${hbBefore.bar.height} then ${hbAfter.body.height})`);
+  expect((await viewOf()).toolbar === false, 'the record carries toolbar: false');
+  const slotTop = () => s.evalJs(`document.querySelector(${JSON.stringify(browserPane + ' .browser-body')}).getBoundingClientRect().top`);
+  const frameTop = () => s.evalJs(`document.querySelector(${JSON.stringify(pageIn('moved-669'))}).getBoundingClientRect().top`);
+  until = Date.now() + 3000;
+  while (Math.abs((await frameTop()) - (await slotTop())) > 1 && Date.now() < until) await sleep(100);
+  await frameFits('moved-669', 'with the toolbar hidden');
+  await gesture(`document.getElementById('next').click()`);
+  await guest.waitFor(`location.pathname === '/two'`, 'the guest on /two');
+  await s.waitFor(`document.querySelector(${JSON.stringify(browserPane)})?.dataset.url === ${JSON.stringify(origin + '/two')}`, 'the record follows the link');
+  expect((await viewOf()).toolbar === false, 'the record keeps toolbar: false across a link');
+  expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(browserPane + ' .browser-toolbar')})`)), 'the row is still absent after a link');
+  await gesture('history.back()');
+  await guest.waitFor(`location.pathname === '/'`, 'the guest back on /');
+  await s.waitFor(`document.querySelector(${JSON.stringify(browserPane)})?.dataset.url === ${JSON.stringify(home)}`, 'the record back on /');
+  expect((await viewOf()).toolbar === false, 'the record keeps toolbar: false across Back');
+  step('(j4) M9 fix 839: Hide browser chrome hides the toolbar row alone, the page takes its room, and a link and Back keep it hidden');
+
   // (k) The record survives a renderer reload.
   guest.close();
   guest = null;
@@ -501,7 +540,14 @@ try {
   await s.waitFor(`!!document.querySelector('.app-body')`, 'app after reload');
   await s.waitFor(`document.querySelector(${JSON.stringify(browserPane)})?.dataset.url === ${JSON.stringify(home)}`, 'the browser pane back on /');
   await s.waitFor(`document.querySelector(${JSON.stringify(browserPane + ' .pane-name')})?.textContent === 'Emerald fixture one'`, 'titled one again', 15000);
-  step('(k) the browser pane comes back on its page after a renderer reload');
+  expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(browserPane + ' .browser-toolbar')})`)), 'the row is still hidden after the reload');
+  expect((await viewOf()).toolbar === false, 'the record is still at toolbar: false after the reload');
+  await titleMenu();
+  expect((await s.evalJs(`document.querySelector('.pane-menu .menu-label')?.textContent`)) === 'Show browser chrome', 'the menu now offers Show browser chrome');
+  await clickMenu('Show browser chrome');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(browserPane + ' .browser-toolbar')}) && !document.querySelector('.pane-menu')`, 'the toolbar row is back and the menu closed');
+  expect(!('toolbar' in (await viewOf())), 'the shown row leaves no toolbar key on the record');
+  step('(k) the browser pane comes back on its page after a renderer reload, its toolbar row still hidden until Show browser chrome brings it back (fix 839)');
 
   // (l) emmer open <host:port>.
   let r = await cliOpen(`127.0.0.1:${port}/two`);

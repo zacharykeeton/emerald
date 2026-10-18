@@ -1,6 +1,6 @@
 import { SESSION_COLOR_NAMES, SESSION_PHASES, isSessionPhase, parseSessionColor } from '@emerald/shared';
 import type { SessionPhase } from '@emerald/shared';
-import { parse, positionals } from '../args.ts';
+import { parse, positionals, readText } from '../args.ts';
 import { usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
@@ -10,6 +10,9 @@ import { shortId } from '../resolve.ts';
 const options = {
   comment: { type: 'string' },
   'clear-comment': { type: 'boolean', default: false },
+  // M9 fix 855: the comment read verbatim from stdin or a file.
+  'comment-stdin': { type: 'boolean', default: false },
+  'comment-file': { type: 'string' },
   phase: { type: 'string' },
   'clear-phase': { type: 'boolean', default: false },
   color: { type: 'string' },
@@ -46,14 +49,25 @@ export function sessionRefFor(ref: string | undefined, env: NodeJS.ProcessEnv): 
 const command: Command = {
   name: 'set',
   summary: "write a session's checkpoint, a comment and a phase, or set its colour (no <session>: the one this runs in)",
-  usage: `emmer set [<session>] [--comment <text> | --clear-comment] [--phase ${SESSION_PHASES.join('|')} | --clear-phase] [--color ${COLOR_NAMES}|#rrggbb] [--scheme <name> | --clear-scheme] [--keep-whole on|off] [--json]`,
+  usage: `emmer set [<session>] [--comment <text> | --comment-stdin | --comment-file <path> | --clear-comment] [--phase ${SESSION_PHASES.join('|')} | --clear-phase] [--color ${COLOR_NAMES}|#rrggbb] [--scheme <name> | --clear-scheme] [--keep-whole on|off] [--json]`,
   async run(argv) {
     const parsed = parse(argv, options);
     const ref = sessionRefFor(positionals(parsed, [], ['session']).session, process.env);
     const v = parsed.values;
     const fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean } = {};
-    if (v.comment !== undefined && v['clear-comment']) throw usageError('--comment and --clear-comment together');
+    // M9 fix 855: the comment from stdin or a file too; any two of the four
+    // comment options are refused by the first two given in this order.
+    const commentFlags = [
+      ...(v.comment !== undefined ? ['--comment'] : []),
+      ...(v['comment-stdin'] ? ['--comment-stdin'] : []),
+      ...(v['comment-file'] !== undefined ? ['--comment-file'] : []),
+      ...(v['clear-comment'] ? ['--clear-comment'] : []),
+    ];
+    if (commentFlags.length > 1) throw usageError(`${commentFlags[0]} and ${commentFlags[1]} together`);
     if (v.comment !== undefined) fields.comment = v.comment;
+    if (v['comment-stdin'] || v['comment-file'] !== undefined) {
+      fields.comment = await readText({ stdin: v['comment-stdin'], file: v['comment-file'] }, { stdin: '--comment-stdin', file: '--comment-file' }, false);
+    }
     if (v['clear-comment']) fields.comment = null;
     if (v.phase !== undefined && v['clear-phase']) throw usageError('--phase and --clear-phase together');
     if (v.phase !== undefined) {
@@ -77,7 +91,7 @@ const command: Command = {
       else if (v['keep-whole'] === 'off') fields.keepWhole = false;
       else throw usageError(`--keep-whole must be on or off, got ${JSON.stringify(v['keep-whole'])}`);
     }
-    if (fields.comment === undefined && fields.phase === undefined && fields.color === undefined && fields.scheme === undefined && fields.keepWhole === undefined) throw usageError('nothing to set: pass --comment, --clear-comment, --phase, --clear-phase, --color, --scheme, --clear-scheme or --keep-whole');
+    if (fields.comment === undefined && fields.phase === undefined && fields.color === undefined && fields.scheme === undefined && fields.keepWhole === undefined) throw usageError('nothing to set: pass --comment, --comment-stdin, --comment-file, --clear-comment, --phase, --clear-phase, --color, --scheme, --clear-scheme or --keep-whole');
 
     await withDaemon(async (client) => {
       const found = await findSession(client, ref);

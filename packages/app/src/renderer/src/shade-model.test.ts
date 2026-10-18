@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { currentTab, defaultLayout, setPaneSession, splitPane } from '@emerald/shared';
-import { SHADE_AFTER_CHOICES, shadeActivity, shadeAfterLabel, shadeWait, shadeablePanes, shouldAutoShade } from './shade-model.ts';
+import { SHADE_AFTER_CHOICES, shadeActivity, shadeAfterLabel, shadeAllNext, shadeWait, shadeablePanes, shouldAutoShade } from './shade-model.ts';
 import { aSession } from './test-support.ts';
 
 const MIN = 60_000;
@@ -77,4 +77,11 @@ test('the menu choices and their labels', () => {
   assert.deepEqual(SHADE_AFTER_CHOICES, [0, 2, 5, 15, 30]);
   assert.equal(shadeAfterLabel(0), 'Off');
   assert.equal(shadeAfterLabel(15), '15 min');
+});
+
+test('shadeAllNext (M9 fix 844): nothing with no pane, shade while any is up, lift once all are down', () => {
+  assert.equal(shadeAllNext([], new Set()), null);
+  assert.equal(shadeAllNext(['a', 'b'], new Set()), 'shade');
+  assert.equal(shadeAllNext(['a', 'b'], new Set(['a'])), 'shade');
+  assert.equal(shadeAllNext(['a', 'b'], new Set(['a', 'b', 'z'])), 'lift');
 });

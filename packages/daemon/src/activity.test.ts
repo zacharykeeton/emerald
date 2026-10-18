@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { SessionInfo } from '@emerald/shared';
+import { costParts, ratesFor } from '@emerald/shared';
 import { spawn } from 'node:child_process';
 import { isFullPayloadLine, slimHookLine } from '@emerald/shared/hook-log';
 import { ActivityLog, generationPaths, parseActivityLine, parseLogLine, rotateHookLog, rotatedPath } from './activity.ts';
@@ -1326,4 +1327,61 @@ test('a rotation killed mid-slim is recovered at the next open (M9 fix 629)', as
     assert.deepEqual(read(log), ['turn1', 'turn2', 'turn3'], 'every line once');
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// M9 fix 836: one folder's totals over the whole log. a and b are the
+// folder's (b by its groupCwd), w is a worktree beside it and o another
+// folder, both left out of the folder's figures and in every folder's
+// price beside them.
+test('activity totals fold one folder\'s rows over the whole log into a total and a row per month, a worktree beside it and another folder left out (M9 fix 836)', () => {
+  const S = new Date(2026, 8, 30, 10).getTime();
+  const O = new Date(2026, 9, 2, 10).getTime();
+  const bUsage = { fresh: 300, cacheWrite: 0, cacheRead: 24000, output: 90 };
+  const log = new ActivityLog();
+  const raw = [
+    line(S, 'a', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    statusLine(S + 1 * MIN, 'a', { fresh: 4000, cacheWrite: 8000, cacheRead: 12000, output: 500 }, 0.25),
+    line(S + 30 * MIN, 'a', 'Stop', 'working', 'done'),
+    line(O, 'b', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    statusLine(O + 1 * MIN, 'b', bUsage, null, 'Sonnet 5'),
+    line(O + 20 * MIN, 'b', 'Stop', 'working', 'done'),
+    line(O, 'w', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    statusLine(O + 1 * MIN, 'w', { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 10 }, 0.1),
+    line(O + 5 * MIN, 'w', 'Stop', 'working', 'done'),
+    line(O, 'o', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    statusLine(O + 1 * MIN, 'o', { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 10 }, 0.4),
+    line(O + 5 * MIN, 'o', 'Stop', 'working', 'done'),
+  ];
+  for (const r of raw) log.record(parseActivityLine(r)!);
+  const records = [
+    session('a', { cwd: 'C:/code/proj', groupCwd: 'C:/code/proj', commits: [{ hash: 'h1', at: S + 10 * MIN }] } as Partial<SessionInfo>),
+    session('b', { cwd: 'C:/code/proj/packages/app', groupCwd: 'C:/code/proj' }),
+    session('w', { cwd: 'C:/code/proj-wt/fix-x', groupCwd: 'C:/code/proj-wt/fix-x' }),
+    session('o', { cwd: 'C:/code/other', groupCwd: 'C:/code/other' }),
+  ];
+  const now = new Date(2026, 9, 3).getTime();
+  const priced = costParts(bUsage, ratesFor('Sonnet 5')!).total;
+  const t = log.totals('C:\\CODE\\proj\\', null, null, now, records);
+  assert.equal(t.from, S, 'from the log\'s first line');
+  assert.equal(t.historyFrom, S);
+  assert.equal(t.to, now);
+  assert.equal(t.total.requests, 2);
+  assert.equal(t.total.estimated, true);
+  assert.ok(Math.abs(t.total.usd - (0.25 + priced)) < 1e-9, `usd ${t.total.usd}`);
+  assert.equal(t.total.agentMs, 50 * MIN);
+  assert.equal(t.total.commits, 1);
+  assert.deepEqual(t.months.map((m) => m.month), ['2026-09', '2026-10']);
+  const [sep, oct] = t.months;
+  assert.equal(sep!.requests, 1);
+  assert.ok(Math.abs(sep!.usd - 0.25) < 1e-9);
+  assert.ok(Math.abs(sep!.allUsd - 0.25) < 1e-9);
+  assert.equal(sep!.commits, 1);
+  assert.equal(sep!.from, S, 'the first month is cut to the window');
+  assert.equal(oct!.requests, 1);
+  assert.ok(Math.abs(oct!.allUsd - (priced + 0.1 + 0.4)) < 1e-9, `allUsd ${oct!.allUsd}`);
+  assert.equal(oct!.to, now, 'the last month is cut to the window');
+  assert.equal(t.firstAt, S);
+  const late = log.totals('C:/code/proj', O, null, now, records);
+  assert.deepEqual(late.months.map((m) => m.month), ['2026-10']);
+  assert.equal(late.total.requests, 1);
 });

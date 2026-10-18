@@ -286,6 +286,11 @@ export interface FilesApi {
   // back to HEAD's version of the repository-relative path. False when
   // git refused, or the path is not a file inside the repository.
   gitRevert(dir: string, rel: string): Promise<boolean>;
+  // The Statistics tab's git figures (M9 fix 836): the commits on HEAD,
+  // the first commit's time, the tags on the default branch and the
+  // version bumps of a package.json on it. Never rejects; root is null
+  // outside a repo.
+  gitProjectCounts(dir: string): Promise<GitProjectCounts>;
   // A file to open from outside the renderer (M9 fix 341): `emmer open`
   // relayed over the daemon, or a launch with a file (fix 342); pinned
   // tab, or with pane a pane beside the focused one. Installing the
@@ -307,6 +312,8 @@ export interface OpenExtra {
   beside?: string;
   // M9 fix 659: the path is a URL for a browser pane.
   url?: boolean;
+  // M9 fix 853: the path is a folder to open a new tab on, with a Claude or a shell.
+  kind?: 'claude' | 'shell';
 }
 
 // One file of a review (M64): its path relative to the repo root and
@@ -368,6 +375,19 @@ export interface GitLog {
   // commits view with no session behind it (M52) can name the branch.
   head: string | null;
   commits: GitCommit[];
+}
+
+// A repository's counts for the Statistics tab (M9 fix 836). branch is
+// main, else master, else HEAD; bumps is null when the version history
+// did not read in time, and bumpsFile the package.json with the most.
+export interface GitProjectCounts {
+  root: string | null;
+  branch: string | null;
+  commits: number;
+  firstCommitAt: number | null;
+  tags: number;
+  bumps: number | null;
+  bumpsFile: string | null;
 }
 
 // One commit of the graph (M51): the list's fields plus the parents and
@@ -784,6 +804,11 @@ export interface EmeraldApi {
   // disconnected. The connected push carries the same, but a renderer that
   // loads after the connection is up never saw it.
   daemonInfo(): Promise<DaemonInfo | null>;
+  // The last crash of a daemon this window started (M9 fix 832), held by
+  // the main process until Not now, so a reload brings the banner back.
+  daemonCrash(): Promise<DaemonCrash | null>;
+  // Not now on the crash banner: the main process forgets the crash.
+  dismissCrash(): void;
   request<K extends RequestType>(type: K, body: Requests[K]['req']): Promise<Requests[K]['res']>;
   send(msg: FireAndForget): void;
   on(handler: (msg: RendererPush) => void): () => void;

@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { USE_FEATURES, USE_NAMES } from '@emerald/shared';
 import type { LayoutTab, LayoutNode } from '@emerald/shared';
 import { BINDINGS } from './keys-model.ts';
-import { PANES, emptyTabs } from './tabs-model.ts';
+import { PANES, emptyTabs, statsPath } from './tabs-model.ts';
 import { PANE_USE, createTurnGate, frontView, openViews, outsideOpenUse, paneKind, tabKind, viewDiff } from './use-record-model.ts';
 
 test('M9 fix 700: a file from a launch records file-launch, any other open cli-open', () => {
   assert.deepEqual(outsideOpenUse({}), { name: 'cli-open', from: 'cli' });
   assert.deepEqual(outsideOpenUse({ launch: false }), { name: 'cli-open', from: 'cli' });
   assert.deepEqual(outsideOpenUse({ launch: true }), { name: 'file-launch', from: 'click' });
+  // M9 fix 853: a folder from Explorer's Open in Emerald items.
+  assert.deepEqual(outsideOpenUse({ launch: true, kind: 'shell' }), { name: 'folder-launch', from: 'click' });
 });
 
 const pane = (id: string, sessionId: string | null, view: Extract<LayoutNode, { kind: 'pane' }>['view'] = null) => ({ kind: 'pane' as const, id, sessionId, view });
@@ -21,6 +23,7 @@ test('tabKind names each kind of strip tab (M9 fix 676)', () => {
   assert.equal(tabKind('emerald://something-else'), 'other-tab');
   assert.equal(tabKind('C:/Users/x/.claude/projects/p/0123abcd-0000-0000-0000-000000000000.jsonl'), 'transcript-tab');
   assert.equal(tabKind('C:/code/zorca/README.md'), 'file-tab');
+  assert.equal(tabKind(statsPath('C:/x')), 'stats-tab', 'M9 fix 837');
 });
 
 test('paneKind names each kind of pane', () => {

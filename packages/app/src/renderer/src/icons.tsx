@@ -74,6 +74,15 @@ export function NewsIcon({ size = 14, className = 'tab-icon' }: IconProps) {
   );
 }
 
+// The Statistics tab's icon (M9 fix 837): three bars.
+export function StatsIcon({ size = 14, className = 'tab-icon' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <path d="M3.5 13.5v-4 M8 13.5v-9 M12.5 13.5v-6.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ShadeIcon({ size = 13, className = 'pane-shade-icon' }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">

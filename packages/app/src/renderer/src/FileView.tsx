@@ -21,7 +21,7 @@ import { askBeforeClose, clearReveal, closeFileTab, getUiState, revealInFiles, s
 import { focusPane } from '@emerald/shared';
 import { editTab } from './store.ts';
 import { useSqueeze } from './squeeze.ts';
-import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomStep } from './image-zoom-model.ts';
+import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomChip, zoomStep } from './image-zoom-model.ts';
 import type { ImageZoom } from './image-zoom-model.ts';
 
 // A file tab's content: a header with the full path and the two ways out
@@ -109,6 +109,10 @@ import type { ImageZoom } from './image-zoom-model.ts';
 // on different schemes both wear the last focused one's syntax, and a
 // file with no scheme of its own follows the window's while it is
 // focused.
+// M9 fix 851: what a typed key on a read-only editor says, in place of Monaco's stock "Cannot edit in read-only editor".
+const PRETTY_READ_ONLY = 'Pretty is a formatted copy and does not take edits. Switch to Raw to edit the file.';
+const TRANSCRIPT_READ_ONLY = 'This is a Claude transcript, shown read-only.';
+
 interface Props {
   path: string;
   view?: FileTabView;
@@ -422,7 +426,10 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     const model = prettyShown ? prettyModel(path) : fileModel;
     if (model === null || editor.getModel() === model) return;
     const readOnly = prettyShown || isTranscript(path);
-    editor.updateOptions({ readOnly, domReadOnly: readOnly, quickSuggestions: quickSuggestionsFor(model.getLanguageId()) });
+    const readOnlyMessage = prettyShown ? { value: PRETTY_READ_ONLY } : isTranscript(path) ? { value: TRANSCRIPT_READ_ONLY } : undefined;
+    // undefined clears an earlier message (Monaco's option merge writes it
+    // over), which exactOptionalPropertyTypes does not let the type say.
+    editor.updateOptions({ readOnly, domReadOnly: readOnly, readOnlyMessage, quickSuggestions: quickSuggestionsFor(model.getLanguageId()) } as monaco.editor.IEditorOptions);
     editor.setModel(model);
     const key = prettyShown ? prettyKey(path) : path;
     editor.restoreViewState(viewStateFor(key));
@@ -688,7 +695,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
         {sizeText !== '' && <span className="file-image-size">{sizeText}</span>}
         {sizeText !== '' && (
           <button className="files-button file-image-zoom" title="Back to fit (0)" onClick={() => setZoom('fit')}>
-            {zoom === 'fit' ? 'Fit' : `${Math.round(scale * 100)}%`}
+            {zoomChip(zoom, fit)}
           </button>
         )}
         {animated && !imageFailed && (

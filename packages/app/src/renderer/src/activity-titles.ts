@@ -1,4 +1,4 @@
-import { clockTime } from '@emerald/shared';
+import { clockTime, shortModel } from '@emerald/shared';
 import type { ActivitySession, CappedSpan, DebtSpan } from '@emerald/shared';
 import { usageWindowName } from './usage-model.ts';
 
@@ -25,7 +25,27 @@ export function spanTitle(s: ActivitySession, span: { from: number; prompt: stri
     return `${name}${type} · ${when}\n${by}`;
   }
   const name = s.name ?? (s.outside === true ? 'a session outside emerald' : 'a session no longer listed');
-  return (span.prompt === null ? `${name} · ${when}` : `${name} · ${when}\n${span.prompt}`) + outsideNote(s);
+  const words = effortWords(s, span.from, to);
+  const head = words === null ? `${name} · ${when}` : `${name} · ${when} · ${words}`;
+  return (span.prompt === null ? head : `${head}\n${span.prompt}`) + outsideNote(s);
+}
+
+// M9 fix 852: the model and effort a span ran at, off its request points, in fix 800's words ("Opus 5.5 · high"); each pair once, in the order first met, a later one on the same model as the pair before it giving the level alone ("Opus 5.5 · high, then medium"); a point with no effort counts for nothing, so an older daemon's span reads as before.
+export function effortWords(s: Pick<ActivitySession, 'requests'>, from: number, to: number): string | null {
+  const named = new Set<string>();
+  const parts: string[] = [];
+  let lastModel: string | null = null;
+  for (const p of s.requests ?? []) {
+    if (p.at < from || p.at > to) continue;
+    const effort = p.effort;
+    if (typeof effort !== 'string' || effort === '') continue;
+    const pair = `${p.model ?? ''}\n${effort}`;
+    if (named.has(pair)) continue;
+    named.add(pair);
+    parts.push(p.model === null || p.model === lastModel ? effort : `${shortModel(p.model)} · ${effort}`);
+    lastModel = p.model;
+  }
+  return parts.length === 0 ? null : parts.join(', then ');
 }
 
 // The hover on a capped band (M9 fix 285): which usage window was spent,

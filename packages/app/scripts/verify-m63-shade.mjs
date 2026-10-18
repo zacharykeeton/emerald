@@ -18,7 +18,7 @@ import { MARK_STEPPING } from './mark-step.mjs';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm63-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m63';
-const { clickNewShell, expect, freshPort, getLayout, hoverForCard, killTree, launch, leaves, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, clickNewShell, expect, freshPort, getLayout, hoverForCard, killTree, launch, leaves, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 setTimeout(() => {
@@ -443,6 +443,10 @@ try {
   await s.waitFor(`document.querySelectorAll('.term-host').length === 3`, 'three panes');
   expect(await rightClick('.tab.tab-panes[data-current]'), 'right-click the layout tab');
   await s.waitFor(`!!document.querySelector('.layout-tab-menu')`, 'the tab menu');
+  // M9 fix 844: the Shade all and Lift all rows show the one chord.
+  const shadeHints = (menuSel) => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(menuSel + ' .menu-item')})].filter((b) => ['Shade all', 'Lift all'].includes(b.querySelector('.menu-label')?.textContent ?? '')).map((b) => b.querySelector('.menu-hint')?.textContent ?? null)`);
+  const tabHints = await shadeHints('.layout-tab-menu');
+  expect(JSON.stringify(tabHints) === JSON.stringify(['Ctrl+Shift+U', 'Ctrl+Shift+U']), `fix 844: the Shade all and Lift all rows show the chord on the tab menu, got ${JSON.stringify(tabHints)}`);
   expect(await menuItem('Shade all'), 'Shade all on the tab menu');
   await s.waitFor(`document.querySelectorAll('.pane-shade').length === 3`, 'every pane of the tab shaded');
   // Fix 154: a shell's face has no spend and no counts, the counted one keeps them.
@@ -457,6 +461,8 @@ try {
   await s.waitFor(`!!document.querySelector('.shade-menu')`, "the button's menu");
   const shadeMenuItems = await s.evalJs(`[...document.querySelectorAll('.shade-menu .menu-item')].map((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') + (b.dataset.checked === 'true' ? ' *' : ''))`);
   expect(shadeMenuItems.join(',') === 'Shade all,Lift all,Shade after idle,Off *,2 min,5 min,15 min,30 min', `the button's menu, got ${JSON.stringify(shadeMenuItems)}`);
+  const buttonHints = await shadeHints('.shade-menu');
+  expect(JSON.stringify(buttonHints) === JSON.stringify(['Ctrl+Shift+U', 'Ctrl+Shift+U']), `fix 844: the Shade all and Lift all rows show the chord on the button's menu, got ${JSON.stringify(buttonHints)}`);
   expect(await menuItem('Shade all'), "Shade all on the button's menu");
   await s.waitFor(`document.querySelectorAll('.pane-shade').length === 3`, 'three shaded from the button');
   expect(await rightClick(paneSel(p1) + ' .pane-shade-toggle'), 'right-click the button once more');
@@ -464,6 +470,31 @@ try {
   expect(await menuItem('Lift all'), "Lift all on the button's menu");
   await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'all lifted from the button');
   step('Shade all shades three, a click lifts one, Lift all lifts the rest; the same pair on the button');
+  // M9 fix 844: the chords, with the keyboard on the first pane.
+  layout = await getLayout(s);
+  await zreq(s, 'layout.set', { layout: { ...layout, focusedPaneId: p1 } });
+  await s.waitFor(`!!document.activeElement?.closest(${JSON.stringify(paneSel(p1))})`, 'the keyboard in the first pane');
+  await s.key('U', 'KeyU', 85, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 3`, 'Ctrl+Shift+U shaded the three');
+  await s.key('U', 'KeyU', 85, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+Shift+U again lifted them');
+  await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 1 && !!${q(paneSel(p1) + ' .pane-shade')}`, 'Ctrl+Shift+K shaded the focused pane alone');
+  await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+Shift+K again lifted it');
+  // The keys were a person's gesture, which acks every done session
+  // (attention.ts, M31), so the first one is idle now; it goes back to
+  // where this step found it, done and resting, which the idle-shade step
+  // and fix 291's face below need of the first pane. A Stop alone leaves
+  // an idle session idle, so a turn first, and the Stop waits out the
+  // recent-input window (RECENT_INPUT_MS, 10 s), inside which a reply
+  // into the focused pane is taken as seen at once (fix 30).
+  await post(s1, { hook_event_name: 'UserPromptSubmit', prompt: 'after the chords' });
+  await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(s1)}]')?.dataset.state === 'working'`, 'the first session working again');
+  await sleep(10500);
+  await post(s1, { hook_event_name: 'Stop', last_assistant_message: 'shaded' });
+  await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(s1)}]')?.dataset.state === 'done'`, 'the first session is done again after the chords');
+  step("fix 844: Ctrl+Shift+U shades the tab's three and lifts them, Ctrl+Shift+K shades the focused pane alone and lifts it");
 
   // 5. The idle shade. The setting is minutes, and the store takes any
   // positive number, so a twentieth of a minute (three seconds) lets the
@@ -591,7 +622,13 @@ try {
   // the activity to nothing; at 400 the old code left both clipped and both
   // drawn. The harness has no Claude home, so no model word is drawn; the
   // canvas reads what a real line's Sonnet word and six characters take.
-  await post(s1, { hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: 'Read the sidebar tree and list every member line', subagent_type: 'general-purpose' }, tool_response: { agentId: 'shade-a3', description: 'Read the sidebar tree and list every member line' } });
+  // M9 fix 835: the Agent call carries its prompt and the model it
+  // resolved, and the member makes two calls before the Bash one, so its
+  // card later reads three lines of the prompt, the model and two earlier
+  // phrases; the Bash call stays the latest, so fix 764's reads hold.
+  await post(s1, { hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: 'Read the sidebar tree and list every member line', subagent_type: 'general-purpose', prompt: 'Read the sidebar tree and list every member line.\n\nStart at Sidebar.tsx and follow the team rows.\nReport the parts of each line in order.\nDo not edit anything.' }, tool_response: { agentId: 'shade-a3', description: 'Read the sidebar tree and list every member line', resolvedModel: 'claude-sonnet-5' } });
+  await post(s1, { hook_event_name: 'PreToolUse', agent_id: 'shade-a3', tool_name: 'Read', tool_input: { file_path: 'C:/sim/Sidebar.tsx' } });
+  await post(s1, { hook_event_name: 'PreToolUse', agent_id: 'shade-a3', tool_name: 'Grep', tool_input: { pattern: 'sidebar-row-member' } });
   await post(s1, { hook_event_name: 'PreToolUse', agent_id: 'shade-a3', tool_name: 'Bash', tool_input: { command: 'npm run verify:all', description: 'Running the whole verify list on a private pair' } });
   expect(await click(rowSel654 + ' .sidebar-row-team-fold'), "unfold the row's team for fix 764");
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 2`, 'two members listed under the row for fix 764', 5000);
@@ -668,6 +705,22 @@ try {
   const rowDone654 = await rowLine654();
   expect(done654.activity === 'lid built' && done654.activity === rowDone654 && done654.shown, `after the turn the face reads the reply as the row does, got ${JSON.stringify(done654)} against ${JSON.stringify(rowDone654)}`);
   expect(done654.a2?.state === 'returned' && done654.a2.activity === 'Reading lid.ts', `the returned fork keeps its last phrase, got ${JSON.stringify(done654.a2)}`);
+  // M9 fix 835: shade-a3's card says the first three lines it was asked,
+  // the model its Agent call resolved (the harness has no Claude home, so
+  // no request names one), and its two calls before the latest.
+  await hoverForCard(s, paneSel(p1) + ' .pane-shade-member[data-member="shade-a3"] .pane-shade-member-name', '.agent-popover[data-member="shade-a3"]', "shade-a3's card on its box");
+  const card835 = await s.evalJs(`(() => { const c = document.querySelector('.agent-popover[data-member="shade-a3"]'); return { prompt: c.querySelector('.agent-card-prompt')?.textContent ?? null, model: c.querySelector('.agent-card-model')?.textContent ?? null, earlier: [...c.querySelectorAll('.agent-card-earlier')].map((e) => e.textContent), activity: c.querySelector('.agent-card-activity')?.textContent ?? null, price: !!c.querySelector('.agent-card-price') }; })()`);
+  expect(
+    card835.prompt === 'Read the sidebar tree and list every member line.\nStart at Sidebar.tsx and follow the team rows.\nReport the parts of each line in order.' &&
+      card835.model === 'Sonnet 5' &&
+      JSON.stringify(card835.earlier) === JSON.stringify(['Reading Sidebar.tsx', 'Searching for sidebar-row-member']) &&
+      card835.activity === 'Running the whole verify list on a private pair' &&
+      !card835.price,
+    `fix 835: the card says the first three lines of the prompt, the model resolved before any request and the two calls before the latest, got ${JSON.stringify(card835)}`,
+  );
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "shade-a3's card closes after the mouse leaves");
+  step("M9 fix 835: a member's card says the first three lines it was asked, its model off the Agent call before any request, and its two calls before the latest");
   // M9 fix 821: a hover on a member's box opens its card, and a click on the
   // box (the card still open) lifts the shade and takes the card with it.
   await hoverForCard(s, paneSel(p1) + ' .pane-shade-member[data-member="shade-a2"] .pane-shade-member-name', '.agent-popover[data-member="shade-a2"]', "shade-a2's card on its box");
@@ -887,6 +940,32 @@ try {
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
   await s.waitFor(`!document.querySelector('.agent-popover')`, "sh1's card closes after the mouse leaves");
   step("fix 821: a hover on a member's box opens the agent card (the fork's with its whole name, the model in full, the box's price and its tasks; the shell's with its command), a click on the box lifts the shade and closes the card");
+
+  // M9 fix 834: the card's heading is two lines, the name alone on the
+  // first and the role, model, state and price as chips under it at the
+  // name's start. a4 is a long-typed member with no description (its
+  // name is general-purpose) and a1 a long-named one; both carry every
+  // part, which once squeezed the name to a letter a line and ran the
+  // price past the card's edge.
+  for (const id of ['a4', 'a1']) {
+    const cardSel = `.agent-popover[data-member="${id}"]`;
+    await hoverForCard(s, sixSel + ` .pane-shade-member[data-member="${id}"] .pane-shade-member-name`, cardSel, `${id}'s card for the heading's layout`);
+    await s.waitFor(`(() => { const c = ${q(cardSel)}; return !!c && !!c.querySelector('.agent-card-model') && !!c.querySelector('.agent-card-price'); })()`, `${id}'s card carries its model and price`, 3000);
+    const read = await s.evalJs(`(() => {
+      const card = ${q(cardSel)};
+      const box = (el) => { if (el === null) return null; const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), w: Math.round(r.width) }; };
+      const cs = getComputedStyle(card);
+      const rect = card.getBoundingClientRect();
+      const inner = Math.round(rect.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth));
+      const sel = ['mark', 'name', 'role', 'model', 'state', 'price'].map((p) => '.agent-card-heading .agent-card-' + p).join(', ');
+      const parts = [...card.querySelectorAll(sel)].map(box);
+      return { card: box(card), inner, name: box(card.querySelector('.agent-card-name')), chips: box(card.querySelector('.agent-card-chips')), parts };
+    })()`);
+    expect(read.parts.length === 6 && read.name.w >= 100 && read.parts.every((p) => p.right <= read.inner + 1) && read.chips !== null && read.chips.top >= read.name.bottom - 1 && Math.abs(read.chips.left - read.name.left) <= 1, `fix 834: ${id}'s card keeps the name at least 100px wide on its own line with every heading part inside the card, got ${JSON.stringify(read)}`);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+    await s.waitFor(`!document.querySelector('.agent-popover')`, `${id}'s card closes after the mouse leaves`);
+  }
+  step("fix 834: the agent card gives the name a line of its own at least 100px wide, the role, model, state and price under it at the name's start and inside the card, on a long-typed member and a long-named one");
 
   // The narrow fold: the six-member pane at a quarter of the row (under
   // 360px) is one column of four boxes, the fifth on hidden, and "and 3

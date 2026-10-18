@@ -49,11 +49,11 @@ function fakePipe() {
   return { emerald, requests, sends, push, setFail: (v: boolean) => (fail = v), attaches: () => requests.filter((r) => r.type === 'pty.attach').length, detaches: () => requests.filter((r) => r.type === 'pty.detach').length };
 }
 
-function setup(detachMs = 5) {
+function setup(detachMs = 5, pidOf?: (sessionId: string) => number | null) {
   const pipe = fakePipe();
   let focused: string | null = 'p1';
   const listeners = new Set<() => void>();
-  const feed = new TerminalFeed({ emerald: pipe.emerald, focusedPaneId: () => focused, onLayout: (fn) => (listeners.add(fn), () => listeners.delete(fn)), ringBytes: 64, detachMs });
+  const feed = new TerminalFeed({ emerald: pipe.emerald, focusedPaneId: () => focused, onLayout: (fn) => (listeners.add(fn), () => listeners.delete(fn)), ringBytes: 64, detachMs, ...(pidOf === undefined ? {} : { pidOf }) });
   const focus = (paneId: string | null) => {
     focused = paneId;
     for (const l of listeners) l();
@@ -192,4 +192,51 @@ test('a handle opened within the detach delay keeps the attachment and its ring'
   assert.equal(pipe.detaches(), 0);
   assert.equal(pipe.attaches(), 1);
   assert.deepEqual(t2.writes, ['kept']);
+});
+
+test('a handle opened within the detach delay on a session whose process changed starts over (M9 fix 842)', async () => {
+  let pid: number | null = 100;
+  const { pipe, feed } = setup(30, () => pid);
+  const t1 = new FakeTerm();
+  const h1 = feed.open('s1', t1, { paneId: () => 'p1', fit: { cols: 100, rows: 30 } });
+  pipe.push(output('s1', 'old screen', true));
+  h1.close();
+  pid = 200;
+  const t2 = new FakeTerm();
+  feed.open('s1', t2, { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  assert.ok(!t2.writes.some((w) => w.includes('old screen')), `the new pane holds none of the old process's screen, got ${JSON.stringify(t2.writes)}`);
+  assert.equal(t2.resets, 1, 'the new terminal is reset once');
+  assert.equal(pipe.attaches(), 2, 'one attach for the new process');
+  pipe.push(output('s1', 'new', true));
+  assert.deepEqual(t2.writes, ['new']);
+  await sleep(50);
+  assert.equal(pipe.detaches(), 0);
+});
+
+test('a handle opened within the detach delay on the same process keeps the ring (M9 fix 842)', async () => {
+  const { pipe, feed } = setup(30, () => 100);
+  const t1 = new FakeTerm();
+  const h1 = feed.open('s1', t1, { paneId: () => 'p1', fit: { cols: 100, rows: 30 } });
+  pipe.push(output('s1', 'kept', true));
+  h1.close();
+  const t2 = new FakeTerm();
+  feed.open('s1', t2, { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  await sleep(50);
+  assert.deepEqual(t2.writes, ['kept']);
+  assert.equal(pipe.attaches(), 1);
+});
+
+test('an exited session moved inside the detach delay keeps its ring (M9 fix 842)', async () => {
+  let pid: number | null = 100;
+  const { pipe, feed } = setup(30, () => pid);
+  const t1 = new FakeTerm();
+  const h1 = feed.open('s1', t1, { paneId: () => 'p1', fit: { cols: 100, rows: 30 } });
+  pipe.push(output('s1', 'kept', true));
+  pid = null;
+  h1.close();
+  const t2 = new FakeTerm();
+  feed.open('s1', t2, { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  await sleep(50);
+  assert.deepEqual(t2.writes, ['kept']);
+  assert.equal(pipe.attaches(), 1);
 });

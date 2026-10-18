@@ -2,6 +2,60 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 825 to 858, 2026-10-18
+
+Thirty-four fixes, most of them what was met in 0.1.797: the pane title, the exited notice and row, the copy note and the agent card. Beside them come a Statistics tab for a project, Open in Emerald on Explorer's folder menu, two bugs from the last run and install, and `emmer` verbs that take their text from a file or a pipe. The daemon goes from level 67 to 71, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**A project's statistics.** Right-click the `+` on a folder heading in the sidebar, or the root of the Files rail, and pick `Statistics in a tab`. The tab counts the folder's commits and releases (its git tags, or the version bumps of its `package.json` when it has no tags, the tab saying which), the requests, tokens, price at API rates and agent time of every session started in it or under it, the span from the first commit or the first activity to today, the yield per release, per hundred commits and per $1,000, and a row per month. Enter your plan under it (Pro, Max 5x, Max 20x, Team or another, with a price and a start day) and it also shows what the plan cost over the span against the API price. While the daemon adds up the history it reads `Reading the totals…`.
+
+**Open in Emerald from Explorer.** Right-click a folder in Explorer, or the empty space inside one, and on Windows 11 open **Show more options**: **Open in Emerald (Claude)** and **Open in Emerald (shell)** open a new tab in the running window with a Claude session or a shell started in that folder, and start the window if none is up. The installer writes the two items and the uninstaller takes them out.
+
+**The pane title's buttons hold.** A narrowing pane title now gives up its words before its buttons: the roster, the tokens and the context, the state word, then the name and the folder go first, then the chat button and the splits, then hide and close. The focus button and the shade never go. Narrow a pane by dragging its divider and watch the buttons stay.
+
+**The exited notice on a card.** Typing into a pane whose process has ended shows its `exited` notice and Resume on a solid card, drawn as a dialog is, on both faces, so it reads clearly over the kept screen.
+
+**The agent card's name on its own line.** Under the shade, a hover on a team member's box opens a card whose name has a line of its own, with the role, the model, the state and the price under it. A subagent's card also shows the first three lines it was asked, its two calls before the latest, and its model from the start, before its first request names one.
+
+### Details
+
+**A quick next prompt.** A prompt sent a second or two after a reply keeps its row at working and the chat face's Stop drawn, where before the previous turn's late end put the row back to idle.
+
+**An exited session survives a restart.** A session that exited without an exit code is kept across a daemon restart with its commits, spans, costs and screen, rather than dropped.
+
+**The crash banner after a reload.** The banner that says the daemon crashed stays through a reload of the window, until Not now.
+
+**A Claude typed into a shell.** A `claude` you type yourself into an Emerald shell pane loads the emerald mod too, so its row reads what Claude Code shows, and Keep whole while idle works on that row; the mark goes when that Claude leaves.
+
+**Resume on an exited row.** An exited row's amber Resume sits at the right end of its agent line, where a live row shows its cpu meter, and after the badge when there is no agent line.
+
+**Dropping to a shell and resuming beside it.** A pane dropped to a shell after `/exit` shows its plain ground until the shell is up, and a Claude resumed beside it starts from its own screen with nothing of the old process's left over.
+
+**Shade chords.** Ctrl+Shift+U shades every pane of the tab, or lifts them all when every one is shaded, and Ctrl+Shift+K shades or lifts the focused pane; the prefix keys are `u` and `k`, and the Shade all menus show the chord.
+
+**A multi-select question.** An AskUserQuestion that takes several answers can now be submitted from either card: tick the options with their digits or a click, then press the Submit button (Enter on the chat card). A typed answer goes in and ticks its row; Enter again submits. On the current Claude Code the button reads `Next` until the last question, and its own `Review your answers` step shows as a plain two-button card.
+
+**The chat box.** After a Resume the box's placeholder names the session again, and an empty box no longer shows a scrollbar.
+
+**The trust card.** Under a folder trust dialog the box reads `Answer the trust question above`, the card shows the folder on a line of its own, cut from the left so its name stays in view with the whole path in its tooltip, and an Escape in the view no longer answers the dialog with `No, exit`.
+
+**The sidebar answer card.** Its last button reads `Cancel`, which sends Escape to the session, and an Escape on the card only closes it, reaching no terminal behind it.
+
+**The copy note in its pane.** A copy out of a session pane shows its `Copied 3 lines` note in that pane's bottom right, above the box on the chat face, and Ctrl+C on a selection in the chat view copies and shows the note too.
+
+**Pictures zoom further.** A picture zooms in its own steps from 10 to 800 percent, and its chip reads `100%` when the fitted picture is already at actual size.
+
+**The Pretty view.** A key typed on a JSON file's Pretty view says `Pretty is a formatted copy and does not take edits. Switch to Raw to edit the file.`
+
+**The activity strip's hover.** A span's hover names the model and the effort it ran at, such as `Opus 5.5 · high`, and `then medium` when the level changed.
+
+**The browser pane's toolbar.** `Hide browser chrome` on a browser pane's menu hides its toolbar row and keeps it hidden across a link, a reload and a restart; `Show browser chrome` brings it back.
+
+**Text from a file or a pipe.** `emmer browser fill` and `eval`, `emmer send`, `emmer prompt` and `emmer set --comment` take their text with `--stdin` or `--file <path>` (`--comment-stdin` and `--comment-file` for `set`), so a newline, a `%` or a double quote arrives as written; `fill --clear` empties a field.
+
+**Smaller browser things.** `emmer browser wait` finds text in a field's value or an aria-label too and says which, and `emmer browser events` leaves out Electron's own sandbox console errors.
+
 ## Fixes 797 to 824, 2026-10-16
 
 Twenty-eight fixes, most of them the chat view as it was met in 0.1.769: it now says what Claude is doing as the terminal does, shows what a command printed, answers questions and the folder trust dialog from its card, and keeps an exited conversation on screen. Beside it, the rows behave after an idle compaction and an `/exit`, the window says so when its daemon crashed, and a few small sweeps land. The daemon goes from level 66 to 67, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

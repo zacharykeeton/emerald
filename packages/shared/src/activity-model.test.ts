@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ActivitySession } from './activity.ts';
 import type { ActivityStats } from './activity-model.ts';
+import { activityTotals, monthBounds, monthKey } from './activity-model.ts';
 import { activityStats, cappedStats, cappedStatsTitle, cappedWallMs, clockTime, commitsStats, compareKeys, commitsStatsTitle, dayBounds, dayKey, debtStats, debtStatsTitle, drawnSessions, fiveHourKey, formatSpanLength, historyFromText, liveSpans, mergeStats, packTracks, sessionDebt, statsText, stepWindow, tokensStats, tokensStatsTitle, unitBounds, unitKey, unitLabel, unitWord, weekDays, windowName } from './activity-model.ts';
 import type { ActivityCommit, ActivityRequest } from './activity.ts';
 
@@ -444,4 +445,18 @@ test('liveSpans draws an owed session\'s last stretch to now in the state the st
   // asked stretch, and one it lists in neither grows nothing.
   assert.deepEqual(liveSpans([a], new Set(), now, new Map([['a', 'unread']]))[0]?.debt, a.debt);
   assert.deepEqual(liveSpans([a], new Set(), now)[0], a);
+});
+
+test('monthKey and monthBounds name a local month and its bounds, and activityTotals starts its months at the log\'s first line (M9 fix 836)', () => {
+  assert.equal(monthKey(new Date(2026, 9, 31, 23, 59).getTime()), '2026-10');
+  assert.equal(monthKey(new Date(2026, 0, 1).getTime()), '2026-01');
+  assert.deepEqual(monthBounds('2026-10'), { from: new Date(2026, 9, 1).getTime(), to: new Date(2026, 10, 1).getTime() });
+  assert.deepEqual(monthBounds('2026-12'), { from: new Date(2026, 11, 1).getTime(), to: new Date(2027, 0, 1).getTime() });
+  assert.equal(monthBounds('2026-13'), null);
+  assert.equal(monthBounds('2026-1'), null);
+  const t = activityTotals([], 'C:/x', 0, new Date(2026, 9, 3).getTime(), new Date(2026, 8, 30).getTime());
+  assert.deepEqual(t.months.map((m) => m.month), ['2026-09', '2026-10']);
+  assert.equal(t.months[0]!.from, new Date(2026, 8, 1).getTime(), 'a window from 0 runs its first month from the 1st');
+  assert.equal(t.total.requests, 0);
+  assert.equal(t.firstAt, null);
 });

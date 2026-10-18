@@ -25,6 +25,16 @@
 ; repairs the boxes the fileAssociations installer touched. The ProgId
 ; names stay emerald.md and emerald.json; verify-m7-install.mjs reads them
 ; off the EMERALD_OPENWITH lines below.
+;
+; M9 fix 853: Open in Emerald (Claude) and Open in Emerald (shell) on
+; Explorer's menu for a folder (Directory\shell, %1) and for a folder's
+; empty background (Directory\Background\shell, %V), under SHELL_CONTEXT as
+; the openers are. Each runs the exe with --open-claude or --open-shell
+; before the folder, which launch-argument.ts reads; verify-m7-install.mjs
+; reads them off the EMERALD_FOLDERMENU lines below. On a stock Windows 11
+; menu they sit under Show more options; the top level there takes an
+; IExplorerCommand from a signed sparse package, set aside until the build
+; is signed.
 
 !ifndef SHCNE_ASSOCCHANGED
   !define SHCNE_ASSOCCHANGED 0x08000000
@@ -53,11 +63,25 @@
   ${EndIf}
 !macroend
 
+!macro EMERALD_FOLDERMENU KEY VERB LABEL FLAG ARG
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${KEY}\shell\${VERB}" "" "${LABEL}"
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${KEY}\shell\${VERB}" "Icon" "$INSTDIR\resources\icon.ico"
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${KEY}\shell\${VERB}\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${FLAG} "${ARG}"'
+!macroend
+
+!macro EMERALD_UNFOLDERMENU KEY VERB
+  DeleteRegKey SHELL_CONTEXT "Software\Classes\${KEY}\shell\${VERB}"
+!macroend
+
 !macro customInstall
   nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\bin\emmer-path.ps1" add "$INSTDIR\resources\bin"'
   Pop $0
   !insertmacro EMERALD_OPENWITH "md" "emerald.md" "Markdown"
   !insertmacro EMERALD_OPENWITH "json" "emerald.json" "JSON"
+  !insertmacro EMERALD_FOLDERMENU "Directory\Background" "emerald.claude" "Open in Emerald (Claude)" "--open-claude" "%V"
+  !insertmacro EMERALD_FOLDERMENU "Directory\Background" "emerald.shell" "Open in Emerald (shell)" "--open-shell" "%V"
+  !insertmacro EMERALD_FOLDERMENU "Directory" "emerald.claude" "Open in Emerald (Claude)" "--open-claude" "%1"
+  !insertmacro EMERALD_FOLDERMENU "Directory" "emerald.shell" "Open in Emerald (shell)" "--open-shell" "%1"
   System::Call "shell32::SHChangeNotify(i,i,i,i) (${SHCNE_ASSOCCHANGED}, ${SHCNF_FLUSH}, 0, 0)"
 !macroend
 
@@ -76,5 +100,9 @@
   Pop $0
   !insertmacro EMERALD_UNOPENWITH "md" "emerald.md"
   !insertmacro EMERALD_UNOPENWITH "json" "emerald.json"
+  !insertmacro EMERALD_UNFOLDERMENU "Directory\Background" "emerald.claude"
+  !insertmacro EMERALD_UNFOLDERMENU "Directory\Background" "emerald.shell"
+  !insertmacro EMERALD_UNFOLDERMENU "Directory" "emerald.claude"
+  !insertmacro EMERALD_UNFOLDERMENU "Directory" "emerald.shell"
   System::Call "shell32::SHChangeNotify(i,i,i,i) (${SHCNE_ASSOCCHANGED}, ${SHCNF_FLUSH}, 0, 0)"
 !macroend

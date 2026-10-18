@@ -81,6 +81,24 @@ export function commitsPath(folder: string, query?: string): string {
   return withQuery(`${DOCUMENT_SCHEME}commits/${encodeURIComponent(normalizePath(folder))}`, query);
 }
 
+// A folder's statistics (M9 fix 837), a fifth document kind,
+// emerald://stats/<folder> shaped as the commits tab's path, with no
+// query: the tab keeps no state of its own; the plan it shows (fix 838)
+// is the window's.
+export function statsFolder(path: string): string | null {
+  const m = /^emerald:\/\/stats\/(.+)$/.exec(documentKey(path));
+  if (m === null) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
+}
+
+export function statsPath(folder: string): string {
+  return `${DOCUMENT_SCHEME}stats/${encodeURIComponent(normalizePath(folder))}`;
+}
+
 // The release notes (M9 fix 227): a fourth document kind with one key
 // and no query, opened by the app itself after an install and by the
 // `whats-new` action. The text is docs/WHATS-NEW.md, read through the
@@ -384,6 +402,8 @@ export function tabName(path: string, titles?: ReadonlyMap<string, string>): str
   }
   const folder = commitsFolder(path);
   if (folder !== null) return `Commits · ${folderName(folder) || folder}`;
+  const statsOf = statsFolder(path);
+  if (statsOf !== null) return `Statistics · ${folderName(statsOf) || statsOf}`;
   if (isWhatsNew(path)) return "What's new";
   if (isTranscript(path)) return folderName(path).replace(/\.jsonl$/i, '');
   return isDocument(path) ? path.slice(DOCUMENT_SCHEME.length) : folderName(path);

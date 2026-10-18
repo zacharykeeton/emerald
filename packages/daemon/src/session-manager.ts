@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { HEAD_TOOLS, Limits, MOD_APPEND, MOD_TOOL_RUNNING, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
+import { HEAD_TOOLS, Limits, MOD_APPEND, MOD_TOOL_RUNNING, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, runningKind, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
 import type { HookOutcome, HookPayload, KeptScreen, ModRow, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
 import type { HookResult } from './hook-sink.ts';
 import { RequestError } from './errors.ts';
@@ -230,7 +230,7 @@ export class SessionManager extends EventEmitter {
     this.opts = opts;
     this.shells = opts.shells ?? findShells();
     this.bashrcPath = opts.bashrcPath ?? path.join(os.tmpdir(), `emerald-bashrc-${process.pid}-${randomUUID().slice(0, 8)}`, 'emerald.bashrc');
-    this.launchers = { claude: new ClaudeLauncher({ modDir: opts.claudeModDir ?? null }), shell: new ShellLauncher({ bashrcPath: this.bashrcPath }) };
+    this.launchers = { claude: new ClaudeLauncher({ modDir: opts.claudeModDir ?? null }), shell: new ShellLauncher({ bashrcPath: this.bashrcPath, modDir: opts.claudeModDir ?? null }) };
     this.staleAfterMs = opts.staleAfterMs ?? Limits.staleAfterMs;
     this.shellDoneAfterMs = opts.shellDoneAfterMs ?? Limits.shellDoneAfterMs;
     const interval = opts.staleCheckIntervalMs ?? 30_000;
@@ -539,6 +539,7 @@ export class SessionManager extends EventEmitter {
       exitCode: null,
       compactFrom: null,
       endReason: null,
+      turn: null,
     };
     this.log.info('session resumed', { id: sessionId, kind: rec.info.kind, pid: pty.pid, cwd, args, typed: plan.typed });
     this.changed(rec);
@@ -624,11 +625,12 @@ export class SessionManager extends EventEmitter {
   // same request since it is set the same way, from a menu or the CLI.
   set(sessionId: string, fields: { comment?: string | null; phase?: SessionPhase | null; color?: string; scheme?: string | null; keepWhole?: boolean }): void {
     const rec = this.get(sessionId);
-    // Keep whole (M9 fix 773) is for a Claude session alone, since a
-    // shell's hand-typed claude never loads the mod that asks; refused
-    // before any field is applied, and false on a shell changes nothing.
-    if (fields.keepWhole === true && rec.info.kind !== 'claude') {
-      throw new SessionError('bad-request', `keep whole is for a Claude session emerald started; ${rec.info.name} is a shell`);
+    // Keep whole (M9 fix 773) is for a session with Claude running in it:
+    // a Claude session, or since fix 833 a shell whose hand-typed claude
+    // loads the mod through CLAUDE_CODE_PLUGIN_DIRS. Refused before any
+    // field is applied, and false on a plain shell changes nothing.
+    if (fields.keepWhole === true && runningKind(rec.info) !== 'claude') {
+      throw new SessionError('bad-request', `keep whole is for a session with Claude running in it; ${rec.info.name} is a shell with none`);
     }
     let info = rec.info;
     if (fields.comment !== undefined) {
@@ -679,11 +681,12 @@ export class SessionManager extends EventEmitter {
 
   // Whether this session's Claude was started with the emerald mod (M9
   // fix 725), so the sink can say once when the mod posted nothing. A
-  // shell pane's hand-typed claude posts under the shell's id with no mod
-  // and is not one.
+  // shell's hand-typed claude loads it through CLAUDE_CODE_PLUGIN_DIRS (M9
+  // fix 833) and is one while it runs.
   launchedWithMod(sessionId: string): boolean {
     const launcher = this.launchers.claude;
-    return launcher instanceof ClaudeLauncher && launcher.modDir !== null && this.sessions.get(sessionId)?.info.kind === 'claude';
+    const info = this.sessions.get(sessionId)?.info;
+    return launcher instanceof ClaudeLauncher && launcher.modDir !== null && info !== undefined && runningKind(info) === 'claude';
   }
 
   // The rate-limit windows of a mod's measure (M9 fix 739), emitted as
@@ -1128,7 +1131,10 @@ export class SessionManager extends EventEmitter {
   private noteAgentActivity(rec: SessionRecord, agentId: string, payload: HookPayload): void {
     const activity = toolPhrase(payload.tool_name, payload.tool_input);
     if (activity === null) return;
-    this.patchMember(rec, agentId, (m) => (m.kind !== 'agent' || m.activity === activity ? m : { ...m, activity }));
+    // M9 fix 835: the member's last few phrases ride the same patch, oldest
+    // first, for the card's earlier lines; a member from before the field
+    // starts its list with the activity it already had.
+    this.patchMember(rec, agentId, (m) => (m.kind !== 'agent' || m.activity === activity ? m : { ...m, activity, recent: [...(m.recent ?? (m.activity === null ? [] : [m.activity])), activity].slice(-Limits.memberPhrases) }));
   }
 
   // Applies a change to one team member and publishes it; a member the
@@ -1390,7 +1396,9 @@ export class SessionManager extends EventEmitter {
     // Likewise for the output rate (M41), fanned out on the rate topic to
     // the app, which draws it on the state meter.
     pty.on('rate', (samples: number[]) => this.emit('rate', { id, samples, at: Date.now() }));
-    pty.on('exit', (exitCode: number) => {
+    pty.on('exit', (exitCode: number | undefined) => {
+      // node-pty on Windows sometimes reports no code (M9 fix 831); null is "unknown", which the store keeps.
+      const code = exitCode ?? null;
       trust.dispose();
       if (rec.pty === pty) this.dropTypeAtPrompt(rec);
       // The frame at the exit (M9 fix 159), read once the emulator has
@@ -1401,8 +1409,8 @@ export class SessionManager extends EventEmitter {
         rec.kept = { rows: frame.rows, cursor: frame.cursor };
         this.save();
       });
-      this.apply(rec, { type: 'pty.exit', exitCode, at: Date.now() });
-      this.log.info('session exited', { id, exitCode });
+      this.apply(rec, { type: 'pty.exit', exitCode: code, at: Date.now() });
+      this.log.info('session exited', { id, exitCode: code });
       this.emit('exit', { ...rec.info });
       // After the exit has been announced, so attached clients still get
       // their pty.exit note before the session vanishes under them.

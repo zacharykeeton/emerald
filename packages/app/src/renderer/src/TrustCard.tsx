@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { SessionInfo, TrustDialog } from '@emerald/shared';
 import { trustDialog, trustKeys } from '@emerald/shared';
 import { ackIfDone, typeInto } from './actions.ts';
@@ -19,6 +20,25 @@ interface TrustScreen {
 }
 
 const OPTION_TITLE = 'Sends the arrow keys and Enter to the session';
+
+// M9 fix 847: the dialog's text with the session's own folder on a line of
+// its own under the heading, where the dialog drew its path (which the TUI
+// may wrap); a block inside the pre, so the pre's text still starts with
+// the heading.
+function trustText(screen: TrustScreen | null, dialog: TrustDialog | null, cwd: string, pathClass: string): ReactNode {
+  if (screen === null) return 'Reading the screen…';
+  if (dialog === null) return '(the dialog is not drawn yet)';
+  if (!dialog.pathDropped) return dialog.lines.join('\n');
+  return (
+    <>
+      {dialog.lines[0]}
+      <span className={pathClass} title={cwd}>
+        {cwd}
+      </span>
+      {dialog.lines.slice(1).join('\n')}
+    </>
+  );
+}
 
 function useTrustSend(session: SessionInfo, screen: TrustScreen | null) {
   const dialog: TrustDialog | null = screen === null ? null : trustDialog(screen.rows);
@@ -60,7 +80,7 @@ export function TrustCard({ session, screen, rootRef }: { session: SessionInfo; 
       <div className="chat-ask">
         <div className="chat-ask-heading">{askHeading('trust')}</div>
         <pre className="chat-ask-screen" data-rows={dialog?.lines.length ?? 0}>
-          {screen === null ? 'Reading the screen…' : dialog === null ? '(the dialog is not drawn yet)' : dialog.lines.join('\n')}
+          {trustText(screen, dialog, session.cwd, 'chat-ask-path')}
         </pre>
         <div className="chat-ask-options">
           {(dialog?.options ?? []).map((o) => (
@@ -108,10 +128,10 @@ export function TrustPopover({ session, anchor, onClose, onEnter, onLeave }: Car
   }, [session.state]);
   const { dialog, press, disabled } = useTrustSend(session, screen);
   return (
-    <PopoverCard id={`answer:${session.id}`} className="answer-popover answer-popover-trust" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
+    <PopoverCard id={`answer:${session.id}`} className="answer-popover answer-popover-trust" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave} holdEscape>
       <div className="answer-popover-heading">{askHeading('trust')}</div>
       <pre className="answer-popover-screen" data-rows={dialog?.lines.length ?? 0}>
-        {screen === null ? 'Reading the screen…' : dialog === null ? '(the dialog is not drawn yet)' : dialog.lines.join('\n')}
+        {trustText(screen, dialog, session.cwd, 'answer-popover-path')}
       </pre>
       <div className="answer-popover-options">
         {(dialog?.options ?? []).map((o) => (

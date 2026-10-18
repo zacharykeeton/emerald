@@ -10,3 +10,16 @@ export function copiedNote(text: string): string {
   const chars = [...text].length;
   return `Copied ${chars} character${chars === 1 ? '' : 's'}`;
 }
+
+// M9 fix 849: a note with the pane a copy came from, or null for a note of
+// the window's ("Nothing is waiting", Design Mode's copies).
+export interface CornerNote {
+  text: string;
+  paneId: string | null;
+}
+
+// The note's text where it is drawn: in its own pane, or in the window's
+// corner for a note with no pane.
+export function noteIn(note: CornerNote | null, paneId: string | null): string | null {
+  return note !== null && note.paneId === paneId ? note.text : null;
+}

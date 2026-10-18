@@ -4,7 +4,9 @@ import net from 'node:net';
 import type { SessionInfo } from '@emerald/shared';
 import { CliError, EXIT } from '../cli-error.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
-import { heldPrompt, runPrompt } from './prompt.ts';
+import prompt, { heldPrompt, runPrompt } from './prompt.ts';
+import { stdinText } from '../args.ts';
+import { captureOutput } from '../command.ts';
 
 // A fake emmerd on a private pipe: answers hello, subscribe and
 // session.list, records pty.input, and runs a per-test script when the
@@ -310,4 +312,27 @@ test('--if-idle refuses a working session, exit 1, and sends nothing (M9 fix 741
   assert.match(err.message, /fix-login is working; --if-idle sends only to a session that is not working/);
   assert.deepEqual(submits, []);
   assert.deepEqual(inputs, []);
+});
+
+// M9 fix 855: the prompt's text from stdin or a file.
+test('emmer prompt --stdin sends the piped text less its trailing newline, and refuses it beside text words or --saved', async () => {
+  scenario('idle', (push) => {
+    push(session({ state: 'working', lastPrompt: 'fix it' }));
+    setTimeout(() => push(session({ state: 'done', lastPrompt: 'fix it', lastReply: 'Fixed.' })), 50);
+  });
+  const restoreOut = captureOutput(() => {});
+  const restore = stdinText('fix it\n');
+  try {
+    await prompt.run(['fix-login', '--stdin', '--timeout', '5000']);
+  } finally {
+    restore();
+    restoreOut();
+  }
+  assert.deepEqual(inputs, ['fix it', '\r']);
+  let err = await failure(prompt.run(['fix-login', 'x', '--file', 'f']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'text and --file together');
+  err = await failure(prompt.run(['fix-login', 'tests', '--saved', '--stdin']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, '--saved and --stdin together');
 });

@@ -2,7 +2,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import type { SessionInfo } from '@emerald/shared';
 import type { AgentsRunning } from '../../preload/api.ts';
 import { REFRESH_MS } from './activity-data.ts';
-import { sameAgentsRunning } from './agents-running-model.ts';
+import { liveConversations, sameAgentsRunning } from './agents-running-model.ts';
 
 // The forks' spend since the main thread's last request (M9 fix 277),
 // one answer per conversation id as the main process reads it off the
@@ -51,23 +51,6 @@ function subscribe(l: () => void): () => void {
 
 export function useAgentsRunning(): ReadonlyMap<string, AgentsRunning | null> {
   return useSyncExternalStore(subscribe, () => store);
-}
-
-// The rows whose figure can carry a running part: live, with a
-// conversation bound and a figure to add to; and, since M9 fix 288, a
-// live row with a team out and no status line yet, so its members'
-// models are read before the first figure lands. The second element is
-// the row's own figure, or null for a team-only row, and only goes into
-// the beat's key.
-function liveConversations(sessions: Iterable<SessionInfo>): Array<[string, number | null]> {
-  const out: Array<[string, number | null]> = [];
-  for (const s of sessions) {
-    if (s.conversation === null || s.exitCode !== null || (s.removedAt ?? null) !== null) continue;
-    const usd = s.costUsd ?? null;
-    if (usd === null && s.team.length === 0) continue;
-    out.push([s.conversation.id, usd]);
-  }
-  return out;
 }
 
 // The beat: every live row's conversation asked on mount, whenever one

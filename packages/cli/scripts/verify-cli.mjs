@@ -159,6 +159,15 @@ function emeraldEnv(extra, ...args) {
   return { code: r.status, out, err };
 }
 
+// The same with text piped to the child's stdin (M9 fix 855's --stdin).
+function emeraldIn(input, ...args) {
+  const r = spawnSync(process.execPath, [main, ...args], { env, input, encoding: 'utf8', windowsHide: true });
+  const out = r.stdout ?? '';
+  const err = r.stderr ?? '';
+  fs.appendFileSync(logFile, `$ emerald ${args.join(' ')} < ${JSON.stringify(input)}\n${out}${err}[exit ${r.status}]\n`);
+  return { code: r.status, out, err };
+}
+
 function emeraldJson(...args) {
   const r = emerald(...args);
   let json = null;
@@ -427,6 +436,19 @@ try {
   r = emerald('read', 'alpha');
   expect(r.code === 0 && !r.out.includes('\x1b') && r.out.includes(marker), 'read strips the escapes');
 
+  // M9 fix 855: send --stdin types the piped text verbatim, a % included,
+  // which emmer.cmd's %* would expand on the command line. node is spawned
+  // directly, so this proves the stdin path, not the shim's expansion.
+  r = emeraldIn('echo 100%PATH%\n', 'send', 'alpha', '--stdin', '--enter');
+  expect(r.code === 0 && r.out.includes('sent "echo 100%PATH%" + Enter'), `send --stdin --enter, got ${r.code} ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`);
+  await until('100%PATH% in read --lines 3', () => {
+    const out = emerald('read', 'alpha', '--lines', '3').out;
+    return out.split('\n').some((l) => l === '100%PATH%') ? out : null;
+  });
+  // The output settled, so the M17 cursor read below meets nothing still arriving.
+  emerald('wait', 'alpha', '--for', 'tui-idle', '--timeout', '5000', '--quiet-ms', '500');
+  log('M9 fix 855: send --stdin types the text verbatim, a % included');
+
   // M17: a cursor from one read pages the next; tui-idle waits for the
   // output to go quiet; the screen is the frame, not the stream.
   j = emeraldJson('read', 'alpha', '--json');
@@ -537,11 +559,11 @@ try {
   r = emerald('set', 'beta', '--comment', 'x'.repeat(2001));
   expect(r.code === 1 && /^emmer: comment must be at most 2000 characters \(bad-request\)$/m.test(r.err), 'set with a comment past 2000 characters: the daemon refuses it, exit 1');
   // M9 fix 773: --keep-whole takes on or off, and the daemon refuses the
-  // mark on a shell, whose hand-typed claude never loads the mod.
+  // mark on a shell with no Claude running in it (M9 fix 833).
   r = emerald('set', 'beta', '--keep-whole', 'maybe');
   expect(r.code === 64 && r.err.includes('--keep-whole must be on or off, got "maybe"'), `set --keep-whole maybe: usage, exit 64, got ${r.code} ${JSON.stringify(r.err)}`);
   r = emerald('set', 'beta', '--keep-whole', 'on');
-  expect(r.code === 1 && /^emmer: keep whole is for a Claude session emerald started; beta is a shell \(bad-request\)$/m.test(r.err), `set --keep-whole on a shell: the daemon refuses it, exit 1, got ${r.code} ${JSON.stringify(r.err)}`);
+  expect(r.code === 1 && /^emmer: keep whole is for a session with Claude running in it; beta is a shell with none \(bad-request\)$/m.test(r.err), `set --keep-whole on a shell: the daemon refuses it, exit 1, got ${r.code} ${JSON.stringify(r.err)}`);
 
   // M9 fix 351: set with no session is the session the command runs in,
   // off the EMERALD_SESSION_ID the daemon stamps on every pty (beta's id in

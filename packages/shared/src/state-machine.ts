@@ -36,7 +36,7 @@ export interface HookPayload {
   // The task tools' fields (M9 fix 153): TaskCreate's subject and
   // activeForm, TaskUpdate's taskId and what it sets, TodoWrite's whole
   // list. TaskCreate's id is in the response, not the input.
-  tool_input?: { description?: string; subagent_type?: string; command?: string; file_path?: string; notebook_path?: string; pattern?: string; url?: string; query?: string; skill?: string; subject?: unknown; activeForm?: unknown; taskId?: unknown; status?: unknown; todos?: unknown };
+  tool_input?: { description?: string; subagent_type?: string; prompt?: string; command?: string; file_path?: string; notebook_path?: string; pattern?: string; url?: string; query?: string; skill?: string; subject?: unknown; activeForm?: unknown; taskId?: unknown; status?: unknown; todos?: unknown };
   tool_response?: unknown;
   // PreToolUse and PostToolUse name the call, so the HEAD read before a
   // git-writing command (M58) is matched to the read after it.
@@ -120,9 +120,21 @@ export function summarize(text: unknown): string | null {
   return line.length > SUMMARY_MAX ? `${line.slice(0, SUMMARY_MAX - 1)}…` : line;
 }
 
+// The first lines of an Agent call's prompt for its member's card (M9 fix 835): the first Limits.memberPromptLines lines that say anything, each trimmed and cut at SUMMARY_MAX as summarize cuts one, joined by a newline; null when none does.
+export function promptHead(text: unknown): string | null {
+  if (typeof text !== 'string') return null;
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .slice(0, Limits.memberPromptLines);
+  if (lines.length === 0) return null;
+  return lines.map((l) => (l.length > SUMMARY_MAX ? `${l.slice(0, SUMMARY_MAX - 1)}…` : l)).join('\n');
+}
+
 export type SessionEvent =
   | { type: 'hook'; payload: HookPayload; at: number }
-  | { type: 'pty.exit'; exitCode: number; at: number }
+  | { type: 'pty.exit'; exitCode: number | null; at: number }
   // The shell's prompt said where it is (OSC 9;9, read from the PTY bytes).
   | { type: 'cwd'; cwd: string; at: number }
   // The terminal title on the session changed (the daemon sets the field
@@ -324,11 +336,12 @@ function closeSpan(session: SessionInfo, at: number): SessionInfo {
 // a shell drops the id the span was read from; the SessionStart that
 // follows a /clear opens the next. Claude's conversation title went with
 // it, whether or not the empty title it writes on exit has arrived yet.
-// So did its team.
+// So did its team. A shell's keep-whole mark goes with its Claude (M9 fix
+// 833); a Claude session's stays through its SessionEnd.
 function leave(session: SessionInfo, at: number): SessionInfo {
   let next = closeSpan(session, at);
   if (session.kind === 'shell') {
-    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, effort: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null };
+    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, effort: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null, ...(next.keepWhole === true ? { keepWhole: false } : {}) };
   }
   return transition(followAutoName(clearTeam(next), null), 'idle', at, null);
 }
@@ -612,6 +625,7 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       return transition(next, 'needs-input', at, reason);
     }
     case 'Stop': {
+      if (next.turn && !next.turn.stopped) next = { ...next, turn: { ...next.turn, stopped: true } };
       // A turn that ends with tasks still running is a pause, not a finish:
       // the next task to end wakes the agent, so nobody needs to look yet.
       // The list is set after the transition, which clears it, so a second
@@ -628,6 +642,7 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       return settled.state === 'waiting' && settled.team.some(asksPermission) ? transition(settled, 'needs-input', at, 'agent-permission') : settled;
     }
     case 'StopFailure':
+      if (next.turn && !next.turn.stopped) next = { ...next, turn: { ...next.turn, stopped: true } };
       return { ...transition(next, 'errored', at, null), errorType: payload.error_type ?? 'unknown' };
     case 'SessionEnd':
       // Claude left (leave says what goes with it and what stays). A
@@ -650,9 +665,11 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       if ((next.state !== 'working' && next.state !== 'needs-input') || typeof word !== 'string' || word === '' || word === next.liveVerb) return next;
       return { ...next, liveVerb: word };
     }
-    // The line is the record; UserPromptSubmit stays what moves the row.
+    // The line is the record and UserPromptSubmit stays what moves the row;
+    // the turn's id is kept for TurnComplete below (M9 fix 830).
     case 'TurnStart':
-      return next;
+      if (payload.turn_agent_id !== undefined || typeof payload.turn_id !== 'string' || payload.turn_id === '') return next;
+      return { ...next, turn: { id: payload.turn_id, stopped: false } };
     // A turn that ends with no Stop (an Escape or Ctrl+C mid-turn, or an
     // Escape at a permission dialog, which 2.1.301 reports as reason
     // "answer" with is_aborted false) left the row at working or
@@ -660,10 +677,21 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // TurnComplete and has moved the row on already, so a row still busy
     // here waits on the person: idle, never done, so no chime and no
     // attention. A subagent's turn moves nothing, nor does a paused turn
-    // waiting on an asking member (M9 fixes 738 and 774).
-    case 'TurnComplete':
-      if (payload.turn_agent_id === undefined && (next.state === 'working' || next.state === 'needs-input') && !awaitsAgent(next)) return transition(next, 'idle', at, null);
+    // waiting on an asking member (M9 fixes 738 and 774). A prompt sent
+    // within that second (M9 fix 830) is a new turn the late TurnComplete
+    // must not end, so a TurnComplete is read against the turn TurnStart
+    // opened: another turn's id, or a turn already stopped, moves nothing.
+    case 'TurnComplete': {
+      if (payload.turn_agent_id !== undefined) return next;
+      const open = next.turn ?? null;
+      if (open !== null) {
+        if (open.id !== payload.turn_id) return next;
+        if (open.stopped) return { ...next, turn: null };
+        next = { ...next, turn: null };
+      }
+      if ((next.state === 'working' || next.state === 'needs-input') && !awaitsAgent(next)) return transition(next, 'idle', at, null);
       return next;
+    }
     case 'ToolAsk':
       // The mod's ask at the decision (M9 fix 742) names what is asked
       // for and moves nothing: in auto mode an ask goes to the classifier
@@ -989,24 +1017,33 @@ function clearPermissions(session: SessionInfo): SessionInfo {
 // the input), which the SubagentStart does not carry. It can land before
 // or after the start, so it binds by id, never by order.
 function reduceAgentTool(session: SessionInfo, payload: HookPayload, at: number): SessionInfo {
-  const response = typeof payload.tool_response === 'object' && payload.tool_response !== null ? (payload.tool_response as { agentId?: unknown; description?: unknown }) : null;
+  const response = typeof payload.tool_response === 'object' && payload.tool_response !== null ? (payload.tool_response as { agentId?: unknown; description?: unknown; resolvedModel?: unknown }) : null;
   const id = response?.agentId;
   if (typeof id !== 'string' || id === '') return session;
   const input = payload.tool_input;
   const description = summarize(typeof response?.description === 'string' ? response.description : input?.description);
   const type = typeof input?.subagent_type === 'string' && input.subagent_type !== '' ? input.subagent_type : null;
-  return upsertMember(session, id, 'agent', { type, description }, at);
+  // M9 fix 835: the prompt's first lines (the input's; the response's copy
+  // is the same text) and the model the call resolved, a full id, never
+  // the input's alias.
+  const prompt = promptHead(input?.prompt);
+  const model = typeof response?.resolvedModel === 'string' && response.resolvedModel !== '' ? response.resolvedModel : null;
+  return upsertMember(session, id, 'agent', { type, description, ...(prompt === null ? {} : { prompt }), ...(model === null ? {} : { model }) }, at);
 }
 
 // Adds a running member, or fills in what a known one lacks. The same
 // session comes back when nothing changed, so a repeated hook is no push.
-function upsertMember(session: SessionInfo, id: string, kind: TeamMember['kind'], fill: Partial<Pick<TeamMember, 'type' | 'description' | 'command'>>, at: number): SessionInfo {
+// The prompt and the model (M9 fix 835) are spread in only when known, so a
+// member without them has no such keys.
+function upsertMember(session: SessionInfo, id: string, kind: TeamMember['kind'], fill: Partial<Pick<TeamMember, 'type' | 'description' | 'command' | 'prompt' | 'model'>>, at: number): SessionInfo {
   const member = session.team.find((m) => m.id === id);
   if (member === undefined) {
-    return capTeam(session, [...session.team, { id, kind, type: fill.type ?? null, description: fill.description ?? null, command: fill.command ?? null, startedAt: at, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null }]);
+    return capTeam(session, [...session.team, { id, kind, type: fill.type ?? null, description: fill.description ?? null, command: fill.command ?? null, startedAt: at, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null, ...(fill.prompt === undefined ? {} : { prompt: fill.prompt }), ...(fill.model === undefined ? {} : { model: fill.model }) }]);
   }
-  const filled: TeamMember = { ...member, type: member.type ?? fill.type ?? null, description: member.description ?? fill.description ?? null, command: member.command ?? fill.command ?? null };
-  if (filled.type === member.type && filled.description === member.description && filled.command === member.command) return session;
+  const prompt = member.prompt ?? fill.prompt;
+  const model = member.model ?? fill.model;
+  const filled: TeamMember = { ...member, type: member.type ?? fill.type ?? null, description: member.description ?? fill.description ?? null, command: member.command ?? fill.command ?? null, ...(prompt === undefined ? {} : { prompt }), ...(model === undefined ? {} : { model }) };
+  if (filled.type === member.type && filled.description === member.description && filled.command === member.command && filled.prompt === member.prompt && filled.model === member.model) return session;
   return withTeam(session, session.team.map((m) => (m === member ? filled : m)));
 }
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tokensUp, type NeedsInputReason, type SessionInfo, type SessionSpan, type SessionState, type SessionTask, type TeamMember } from './session.ts';
 import { Limits } from './limits.ts';
-import { SUMMARY_MAX, autoNameFor, classifyHook, groupTasksByOwner, initialState, namesUnknownTask, readTask, reduce, sortTasks, tasksOfAgent, type HookPayload, type SessionEvent } from './state-machine.ts';
+import { SUMMARY_MAX, autoNameFor, classifyHook, groupTasksByOwner, initialState, namesUnknownTask, promptHead, readTask, reduce, sortTasks, tasksOfAgent, type HookPayload, type SessionEvent } from './state-machine.ts';
 import { agentLineText, contextText, contextTitle, hasState, runningKind, tallyText, taskProgress, taskTally, tasksText } from './session-label.ts';
 
 const ALL_STATES: SessionState[] = ['starting', 'idle', 'working', 'waiting', 'needs-input', 'done', 'errored', 'exited'];
@@ -324,6 +324,40 @@ test('team: the Agent tool binds the description by id, before or after the star
   // A PostToolUse of another tool, or one without an agent id, is no member.
   assert.deepEqual(reduce(working, hook('PostToolUse', { tool_name: 'Bash', tool_response: { agentId: 'x' } })).team, []);
   assert.deepEqual(reduce(working, hook('PostToolUse', { tool_name: 'Agent', tool_response: { status: 'done' } })).team, []);
+});
+
+test('team: the Agent tool keeps the first lines of the prompt and the resolved model, once (M9 fix 835)', () => {
+  const working = session({ state: 'working' });
+  const prompted = {
+    ...AGENT_TOOL,
+    tool_input: { ...AGENT_TOOL.tool_input, prompt: 'First line.\n\n  Second line.  \n' + 'x'.repeat(250) + '\nFourth line.\nFifth line.' },
+    tool_response: { ...AGENT_TOOL.tool_response, resolvedModel: 'claude-opus-5-5' },
+  };
+  const head = `First line.\nSecond line.\n${'x'.repeat(199)}…`;
+  const posted = reduce(working, hook('PostToolUse', prompted, T0 + 5));
+  assert.equal(posted.team[0]!.prompt, head);
+  assert.equal(posted.team[0]!.model, 'claude-opus-5-5');
+  // The other order: the start first, the post fills both in.
+  const first = reduce(working, hook('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, T0 + 5));
+  const filled = reduce(first, hook('PostToolUse', prompted, T0 + 6));
+  assert.deepEqual(filled.team, [{ ...first.team[0]!, type: 'Explore', description: 'Verify the history panel', prompt: head, model: 'claude-opus-5-5' }]);
+  // A second post for the same id keeps the first values and is no change.
+  const again = { ...prompted, tool_input: { ...prompted.tool_input, prompt: 'Something else.' }, tool_response: { ...prompted.tool_response, resolvedModel: 'claude-sonnet-5' } };
+  assert.equal(reduce(posted, hook('PostToolUse', again, T0 + 7)).team, posted.team);
+  // A post with neither field leaves the keys out.
+  const plain = reduce(working, hook('PostToolUse', AGENT_TOOL, T0 + 5)).team[0]!;
+  assert.equal('prompt' in plain, false);
+  assert.equal('model' in plain, false);
+});
+
+test('promptHead: the first lines that say anything, trimmed and cut, null when none (M9 fix 835)', () => {
+  assert.equal(promptHead(undefined), null);
+  assert.equal(promptHead(42), null);
+  assert.equal(promptHead('\n  \n'), null);
+  assert.equal(promptHead('  One line.  '), 'One line.');
+  const head = promptHead('a\nb\nc\nd\ne');
+  assert.equal(head?.split('\n').length, Limits.memberPromptLines);
+  assert.equal(head, 'a\nb\nc');
 });
 
 test('team: a Stop with a running subagent and a running shell gives waiting (2) and two members, and the next Stop returns what it leaves out', () => {
@@ -1400,6 +1434,19 @@ test('shell marks (M9 fix 196): C runs the command, D ends it by its code, a lon
   assert.equal(hosted.command!.state, 'ok');
 });
 
+test("a shell's keep-whole mark goes when its Claude leaves, a Claude session's stays (M9 fix 833)", () => {
+  const shell = reduce(session({ kind: 'shell', shell: 'cmd', claudeSessionId: null, state: 'idle', shellCwd: 'C:\\repo', cwd: 'C:\\repo' }), hook('SessionStart', { source: 'startup' }, T0 + 2000));
+  const marked = { ...shell, keepWhole: true };
+  assert.equal(reduce(marked, hook('SessionEnd', { reason: 'prompt_input_exit' }, T0 + 3000)).keepWhole, false, 'its SessionEnd');
+  const back = reduce(reduce(marked, hook('Stop', {}, T0 + 3000)), { type: 'shell-mark', mark: 'D', code: null, at: T0 + 4000, doneAfterMs: 60_000 });
+  assert.equal(back.claudeSessionId, null, 'the prompt came back (fix 360)');
+  assert.equal(back.keepWhole, false, 'the prompt coming back');
+  const plain = reduce(session({ kind: 'shell', shell: 'cmd', claudeSessionId: null, state: 'idle', shellCwd: 'C:\\repo', cwd: 'C:\\repo' }), hook('SessionStart', { source: 'startup' }, T0 + 2000));
+  assert.equal(Object.hasOwn(reduce(plain, hook('SessionEnd', { reason: 'exit' }, T0 + 3000)), 'keepWhole'), false, 'an unmarked shell gains no key');
+  const claude = { ...session({ kind: 'claude', state: 'idle' }), keepWhole: true };
+  assert.equal(reduce(claude, hook('SessionEnd', { reason: 'prompt_input_exit' }, T0 + 3000)).keepWhole, true, "a Claude session's mark stays");
+});
+
 test('a cmd row (M9 fix 649): its prompt back with Claude bound and a hook landed is the leaving; before any hook, on another shell or with no Claude, a bare D changes nothing', () => {
   const mark = (s: SessionInfo, m: 'A' | 'C' | 'D', at: number, code: number | null = null): SessionInfo => reduce(s, { type: 'shell-mark', mark: m, code, at, doneAfterMs: 60_000 });
   const cmd = session({ kind: 'shell', shell: 'cmd', claudeSessionId: null, state: 'idle', shellCwd: 'C:\\repo\\sub', cwd: 'C:\\repo\\sub' });
@@ -1612,6 +1659,50 @@ test('TurnStart moves nothing but the clock (M9 fix 738)', () => {
   const after = reduce(session({ state: 'idle' }), hook('TurnStart', { turn_id: 't-1' }));
   assert.equal(after.state, 'idle');
   assert.equal(after.lastEventAt, T0 + 5000);
+  assert.deepEqual(after.turn, { id: 't-1', stopped: false });
+  const agents = reduce(session({ state: 'idle' }), hook('TurnStart', { turn_id: 't-2', turn_agent_id: 'a1' }));
+  assert.equal(Object.hasOwn(agents, 'turn'), false, "a subagent's TurnStart opens no turn (M9 fix 830)");
+});
+
+test('a TurnComplete of the turn before, landing after the next prompt, leaves the new turn working (M9 fix 830)', () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'one' }, T0 + 10));
+  s = reduce(s, hook('TurnStart', { turn_id: 't-1' }, T0 + 11));
+  s = reduce(s, hook('Stop', {}, T0 + 40));
+  assert.equal(s.state, 'done');
+  s = reduce(s, hook('UserPromptSubmit', { prompt: 'two' }, T0 + 42));
+  s = reduce(s, hook('TurnComplete', { turn_id: 't-1', is_aborted: false, duration_ms: 37324 }, T0 + 43));
+  assert.equal(s.state, 'working');
+  assert.equal(s.turn, null);
+  s = reduce(s, hook('TurnStart', { turn_id: 't-2' }, T0 + 44));
+  assert.deepEqual(s.turn, { id: 't-2', stopped: false });
+});
+
+test("a TurnComplete of the turn before that lands after the next turn's TurnStart moves nothing either (M9 fix 830)", () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'one' }, T0 + 10));
+  s = reduce(s, hook('TurnStart', { turn_id: 't-1' }, T0 + 11));
+  s = reduce(s, hook('Stop', {}, T0 + 40));
+  s = reduce(s, hook('UserPromptSubmit', { prompt: 'two' }, T0 + 42));
+  s = reduce(s, hook('TurnStart', { turn_id: 't-2' }, T0 + 43));
+  s = reduce(s, hook('TurnComplete', { turn_id: 't-1', is_aborted: false, duration_ms: 37324 }, T0 + 44));
+  assert.equal(s.state, 'working');
+  assert.deepEqual(s.turn, { id: 't-2', stopped: false });
+});
+
+test('an Escape (TurnStart and its own TurnComplete, no Stop) still puts the row at idle (M9 fixes 774 and 830)', () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'two' }, T0 + 10));
+  s = reduce(s, hook('TurnStart', { turn_id: 't-2' }, T0 + 11));
+  s = reduce(s, hook('TurnComplete', { turn_id: 't-2', reason: 'aborted', is_aborted: true }, T0 + 20));
+  assert.equal(s.state, 'idle');
+  assert.equal(s.turn, null);
+});
+
+test('a StopFailure ends its turn for TurnComplete as a Stop does (M9 fix 830)', () => {
+  let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'one' }, T0 + 10));
+  s = reduce(s, hook('TurnStart', { turn_id: 't-1' }, T0 + 11));
+  s = reduce(s, hook('StopFailure', { error_type: 'rate_limit' }, T0 + 20));
+  s = reduce(s, hook('UserPromptSubmit', { prompt: 'two' }, T0 + 30));
+  s = reduce(s, hook('TurnComplete', { turn_id: 't-1', is_aborted: false }, T0 + 31));
+  assert.equal(s.state, 'working');
 });
 
 test("a ToolAsk names the ask without moving the state, a PermissionRequest keeps it, the call's PostToolUse clears it (M9 fix 742)", () => {

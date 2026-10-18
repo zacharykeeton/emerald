@@ -149,6 +149,10 @@ try {
   }
   if (!screen.includes(marker)) console.error(`[verify] the Claude pane's screen: ${JSON.stringify(screen.split('\n').filter((l) => l.trim() !== '').slice(-25))}`);
   expect(screen.includes(marker), 'the earlier turn is back on screen');
+  // M9 fix 842: the row's Resume, clicked right after the drop, lands inside
+  // the feed's detach hold, so the new pane would be written the old
+  // process's ring, its exit note last; the feed starts over on a new pid.
+  expect(!/\[process exited with code/.test(screen), `fix 842: the pane the Claude resumed into holds none of the old process's last screen, got ${JSON.stringify(screen.split('\n').filter((l) => l.trim() !== '').slice(-25))}`);
   step(`resume: claude --resume reported in ${idleAt - t0} ms with source=resume and the same id; the earlier reply "${marker}" is on screen`);
   await s.screenshot('m5-claude-resume.png');
 
@@ -195,8 +199,8 @@ try {
   const stopsBefore = eventsFor(shellId).filter((e) => e.event === 'Stop').length;
   while (Date.now() < stopDeadline2 && eventsFor(shellId).filter((e) => e.event === 'Stop').length === stopsBefore) await sleep(200);
   expect(eventsFor(shellId).filter((e) => e.event === 'Stop').length > stopsBefore, 'Stop logged for the hosted conversation');
-  // M9 fix 726: a hand-typed claude has no --plugin-dir.
-  expect(eventsFor(shellId).filter((e) => e.event === 'Stop').every((e) => e.mod !== true), 'a claude typed into a shell pane posts through the hook file alone, and its row moves as today');
+  // M9 fix 833: a hand-typed claude loads the emerald mod through the shell's CLAUDE_CODE_PLUGIN_DIRS (fix 726's read, inverted).
+  expect(eventsFor(shellId).some((e) => e.mod === true), `fix 833: a claude typed into a shell pane loads the emerald mod, got ${eventsFor(shellId).map((e) => `${e.event}${e.mod ? ':mod' : ''}`).join(', ')}`);
   await sleep(500);
   await typeLine(s, '/exit');
   // Claude leaves: the shell is a shell again, unbound, still in the

@@ -102,11 +102,20 @@ try {
   // tooltip used to carry it; the word itself has no title attribute.
   const stateSel = `[data-pane-id=${JSON.stringify(p1.id)}] .pane-state`;
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(stateSel)}).getAttribute('title')`)) === null, 'the state word carries no tooltip');
-  // The chat button gives with the splits at the third squeeze level (M9
-  // fix 724), so the state word shows on the harness's narrow pane again.
-  const titleRead = await s.evalJs(`(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1.id)}] .pane-title'); const f = t.querySelector('.pane-face-toggle'); return { width: Math.round(t.getBoundingClientRect().width), level: Number(t.dataset.squeeze ?? 0), state: t.querySelector('.pane-state').getBoundingClientRect().width, toggle: f === null ? null : getComputedStyle(f).display }; })()`);
-  expect(titleRead.state > 0 && titleRead.level < 5 && (titleRead.level < 3 || titleRead.toggle === 'none'), `fix 724: the state word shows and the chat button is gone from level 3, got ${JSON.stringify(titleRead)}`);
-  step(`fix 724: at ${titleRead.width} px the state word shows at level ${titleRead.level} and the chat button is ${titleRead.toggle === 'none' ? 'gone' : 'shown'}`);
+  // The chat button holds with the splits to the eighth squeeze level
+  // since M9 fix 840, after the state word (the fifth), so on the
+  // harness's narrow pane the word can be gone; pane 1 is widened to
+  // three quarters of the root split for the read and the card, and put
+  // back after.
+  const titleProbe = `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1.id)}] .pane-title'); const f = t.querySelector('.pane-face-toggle'); return { width: Math.round(t.getBoundingClientRect().width), level: Number(t.dataset.squeeze ?? 0), state: t.querySelector('.pane-state').getBoundingClientRect().width, toggle: f === null ? null : getComputedStyle(f).display }; })()`;
+  const titleLayout = await getLayout(s);
+  expect(titleLayout.root.kind === 'split' && titleLayout.root.first.kind === 'pane' && titleLayout.root.first.id === p1.id, 'pane 1 is the first leaf of the root split');
+  const titleRatioBefore = titleLayout.root.ratio;
+  await zreq(s, 'layout.set', { layout: { ...titleLayout, root: { ...titleLayout.root, ratio: 0.75 } } });
+  await s.waitFor(`(${titleProbe}).level < 5`, 'pane 1 widened below the fifth level', 5000);
+  const titleRead = await s.evalJs(titleProbe);
+  expect(titleRead.state > 0 && titleRead.level < 5 && titleRead.toggle !== 'none', `fix 840: the state word shows and the chat button holds below level 8, got ${JSON.stringify(titleRead)}`);
+  step(`fix 840: at ${titleRead.width} px the state word shows at level ${titleRead.level} and the chat button is ${titleRead.toggle === null ? 'absent' : 'shown'}`);
   const stateAt = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(stateSel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stateAt.x, y: stateAt.y });
   const stateCardSel = `.turn-popover [data-part="state"] .turn-card-text`;
@@ -115,6 +124,8 @@ try {
   expect(reason.includes('permission'), `the card explains the reason, got ${JSON.stringify(reason)}`);
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`!document.querySelector('.turn-popover')`, 'Escape closes the card');
+  const titleLayoutAfter = await getLayout(s);
+  await zreq(s, 'layout.set', { layout: { ...titleLayoutAfter, root: { ...titleLayoutAfter.root, ratio: titleRatioBefore } } });
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
 
   await post({ hook_event_name: 'Notification', notification_type: 'agent_needs_input' });

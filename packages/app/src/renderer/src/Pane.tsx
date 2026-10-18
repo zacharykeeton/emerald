@@ -44,6 +44,7 @@ import { SessionMark } from './session-mark.tsx';
 import { RosterUnits } from './roster.tsx';
 import { ShadeIcon } from './icons.tsx';
 import { SHADE_AFTER_CHOICES, SHADE_TICK_MS, shadeActivity, shadeAfterLabel, shadeWait, shadeablePanes, shouldAutoShade } from './shade-model.ts';
+import { liftByPerson, paneLifted, paneTouched, touchPane } from './shade-touch.ts';
 import { shadeName } from './shade-name-model.ts';
 import { loadSchemes, setScheme, useScheme } from './scheme-store.ts';
 import { useRates } from './rates-store.ts';
@@ -65,7 +66,8 @@ import { RollingFigure } from './RollingFigure.tsx';
 import { HushButton } from './HushButton.tsx';
 import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
-import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPane, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
+import { PaneNote } from './CheatSheet.tsx';
+import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
   paneId: string;
@@ -83,27 +85,6 @@ const clockTime = (at: number): string => new Date(at).toLocaleTimeString([], { 
 // How long the exited notice (M9 fix 313) stays up after the last blocked
 // key or paste, each one restarting the same four seconds.
 const EXITED_NOTICE_MS = 4000;
-
-// The idle shade's memory (M63), per pane and per window: when a key or
-// a click last went into the pane, and the session's stateSince when a
-// person last lifted its shade, which holds the shade up until the
-// session's state moves again. Outside the store, since the sidebar has
-// no use for it and a keystroke must not re-render every consumer.
-const paneTouched = new Map<string, number>();
-const paneLifted = new Map<string, number>();
-
-function touchPane(paneId: string): void {
-  paneTouched.set(paneId, Date.now());
-}
-
-// A person lifting the shade, by a click, a key or a focus into the pane:
-// the pane counts as touched and the lift is remembered against the
-// session's state, so the idle timer leaves it up.
-function liftByPerson(paneId: string, session: SessionInfo | undefined): void {
-  touchPane(paneId);
-  if (session !== undefined) paneLifted.set(paneId, session.stateSince);
-  liftPane(paneId);
-}
 
 // One leaf of the split tree: a terminal on a session, or a picker when the
 // pane is empty. Clicking anywhere in it makes it the focused pane; a right
@@ -320,32 +301,35 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // clip (M9 fix 77): both rosters are rendered and the CSS shows one by
   // data-squeeze, which the hook sets by measuring the state word at each
   // level. A second level drops the tokens (M9 fix 146), which hold
-  // until then, and the checklist count with them (M9 fix 153). Then the
-  // buttons give, in the order of M9 fix 208: the two splits and the chat
-  // button at the third level (a narrow pane is not one to split or flip,
-  // and the chords and the menu still do; M9 fix 724) and the context percent at the fourth (fix 222).
-  // Then the line itself, in the order of M9 fix 237: the state word at
-  // the fifth (the row and the shade face still say it, and the mark's
-  // colour and motion carry it here), the name at the sixth with the
-  // reading, the folded roster and the seam (a pane too narrow to name
-  // has no room for a figure), hide and close at the seventh (a pane
-  // that narrow is one to zoom or shade, not close, and the keys and
-  // the menu still close it); the mark, the zoom and the shade never
-  // give, since the zoom is what a narrow pane needs most (fix 181 had
-  // it go first, and a person widened the window to reach the button
-  // whose point was not to) and the shade is the other thing a person
-  // does to a sliver of a pane. The hook measures the state word while
-  // it shows; from the fifth level the word is gone and the title's own
+  // until then, and the checklist count with them (M9 fix 153). The
+  // dollars and the context percent go at the third (fix 222). Then the
+  // line itself, in the order of M9 fix 237: the state word at the fifth
+  // (the row and the shade face still say it, and the mark's colour and
+  // motion carry it here), the name at the sixth with the reading, the
+  // folded roster and the seam (a pane too narrow to name has no room
+  // for a figure), and the title's own room tightened at the seventh.
+  // The buttons give only once every word and figure has (M9 fix 840,
+  // the user's rule): the chat button and the two splits at the eighth
+  // (a narrow pane is not one to split or flip, and the chords and the
+  // menu still do; fix 724), hide and close at the ninth (a pane that
+  // narrow is one to zoom or shade, not close, and the keys and the
+  // menu still close it); the mark, the zoom and the shade never give,
+  // since the zoom is what a narrow pane needs most (fix 181 had it go
+  // first, and a person widened the window to reach the button whose
+  // point was not to) and the shade is the other thing a person does to
+  // a sliver of a pane. The hook measures the state word while it
+  // shows; from the fifth level the word is gone and the title's own
   // overflow is the measure, the buttons' box being the last thing on
-  // the line. Every title has the seven levels (eight counting the
-  // whole line at 0); one without tokens or a count passes through an
-  // empty second, which is simpler than renumbering. The reading's box is
+  // the line. Every title has the nine levels (ten counting the whole
+  // line at 0); one without tokens or a count passes through an empty
+  // second, and every title through the fourth, which hides nothing of
+  // its own, which is simpler than renumbering. The reading's box is
   // measured too (M9 fix 817): once its words are gone its percent and
   // dollars are flex: none and run past its width unseen, so a level at
   // which the box overflows does not fit; hidden, it measures 0 against 0.
   const titleRef = useRef<HTMLDivElement>(null);
   const team = session === undefined ? null : teamCounts(session);
-  useSqueeze(titleRef, 8, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
+  useSqueeze(titleRef, 10, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
   // The session's colour on the pane as well as its title (M9 fix 43): the
   // focus ring is the pane's ::after, so it reads the variable from here.
   // An empty pane and a session with no colour keep the amber.
@@ -616,7 +600,7 @@ function ShadeButton({ paneId, session, shaded }: { paneId: string; session: Ses
       <button
         className="pane-shade-toggle"
         data-shaded={shaded || undefined}
-        title={shaded ? 'Lift the shade (a click on the pane does too); right-click for Shade all and the idle shade' : shadeTitle()}
+        title={shaded ? `Lift the shade (a click on the pane does too, and ${plainKeyFor('shade-pane')}); right-click for Shade all and the idle shade` : `${shadeTitle()} (${plainKeyFor('shade-pane')})`}
         onClick={() => (shaded ? liftByPerson(paneId, session) : shadePane(paneId))}
         onContextMenu={(ev) => {
           ev.preventDefault();
@@ -636,6 +620,8 @@ function ShadeButton({ paneId, session, shaded }: { paneId: string; session: Ses
           items={[
             {
               label: 'Shade all',
+              // M9 fix 844: the one chord does whichever of the two rows the tab needs.
+              hint: plainKeyFor('shade-all'),
               title: 'Pull the shade over every pane of this tab',
               onClick: () => {
                 setMenu(null);
@@ -644,6 +630,7 @@ function ShadeButton({ paneId, session, shaded }: { paneId: string; session: Ses
             },
             {
               label: 'Lift all',
+              hint: plainKeyFor('shade-all'),
               title: 'Lift every shade on this tab',
               onClick: () => {
                 setMenu(null);
@@ -771,7 +758,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
   };
   return (
     <span className="pane-title-actions" onMouseDown={(ev) => ev.preventDefault()}>
-      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with the splits at the third level (M9 fix 724); the chord stays. */}
+      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with the splits (M9 fix 724), at the eighth level once every word has gone (fix 840); the chord stays. */}
       {face !== undefined && session !== undefined && (
         <button
           className="pane-face-toggle"
@@ -941,7 +928,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
     },
     [],
   );
-  const { zoomedPaneId, fontSizes, findOpen } = useUi();
+  const { zoomedPaneId, fontSizes, findOpen, dropping } = useUi();
   const fontSize = fontSizes.get(paneId) ?? FONT_SIZE_DEFAULT;
   // The search addon is built with the terminal; the find bar (M26) gets
   // it through state rather than a ref so the bar follows a new terminal
@@ -1065,6 +1052,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
     <div
       className="term-wrap"
       data-kept={kept ? '' : undefined}
+      data-dropping={dropping.has(sessionId) ? '' : undefined}
       // A click anywhere in the pane dismisses the exited notice, except
       // the notice's own Resume button, which stops the click reaching
       // here (M9 fix 313).
@@ -1073,6 +1061,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       }}
     >
       <div className="term-host" ref={hostRef} data-scheme={scheme.name} style={{ '--pane-bg': scheme.background } as CSSProperties} />
+      {face !== 'chat' && <PaneNote paneId={paneId} />}
       {/* M9 fix 689: the chat face over the terminal, which stays mounted and hidden under it; inside .term-wrap so the shade covers both. */}
       {face === 'chat' && session !== undefined && <ChatView paneId={paneId} session={session} focused={focused} shaded={shaded} />}
       {findSeq !== undefined && term !== null && search !== null && <FindBar paneId={paneId} term={term} search={search} focusSeq={findSeq} />}
@@ -1085,20 +1074,23 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
           and a click in the pane does not put it away. */}
       {sessionState === 'exited' && (notice || face === 'chat') && session !== undefined && (
         <div className="pane-exited-notice" data-exited-notice="">
-          <div className="pane-exited-notice-title">exited</div>
-          <div className="pane-exited-notice-body">
-            {face === 'chat' ? "This session's process has ended; its conversation is kept." : "This session's process has ended; its last screen is kept."}
+          {/* M9 fix 841: on a solid card, as a dialog is, on both faces. */}
+          <div className="pane-exited-notice-card">
+            <div className="pane-exited-notice-title">exited</div>
+            <div className="pane-exited-notice-body">
+              {face === 'chat' ? "This session's process has ended; its conversation is kept." : "This session's process has ended; its last screen is kept."}
+            </div>
+            <button
+              className="pane-exited-notice-resume"
+              title={resumeTitle(session)}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                void resumeSession(session.id).catch(warn('resume'));
+              }}
+            >
+              Resume
+            </button>
           </div>
-          <button
-            className="pane-exited-notice-resume"
-            title={resumeTitle(session)}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              void resumeSession(session.id).catch(warn('resume'));
-            }}
-          >
-            Resume
-          </button>
         </div>
       )}
     </div>
@@ -1604,7 +1596,7 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     const text = term.getSelection();
     if (text === '') return false;
     // M9 fix 806: with a note in the corner of what was copied.
-    copyAndNote(text);
+    copyAndNote(text, paneIdRef.current);
     return true;
   };
   term.attachCustomKeyEventHandler((ev) => {

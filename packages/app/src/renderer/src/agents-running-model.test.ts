@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentOut, runningFigure, sameAgentsRunning } from './agents-running-model.ts';
+import { agentOut, liveConversations, runningFigure, sameAgentsRunning } from './agents-running-model.ts';
 import type { TeamMember } from '@emerald/shared';
+import { aSession } from './test-support.ts';
+
+test('liveConversations leaves out an exited row whatever its exit code (M9 fix 831)', () => {
+  const live = aSession({ id: 'live', kind: 'claude', state: 'working', conversation: { id: 'c-live', cwd: 'C:/r', args: [] }, costUsd: 1.5 });
+  const gone = aSession({ id: 'gone', kind: 'claude', state: 'exited', exitCode: null, conversation: { id: 'c-gone', cwd: 'C:/r', args: [] }, costUsd: 2 });
+  assert.deepEqual(liveConversations([live, gone]), [['c-live', 1.5]]);
+});
 
 // M9 fix 277: the row's and the card's dollar figure with the forks'
 // spend since the main thread's last request, and the bare figure

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DIRTY_MARK, PANES, WHATS_NEW_PATH, activate, activityWindow, activityPath, closeAll, commitsFolder, commitsPath, closeFile, closeOthers, defaultView, deletedFilePanes, dirtyMark, emptyTabs, isDocument, isAnimatedKind, isFileTab, isImage, isJson, isMarkdown, isMermaidFile, isPreview, isTranscript, isWhatsNew, openFile, pinTab, quickSuggestionsFor, renameFilePanes, renameTabs, setTabQuery, setView, tabName, tabQuery, tabsFromJson, viewFor } from './tabs-model.ts';
+import { statsFolder, statsPath } from './tabs-model.ts';
 import type { Layout, LayoutNode } from '@emerald/shared';
 
 const a = 'C:\\repo\\a.ts';
@@ -208,6 +209,17 @@ test('a commits document names its folder in the URL, encoded, and the tab by it
   assert.equal(tabName(doc), 'Commits · emerald');
   const m = openFile(openFile(emptyTabs(), doc), commitsPath('C:\\Users\\z\\code\\emerald\\'));
   assert.deepEqual(m.files, [doc], 'the same folder either way is one tab');
+});
+
+test('a statistics document names its folder as the commits one does, and neither kind reads the other (M9 fix 837)', () => {
+  const doc = statsPath('C:/Users/z/code/emerald');
+  assert.equal(doc, 'emerald://stats/C%3A%5CUsers%5Cz%5Ccode%5Cemerald');
+  assert.equal(isDocument(doc), true);
+  assert.equal(statsFolder(doc), 'C:\\Users\\z\\code\\emerald');
+  assert.equal(statsFolder(commitsPath('C:/Users/z/code/emerald')), null);
+  assert.equal(statsFolder(a), null);
+  assert.equal(commitsFolder(doc), null);
+  assert.equal(tabName(doc), 'Statistics · emerald');
 });
 
 test("a document's query is its state, kept under its key: an open with one sets it, one without keeps it, a close drops it and the JSON carries it (M9 fix 178)", () => {

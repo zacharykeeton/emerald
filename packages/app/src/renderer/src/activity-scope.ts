@@ -1,3 +1,4 @@
+import { underFolder } from '@emerald/shared';
 import type { ActivitySession } from '@emerald/shared';
 
 // Which of the day's rows the Activity tab's strip shows (M66). The rail
@@ -38,18 +39,9 @@ export function scopedSessions(list: readonly ActivitySession[], scope: Activity
   });
 }
 
-// Equal to the folder or inside it, whichever way the slashes lean and
-// whatever the case, since both spellings reach the store.
-export function underFolder(path: string, folder: string): boolean {
-  const a = fold(path);
-  const b = fold(folder);
-  return a === b || a.startsWith(`${b}\\`);
-}
-
-function fold(p: string): string {
-  const out = p.replace(/[\\/]+/g, '\\').toLowerCase();
-  return out.length > 3 && out.endsWith('\\') ? out.slice(0, -1) : out;
-}
+// The prefix rule is shared's since M9 fix 836, so the daemon's folder
+// totals keep the rows this scope does.
+export { underFolder };
 
 // The head's words for the scope, before the day's numbers; the here
 // scope names the tab holding the pane.

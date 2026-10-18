@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { answerOptions, askQuestion, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
+import { optionKeys, submitMoves } from './screen-prompt-model.ts';
 
 // A permission dialog as Claude Code 2.1 draws it, the transcript above
 // it, the cursor on the dialog's last row.
@@ -294,6 +295,139 @@ test('freeAnswerKeys: the digit unless the pointer is there, then the clears and
   assert.deepEqual(freeAnswerKeys(askQuestion(FREE_MOVED)!, 'Medium please'), { move: null, text: 'Medium please' });
   const typed = ASK_ONE.map((r) => (r === '  4. Type something.' ? '❯ 4. 444' : r === '❯ 1. Green' ? '  1. Green' : r));
   assert.deepEqual(freeAnswerKeys(askQuestion(typed)!, 'Medium please'), { move: null, text: '\x7f\x7f\x7fMedium please' });
+});
+
+// M9 fix 845: three screens of a multi-select captured from a real Claude
+// Code 2.1.302 in a harness session on 2026-10-18, rows verbatim with
+// trailing spaces trimmed, from the dialog's rule down. The Submit row sits
+// right under the free row with no blank (MULTI_ONE); four Downs from
+// option 1 put the pointer on it, after Enter had ticked Lint and the 2
+// Types (MULTI_SUBMIT); with the pointer on the free row a digit was typed
+// into the field and ticked it, and one DEL and text replaced it
+// (MULTI_TYPED). Enter on an option or the field toggles it; Enter on the
+// Submit row goes to a Review your answers tab, a numbered select of
+// Submit answers and Cancel drawn with no footer.
+const MULTI_ONE = [
+  RULE,
+  '←  ☐ Checks  ✔ Submit  →',
+  '',
+  'Which checks should the sample run?',
+  '',
+  '❯ 1. [ ] Lint',
+  '         Style only.',
+  '  2. [ ] Types',
+  '         The compiler.',
+  '  3. [ ] Tests',
+  '         The unit suites.',
+  '  4. [ ] Type something',
+  '     Submit',
+  RULE,
+  '  5. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · Esc to cancel',
+];
+const MULTI_SUBMIT = [
+  RULE,
+  '←  ☒ Checks  ✔ Submit  →',
+  '',
+  'Which checks should the sample run?',
+  '',
+  '  1. [✔] Lint',
+  '         Style only.',
+  '  2. [✔] Types',
+  '         The compiler.',
+  '  3. [ ] Tests',
+  '         The unit suites.',
+  '  4. [ ] Type something',
+  '❯    Submit',
+  RULE,
+  '  5. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · ctrl+g to edit in Notepad · Esc to cancel',
+];
+const MULTI_TYPED = [
+  RULE,
+  '←  ☒ Checks  ✔ Submit  →',
+  '',
+  'Which checks should the sample run?',
+  '',
+  '  1. [ ] Lint',
+  '         Style only.',
+  '  2. [ ] Types',
+  '         The compiler.',
+  '  3. [ ] Tests',
+  '         The unit suites.',
+  '❯ 4. [✔] Some words',
+  '     Submit',
+  RULE,
+  '  5. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · ctrl+g to edit in Notepad · Esc to cancel',
+];
+// The 0.1.797 postscript's screen, rebuilt in the capture's row shape.
+const MULTI_797 = [
+  RULE,
+  '←  ☒ Rows  ✔ Submit  →',
+  '',
+  'Which retro rows should I make? And anything from your side, to keep or to change?',
+  '',
+  '❯ 1. [✔] All of them (Recommended)',
+  '  2. [ ] 1: install:check warnings',
+  '  3. [ ] 2: settings.local.json words',
+  '  4. [ ] Type something',
+  '     Submit',
+  RULE,
+  '  5. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · Esc to cancel',
+];
+
+test('askQuestion: a multi-select reads its Submit row as the button, never a description (fix 845)', () => {
+  const q = askQuestion(MULTI_797);
+  assert.ok(q !== null);
+  assert.equal(q.multi, true);
+  assert.deepEqual(q.submit, { label: 'Submit', pointer: false });
+  assert.equal(q.options[3]!.description, '');
+  assert.deepEqual(q.options.map((o) => o.label), ['[✔] All of them (Recommended)', '[ ] 1: install:check warnings', '[ ] 2: settings.local.json words', '[ ] Type something', 'Chat about this']);
+  assert.equal(freeOption(q)?.key, '4');
+  assert.equal(freeText(freeOption(q)!), '');
+  for (const [name, rows, pointer] of [['MULTI_ONE', MULTI_ONE, false], ['MULTI_SUBMIT', MULTI_SUBMIT, true], ['MULTI_TYPED', MULTI_TYPED, false]] as const) {
+    const m = askQuestion(rows);
+    assert.ok(m !== null, name);
+    assert.equal(m.multi, true, name);
+    assert.deepEqual(m.submit, { label: 'Submit', pointer }, name);
+    assert.ok(!m.options.some((o) => o.description.includes('Submit')), name);
+    assert.equal(freeOption(m)?.key, '4', name);
+  }
+  assert.equal(askQuestion(MULTI_ONE)!.options[0]!.description, 'Style only.');
+  assert.equal(freeText(freeOption(askQuestion(MULTI_TYPED)!)!), 'Some words');
+  // The first tab of two draws Next on the same row.
+  const next = askQuestion(MULTI_ONE.map((r) => (r === '     Submit' ? '     Next' : r === '←  ☐ Checks  ✔ Submit  →' ? '←  ☐ Checks  ☐ Targets  ✔ Submit  →' : r)));
+  assert.deepEqual(next?.submit, { label: 'Next', pointer: false });
+  // Every single-select reads no box and no button.
+  const all = ['←  ☒ answered Colour  ☒ Size  ✓ Submit  →', '', 'Ready?', '', '❯ 1. Submit answers', '  2. Cancel', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'];
+  for (const [name, rows] of [['ASK_ONE', ASK_ONE], ['ASK_TABS', ASK_TABS], ['ASK_TABS_2', ASK_TABS_2], ['FREE_MOVED', FREE_MOVED], ['FREE_TYPED', FREE_TYPED], ['all', all]] as const) {
+    const s = askQuestion(rows);
+    assert.ok(s !== null, name);
+    assert.equal(s.multi, false, name);
+    assert.equal(s.submit, null, name);
+  }
+});
+
+test('submitMoves, freeAnswerKeys and optionKeys on a multi-select (fix 845)', () => {
+  assert.equal(submitMoves(askQuestion(MULTI_797)!), 4);
+  const third = MULTI_797.map((r) => (r === '❯ 1. [✔] All of them (Recommended)' ? '  1. [✔] All of them (Recommended)' : r === '  3. [ ] 2: settings.local.json words' ? '❯ 3. [ ] 2: settings.local.json words' : r));
+  assert.equal(submitMoves(askQuestion(third)!), 2);
+  assert.equal(submitMoves(askQuestion(MULTI_SUBMIT)!), 0);
+  assert.equal(submitMoves(askQuestion(MULTI_ONE)!), 4);
+  assert.equal(submitMoves(askQuestion(ASK_ONE)!), null);
+  assert.deepEqual(freeAnswerKeys(askQuestion(MULTI_797)!, 'Some words'), { move: '\x1b[B\x1b[B\x1b[B', text: 'Some words' });
+  assert.deepEqual(freeAnswerKeys(askQuestion(MULTI_SUBMIT)!, 'Some words'), { move: '\x1b[A', text: 'Some words' });
+  assert.deepEqual(freeAnswerKeys(askQuestion(MULTI_TYPED)!, 'Some words'), { move: null, text: '\x7f'.repeat(10) + 'Some words' });
+  assert.equal(optionKeys(askQuestion(MULTI_797), '2'), '2');
+  assert.equal(optionKeys(askQuestion(MULTI_TYPED), '2'), '\x1b[A2');
+  assert.equal(optionKeys(askQuestion(ASK_ONE), '2'), '2');
+  assert.equal(optionKeys(null, '2'), '2');
 });
 
 // M9 fix 801: one press per dialog, told by the dialog's key.

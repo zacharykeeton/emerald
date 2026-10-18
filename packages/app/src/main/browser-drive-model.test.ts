@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EventLog, centre, downloadName, eventLine, keySpec, parseRef, pauseFor, screenshotName, snapshotOf, type AxNode } from './browser-drive-model.ts';
+import { EventLog, centre, downloadName, eventLine, keySpec, parseRef, fromElectron, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode } from './browser-drive-model.ts';
 
 // M9 fix 673: the events, the download names and the pause rule.
 
@@ -103,4 +103,33 @@ test('keys: named, letters with their text, modifiers, and a key not on the list
 test('the centre of a quad, and a screenshot named by the local time', () => {
   assert.deepEqual(centre([10, 20, 30, 20, 30, 40, 10, 40]), { x: 20, y: 30 });
   assert.equal(screenshotName(new Date(2026, 9, 14, 9, 5, 7, 42)), 'browser-20261014-090507-042.png');
+});
+
+// M9 fix 856: wait finds a text on the page, in a field's value or in an
+// aria-label, the expression run against a stub document.
+test('the wait expression says where the text is: the page, a field, a label, or nowhere', () => {
+  type El = { tagName?: string; type?: string; value?: string; selectedOptions?: { text: string }[]; getAttribute?: (name: string) => string | null };
+  const run = (text: string, page: { innerText?: string; fields?: El[]; labelled?: El[] }): unknown => {
+    const stub = {
+      body: { innerText: page.innerText ?? '' },
+      querySelectorAll: (sel: string) => (sel === '[aria-label]' ? (page.labelled ?? []) : sel === 'input, textarea, select' ? (page.fields ?? []) : []),
+    };
+    return new Function('document', `return ${waitExpression(text)}`)(stub);
+  };
+  const label = (value: string): El => ({ getAttribute: (name) => (name === 'aria-label' ? value : null) });
+  assert.equal(run('Feature Implementation', { innerText: 'a Feature Implementation here' }), 'text');
+  assert.equal(run('Feature Implementation', { fields: [{ tagName: 'INPUT', type: 'text', value: 'Feature Implementation' }] }), 'field');
+  assert.equal(run('Feature Implementation', { fields: [{ tagName: 'INPUT', type: 'password', value: 'Feature Implementation' }] }), null);
+  assert.equal(run('Feature Implementation', { fields: [{ tagName: 'SELECT', type: 'select-one', selectedOptions: [{ text: 'Feature Implementation' }] }] }), 'field');
+  assert.equal(run('Feature Implementation', { labelled: [label('Feature Implementation')] }), 'label');
+  assert.equal(run('Feature Implementation', { innerText: 'nothing', fields: [{ tagName: 'TEXTAREA', type: 'textarea', value: 'other' }], labelled: [label('other')] }), null);
+  assert.equal(run('a "b" \\c', { fields: [{ tagName: 'INPUT', type: 'text', value: 'x a "b" \\c y' }] }), 'field');
+});
+
+// M9 fix 857: Electron's own console lines are told by their source.
+test('a console line from node:electron/ is Electron\'s own, and a page\'s is not', () => {
+  assert.equal(fromElectron('node:electron/js2c/sandbox_bundle'), true);
+  assert.equal(fromElectron('http://127.0.0.1:9/'), false);
+  assert.equal(fromElectron(''), false);
+  assert.equal(fromElectron('node:internal/x'), false);
 });

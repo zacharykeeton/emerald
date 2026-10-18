@@ -57,7 +57,9 @@
 // it, and needs no emerald installed, so it belongs to the install session.
 // M9 fix 381: it also reads each extension's classic default before and
 // after the install (untouched by it) and after the uninstall (cleared
-// when it named one of our ProgIds). M9 fix 630: the half runs on a home,
+// when it named one of our ProgIds). M9 fix 853: the four folder menu
+// keys, none before the install, each read after it and after the install
+// over it, and gone after the uninstall. M9 fix 630: the half runs on a home,
 // pipe and CLAUDE_SETTINGS of its own (<home>\install-half), puts the
 // hooks into those private settings through the installed shim, installs
 // over the install (the uninstaller under --updated must leave them) and,
@@ -68,8 +70,8 @@
 // live install without an installer or an uninstaller, so it runs on the
 // box the install session sits on, with the app up. The install
 // directory's files, the user PATH entry and its registry kind, the
-// ProgIds, their open commands, their OpenWithProgids entries and the
-// extension keys' classic defaults (expected untouched, which fails on
+// ProgIds, their open commands, their OpenWithProgids entries, the four
+// folder menu keys of fix 853 and the extension keys' classic defaults (expected untouched, which fails on
 // the fileAssociations installer of fixes 342 to 371 and passes on fix
 // 381's), each checked against what electron-builder.yml and
 // build/installer.nsh name rather than against a before-and-after; the
@@ -222,6 +224,41 @@ function nshOpenWith() {
     out.push({ ext: m[1], progId: m[2], description: m[3] });
   }
   return out;
+}
+
+// The folder menu items the installer writes (M9 fix 853), read off
+// build/installer.nsh's EMERALD_FOLDERMENU lines: [{ key, verb, label,
+// flag, arg }], key being Directory or Directory\Background.
+function nshFolderMenu() {
+  const text = fs.readFileSync(path.join(appDir, 'build', 'installer.nsh'), 'utf8');
+  const out = [];
+  for (const m of text.matchAll(/^\s*!insertmacro EMERALD_FOLDERMENU "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)" "([^"]+)"/gm)) {
+    out.push({ key: m[1], verb: m[2], label: m[3], flag: m[4], arg: m[5] });
+  }
+  return out;
+}
+
+// One folder menu item as the registry has it under
+// HKCU\Software\Classes\<key>\shell\<verb>: its label (the key's default),
+// its Icon and its command, or null when the key is not there.
+function folderMenuItem(key, verb) {
+  const sub = `Software\\Classes\\${key}\\shell\\${verb}`;
+  const out = powershell(`$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('${sub}'); if ($k -ne $null) { $c=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('${sub}\\command'); $cmd=''; if ($c -ne $null) { $cmd=$c.GetValue('') }; 'label:' + $k.GetValue('') + [char]10 + 'icon:' + $k.GetValue('Icon') + [char]10 + 'command:' + $cmd }`);
+  if (!out.startsWith('label:')) return null;
+  const lines = out.split(/\r?\n/);
+  const field = (name) => (lines.find((l) => l.startsWith(`${name}:`)) ?? `${name}:`).slice(name.length + 1);
+  return { label: field('label'), icon: field('icon'), command: field('command') };
+}
+
+// What a folder menu item should read (M9 fix 853), message beside it.
+function folderMenuExpect(item, e) {
+  const command = `"${path.join(installDir, 'Emerald.exe')}" ${e.flag} "${e.arg}"`;
+  return (
+    item !== null &&
+    item.label === e.label &&
+    item.icon.toLowerCase() === path.join(installDir, 'resources', 'icon.ico').toLowerCase() &&
+    item.command.toLowerCase() === command.toLowerCase()
+  );
 }
 
 // What a terminal opened after the install would see: machine PATH then
@@ -778,6 +815,10 @@ async function installHalf() {
   log(`classic defaults before the install: .md ${defaultsBefore.md ?? '(none)'}, .json ${defaultsBefore.json ?? '(none)'}`);
   const entries = nshOpenWith();
   expect(entries.length === 2 && entries.map((e) => e.ext).join(',') === 'md,json', `build/installer.nsh names two Open with entries (${entries.map((e) => `.${e.ext} as ${e.progId}`).join(', ')})`);
+  // M9 fix 853: the four folder menu items, none there before the install.
+  const folderMenu = nshFolderMenu();
+  expect(folderMenu.length === 4, `build/installer.nsh names four folder menu items (${folderMenu.map((e) => `${e.key}\\shell\\${e.verb}`).join(', ')})`);
+  for (const e of folderMenu) expect(folderMenuItem(e.key, e.verb) === null, `${e.key}\\shell\\${e.verb} is not there before the install (fix 853)`);
 
   // M9 fix 630: the install half's own private pair and Claude settings,
   // since updaterHalf's env is its own local. The uninstaller runs
@@ -883,6 +924,10 @@ async function installHalf() {
     expect(def === defaultsBefore[ext], `.${ext}'s classic default is untouched by the install (${def ?? '(none)'})`);
   }
   log(`openers registered: .md as ${openersAdded.md}, .json as ${openersAdded.json}`);
+  for (const e of folderMenu) {
+    const item = folderMenuItem(e.key, e.verb);
+    expect(folderMenuExpect(item, e), `${e.key}\\shell\\${e.verb} reads ${e.label} and runs the installed Emerald.exe ${e.flag} "${e.arg}" (fix 853), got ${JSON.stringify(item)}`);
+  }
   const uninstallExe = path.join(installDir, 'Uninstall Emerald.exe');
   expect(fs.existsSync(uninstallExe), 'uninstaller present');
 
@@ -900,6 +945,10 @@ async function installHalf() {
   expect(again.status === 0, `the second installer exited ${again.status}`);
   expect(privateHeld().held.length === HOOK_EVENTS.length, `an install over the install (this build's uninstaller under --updated) left all ${HOOK_EVENTS.length} hooks in place`);
   expect(fs.existsSync(path.join(installDir, 'Emerald.exe')), 'Emerald.exe installed again');
+  for (const e of folderMenu) {
+    const item = folderMenuItem(e.key, e.verb);
+    expect(folderMenuExpect(item, e), `${e.key}\\shell\\${e.verb} kept across an update's uninstall under --updated (fix 853), got ${JSON.stringify(item)}`);
+  }
 
   log('running the uninstaller silently');
   // NSIS uninstallers copy themselves to %TEMP% and return at once, so wait
@@ -936,6 +985,7 @@ async function installHalf() {
     const expected = defaultsBefore[ext] === openersAdded[ext] ? null : defaultsBefore[ext];
     expect(def === expected, `.${ext}'s classic default after the uninstall is ${def ?? '(none)'}${defaultsBefore[ext] === openersAdded[ext] ? ' (it named ours before, cleared)' : ' (as before)'}`);
   }
+  for (const e of folderMenu) expect(folderMenuItem(e.key, e.verb) === null, `the ${e.key}\\shell\\${e.verb} key is gone (fix 853)`);
   log('install half PASS');
 }
 
@@ -989,6 +1039,13 @@ async function entriesRead() {
     const def = classicDefault(ext);
     if (def === progId) look(`.${ext}'s classic default is ours: the old fileAssociations installer wrote it, and installer.nsh's customUnInstall clears one naming ours at the next uninstall (${def})`);
     else expect(true, `.${ext}'s classic default is not ours (${def ?? '(none)'})`);
+  }
+  // M9 fix 853: the four folder menu items, each as installer.nsh names it.
+  const folderMenu = nshFolderMenu();
+  expect(folderMenu.length === 4, `build/installer.nsh names four folder menu items`);
+  for (const e of folderMenu) {
+    const item = folderMenuItem(e.key, e.verb);
+    expect(folderMenuExpect(item, e), `${e.key}\\shell\\${e.verb} reads ${e.label} and runs the installed Emerald.exe ${e.flag} "${e.arg}" (fix 853), got ${JSON.stringify(item)}`);
   }
   log(`entries read PASS, ${looks} look${looks === 1 ? '' : 's'}`);
 }

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import { currentTab, replaceTab, splitPane } from '@emerald/shared';
 import { PipeClient } from '@emerald/shared/pipe-client';
+import { ActivityLog, parseActivityLine } from './activity.ts';
 import { LayoutStore } from './layout-store.ts';
 import { silentLogger } from './log.ts';
 import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer, ROW_PUSH_LEVEL, claimPipe } from './pipe-server.ts';
@@ -242,6 +243,47 @@ test('update.report, update.state and update.act relay the updater between the a
     await untilGone;
     assert.deepEqual(await cli.request('update.state', {}), { state, apps: 0 });
     cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 836: activity.totals folds one folder's history on the daemon's
+// side; the shared server, which has no activity log, answers zeros.
+test('activity.totals answers one folder\'s totals and a row per month, and refuses a request with no folder or a window backwards (M9 fix 836)', async () => {
+  const pipe = `${PIPE}-totals`;
+  const activity = new ActivityLog();
+  const conv = 'conv-totals';
+  const at = Date.now() - 60 * 60_000;
+  const payload = (event: string, extra: Record<string, unknown> = {}) => ({ hook_event_name: event, session_id: conv, cwd: 'C:/code/proj', ...extra });
+  const lines = [
+    { at, sessionId: conv, event: 'UserPromptSubmit', unhosted: true, outcome: 'applied', from: 'idle', to: 'working', payload: payload('UserPromptSubmit') },
+    { at: at + 60_000, sessionId: conv, event: 'StatusLine', unhosted: true, outcome: 'applied', payload: payload('StatusLine', { model: { display_name: 'Opus 5' }, cost: { total_cost_usd: 0.2 }, context_window: { used_percentage: 5, current_usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 } } }) },
+    { at: at + 120_000, sessionId: conv, event: 'Stop', unhosted: true, outcome: 'applied', from: 'working', to: 'done', payload: payload('Stop') },
+  ];
+  for (const l of lines) activity.record(parseActivityLine(JSON.stringify(l))!);
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, activity });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const t = await cli.request('activity.totals', { folder: 'C:/code/proj' });
+    assert.equal(t.total.requests, 1);
+    assert.ok(Math.abs(t.total.usd - 0.2) < 1e-9);
+    assert.equal(t.months.length, 1);
+    assert.equal(t.historyFrom, at);
+    await assert.rejects(cli.request('activity.totals', {} as never), { code: 'bad-request' });
+    await assert.rejects(cli.request('activity.totals', { folder: '' }), { code: 'bad-request' });
+    await assert.rejects(cli.request('activity.totals', { folder: 'C:/code/proj', from: 10, to: 5 }), { code: 'bad-request' });
+    cli.close();
+    const plain = await PipeClient.connect(PIPE);
+    await plain.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const none = await plain.request('activity.totals', { folder: 'C:/code/proj' });
+    assert.equal(none.total.requests, 0);
+    assert.equal(none.total.usd, 0);
+    assert.deepEqual(none.months, []);
+    assert.equal(none.historyFrom, null);
+    plain.close();
   } finally {
     await own.close();
   }

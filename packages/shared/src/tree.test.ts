@@ -678,13 +678,13 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'file' }))), LayoutError, 'no path');
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'file', path: 'C:\a', view: 'split' }))), LayoutError, 'view');
   // M9 fix 659: a browser view is a URL as browserUrl writes it, or ''
-  // for an empty address bar; nothing else is kept.
+  // for an empty address bar; profile and toolbar are kept, nothing else.
   const page = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/' })));
   assert.deepEqual((page.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/' });
   const blank = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '' })));
   assert.deepEqual((blank.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: '' });
-  const extra = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'https://example.com/', chrome: false, title: 'x' })));
-  assert.deepEqual((extra.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'https://example.com/' });
+  const extra = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'https://example.com/', chrome: false, title: 'x', toolbar: false })));
+  assert.deepEqual((extra.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'https://example.com/', toolbar: false });
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'localhost:3000' }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'file:///C:/x' }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 3 }))), /url must be an http or https URL/);
@@ -694,6 +694,12 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   const profiled = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b' })));
   assert.deepEqual((profiled.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/', profile: 'b' });
   assert.equal('profile' in ((page.tabs[0]!.root as { first: { view: object } }).first.view), false);
+  // M9 fix 839: toolbar is kept only when false.
+  const shown = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', toolbar: true })));
+  assert.equal('toolbar' in ((shown.tabs[0]!.root as { first: { view: object } }).first.view), false);
+  const both = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', toolbar: false })));
+  assert.deepEqual((both.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', toolbar: false });
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', toolbar: 'no' }))), /toolbar must be a boolean/);
   for (const profile of ['B', '', 3]) {
     assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', profile }))), /profile must be/);
   }

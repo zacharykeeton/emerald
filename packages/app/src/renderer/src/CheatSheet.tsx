@@ -2,6 +2,7 @@ import { currentPrefix } from './keys.ts';
 import { BINDINGS, formatChord, plainKeyFor } from './keys-model.ts';
 import { useSkin } from './skin.ts';
 import { closeCheatSheet, useUi } from './ui.ts';
+import { noteIn } from './copy-note.ts';
 
 // The key table, opened with prefix then ? (or Ctrl+Shift+?). Rendered from
 // the same BINDINGS the handler uses, so it cannot drift. Any key or a
@@ -54,6 +55,15 @@ export function CheatSheet() {
 export function PrefixIndicator() {
   const { prefixArmed, cornerNote } = useUi();
   if (prefixArmed) return <div className="prefix-armed">{formatChord(currentPrefix())} …</div>;
-  if (cornerNote !== null) return <div className="corner-note">{cornerNote}</div>;
+  const text = noteIn(cornerNote, null);
+  if (text !== null) return <div className="corner-note">{text}</div>;
   return null;
+}
+
+// M9 fix 849: a copy's note in the bottom right of the pane it came from,
+// under the same class so every document-wide read still finds it.
+export function PaneNote({ paneId }: { paneId: string }) {
+  const { cornerNote } = useUi();
+  const text = noteIn(cornerNote, paneId);
+  return text === null ? null : <div className="corner-note in-pane">{text}</div>;
 }

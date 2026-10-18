@@ -73,10 +73,12 @@ export type FileTabView = 'rendered' | 'raw' | 'turns' | 'pretty';
 export type FilePaneView = { kind: 'file'; path: string; view?: FileTabView };
 // M9 fix 659: a fourth kind, a web page in a pane. `url` is the page's
 // address as browserUrl writes it, or '' while the pane's address bar
-// has not been filled; the toolbar is the pane, as a file pane's header
-// is, so there is no chrome field. M9 fix 673: profile names the page's
-// own cookies and storage (BROWSER_PROFILE); absent is the shared default.
-export type BrowserPaneView = { kind: 'browser'; url: string; profile?: string };
+// has not been filled; the toolbar row sits inside the pane, as a file
+// pane's header does, so there is no chrome field. M9 fix 673: profile
+// names the page's own cookies and storage (BROWSER_PROFILE); absent is
+// the shared default. M9 fix 839: toolbar, kept only when false, hides
+// that row alone from the pane menu, the title bar staying.
+export type BrowserPaneView = { kind: 'browser'; url: string; profile?: string; toolbar?: false };
 export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView;
 
 export type LayoutNode =

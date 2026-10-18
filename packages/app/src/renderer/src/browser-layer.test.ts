@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RING_PX, adoptFrames, frameRect } from './browser-layer.ts';
+import { RING_PX, adoptFrames, frameRect, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
 
 // M9 fix 669: which frame a browser pane gets across a layout change, and
 // where a frame sits over its slot.
@@ -76,4 +76,24 @@ test('a frame sits over its slot, inset off the ring on the left, right and bott
 test('a slot smaller than the ring gives an empty frame, never a negative one', () => {
   const r = frameRect(rect(10, 10, 4, 2), rect(0, 0, 100, 100));
   assert.deepEqual(r, { left: 13, top: 10, width: 0, height: 0 });
+});
+
+test('the toolbar row shows by the record, and unasked for an empty address, Design Mode or the tray (M9 fix 839)', () => {
+  for (const pageOn of [true, false]) for (const designOn of [true, false]) for (const trayOpen of [true, false]) {
+    assert.equal(toolbarShown(true, pageOn, designOn, trayOpen), true);
+    assert.equal(toolbarShown(false, pageOn, designOn, trayOpen), !pageOn || designOn || trayOpen);
+  }
+  assert.equal(toolbarShown(false, true, false, false), false);
+});
+
+test("a navigation keeps the record's profile and toolbar, and the toolbar flag is kept only when false (M9 fix 839)", () => {
+  const v = { kind: 'browser', url: 'http://a/', profile: 'b', toolbar: false } as const;
+  assert.deepEqual(withPageUrl(v, 'http://b/'), { kind: 'browser', url: 'http://b/', profile: 'b', toolbar: false });
+  assert.deepEqual(withPageUrl(null, 'http://b/'), { kind: 'browser', url: 'http://b/' });
+  assert.deepEqual(withPageUrl(undefined, 'http://b/'), { kind: 'browser', url: 'http://b/' });
+  assert.deepEqual(withPageUrl({ kind: 'commits', folder: 'C:/r' }, 'http://b/'), { kind: 'browser', url: 'http://b/' });
+  assert.deepEqual(withToolbar({ kind: 'browser', url: 'http://a/', profile: 'b' }, false), { kind: 'browser', url: 'http://a/', profile: 'b', toolbar: false });
+  const shown = withToolbar(v, true);
+  assert.deepEqual(shown, { kind: 'browser', url: 'http://a/', profile: 'b' });
+  assert.equal('toolbar' in shown, false);
 });

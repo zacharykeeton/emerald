@@ -39,6 +39,17 @@ test('trustDialog reads the captured dialog: two options in drawn order, the poi
   assert.ok(!d.lines.includes(RULE));
   // Blank runs collapse to one, and none ends the text.
   assert.ok(d.lines.every((l, i) => l !== '' || d.lines[i - 1] !== ''));
+  // M9 fix 847: the path is left out, the cards drawing the session's own.
+  assert.equal(d.pathDropped, true);
+  assert.ok(!d.lines.some((l) => l.includes('trust-1792')), 'the path rows are left out');
+});
+
+test('trustDialog leaves out a path the TUI wrapped onto two rows (M9 fix 847)', () => {
+  const wrapped = CAPTURED.flatMap((r) => (r.includes('trust-1792') ? [' C:\\Users\\someone\\AppData\\Local\\Temp\\emerald-verify\\', ' trust-1792'] : [r]));
+  const d = trustDialog(wrapped);
+  assert.ok(d);
+  assert.deepEqual(d.lines, trustDialog(CAPTURED)!.lines);
+  assert.equal(d.pathDropped, true);
 });
 
 test('trustDialog follows the pointer when it moves to Yes', () => {
@@ -73,12 +84,14 @@ test('trustDialog reads the form for a folder whose settings pre-approve tools, 
   const d = trustDialog(rows);
   assert.ok(d);
   assert.deepEqual(d.options.map((o) => o.label), ['No, continue without these permissions', 'Yes, I trust this folder']);
-  assert.deepEqual(d.lines, ['Accessing workspace:', '', 'C:\\code\\project']);
+  assert.deepEqual(d.lines, ['Accessing workspace:']);
+  assert.equal(d.pathDropped, true);
 });
 
 test('trustDialog with no heading takes the rows under the rule', () => {
   const rows = ['old output', RULE, ' Is this folder yours?', '', ' ❯ No, exit', '   Yes, I trust this folder'];
   assert.deepEqual(trustDialog(rows)?.lines, ['Is this folder yours?']);
+  assert.equal(trustDialog(rows)?.pathDropped, false);
 });
 
 test('trustDialog is null for a numbered permission dialog and for the old numbered trust list', () => {

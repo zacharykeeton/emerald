@@ -218,7 +218,7 @@ export function resumeTitle(session: Pick<SessionInfo, 'name' | 'kind' | 'spawnC
 }
 
 function exitDetail(exitCode: number | null): string {
-  if (exitCode === null) return 'The process ended while emmerd was down, so its exit code is unknown. Resume to start it again.';
+  if (exitCode === null) return 'The exit code is unknown: the process gave none, or it ended while emmerd was down. Resume to start it again.';
   if (exitCode === KILLED_EXIT_CODE) return 'Killed from emerald. Resume to start it again.';
   return 'The process exited. Resume to start it again in the same folder.';
 }

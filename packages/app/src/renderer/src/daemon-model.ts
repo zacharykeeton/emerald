@@ -254,6 +254,22 @@ export function usageFlagSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= USAGE_FLAG_LEVEL;
 }
 
+// The level at which the daemon answers activity.totals (M9 fix 836); an
+// older daemon answers bad-request, so no menu offers the Statistics tab
+// and a tab kept from before says to restart.
+export const STATS_LEVEL = 70;
+
+export function statsSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= STATS_LEVEL;
+}
+
+// The level at which the daemon keeps a browser view's toolbar flag (M9 fix 839); an older daemon's validator drops the field, so a pane on one offers no item.
+export const BROWSER_TOOLBAR_LEVEL = 71;
+
+export function browserToolbarSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= BROWSER_TOOLBAR_LEVEL;
+}
+
 // The level at which the daemon keeps folder labels (M9 fix 194); an
 // older daemon answers folders.list with bad-request, so the heading
 // offers no rename and the store keeps an empty map.

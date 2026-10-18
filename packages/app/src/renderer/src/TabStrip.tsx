@@ -3,6 +3,7 @@ import type { LayoutTab, SessionInfo } from '@emerald/shared';
 import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
 import { closeLayoutTab, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
 import { shadeablePanes } from './shade-model.ts';
+import { plainKeyFor } from './keys-model.ts';
 import { Menu } from './Menu.tsx';
 import { RenameBox } from './RenameBox.tsx';
 import { colorStyle } from './session-color.ts';
@@ -10,13 +11,13 @@ import { SessionMark } from './session-mark.tsx';
 import { ClaudeStar } from './skin-star.tsx';
 import { reviewFolder, reviewSessionId } from './review-model.ts';
 import { folderName } from './files-model.ts';
-import { ClockIcon, FileIcon, FolderIcon, GraphIcon, NewsIcon, PanesIcon } from './icons.tsx';
+import { ClockIcon, FileIcon, FolderIcon, GraphIcon, NewsIcon, PanesIcon, StatsIcon } from './icons.tsx';
 import { fileViewSupported, tabsSupported } from './daemon-model.ts';
 import { startDrag } from './pane-drag.ts';
 import { describeEntry, entryAlive, stepHistory } from './focus-history.ts';
 import { nextStop } from './focus-history-model.ts';
 import { useStore } from './store.ts';
-import { PANES, commitsFolder, dirtyMark, isDocument, isPreview, isTranscript, isWhatsNew, tabName } from './tabs-model.ts';
+import { PANES, commitsFolder, dirtyMark, isDocument, isPreview, isTranscript, isWhatsNew, statsFolder, tabName } from './tabs-model.ts';
 import { useEditStates } from './file-edits.ts';
 import { useRunningShells } from './rates-store.ts';
 import { clearZoom, closeAllTabs, closeFileTab, closeOtherTabs, liftPanes, moveTabKey, pinFileTab, revealInFiles, shadePanes, showTab, tabOrderFor, useUi } from './ui.ts';
@@ -301,6 +302,8 @@ export function TabStrip() {
           <SessionMark kind={markKind(reviewed!)} tone={reviewMark.tone} working={reviewMark.working} size="row" className="tab-mark" />
         ) : commitsFolder(path) !== null ? (
           <GraphIcon />
+        ) : statsFolder(path) !== null ? (
+          <StatsIcon />
         ) : reviewedFolder !== null ? (
           <FolderIcon />
         ) : isWhatsNew(path) ? (
@@ -525,6 +528,8 @@ function LayoutTabMenu({ tab, last, x, y, onClose, onRename, onCloseTab }: Layou
         { label: 'Rename', onClick: done(onRename) },
         {
           label: 'Shade all',
+          // M9 fix 844: the one chord does whichever of the two rows the tab needs.
+          hint: plainKeyFor('shade-all'),
           disabled: panes.length === 0,
           title: panes.length === 0 ? 'No pane on a session' : 'Pull the shade over every pane of this tab',
           onClick: done(() => shadePanes(panes)),
@@ -532,6 +537,7 @@ function LayoutTabMenu({ tab, last, x, y, onClose, onRename, onCloseTab }: Layou
         },
         {
           label: 'Lift all',
+          hint: plainKeyFor('shade-all'),
           disabled: panes.length === 0,
           title: panes.length === 0 ? 'No pane on a session' : 'Lift every shade on this tab',
           onClick: done(() => liftPanes(panes)),

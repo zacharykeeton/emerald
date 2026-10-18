@@ -1,6 +1,6 @@
 import { describeState, MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
 import type { ServerMessage, SessionInfo } from '@emerald/shared';
-import { integerOption, parse } from '../args.ts';
+import { integerOption, parse, readText } from '../args.ts';
 import { CliError, EXIT, usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
@@ -211,20 +211,29 @@ const options = {
   json: { type: 'boolean', default: false },
   // Refuse a session that is working (M9 fix 741), exit 1.
   'if-idle': { type: 'boolean', default: false },
+  // M9 fix 855: the text read verbatim from stdin or a file.
+  stdin: { type: 'boolean', default: false },
+  file: { type: 'string' },
 } as const;
 
 const command: Command = {
   name: 'prompt',
   summary: 'send a prompt and wait for the reply',
-  usage: 'emmer prompt <session> <text...> [--saved] [--force] [--if-idle] [--timeout ms] [--json]',
+  usage: 'emmer prompt <session> <text...|--stdin|--file <path>> [--saved] [--force] [--if-idle] [--timeout ms] [--json]',
   async run(argv) {
     const parsed = parse(argv, options);
     const [ref, ...words] = parsed.positionals;
     if (ref === undefined) throw usageError('missing session');
-    if (words.length === 0) throw usageError(parsed.values.saved ? 'missing the name of the saved prompt' : 'missing text');
+    const v = parsed.values;
+    if (v.saved && v.stdin) throw usageError('--saved and --stdin together');
+    if (v.saved && v.file !== undefined) throw usageError('--saved and --file together');
+    if (words.length > 0 && v.stdin) throw usageError('text and --stdin together');
+    if (words.length > 0 && v.file !== undefined) throw usageError('text and --file together');
+    const text = (await readText({ stdin: v.stdin, file: v.file }, { stdin: '--stdin', file: '--file' }, false)) ?? words.join(' ');
+    if (text === '') throw usageError(parsed.values.saved ? 'missing the name of the saved prompt' : 'missing text');
     if (parsed.values.saved && words.length > 1) throw usageError('one saved prompt name');
     const timeoutMs = integerOption(parsed.values.timeout, 'timeout', 0);
-    const outcome = await runPrompt({ ref, text: words.join(' '), saved: parsed.values.saved, force: parsed.values.force, timeoutMs, ifIdle: parsed.values['if-idle'] });
+    const outcome = await runPrompt({ ref, text, saved: parsed.values.saved, force: parsed.values.force, timeoutMs, ifIdle: parsed.values['if-idle'] });
     const s = outcome.session;
     if (parsed.values.json) {
       printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs, via: outcome.via });

@@ -1,7 +1,7 @@
 import { listPanes } from '@emerald/shared';
 import type { Layout, LayoutNode, LayoutTab, UseFrom, UseLineIn, UseView } from '@emerald/shared';
 import type { PaneMenuRun } from './pane-menu-model.ts';
-import { PANES, activityWindow, commitsFolder, isDocument, isTranscript, isWhatsNew, tabKey } from './tabs-model.ts';
+import { PANES, activityWindow, commitsFolder, isDocument, isTranscript, isWhatsNew, statsFolder, tabKey } from './tabs-model.ts';
 import type { TabsModel } from './tabs-model.ts';
 
 // The pure half of the usage record (M9 fix 676): what kind of view a tab
@@ -25,12 +25,14 @@ export const PANE_USE: Readonly<Record<PaneMenuRun, string>> = {
   'close-session': 'pane-close-session',
   'open-as-tab': 'pane-open-as-tab',
   'toggle-chrome': 'pane-toggle-chrome',
+  'toggle-toolbar': 'pane-toggle-toolbar',
   'set-folder': 'pane-set-folder',
 };
 
 export function tabKind(path: string): UseView {
   if (activityWindow(path) !== null) return 'activity-tab';
   if (commitsFolder(path) !== null) return 'commits-tab';
+  if (statsFolder(path) !== null) return 'stats-tab';
   if (path.startsWith('emerald://review/')) return 'review-tab';
   if (isWhatsNew(path)) return 'whats-new-tab';
   if (isDocument(path)) return 'other-tab';
@@ -138,7 +140,9 @@ export function createTurnGate(schedule: (fn: () => void) => void): { take(): bo
 }
 
 // A file from outside the window (M9 fix 700): a launch with one (a
-// double-click in Explorer) is recorded apart from emmer open.
-export function outsideOpenUse(extra: { launch?: boolean }): { name: 'file-launch' | 'cli-open'; from: UseFrom } {
+// double-click in Explorer) is recorded apart from emmer open, and a
+// folder from Explorer's Open in Emerald items apart again (M9 fix 853).
+export function outsideOpenUse(extra: { launch?: boolean; kind?: 'claude' | 'shell' }): { name: 'folder-launch' | 'file-launch' | 'cli-open'; from: UseFrom } {
+  if (extra.kind !== undefined) return { name: 'folder-launch', from: 'click' };
   return extra.launch === true ? { name: 'file-launch', from: 'click' } : { name: 'cli-open', from: 'cli' };
 }

@@ -19,6 +19,11 @@ export const BROWSER_SNAPSHOT_CAP = 500;
 export const BROWSER_MARK_LINGER_MS = 5000;
 export const BROWSER_WAIT_POLL_MS = 100;
 
+// M9 fix 856: where wait finds a text: the page's own text, else a field's value (an app whose heading is an input), else an aria-label. One expression per poll, as the innerText read was.
+export function waitExpression(text: string): string {
+  return `(() => { const t = ${JSON.stringify(text)}; if (document.body !== null && document.body.innerText.includes(t)) return 'text'; for (const el of document.querySelectorAll('input, textarea, select')) { if (el.type === 'hidden' || el.type === 'password') continue; const v = el.tagName === 'SELECT' ? [...el.selectedOptions].map((o) => o.text).join('\\n') : el.value; if (typeof v === 'string' && v.includes(t)) return 'field'; } for (const el of document.querySelectorAll('[aria-label]')) if ((el.getAttribute('aria-label') ?? '').includes(t)) return 'label'; return null; })()`;
+}
+
 // The fields of Accessibility.getFullAXTree's nodes this reads.
 interface AxValue {
   type?: string;
@@ -216,6 +221,11 @@ export type BrowserEvent =
 function clock(at: number): string {
   const d = new Date(at);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// M9 fix 857: a console line from Electron's own code. Its sandbox bundle can log two errors as a guest starts (the preloadScripts lines fix 620 kept out of the harness's FAIL dump, its section in docs/DONE.md); no page script carries a node:electron/ source, so events leaves them out.
+export function fromElectron(sourceId: string): boolean {
+  return sourceId.startsWith('node:electron/');
 }
 
 export function eventLine(e: BrowserEvent): string {

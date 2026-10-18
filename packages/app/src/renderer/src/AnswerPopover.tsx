@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { SessionInfo } from '@emerald/shared';
-import { ackIfDone, sendFreeAnswer, typeInto } from './actions.ts';
+import { ackIfDone, sendAskSubmit, sendFreeAnswer, typeInto } from './actions.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
-import { answerOptions, askQuestion, dialogKey, freeOption, freeText, pressOver, promptExcerpt } from './screen-prompt-model.ts';
+import { answerOptions, askQuestion, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption, AskPress } from './screen-prompt-model.ts';
 import { askBoxShown, askHeading } from './chat-model.ts';
 import { acknowledgeAttention } from './ui.ts';
@@ -127,6 +127,21 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
       },
     );
   };
+  // M9 fix 845: a multi-select's Submit button, as the chat view's card has.
+  const submitShown = ask !== null && ask.multi && ask.submit !== null;
+  const pressSubmit = () => {
+    if (pressed !== null) return;
+    setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
+    acknowledgeAttention(session.id);
+    void ackIfDone(session.id);
+    sendAskSubmit(session.id).then(
+      (r) => setPressed((p) => (r === 'not-moved' ? null : p === null ? p : { ...p, at: Date.now() })),
+      (err: unknown) => {
+        console.warn('[emerald] ask submit failed', err);
+        setPressed(null);
+      },
+    );
+  };
   const askText = askBoxShown({ reason: session.needsInputReason, recognised: ask !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
   // A question wants words, so the box takes the keyboard as the card
   // opens; a permission keeps it in the terminal, the buttons need none.
@@ -134,7 +149,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
     if (askText) inputRef.current?.focus();
   }, [askText]);
   return (
-    <PopoverCard id={`answer:${session.id}`} className="answer-popover" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
+    <PopoverCard id={`answer:${session.id}`} className="answer-popover" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave} holdEscape>
       <div className="answer-popover-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
       {ask !== null ? (
         <>
@@ -185,14 +200,17 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
                   if (ev.key === 'Escape') onClose();
                   if (ev.key === 'Enter') {
                     ev.preventDefault();
-                    sendFree();
+                    // In a multi-select the second Enter, the field already
+                    // reading the text, submits (fix 845).
+                    if (submitShown && freeOpt !== null && freeText(freeOpt) === free) pressSubmit();
+                    else sendFree();
                   }
                   ev.stopPropagation();
                 }}
               />
             </div>
           ) : (
-            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(o.key)}>
+            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(optionKeys(ask, o.key))}>
               <span className="answer-popover-key">{o.key}</span>
               <span className="answer-popover-text">
                 <span className="answer-popover-label">{o.label}</span>
@@ -201,8 +219,14 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
             </button>
           ),
         )}
+        {submitShown && ask.submit !== null && (
+          <button type="button" className="answer-popover-option answer-popover-submit" data-key="submit" data-pointer={ask.submit.pointer ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
+            <span className="answer-popover-label">{ask.submit.label}</span>
+          </button>
+        )}
+        {/* M9 fix 848: no Esc key cap here, since Escape on this card only
+            closes it; the button is the session's Escape. */}
         <button type="button" className="answer-popover-option answer-popover-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
-          <span className="answer-popover-key">Esc</span>
           <span className="answer-popover-label">Cancel</span>
         </button>
       </div>

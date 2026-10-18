@@ -113,6 +113,39 @@ test('every change lands in sessions.json, and a new manager restores the list a
   }
 });
 
+test('a pty exit with no code is kept as unknown and survives a restart (M9 fix 831)', async () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'sessions.json');
+  const store = new SessionStore(file, silentLogger);
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 30'], cols: 80, rows: 24 });
+    const exit = once(manager, 'exit');
+    // node-pty cannot be made to give no code, so the PtySession's own
+    // event is raised by hand; the real pty is killed in the finally.
+    manager.get(s.id).pty!.emit('exit', undefined);
+    const [exited] = (await exit) as [SessionInfo];
+    assert.strictEqual(exited.exitCode, null, 'the event carries null, not undefined');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { sessions: Array<Record<string, unknown>> };
+    const entry = raw.sessions.find((e) => e['id'] === s.id)!;
+    assert.ok(Object.hasOwn(entry, 'exitCode'), 'the file keeps the key');
+    assert.strictEqual(entry['exitCode'], null);
+    const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
+    try {
+      restarted.restore();
+      const back = restarted.list().find((x) => x.id === s.id);
+      assert.ok(back !== undefined, 'the restart keeps the session');
+      assert.equal(back.state, 'exited');
+      assert.strictEqual(back.exitCode, null);
+    } finally {
+      restarted.close();
+    }
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
 test('set writes the checkpoint one field at a time, persists it, and a resume keeps it', async () => {
   const dir = tempDir();
   const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);
@@ -232,10 +265,39 @@ test('compactAsk skips the engine\'s own compaction of a Claude session marked t
 
     const { id } = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: exitArgs(0), cols: 80, rows: 24 });
     const shell = manager.get(id).info;
-    assert.throws(() => manager.set(id, { keepWhole: true, comment: 'x' }), (err: Error & { code?: string }) => err.code === 'bad-request' && /keep whole is for a Claude session emerald started; .* is a shell/.test(err.message));
+    const refused = (err: Error & { code?: string }) => err.code === 'bad-request' && /keep whole is for a session with Claude running in it; .* is a shell with none/.test(err.message);
+    assert.throws(() => manager.set(id, { keepWhole: true, comment: 'x' }), refused);
     assert.equal(manager.get(id).info, shell, 'refused before any field is applied');
     manager.set(id, { keepWhole: false });
     assert.equal(manager.get(id).info, shell, 'false on a shell changes nothing');
+
+    // M9 fix 833: a shell with Claude running in it can be marked, and the
+    // mark goes when that Claude leaves.
+    const { id: id2 } = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 30'], cols: 80, rows: 24 });
+    manager.applyHook(id2, { hook_event_name: 'SessionStart', session_id: 'c-hosted', source: 'startup' }, Date.now());
+    manager.set(id2, { keepWhole: true });
+    assert.equal(manager.get(id2).info.keepWhole, true, 'a hosted shell is marked');
+    assert.equal(store.load().find((p) => p.id === id2)!.keepWhole, true, 'and the mark is written');
+    const hosted = manager.get(id2);
+    hosted.info = { ...hosted.info, state: 'idle' };
+    assert.equal(manager.compactAsk(id2, 'auto'), 'kept whole while idle by emerald', 'its idle compaction is skipped');
+    manager.applyHook(id2, { hook_event_name: 'SessionEnd', session_id: 'c-hosted', reason: 'prompt_input_exit' }, Date.now());
+    assert.equal(manager.get(id2).info.keepWhole, false, "the mark goes with the shell's Claude");
+    assert.equal(manager.get(id2).info.claudeSessionId, null);
+    assert.throws(() => manager.set(id2, { keepWhole: true }), refused, 'a plain shell again is refused');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
+test("launchedWithMod answers for a shell while Claude runs in it, and not for a plain one (M9 fix 833)", () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, claudeModDir: 'C:\\e\\cli\\mod' });
+  try {
+    const { id } = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 30'], cols: 80, rows: 24 });
+    assert.equal(manager.launchedWithMod(id), false, 'a plain shell');
+    manager.applyHook(id, { hook_event_name: 'SessionStart', session_id: 'c-833', source: 'startup' }, Date.now());
+    assert.equal(manager.launchedWithMod(id), true, 'a shell with Claude running in it');
   } finally {
     manager.killAll();
     manager.close();
@@ -2363,6 +2425,36 @@ test("a member's activity line and a branch move are published without a save (M
     for (let i = 1; i <= 5; i++) post({ hook_event_name: 'PreToolUse', agent_id: 'a1', tool_name: 'Read', tool_input: { file_path: `C:/code/file${i}.ts` } });
     assert.equal(changes.length, 5, 'each activity line is published');
     assert.match(changes[4]!, /file5/);
+    assert.equal(saves(), baseline, 'and none of them saved');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
+test('a member keeps its last three tool phrases, oldest first, the latest its activity line (M9 fix 835)', async () => {
+  const { store, saves } = countingStore();
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, readHead: async () => null, readBranch: () => null });
+  const changes: Array<string[] | undefined> = [];
+  manager.on('changed', (info: SessionInfo) => changes.push(info.team.find((m) => m.id === 'a1')?.recent));
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 10'], cols: 80, rows: 24 });
+    const post = (payload: Record<string, unknown>) => manager.applyHook(s.id, { session_id: 'c1', cwd: process.cwd(), ...payload }, 1000);
+    post({ hook_event_name: 'SessionStart', source: 'startup' });
+    post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the batch' });
+    post({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'fork' });
+    await new Promise((r) => setTimeout(r, 50));
+    const baseline = saves();
+    changes.length = 0;
+    for (let i = 1; i <= 4; i++) post({ hook_event_name: 'PreToolUse', agent_id: 'a1', tool_name: 'Read', tool_input: { file_path: `C:/code/file${i}.ts` } });
+    assert.equal(changes.length, 4, 'each phrase is published');
+    const member = manager.get(s.id).info.team.find((m) => m.id === 'a1')!;
+    assert.deepEqual(member.recent, ['Reading file2.ts', 'Reading file3.ts', 'Reading file4.ts']);
+    assert.equal(member.activity, 'Reading file4.ts');
+    // The latest phrase again adds nothing and publishes nothing.
+    post({ hook_event_name: 'PreToolUse', agent_id: 'a1', tool_name: 'Read', tool_input: { file_path: 'C:/code/file4.ts' } });
+    assert.equal(changes.length, 4, 'a repeat of the latest phrase is no push');
+    assert.deepEqual(manager.get(s.id).info.team.find((m) => m.id === 'a1')!.recent, ['Reading file2.ts', 'Reading file3.ts', 'Reading file4.ts']);
     assert.equal(saves(), baseline, 'and none of them saved');
   } finally {
     manager.killAll();

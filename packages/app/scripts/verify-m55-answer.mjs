@@ -111,6 +111,26 @@ try {
   await s.screenshot('m55-answer-card.png');
   step(`the badge opens the card: ${c.lines.length} rows, buttons ${c.keys.join(' ')}`);
 
+  // M9 fix 848: the last button reads Cancel with no key cap, and Escape
+  // on the card closes it and reaches no session: the shell's Read-Host
+  // keeps the abc typed into it.
+  const esc848 = await s.evalJs(`(() => { const b = document.querySelector('.answer-popover .answer-popover-option[data-key="esc"]'); return { text: b.textContent, title: b.title }; })()`);
+  expect(esc848.text === 'Cancel' && esc848.title === 'Sends Escape to the session', `fix 848: the last button reads Cancel, got ${JSON.stringify(esc848)}`);
+  console.log(`[verify] fix 848: focus is on ${JSON.stringify(await s.evalJs(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: a?.className ?? null, inPane: !!a?.closest('[data-pane-id]') }; })()`))}`);
+  await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: 'abc' })`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('differentlyabc'), 'fix 848: abc typed into the Read-Host');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 848: Escape closes the card', 3000);
+  await sleep(800);
+  expect((await rowState()) === 'needs-input', `fix 848: the row still needs input, got ${await rowState()}`);
+  const row848 = await cursorRow(sessionId);
+  expect(row848.trim().endsWith('differentlyabc'), `fix 848: the Escape reached no session, the cursor row reads ${JSON.stringify(row848)}`);
+  await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: '\\x7f\\x7f\\x7f' })`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('differently'), 'fix 848: the abc cleared');
+  step('fix 848: the sidebar card\'s last button reads Cancel, and Escape on the card closes it and reaches no session');
+  await s.click(badge.x, badge.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-option[data-key="3"]')`, 'fix 848: the card open again');
+
   // Button 2 sends the digit; the shell echoes it at the cursor.
   await s.evalJs(`document.querySelector('.answer-popover .answer-popover-option[data-key="2"]').click()`);
   await waitCursorRow(sessionId, (row) => row.trim().endsWith('differently2'), 'the shell received the 2');

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { addressShown, addressUrl } from '@emerald/shared';
 import type { DesignNote } from '@emerald/shared';
-import { browserPage, registerBrowserSlot, useBrowserPage } from './browser-layer.ts';
+import { browserPage, registerBrowserSlot, toolbarShown, useBrowserPage } from './browser-layer.ts';
 import { designTargetOf, sendDesign } from './design.ts';
 import { addNote, deleteNote, editNote, noteTitle, removeSent } from './design-model.ts';
 import { getUiState, setDesignNotes, setDesignPane, setDesignTray, useUi } from './ui.ts';
@@ -13,6 +13,10 @@ interface Props {
   url: string;
   // Writes a new URL to the pane's record.
   onUrl: (url: string) => void;
+  // The record's toolbar flag (M9 fix 839): false hides the row, which
+  // still shows while the address is empty, Design Mode is on or the
+  // notes tray is open.
+  toolbar: boolean;
 }
 
 const BAD_ADDRESS = 'Only http and https pages open here; type an address such as google.com or localhost:3000, or words to search';
@@ -35,7 +39,7 @@ const TRAY_TITLE = 'Typing a note. Click the page to pick again, or press C or S
 // survives with its history, its scroll and its state; the toolbar reads
 // the page's Back and Forward from the layer, and the layer draws the
 // failed load's line over the page.
-export function BrowserView({ paneId, url, onUrl }: Props) {
+export function BrowserView({ paneId, url, onUrl, toolbar }: Props) {
   const [address, setAddress] = useState(url);
   const [invalid, setInvalid] = useState(false);
   const { back, forward, url: pageUrl } = useBrowserPage(paneId);
@@ -89,6 +93,14 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
   const designOn = designPaneId === paneId;
   const notes = designNotes[paneId] ?? EMPTY_NOTES;
   const trayOpen = designTrayPaneId === paneId;
+  const rowShown = toolbarShown(toolbar, pageOn, designOn, trayOpen);
+  // An input removed while focused fires no blur, and a stale editingRef
+  // would stop the bar following the page when the row comes back.
+  useEffect(() => {
+    if (rowShown) return;
+    editingRef.current = false;
+    setFocused(false);
+  }, [rowShown]);
   const [grab, setGrab] = useState(0);
   const [focusNote, setFocusNote] = useState<string | null>(null);
   // Whether the focus is inside the tray, which turns the hint to the tray's.
@@ -167,104 +179,106 @@ export function BrowserView({ paneId, url, onUrl }: Props) {
 
   return (
     <div className="browser-view" data-pane-id={paneId}>
-      <div className="browser-toolbar">
-        <button className="files-button browser-back" aria-label="Back" title="Back" disabled={!back} onClick={() => ready()?.goBack()}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <button className="files-button browser-forward" aria-label="Forward" title="Forward" disabled={!forward} onClick={() => ready()?.goForward()}>
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <button
-          className="files-button browser-reload"
-          aria-label="Reload"
-          title="Reload; right-click for a hard reload"
-          onClick={() => ready()?.reload()}
-          onContextMenu={(ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            ready()?.reloadIgnoringCache();
-          }}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <input
-          ref={inputRef}
-          className="browser-address"
-          aria-label="Address"
-          aria-invalid={invalid ? 'true' : undefined}
-          title={invalid ? BAD_ADDRESS : 'Address'}
-          spellCheck={false}
-          value={focused ? address : addressShown(address)}
-          onChange={(ev) => {
-            editingRef.current = true;
-            setAddress(ev.target.value);
-          }}
-          onFocus={() => setFocused(true)}
-          onMouseDown={(ev) => {
-            clickFocusRef.current = document.activeElement !== ev.currentTarget;
-          }}
-          onMouseUp={(ev) => {
-            // A click that brings the focus selects the whole address too (M9 fix 691): the press places the caret after the focus's select(), so the release selects again. A second click into a focused bar places the caret, and a drag that made its own selection is left alone.
-            if (!clickFocusRef.current) return;
-            clickFocusRef.current = false;
-            const el = ev.currentTarget;
-            if (el.selectionStart === el.selectionEnd) {
+      {rowShown && (
+        <div className="browser-toolbar">
+          <button className="files-button browser-back" aria-label="Back" title="Back" disabled={!back} onClick={() => ready()?.goBack()}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button className="files-button browser-forward" aria-label="Forward" title="Forward" disabled={!forward} onClick={() => ready()?.goForward()}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            className="files-button browser-reload"
+            aria-label="Reload"
+            title="Reload; right-click for a hard reload"
+            onClick={() => ready()?.reload()}
+            onContextMenu={(ev) => {
               ev.preventDefault();
-              el.select();
-            }
-          }}
-          onBlur={() => {
-            editingRef.current = false;
-            setFocused(false);
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === 'Enter') {
-              ev.preventDefault();
-              go();
-            } else if (ev.key === 'Escape') {
-              ev.preventDefault();
+              ev.stopPropagation();
+              ready()?.reloadIgnoringCache();
+            }}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <input
+            ref={inputRef}
+            className="browser-address"
+            aria-label="Address"
+            aria-invalid={invalid ? 'true' : undefined}
+            title={invalid ? BAD_ADDRESS : 'Address'}
+            spellCheck={false}
+            value={focused ? address : addressShown(address)}
+            onChange={(ev) => {
+              editingRef.current = true;
+              setAddress(ev.target.value);
+            }}
+            onFocus={() => setFocused(true)}
+            onMouseDown={(ev) => {
+              clickFocusRef.current = document.activeElement !== ev.currentTarget;
+            }}
+            onMouseUp={(ev) => {
+              // A click that brings the focus selects the whole address too (M9 fix 691): the press places the caret after the focus's select(), so the release selects again. A second click into a focused bar places the caret, and a drag that made its own selection is left alone.
+              if (!clickFocusRef.current) return;
+              clickFocusRef.current = false;
+              const el = ev.currentTarget;
+              if (el.selectionStart === el.selectionEnd) {
+                ev.preventDefault();
+                el.select();
+              }
+            }}
+            onBlur={() => {
               editingRef.current = false;
-              setAddress(ready()?.getURL() || url);
-              setInvalid(false);
-            }
-          }}
-        />
-        <button
-          className="files-button browser-devtools"
-          aria-label="Developer tools"
-          title="Developer tools"
-          onClick={() => {
-            const page = ready();
-            if (page === null) return;
-            if (page.isDevToolsOpened()) page.closeDevTools();
-            else page.openDevTools();
-          }}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <button
-          className="files-button browser-design"
-          aria-label="Design Mode"
-          title="Design Mode: pick an element to send to Claude (Ctrl+Shift+D)"
-          aria-pressed={designOn}
-          disabled={!pageOn}
-          onClick={() => setDesignPane(designOn ? null : paneId)}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M3.5 2.5l9 4.2-3.9 1.3-1.3 3.9z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            <path d="M8.6 8.6l3.6 3.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-        </button>
-        {!designOn && (notes.length > 0 || trayOpen) && notesButton}
-      </div>
+              setFocused(false);
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === 'Enter') {
+                ev.preventDefault();
+                go();
+              } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                editingRef.current = false;
+                setAddress(ready()?.getURL() || url);
+                setInvalid(false);
+              }
+            }}
+          />
+          <button
+            className="files-button browser-devtools"
+            aria-label="Developer tools"
+            title="Developer tools"
+            onClick={() => {
+              const page = ready();
+              if (page === null) return;
+              if (page.isDevToolsOpened()) page.closeDevTools();
+              else page.openDevTools();
+            }}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            className="files-button browser-design"
+            aria-label="Design Mode"
+            title="Design Mode: pick an element to send to Claude (Ctrl+Shift+D)"
+            aria-pressed={designOn}
+            disabled={!pageOn}
+            onClick={() => setDesignPane(designOn ? null : paneId)}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M3.5 2.5l9 4.2-3.9 1.3-1.3 3.9z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+              <path d="M8.6 8.6l3.6 3.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </button>
+          {!designOn && (notes.length > 0 || trayOpen) && notesButton}
+        </div>
+      )}
       {designOn && (
         <div className="design-hint" role="status">
           <span className="design-hint-text" title={trayOpen && trayFocus ? TRAY_TITLE : PAGE_HINT}>

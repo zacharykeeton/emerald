@@ -1,6 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
-import { usageError } from './cli-error.ts';
+import { CliError, usageError } from './cli-error.ts';
 
 export type OptionSpec = NonNullable<ParseArgsConfig['options']>;
 
@@ -54,4 +56,51 @@ export function integerOption(value: string | undefined, name: string, fallback:
   if (value === undefined) return fallback;
   if (!/^\d+$/.test(value)) throw usageError(`--${name} must be a whole number, got ${JSON.stringify(value)}`);
   return Number(value);
+}
+
+// M9 fix 854: a verb's text read whole from stdin or a file, so a newline, a % or a double quote reaches the command as written; emmer.cmd's %* and Windows PowerShell 5.1 change all three on the command line (the backlog entry of 2026-10-16).
+export async function readText(
+  src: { stdin: boolean; file: string | undefined },
+  flags: { stdin: string; file: string },
+  keepNewline: boolean,
+): Promise<string | null> {
+  if (!src.stdin && src.file === undefined) return null;
+  if (src.stdin && src.file !== undefined) throw usageError(`${flags.stdin} and ${flags.file} together`);
+  let bytes: Buffer;
+  if (src.file !== undefined) {
+    const abs = path.resolve(src.file);
+    if (!isFile(abs)) throw new CliError(`no file ${abs}`);
+    bytes = fs.readFileSync(abs);
+  } else if (testStdin !== null) {
+    bytes = Buffer.from(testStdin, 'utf8');
+  } else {
+    if (process.stdin.isTTY === true) throw usageError(`${flags.stdin} reads text piped in, and nothing is piped`);
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : (chunk as Buffer));
+    bytes = Buffer.concat(chunks);
+  }
+  let text = bytes.toString('utf8');
+  if (text.startsWith('﻿')) text = text.slice(1);
+  if (!keepNewline) text = text.replace(/\r?\n$/, '');
+  return text;
+}
+
+let testStdin: string | null = null;
+
+// Makes readText take text in place of process.stdin (and skip the
+// terminal check) until the returned function is called; for tests.
+export function stdinText(text: string): () => void {
+  const before = testStdin;
+  testStdin = text;
+  return () => {
+    testStdin = before;
+  };
+}
+
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }

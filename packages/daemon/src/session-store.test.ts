@@ -436,7 +436,8 @@ test('a wrongly typed decoration field reads as none and keeps the record, where
   const badRemoved = { ...toPersisted(info({ id: 'badRemoved' })), removedAt: 'x' };
   fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [good, bad, noCreated, badExit, badRemoved] }));
   const loaded = new SessionStore(file, silentLogger).load();
-  assert.deepEqual(loaded.map((s) => s.id), ['good', 'bad'], 'the identity fields still drop');
+  assert.deepEqual(loaded.map((s) => s.id), ['good', 'bad', 'badExit'], 'the identity fields still drop; a bad exit code reads as unknown (M9 fix 831)');
+  assert.equal(loaded[2]!.exitCode, null);
   const b = loaded[1]!;
   assert.deepEqual(
     [b.lastPrompt, b.lastReply, b.lastPromptAt, b.lastReplyAt, b.model, b.contextPercent, b.comment, b.phase],
@@ -444,6 +445,29 @@ test('a wrongly typed decoration field reads as none and keeps the record, where
   );
   assert.equal(b.claudeSessionId, bad.claudeSessionId, 'the rest of the record is whole');
   assert.equal(loaded[0]!.phase, 'in-review');
+});
+
+test('an entry with no exitCode, as a pty that gave none left it, loads with a null code and keeps the record (M9 fix 831)', () => {
+  const file = tempFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const entry: Record<string, unknown> = { ...toPersisted(info({ id: 'noCode', state: 'exited', stateSince: 9000, pid: null })) };
+  delete entry['exitCode'];
+  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [entry] }));
+  const loaded = new SessionStore(file, silentLogger).load();
+  assert.deepEqual(loaded.map((s) => s.id), ['noCode']);
+  assert.equal(loaded[0]!.exitCode, null);
+  assert.equal(loaded[0]!.exitedAt, 9000);
+});
+
+test('toPersisted writes a null exit code for an exited record whose code is undefined (M9 fix 831)', () => {
+  const persisted = toPersisted(info({ id: 'undef', state: 'exited', exitCode: undefined as unknown as null, stateSince: 9000, pid: null }));
+  assert.strictEqual(persisted.exitCode, null);
+  const file = tempFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [persisted] }));
+  const loaded = new SessionStore(file, silentLogger).load();
+  assert.deepEqual(loaded.map((s) => s.id), ['undef']);
+  assert.equal(loaded[0]!.exitCode, null);
 });
 
 test('load skips bad entries and survives a corrupt file', () => {

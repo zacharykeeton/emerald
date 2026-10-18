@@ -16,7 +16,7 @@ import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
 import { createFile, makeFolder, heldTrash, renameEntry, trashEntry, writeFileText } from './file-write.ts';
 import { folderIcon, folderIconForget } from './folder-icon.ts';
-import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
+import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitProjectCounts, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
 import type { Runner } from './node-runner.ts';
 import { createNotifier } from './notify.ts';
 import type { NotifyOutcome } from './notify.ts';
@@ -42,6 +42,9 @@ import { postGapPoster, postInstallPoster } from './install-poster.ts';
 import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
 import { wireUpdateRelay } from './update-relay.ts';
 import { openExtraOf, reloadHolding, wireFileOpenRelay } from './file-open-relay.ts';
+import type { OpenRequest } from './file-open-relay.ts';
+import { launchArgument, launchLabel } from './launch-argument.ts';
+import type { LaunchKind } from './launch-argument.ts';
 import { wireBrowserDriver } from './browser-driver.ts';
 import { wireDesignMode } from './design-wire.ts';
 import { sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
@@ -167,11 +170,21 @@ client.on('message', (msg: ServerMessage) => {
   if (msg.type === 'browser.requested') return;
   pushToRenderer(msg);
 });
+// The last crash the window heard (M9 fix 832), for a renderer that reloads
+// before Not now; Not now clears it.
+let lastCrash: DaemonCrash | null = null;
 client.on('connected', (daemon: DaemonInfo) => pushToRenderer({ type: 'daemon.connected', daemon }));
 ipcMain.handle('emerald:daemon-restart', () => client.restartDaemon());
 ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
 client.on('disconnected', () => pushToRenderer({ type: 'daemon.disconnected' }));
-client.on('daemon-crashed', (crash: DaemonCrash) => pushToRenderer({ type: 'daemon.crashed', crash }));
+client.on('daemon-crashed', (crash: DaemonCrash) => {
+  lastCrash = crash;
+  pushToRenderer({ type: 'daemon.crashed', crash });
+});
+ipcMain.handle('emerald:daemon-crash', () => lastCrash);
+ipcMain.on('emerald:dismiss-crash', () => {
+  lastCrash = null;
+});
 
 // Requests made before the first connection wait for it instead of failing;
 // after a later disconnect they fail fast and the renderer resyncs on reconnect.
@@ -575,6 +588,7 @@ ipcMain.handle('emerald:files-git-review', (_event, dir: string, base: string) =
 ipcMain.handle('emerald:files-git-show', (_event, dir: string, hash: string, rel: string) => gitShow(dir, hash, rel));
 // Revert a file's changes (M9 fix 310), from the rail's row menu.
 ipcMain.handle('emerald:files-git-revert', (_event, dir: string, rel: string) => gitRevert(dir, rel));
+ipcMain.handle('emerald:files-git-project-counts', (_event, dir: string) => gitProjectCounts(dir));
 // The Commits tab's watch on the repository's logs (M49): a commit pushes
 // the root as a change, which the rail's git poll refetches on. The log
 // line is the watch's only trace (M9 fix 531), one per commit per root.
@@ -878,29 +892,6 @@ function createWindow(): void {
   }
 }
 
-// A launch with a file on its command line (M9 fix 342): a double-click
-// on a .md or .json once the installer has registered emerald as an opener,
-// or `Emerald.exe notes.md` by hand. The file is the first plain argument
-// after the app's own: Electron's and the installer's switches start
-// with a dash (--remote-debugging-port, --user-data-dir, --updated), and
-// the dev build is `electron <main.js> [file]`, so its own path is the
-// first plain argument there. Every launch asks for the single-instance
-// lock (keyed on the profile, so a harness window never meets another
-// script's); a launch with a file that does not get it hands the path to
-// the holder as second-instance data and quits at once, while a launch
-// with no file goes on to a window of its own either way, since a second
-// window is what a second plain launch has always given.
-function fileArgument(): string | null {
-  const plain = process.argv.slice(1).filter((a) => !a.startsWith('-'));
-  const candidate = plain[app.isPackaged ? 0 : 1];
-  if (candidate === undefined) return null;
-  const p = path.resolve(candidate);
-  try {
-    return fs.statSync(p).isFile() ? p : null;
-  } catch {
-    return null;
-  }
-}
 // M9 fix 355: EMERALD_INSPECT_PORT puts the devtools server on a port so
 // the installed window can be attached and profiled; inspect.ts says
 // when the variable yields (the harness names a port on the command
@@ -912,20 +903,37 @@ if (inspect.port !== null) {
 } else if (inspect.reason !== 'not asked') {
   log(`inspect port: ${inspect.reason}`);
 }
-const launchFile = fileArgument();
-let holdsLock = app.requestSingleInstanceLock({ path: launchFile });
-const handedOver = launchFile !== null && !holdsLock;
-log(`single-instance lock ${holdsLock ? 'held' : 'not held'}${launchFile === null ? '' : `, launched with ${launchFile}`}`);
-if (handedOver) {
-  log(`${launchFile} handed to the running window; quitting`);
+// A launch with a file or a folder on its command line (M9 fixes 342 and
+// 853): launch-argument.ts says how it is read and why a launch that does
+// not get the lock hands its path over and quits.
+const launch = launchArgument(process.argv, app.isPackaged, (p) => {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
+});
+let holdsLock = app.requestSingleInstanceLock({ path: launch?.path ?? null, kind: launch?.kind ?? null });
+const handedOver = launch !== null && !holdsLock;
+log(`single-instance lock ${holdsLock ? 'held' : 'not held'}${launch === null ? '' : `, launched with ${launchLabel(launch)}`}`);
+// The open a launch asks for: a file, or a folder to open a new tab on
+// with a Claude or a shell (fix 853).
+function launchOpen(p: string, kind: LaunchKind): OpenRequest {
+  return { path: p, pane: false, launch: true, ...(kind === 'file' ? {} : { kind }) };
+}
+if (launch !== null && handedOver) {
+  log(`${launchLabel(launch)} handed to the running window; quitting`);
   app.quit();
 } else {
-  if (launchFile !== null) openRelay.open({ path: launchFile, pane: false, launch: true });
+  if (launch !== null) openRelay.open(launchOpen(launch.path, launch.kind));
   app.on('second-instance', (_event, _argv, _cwd, additionalData) => {
-    const p = (additionalData as { path?: unknown } | undefined)?.path;
+    const data = additionalData as { path?: unknown; kind?: unknown } | undefined;
+    const p = data?.path;
     if (typeof p !== 'string') return;
-    log(`${p} from a second launch`);
-    openRelay.open({ path: p, pane: false, launch: true });
+    // A second launch from an older build sends { path } alone, a file.
+    const kind: LaunchKind = data?.kind === 'claude' || data?.kind === 'shell' ? data.kind : 'file';
+    log(`${launchLabel({ path: p, kind })} from a second launch`);
+    openRelay.open(launchOpen(p, kind));
   });
   // A window that went on without the lock (another window holds it, or
   // a killed one's singleton had not gone yet) asks again for a while,

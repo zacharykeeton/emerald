@@ -1,6 +1,24 @@
 import { formatTokens, formatUsd } from '@emerald/shared';
-import type { TeamMember } from '@emerald/shared';
+import type { SessionInfo, TeamMember } from '@emerald/shared';
 import type { AgentsRunning } from '../../preload/api.ts';
+
+// The rows whose figure can carry a running part: live, with a
+// conversation bound and a figure to add to; and, since M9 fix 288, a
+// live row with a team out and no status line yet, so its members'
+// models are read before the first figure lands. The second element is
+// the row's own figure, or null for a team-only row, and only goes into
+// the beat's key. Live is read off the state (M9 fix 831): an exited row
+// may carry a null exit code, the process having given none.
+export function liveConversations(sessions: Iterable<SessionInfo>): Array<[string, number | null]> {
+  const out: Array<[string, number | null]> = [];
+  for (const s of sessions) {
+    if (s.conversation === null || s.state === 'exited' || (s.removedAt ?? null) !== null) continue;
+    const usd = s.costUsd ?? null;
+    if (usd === null && s.team.length === 0) continue;
+    out.push([s.conversation.id, usd]);
+  }
+  return out;
+}
 
 // The two-part dollar figure (M9 fix 277): Claude Code's own figure off
 // the status line, which only moves when the main thread does, and the

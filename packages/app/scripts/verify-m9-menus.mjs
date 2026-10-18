@@ -566,7 +566,7 @@ try {
   await s.rightClick(plus.x, plus.y);
   await s.waitFor(`!!document.querySelector('.group-menu')`, 'the + menu');
   const addItems = await s.evalJs(`[...document.querySelectorAll('.group-menu .menu-item')].map(b => b.querySelector('.menu-label').textContent)`);
-  expect(JSON.stringify(addItems) === JSON.stringify(['New Claude session here', 'Other shell here', 'Commits in a pane', 'Commits in a tab']) && (await s.evalJs(`document.querySelector('.group-menu').dataset.folder`)) === os.homedir(), 'the + menu offers Claude in the folder, the commits view (M52) and the commits tab (M61), got ' + JSON.stringify(addItems));
+  expect(JSON.stringify(addItems) === JSON.stringify(['New Claude session here', 'Other shell here', 'Commits in a pane', 'Commits in a tab', 'Statistics in a tab']) && (await s.evalJs(`document.querySelector('.group-menu').dataset.folder`)) === os.homedir(), 'the + menu offers Claude in the folder, the commits view (M52), the commits tab (M61) and the Statistics tab (M9 fix 837), got ' + JSON.stringify(addItems));
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`!document.querySelector('.group-menu')`, 'Escape closed the + menu');
   step('Sidebar menus: the order on the heading, Claude and a commits view on a folder heading\'s +');

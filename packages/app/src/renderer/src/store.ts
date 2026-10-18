@@ -36,7 +36,7 @@ export interface State {
   conflicts: ConflictReport;
   // What hello said about the daemon this window is on; null until connected.
   daemon: DaemonInfo | null;
-  // The last daemon this window started that ended on a crash code (M9 fix 815), until Not now; kept across the disconnect and the next hello.
+  // The last daemon this window started that ended on a crash code (M9 fix 815), until Not now; kept across the disconnect, the next hello and a reload (M9 fix 832), the main process holding it.
   crashed: DaemonCrash | null;
   // The colour a Colour row's swatch is previewing on one session (M9
   // fix 157), laid over `sessions` in the snapshot getState hands out;
@@ -96,6 +96,29 @@ export function subscribe(listener: () => void): () => void {
   };
 }
 
+// M9 fix 853: resolves once the daemon is known and the layout is in. A
+// launch's open is delivered at the page's first ready, before sync() has
+// landed, and newTab leaves the layout unmade while the daemon is unknown,
+// so a folder from Explorer would otherwise start its session in the old
+// tab. Fifteen seconds: the main process gives the first connection ten
+// (READY_DEADLINE_MS), and the sync's own requests follow it.
+export const SYNC_WAIT_MS = 15_000;
+export function whenSynced(timeoutMs = SYNC_WAIT_MS): Promise<void> {
+  if (state.daemon !== null && state.layout !== null) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error('the daemon did not come up'));
+    }, timeoutMs);
+    const unsubscribe = subscribe(() => {
+      if (state.daemon === null || state.layout === null) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
 // The fields named, as one object whose identity holds while every named
 // field's identity holds (M9 fix 354): a push that moves another field
 // then costs this reader no render. The pick is cached per hook, since
@@ -137,12 +160,15 @@ export function start(): void {
 // the first push.
 async function sync(): Promise<void> {
   await window.emerald.request('subscribe', { topics: ['sessions', 'layout'] });
-  const [{ layout }, { sessions }, daemon] = await Promise.all([
+  const [{ layout }, { sessions }, daemon, crash] = await Promise.all([
     window.emerald.request('layout.get', {}),
     // The removed ones too (M57); a daemon before level 25 reads no flag
     // and answers the listed ones alone.
     window.emerald.request('session.list', { removed: true }),
     window.emerald.daemonInfo(),
+    // The crash the main process holds (M9 fix 832), for a renderer that
+    // reloaded before Not now.
+    window.emerald.daemonCrash(),
   ]);
   // The rate topic (M41) is its own request after the daemon is known: a
   // daemon before level 14 answers bad-request to a topic it has not got,
@@ -165,6 +191,9 @@ async function sync(): Promise<void> {
     folders: new Map(folders.map((f) => [f.folder, f.label])),
     conflicts,
     daemon,
+    // Read at the setState, so a crash push that landed while the reads
+    // were out is kept, and a null answer never clears a banner on show.
+    crashed: crash ?? state.crashed,
     // A resync is the daemon's word as a push is, so a held preview ends.
     preview: state.preview?.held === true ? null : state.preview,
   });
@@ -174,6 +203,7 @@ async function sync(): Promise<void> {
 // The crash banner's Not now (M9 fix 815).
 export function dismissCrash(): void {
   setState({ crashed: null });
+  window.emerald.dismissCrash();
 }
 
 // Exported for the store's test, which feeds it a push by hand.

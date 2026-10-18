@@ -42,10 +42,11 @@ import { daemonLevel, tabsSupported } from './daemon-model.ts';
 import { CLOSE_GRACE_MS, closeTyping } from './group-sweep-model.ts';
 import type { SweepMode } from './group-sweep-model.ts';
 import { CLAUDE_ENTER_DELAY_MS, STALL_MS, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
-import { editLayout, editTab, getState, subscribe } from './store.ts';
+import { editLayout, editTab, getState, subscribe, whenSynced } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
-import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, loadClaudeOpensOn, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setDropping, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { openFolder } from './folder-open-model.ts';
 import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.ts';
 import type { ClosedSpot } from './close-countdown-model.ts';
 import { exitsToShell } from './exit-to-shell-model.ts';
@@ -54,7 +55,7 @@ import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
 import { flashCornerNote } from './ui.ts';
 import { copiedNote } from './copy-note.ts';
-import { FREE_MOVE_WAIT_MS, askQuestion, freeAnswerKeys, freeOption } from './screen-prompt-model.ts';
+import { FREE_MOVE_WAIT_MS, askQuestion, freeAnswerKeys, freeOption, submitMoves } from './screen-prompt-model.ts';
 
 // Layout and session actions shared by the sidebar, the picker and the
 // keybindings, so the rules live in one place.
@@ -337,6 +338,28 @@ export async function openFileFromOutside(path: string, pane = false, extra: { s
   }
 }
 
+// A folder from Explorer's Open in Emerald items (M9 fix 853), handed over
+// by a launch as a file is: folder-open-model.ts says the order. Both
+// kinds remember the folder in recent folders, through startClaudeIn and
+// startShellIn.
+export async function openFolderFromOutside(folder: string, kind: 'claude' | 'shell'): Promise<void> {
+  await openFolder(folder, kind, {
+    synced: () => whenSynced(),
+    newTab: async () => {
+      // A file tab in front goes back to the panes, as the key does.
+      showTab(PANES);
+      const before = getState().layout?.tabs.map((t) => t.id) ?? [];
+      const next = await newTab();
+      const tab = currentTab(next);
+      return before.includes(tab.id) ? null : { tabId: tab.id, paneId: tab.focusedPaneId };
+    },
+    roomBesideFocused,
+    startClaudeIn,
+    startShellIn: (paneId, f) => startShellIn(paneId, f),
+    opensOn: loadClaudeOpensOn,
+  });
+}
+
 // Open a file… (M9 fix 341): the native chooser, started in the rail's
 // folder, and the pick as a pinned tab. The root is read off the rail's
 // own data-root so this stays out of the component; a collapsed rail has
@@ -476,7 +499,45 @@ export function sendFreeAnswer(sessionId: string, text: string): Promise<'sent' 
       keys = freeAnswerKeys(ask, text);
     }
     typeInto(sessionId, keys.text);
+    // M9 fix 845: in a multi-select Enter on the field toggles its box
+    // (the capture's free-m4), so the text goes in alone, ticks the row,
+    // and the answer is sent by the Submit button.
+    if (ask.multi) return 'sent';
     await new Promise((resolve) => setTimeout(resolve, CLAUDE_ENTER_DELAY_MS));
+    typeInto(sessionId, '\r');
+    return 'sent';
+  });
+}
+
+// M9 fix 845: a multi-select's Submit (or Next) button: the Downs that take
+// the pointer to its row in one write (the capture of 2.1.302 read two
+// Downs in one write move two rows), a read until the pointer is there,
+// then Enter, which only on that row submits (on an option it toggles).
+export function sendAskSubmit(sessionId: string): Promise<'sent' | 'not-moved'> {
+  return chainOn(promptChains, sessionId, async () => {
+    const read = async () => {
+      const res = await window.emerald.request('pty.screen', { sessionId });
+      return askQuestion(res.rows);
+    };
+    const ask = await read();
+    const moves = ask === null ? null : submitMoves(ask);
+    if (moves === null) {
+      console.warn('[emerald] ask submit: no Submit row to reach');
+      return 'not-moved';
+    }
+    if (moves > 0) {
+      typeInto(sessionId, '\x1b[B'.repeat(moves));
+      const until = Date.now() + FREE_MOVE_WAIT_MS;
+      let there = false;
+      while (!there && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        there = (await read())?.submit?.pointer === true;
+      }
+      if (!there) {
+        console.warn('[emerald] ask submit: the pointer never reached the Submit row');
+        return 'not-moved';
+      }
+    }
     typeInto(sessionId, '\r');
     return 'sent';
   });
@@ -711,9 +772,17 @@ export function installExitToShell(): () => void {
 async function dropToShell(sessionId: string, paneId: string): Promise<void> {
   const claude = getState().sessions.get(sessionId);
   if (claude === undefined) return;
-  const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 });
-  const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneSession(t, paneId, shell.id) : t), paneId);
-  if (findPane(tab, paneId)?.sessionId !== shell.id) await killSessionUnrecorded(shell.id, true);
+  // M9 fix 842: the pane shows its plain ground, not the exited Claude's
+  // last screen, until the shell takes it; a drop that fails leaves the
+  // pane as it was.
+  setDropping(sessionId, true);
+  try {
+    const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 });
+    const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneSession(t, paneId, shell.id) : t), paneId);
+    if (findPane(tab, paneId)?.sessionId !== shell.id) await killSessionUnrecorded(shell.id, true);
+  } finally {
+    setDropping(sessionId, false);
+  }
 }
 
 // The row's hover holds the count and the leave lets it run on from where
@@ -1221,10 +1290,11 @@ export function shownTab(): LayoutTab | null {
 
 // M9 fix 806: every copy out of a pane, either face, through the main
 // process (fix 370) and then a note in the corner of what was copied; a
-// failed write says nothing but the warning.
-export function copyAndNote(text: string): void {
+// failed write says nothing but the warning. Since fix 849 the note shows
+// in the pane the copy came from.
+export function copyAndNote(text: string, paneId: string | null = null): void {
   window.emerald.clipboard
     .write(text)
-    .then(() => flashCornerNote(copiedNote(text)))
+    .then(() => flashCornerNote(copiedNote(text), paneId))
     .catch((err: unknown) => console.warn('[emerald] copy failed', err));
 }

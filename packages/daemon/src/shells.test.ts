@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { ShellOption } from '@emerald/shared';
-import { CMD_MARKS, PROMPT_WRAPPER, ShellLauncher, cmdPrompt } from './launchers/shell.ts';
+import { CMD_MARKS, PROMPT_WRAPPER, ShellLauncher, cmdPrompt, isEmeraldMod, pluginDirs } from './launchers/shell.ts';
 import { silentLogger } from './log.ts';
 import { SessionManager } from './session-manager.ts';
 import { findShells } from './shells.ts';
@@ -40,6 +40,41 @@ test('the launcher runs Git Bash with the rc, cmd with the PROMPT, and keeps the
   assert.equal(p.file, pwsh.file);
   assert.equal(p.args.at(-1), PROMPT_WRAPPER);
   for (const other of [launcher.command([], gitbash), c]) assert.ok(!other.args.includes(PROMPT_WRAPPER), "fix 505's Enter handler stays PowerShell's");
+});
+
+test("pluginDirs puts the mod first, keeps another tool's folders and drops an inherited emerald mod (M9 fix 833)", () => {
+  const isMod = (dir: string) => dir.toLowerCase() === 'c:\\installed\\cli\\mod';
+  assert.equal(pluginDirs('C:\\e\\cli\\mod', undefined, isMod), 'C:\\e\\cli\\mod');
+  assert.equal(pluginDirs('C:\\e\\cli\\mod', 'C:\\mine\\plug', isMod), 'C:\\e\\cli\\mod;C:\\mine\\plug');
+  assert.equal(pluginDirs('C:\\e\\cli\\mod', 'c:\\E\\cli\\mod;;C:\\mine\\plug', isMod), 'C:\\e\\cli\\mod;C:\\mine\\plug', 'our own folder once, case-blind, empty entries dropped');
+  assert.equal(pluginDirs('C:\\e\\cli\\mod', 'C:\\installed\\cli\\mod;C:\\mine\\plug', isMod), 'C:\\e\\cli\\mod;C:\\mine\\plug', 'an inherited emerald mod dropped');
+  assert.equal(pluginDirs(null, 'C:\\installed\\cli\\mod', isMod), '');
+  const root = mkTemp('emerald-mod-');
+  const mod = path.join(root, 'mod');
+  const other = path.join(root, 'other');
+  for (const [dir, name] of [[mod, 'emerald'], [other, 'other']] as const) {
+    fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
+  }
+  assert.equal(isEmeraldMod(mod), true);
+  assert.equal(isEmeraldMod(other), false);
+  assert.equal(isEmeraldMod(path.join(root, 'missing')), false);
+});
+
+test('every shell launch names the emerald mod in CLAUDE_CODE_PLUGIN_DIRS beside its own variables (M9 fix 833)', () => {
+  const launcher = new ShellLauncher({ bashrcPath: 'C:\\h\\emerald.bashrc', modDir: 'C:\\e\\cli\\mod', env: {} });
+  const gitbash: ShellOption = { id: 'gitbash', label: 'Git Bash', file: 'C:\\Git\\bin\\bash.exe' };
+  const cmd: ShellOption = { id: 'cmd', label: 'Command Prompt', file: 'C:\\Windows\\System32\\cmd.exe' };
+  const pwsh: ShellOption = { id: 'pwsh', label: 'PowerShell', file: 'C:\\pwsh\\pwsh.exe' };
+  const rc = launcher.command([], gitbash);
+  const bashArgs = launcher.command(['-c', 'exit 4'], gitbash);
+  const c = launcher.command([], cmd);
+  const p = launcher.command([], pwsh);
+  for (const [what, got] of [['git bash', rc], ['git bash with args', bashArgs], ['cmd', c], ['powershell', p]] as const) {
+    assert.equal(got.env?.['CLAUDE_CODE_PLUGIN_DIRS'], 'C:\\e\\cli\\mod', what);
+  }
+  assert.equal(rc.env?.['CHERE_INVOKING'], '1');
+  assert.ok(c.env?.['PROMPT']?.startsWith(CMD_MARKS));
 });
 
 test('a real cmd shell reports its folder and moves with cd .., with no command ever running (fix 624)', async () => {
