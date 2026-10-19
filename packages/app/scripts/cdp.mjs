@@ -252,9 +252,12 @@ export async function launch(port, opts = {}) {
   // M9 fix 645: a connect that gives up ends the window it spawned (Node's
   // handle alone, never killTree, which takes the daemon) and carries this
   // window's lines, since a relaunch's catch prints the old session's.
+  // M9 fix 867: on a layout with two windows the first window's page,
+  // the one with no window query, is the one a script drives.
+  const first = pages.find((p) => !new URL(p.url).searchParams.has('window')) ?? pages[0];
   let session;
   try {
-    session = await connect(pages[0].webSocketDebuggerUrl);
+    session = await connect(first.webSocketDebuggerUrl);
   } catch (err) {
     child.kill();
     throw new Error(`${err.message}; the window's lines: ${logs.join('')}`);
@@ -272,6 +275,27 @@ export async function launch(port, opts = {}) {
   // while the document is still the initial about:blank; a script's first
   // read used to land there under load, so hand back a committed app.
   await session.waitFor(`!!document.querySelector('.app-body')`, 'the app document', 20000);
+  return session;
+}
+
+// M9 fix 867: a second window of the same app is a second page target on the same devtools port, its URL carrying ?window=<id>.
+export async function windowPage(port, windowId, ms = 15000) {
+  const deadline = Date.now() + ms;
+  let page;
+  while (page === undefined) {
+    if (Date.now() > deadline) throw new Error(`no page for window ${windowId} on port ${port}`);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(2000) });
+      page = (await res.json()).find((p) => p.type === 'page' && !p.url.startsWith('about:') && new URL(p.url).searchParams.get('window') === windowId);
+    } catch {
+      // The devtools server is busy; ask again.
+    }
+    if (page === undefined) await sleep(200);
+  }
+  const session = await connect(page.webSocketDebuggerUrl);
+  session.port = port;
+  await session.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await session.waitFor(`!!document.querySelector('.app-body')`, `window ${windowId}'s app document`, Math.max(5000, deadline - Date.now()));
   return session;
 }
 
@@ -514,6 +538,18 @@ export const getLayout = async (s) => {
 
 // The whole layout, tabs and all (M36).
 export const getTabs = async (s) => (await zreq(s, 'layout.get', {})).layout;
+
+// M9 fix 885 raised the files rail's default from 260 to 330 px, which takes
+// 70 px off every pane of the 1200 px harness window. A script whose pane
+// fixtures were written against the old area, and whose steps are about the
+// panes rather than the rail, puts the rail back at 261 with a reload (a
+// stored 260 now reads as the new default; 261 is kept as stored). Only the
+// scripts that call it change.
+export async function railAtOldWidth(s) {
+  await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 261 }))`);
+  await s.send('Page.reload');
+  await s.waitFor(`Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 261) < 3`, 'the rail at 261px (fix 885)', 15000);
+}
 
 // A page-side expression for waitFor: the focused pane of the tab on show
 // is the one given.

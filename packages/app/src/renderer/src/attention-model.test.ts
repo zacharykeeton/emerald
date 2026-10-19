@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ATTENTION_STATES, RECENT_INPUT_MS, acknowledge, answeringSession, attentionState, canMarkUnread, chiming, emptyAttention, hushAll, isAttentionSound, isRecentInput, markUnread, nextSound, observe, setHushed, waitOverlay, waitingOrder } from './attention-model.ts';
+import { ATTENTION_STATES, RECENT_INPUT_MS, acknowledge, answeringSession, attentionState, canMarkUnread, chiming, emptyAttention, hushAll, isAttentionSound, isRecentInput, markUnread, nextSound, observe, setHushed, taskbarCounts, waitOverlay, waitingOrder } from './attention-model.ts';
 import type { AttentionModel } from './attention-model.ts';
 import type { SessionState } from '@emerald/shared';
 
@@ -284,4 +284,19 @@ test('an idle compaction of a done row is no arrival and keeps it wanting', () =
   assert.deepEqual(arrived, [], 'its return to done is no second arrival');
   assert.deepEqual(ids(model), ['a']);
   assert.equal(attentionState({ state: 'working', compactFrom: { state: 'idle', since } }), 'working', 'an idle row compacting is plain working');
+});
+
+test('taskbarCounts reads working by the attention word and live as not exited (M9 fix 870)', () => {
+  const T = 1_000;
+  const sessions = [
+    { state: 'working' as const },
+    { state: 'working' as const, stale: true },
+    { state: 'working' as const, compactFrom: { state: 'done' as const, since: T } },
+    { state: 'idle' as const },
+    { state: 'done' as const },
+    { state: 'waiting' as const },
+    { state: 'exited' as const },
+  ];
+  assert.deepEqual(taskbarCounts(sessions), { working: 1, live: 6 });
+  assert.deepEqual(taskbarCounts([]), { working: 0, live: 0 });
 });

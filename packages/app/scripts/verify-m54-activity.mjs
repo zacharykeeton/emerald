@@ -2317,7 +2317,81 @@ try {
   {
     const { spanText, tokensText, usdText } = await import('../src/renderer/src/stats-model.ts');
     const { session: statsShell } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: statsRepo, name: 'stats-shell', cols: 100, rows: 30 });
-    const groupSel = `[...document.querySelectorAll('.sidebar-group')].find((g) => (g.dataset.group ?? '').toLowerCase() === ${JSON.stringify(statsRepo.toLowerCase())})`;
+    // M9 fix 885: the rail's Stats tab, before the document tab below so
+    // its ask is the first on the folder. The stats shell goes onto the
+    // shell pane (the fix 224 shape) for the rail to follow, the tab is
+    // read against the daemon's totals, a session working for twenty
+    // seconds and a width drag must not ask or compute again, three
+    // switches away and back must not either, and a cd to another folder
+    // draws that folder's own figures.
+    {
+      const withSession885 = (node, paneId, sessionId) => (node.kind === 'pane' ? (node.id === paneId ? { ...node, sessionId } : node) : { ...node, first: withSession885(node.first, paneId, sessionId), second: withSession885(node.second, paneId, sessionId) });
+      const layout885 = await getLayout(s);
+      const shellPane885 = leaves(layout885).find((p) => p.sessionId !== null);
+      expect(shellPane885 !== undefined, 'a shell pane to stand in for (fix 885)');
+      const originalSession885 = shellPane885.sessionId;
+      const put885 = async (sessionId) => {
+        const l = await getLayout(s);
+        await zreq(s, 'layout.set', { layout: { ...l, root: withSession885(l.root, shellPane885.id, sessionId), focusedPaneId: shellPane885.id } });
+      };
+      const railView885 = `document.querySelector('.files-rail .stats-view[data-place="rail"]')`;
+      const figures885 = (scope) => s.evalJs(`[...document.querySelectorAll('${scope} .stats-figure')].map((f) => [f.querySelector('.stats-figure-label')?.textContent ?? '', f.querySelector('.stats-figure-value')?.textContent ?? '', f.querySelector('.stats-figure-note')?.textContent ?? ''].join('|'))`);
+      await put885(statsShell.id);
+      await s.waitFor(`(document.querySelector('.files-rail')?.dataset.root ?? '').toLowerCase() === ${JSON.stringify(statsRepo.toLowerCase())}`, 'the rail on the stats folder', 10000);
+      await s.evalJs(`document.querySelector('.rail-tab[data-tab="stats"]').click()`);
+      await s.waitFor(`${railView885}?.dataset.state === 'ready'`, "the rail's Stats ready", 15000);
+      const railTotals885 = await zreq(s, 'activity.totals', { folder: statsRepo });
+      const { tokensText: tokensText885, usdText: usdText885 } = await import('../src/renderer/src/stats-model.ts');
+      const want885 = ['Commits|2|', 'Releases|1|tags on main', 'Requests|2|', `Tokens in|${tokensText885(railTotals885.total.up)}|`, `Tokens out|${tokensText885(railTotals885.total.down)}|`, `At API prices|${usdText885(railTotals885.total.usd, true)}|`, 'Agent time|30m|'];
+      const railFigures885 = await figures885('.files-rail .stats-view');
+      expect(JSON.stringify(railFigures885) === JSON.stringify(want885), `the rail's figures (wanted ${JSON.stringify(want885)}, read ${JSON.stringify(railFigures885)})`);
+      expect(!(await s.evalJs(`!!document.querySelector('.files-rail .stats-view .file-header')`)), "the rail's Stats has no document header");
+      const { session: busy885 } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: home, name: 'stats-busy', cols: 100, rows: 30 });
+      await post(busy885.id, { hook_event_name: 'SessionStart', source: 'startup' });
+      for (let turn = 0; turn < 10; turn++) {
+        await post(busy885.id, { hook_event_name: 'UserPromptSubmit', prompt: 'busy 885' });
+        await sleep(1000);
+        await post(busy885.id, { hook_event_name: 'Stop', stop_hook_active: false });
+        await sleep(1000);
+        if (turn === 4) {
+          const edge885 = await s.evalJs(`(() => { const r = document.querySelector('.files-resizer').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 100 }; })()`);
+          await s.mouse('mousePressed', edge885.x, edge885.y);
+          for (let dx = 5; dx <= 40; dx += 5) await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edge885.x - dx, y: edge885.y, button: 'left', buttons: 1 });
+          for (let dx = 35; dx >= 0; dx -= 5) await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edge885.x - dx, y: edge885.y, button: 'left', buttons: 1 });
+          await s.mouse('mouseReleased', edge885.x, edge885.y);
+        }
+      }
+      const counters885 = () => s.evalJs(`(() => { const v = ${railView885}; return v === null ? null : v.dataset.asks + '|' + v.dataset.sheets; })()`);
+      const afterBusy885 = await counters885();
+      expect(afterBusy885 === '1|1', `twenty seconds of a session's turns and a width drag asked once and computed once (asks|sheets ${afterBusy885})`);
+      for (let i = 0; i < 3; i++) {
+        await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
+        await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'files'`, 'the rail on Files');
+        await s.evalJs(`document.querySelector('.rail-tab[data-tab="stats"]').click()`);
+        await s.waitFor(`${railView885}?.dataset.state === 'ready'`, "the rail's Stats ready again", 15000);
+      }
+      const afterSwitches885 = await counters885();
+      expect(afterSwitches885 === '1|1', `three switches away and back asked nothing and computed nothing (asks|sheets ${afterSwitches885})`);
+      fs.mkdirSync(`${statsRepo}-other`);
+      const { session: otherShell885 } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: `${statsRepo}-other`, name: 'stats-other-shell', cols: 100, rows: 30 });
+      await put885(otherShell885.id);
+      await s.waitFor(`${railView885}?.dataset.folder?.toLowerCase() === ${JSON.stringify(`${statsRepo}-other`.toLowerCase())} && ${railView885}?.dataset.state === 'ready'`, "the rail's Stats on the other folder", 15000);
+      const otherFigures885 = await figures885('.files-rail .stats-view');
+      expect(otherFigures885.includes('Commits|none|not a git repository') && otherFigures885.includes('Requests|1|') && otherFigures885.includes('At API prices|$0.10|'), `the rail followed to the other folder's own figures (${JSON.stringify(otherFigures885)})`);
+      await put885(originalSession885);
+      await s.click(activityBox.x, activityBox.y);
+      await s.waitFor(`document.querySelector('.pane[data-view="activity"]')?.classList.contains('focused')`, 'the activity pane focused again (fix 885)', 10000);
+      await s.evalJs(`document.querySelector('.rail-tab[data-tab="timeline"]').click()`);
+      await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'timeline' && !${railView885}`, 'the rail back on Activity, its Stats view gone');
+      for (const id of [busy885.id, otherShell885.id]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
+      try {
+        fs.rmSync(`${statsRepo}-other`, { recursive: true, force: true });
+      } catch {
+        console.log(`[verify] note: ${statsRepo}-other left in place`);
+      }
+      step("M9 fix 885: the rail's Stats tab reads the folder's figures, asks once and computes once across twenty seconds of a session's turns and a width drag and three switches away and back, and follows the rail to another folder");
+    }
+    const groupSel =`[...document.querySelectorAll('.sidebar-group')].find((g) => (g.dataset.group ?? '').toLowerCase() === ${JSON.stringify(statsRepo.toLowerCase())})`;
     await s.waitFor(`!!(${groupSel})?.querySelector('.sidebar-group-add')`, "the stats folder's heading", 10000);
     const plus837 = await s.evalJs(`(() => { const r = (${groupSel}).querySelector('.sidebar-group-add').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     await s.rightClick(plus837.x, plus837.y);
@@ -2326,15 +2400,22 @@ try {
     await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready'`, 'the Statistics tab ready', 15000);
     const t = await zreq(s, 'activity.totals', { folder: statsRepo });
     expect(t.total.requests === 2 && t.total.estimated === true && t.total.agentMs === 30 * MINUTE && t.firstAt === hm(dayAgo(7).getTime(), 15, 0), `activity.totals counts stats-a's two requests alone, estimated, its half hour and its first line (${JSON.stringify({ requests: t.total.requests, estimated: t.total.estimated, agentMs: t.total.agentMs, firstAt: t.firstAt })})`);
-    const view837 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); return { now: Number(v.dataset.now), figures: [...v.querySelectorAll('.stats-figure')].map((f) => [f.querySelector('.stats-figure-label')?.textContent ?? '', f.querySelector('.stats-figure-value')?.textContent ?? '', f.querySelector('.stats-figure-note')?.textContent ?? ''].join('|')), span: v.querySelector('.stats-span')?.textContent ?? null, history: v.querySelector('.stats-history')?.textContent ?? null, tab: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.querySelector('.tab-name')?.textContent ?? null, key: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.dataset.key ?? null }; })()`);
+    const view837 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); return { now: Number(v.dataset.now), figures: [...v.querySelectorAll('.stats-figure')].map((f) => [f.querySelector('.stats-figure-label')?.textContent ?? '', f.querySelector('.stats-figure-value')?.textContent ?? '', f.querySelector('.stats-figure-note')?.textContent ?? ''].join('|')), span: v.querySelector('.stats-span')?.textContent ?? null, history: v.querySelector('.stats-history')?.textContent ?? null, yieldLine: v.querySelector('.stats-yield')?.textContent ?? null, asOf: v.querySelector('.stats-asof')?.textContent ?? null, tab: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.querySelector('.tab-name')?.textContent ?? null, key: [...document.querySelectorAll('.tab.tab-file')].find((e) => e.dataset.key.startsWith('emerald://stats/'))?.dataset.key ?? null }; })()`);
     const want837 = ['Commits|2|', 'Releases|1|tags on main', 'Requests|2|', `Tokens in|${tokensText(t.total.up)}|`, `Tokens out|${tokensText(t.total.down)}|`, `At API prices|${usdText(t.total.usd, true)}|`, 'Agent time|30m|'];
     expect(JSON.stringify(view837.figures) === JSON.stringify(want837), `the tab's figures (wanted ${JSON.stringify(want837)}, read ${JSON.stringify(view837.figures)})`);
     const spanWant = spanText(statsFirstCommitAt, t.firstAt, view837.now);
     expect(view837.span === spanWant && spanWant.startsWith('21 days, '), `the span runs from the first commit, 21 days (wanted ${spanWant}, read ${view837.span})`);
     expect(view837.history !== null && view837.history.startsWith(historyWant()) && view837.history.endsWith('; the requests, tokens, price and agent time before it are not in the log'), `the history line names the log's start and says what it leaves out (${view837.history})`);
+    // M9 fix 885: the first commit is 20 days back and the log's first line
+    // 13, so one commit and one release (the tag made now) fall from the
+    // log's first day on, and the yield counts those against the spend.
+    const { historyDay: historyDay885, yieldText: yieldText885 } = await import('../src/renderer/src/stats-model.ts');
+    const yieldWant885 = yieldText885(t.total.usd, true, 1, 1, historyDay885(t.historyFrom), view837.now);
+    expect(view837.yieldLine === yieldWant885 && yieldWant885.includes("the log's first day"), `the yield is counted from the log's first day (wanted ${yieldWant885}, read ${view837.yieldLine})`);
+    expect(/^as of \d\d:\d\d$/.test(view837.asOf ?? ''), `the as-of time sits beside the span (${view837.asOf})`);
     expect(view837.tab === `Statistics · ${path.basename(statsRepo)}`, `the strip's tab is named for the folder (${view837.tab})`);
     await s.screenshot('m9-fix837-stats-tab.png');
-    step('M9 fix 837: Statistics in a tab from the + menu reads the folder\'s commits, its tag as the release, its two requests with the estimate, the tokens, the price and the agent time, the worktree and the other folder left out, and the span from the first commit');
+    step('M9 fix 837: Statistics in a tab from the + menu reads the folder\'s commits, its tag as the release, its two requests with the estimate, the tokens, the price and the agent time, the worktree and the other folder left out, the span from the first commit, and the yield counted from the log\'s first day (fix 885)');
 
     // M9 fix 838: a Max 20x plan entered in the tab, read against the
     // pure sums, kept across a reload (emerald.plan) and removed again.
@@ -2415,6 +2496,16 @@ try {
   await s.waitFor(`!!document.querySelector('.files-rail .activity-card .activity-expand')`, 'the rail card with its expand');
   expect(!(await s.evalJs(`!!document.querySelector('.files-rail .activity-card .activity-open-pane')`)), 'no pane button on the card under level 31');
   step('M69: the pane survives a relaunch and an older daemon gets no pane button');
+
+  // M9 fix 885: the rail keeps its Stats tab under a daemon at level 31,
+  // with the level message (the activity pane is focused after a reload,
+  // so the rail may be on no folder, and the message comes first).
+  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 4, 'four rail tabs under the older daemon (fix 885)');
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="stats"]').click()`);
+  await s.waitFor(`document.querySelector('.files-rail .stats-view[data-state="old"] .stats-message')?.textContent === 'Statistics need emmerd at level 70 or later; restart it from the banner.'`, 'the level message on the rail\'s Stats', 10000);
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="timeline"]').click()`);
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'timeline'`, 'the rail back on Activity');
+  step('M9 fix 885: the rail keeps its Stats tab under a daemon at level 31, with the level message');
 
   // M9 fix 245, the closed-app edge: the window's close above wrote
   // `away`, the relaunch's hello `back`, after the two seeded lines and

@@ -1,4 +1,4 @@
-import { formatSpanLength, formatTokens, historyFromText } from '@emerald/shared';
+import { clockTime, formatSpanLength, formatTokens, historyFromText } from '@emerald/shared';
 import type { ActivityTotals } from '@emerald/shared';
 import type { GitProjectCounts } from '../../preload/api.ts';
 
@@ -9,6 +9,9 @@ import type { GitProjectCounts } from '../../preload/api.ts';
 
 // How often the tab asks again while it is shown.
 export const STATS_REFRESH_MS = 60_000;
+
+// What the tab and the rail say under a daemon that cannot answer.
+export const STATS_OLD_TEXT = 'Statistics need emmerd at level 70 or later; restart it from the banner.';
 
 const DAY_MS = 86_400_000;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -88,14 +91,34 @@ export function spanTitle(firstCommitAt: number | null, firstAt: number | null, 
 }
 
 // The yield: the price per release and per hundred commits, and the
-// releases per $1,000, each dollar figure marked when estimated.
-export function yieldText(usd: number, estimated: boolean, releases: number, commits: number): string {
+// releases per $1,000, each dollar figure marked when estimated. With a
+// since (M9 fix 885), the releases and commits counted are those from the
+// log's first day on, and the line says so.
+export function yieldText(usd: number, estimated: boolean, releases: number, commits: number, since: number | null = null, now = Date.now()): string {
   if (usd <= 0) return 'no spend recorded';
   const parts: string[] = [];
   if (releases > 0) parts.push(`${usdText(usd / releases, estimated)} per release`);
   if (commits > 0) parts.push(`${usdText((usd / commits) * 100, estimated)} per hundred commits`);
-  parts.push(`${((releases / usd) * 1000).toFixed(1)} releases per $1,000`);
-  return parts.join(' · ');
+  parts.push(`${((releases / usd) * 1000).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} releases per $1,000`);
+  const line = parts.join(' · ');
+  return since === null ? line : `${line}; releases and commits from ${dayText(since, now)}, the log's first day`;
+}
+
+// The local midnight of the log's first day, null with no log.
+export function historyDay(historyFrom: number | null): number | null {
+  return historyFrom === null ? null : midnight(historyFrom);
+}
+
+// The releases from that day on, by the rule releasesOf applies to the
+// whole history; null when the counts carry no since.
+export function releasesSince(counts: GitProjectCounts): number | null {
+  if (counts.since === undefined) return null;
+  return counts.tags > 0 ? counts.since.tags : (counts.since.bumps ?? 0);
+}
+
+// When the figures were read, beside the span.
+export function asOfText(at: number): string {
+  return `as of ${clockTime(at)}`;
 }
 
 // The history line under the months: how far back the log reaches, and,

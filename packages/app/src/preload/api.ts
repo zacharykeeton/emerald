@@ -289,8 +289,9 @@ export interface FilesApi {
   // The Statistics tab's git figures (M9 fix 836): the commits on HEAD,
   // the first commit's time, the tags on the default branch and the
   // version bumps of a package.json on it. Never rejects; root is null
-  // outside a repo.
-  gitProjectCounts(dir: string): Promise<GitProjectCounts>;
+  // outside a repo; with since, the same counts from that time on (M9
+  // fix 885).
+  gitProjectCounts(dir: string, since?: number | null): Promise<GitProjectCounts>;
   // A file to open from outside the renderer (M9 fix 341): `emmer open`
   // relayed over the daemon, or a launch with a file (fix 342); pinned
   // tab, or with pane a pane beside the focused one. Installing the
@@ -388,6 +389,16 @@ export interface GitProjectCounts {
   tags: number;
   bumps: number | null;
   bumpsFile: string | null;
+  // Asked for with a start time (M9 fix 885): the same counts from that
+  // time on, for the yield of a span the activity log does not cover.
+  since?: GitCountsSince;
+}
+
+export interface GitCountsSince {
+  from: number;
+  commits: number;
+  tags: number;
+  bumps: number | null;
 }
 
 // One commit of the graph (M51): the list's fields plus the parents and
@@ -496,10 +507,13 @@ export interface NotifyRequest {
 // The renderer's attention set, sent on every change (M9 fix 104) so the
 // main process can flash the taskbar button and badge it with the count:
 // `flash` when the renderer chimed for the arrival, so a beep and a flash
-// always come together.
+// always come together. M9 fix 870: and the counts of sessions working and
+// not exited, for the bar and the tooltip.
 export interface AttentionRequest {
   wanting: number;
   flash: boolean;
+  working: number;
+  live: number;
 }
 
 export interface NotifyApi {
@@ -804,6 +818,8 @@ export interface EmeraldApi {
   // disconnected. The connected push carries the same, but a renderer that
   // loads after the connection is up never saw it.
   daemonInfo(): Promise<DaemonInfo | null>;
+  // The layout window this page shows (M9 fix 866): known at once for a window main opened from a record, and for the first window once main has read the layout.
+  windowId(): Promise<string>;
   // The last crash of a daemon this window started (M9 fix 832), held by
   // the main process until Not now, so a reload brings the banner back.
   daemonCrash(): Promise<DaemonCrash | null>;

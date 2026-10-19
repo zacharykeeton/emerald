@@ -3,6 +3,7 @@
 // node_modules walk can never reach the repo, then drives bin\emmer.cmd (the
 // shim falls back to node when there is no Emerald.exe above it) under a private
 // EMERALD_HOME and EMERALD_PIPE: daemon start, a shell, send and read, kill, stop.
+// Since M9 fix 884 it also reads bin/emmer, the Git Bash shim, for LF line endings and runs it by its bare name under Git Bash when the box has one.
 // Logs to %TEMP%\emerald-verify\stage.log. Build first (npm run build).
 // Run: npm run verify:stage -w @emerald/app
 import { spawnSync } from 'node:child_process';
@@ -69,6 +70,24 @@ function powershell(command) {
   return (r.stdout ?? '').trim();
 }
 
+// M9 fix 884: the Git Bash shim beside emmer.cmd. A bare `bash` from a
+// process PowerShell started is WSL's (System32), so Git Bash is found the
+// way Claude Code finds it: CLAUDE_CODE_GIT_BASH_PATH, then bin\bash.exe up
+// to two folders above each git.exe on PATH, then Program Files.
+function findGitBash() {
+  const named = process.env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (named && fs.existsSync(named)) return named;
+  const hits = (spawnSync('where.exe', ['git'], { encoding: 'utf8', windowsHide: true }).stdout ?? '').split(/\r?\n/).filter(Boolean);
+  for (const git of hits) {
+    for (let d = path.dirname(git), i = 0; i < 3; d = path.dirname(d), i++) {
+      const bash = path.join(d, 'bin', 'bash.exe');
+      if (fs.existsSync(bash)) return bash;
+    }
+  }
+  const fallback = path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
+  return fs.existsSync(fallback) ? fallback : null;
+}
+
 function readDaemonInfo() {
   try {
     return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
@@ -133,6 +152,22 @@ async function main() {
 
   let r = emerald('--version');
   expect(r.code === 0 && /^\d+\.\d+\.\d+$/.test(r.out.trim()), `emmer --version prints a version through the shim (${r.out.trim()})`);
+
+  // M9 fix 884: bin/emmer is staged, LF, and Git Bash runs it by its bare name.
+  const version = r.out.trim();
+  const shPath = path.join(stageCopy, 'bin', 'emmer');
+  const shText = fs.existsSync(shPath) ? fs.readFileSync(shPath, 'utf8') : '';
+  expect(shText.startsWith('#!/bin/sh\n') && !shText.includes('\r'), 'bin/emmer, the Git Bash shim, is staged with LF line endings');
+  const gitBash = findGitBash();
+  if (gitBash === null) {
+    log('Git Bash is not on this box; bin/emmer was checked by its bytes alone');
+  } else {
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const b = spawnSync(gitBash, ['-c', 'command -v emmer && emmer --version'], { env: { ...env, [pathKey]: `${path.join(stageCopy, 'bin')};${env[pathKey] ?? ''}` }, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+    fs.appendFileSync(logFile, `$ bash -c 'command -v emmer && emmer --version' (${gitBash})\n${b.stdout ?? ''}${b.stderr ?? ''}[exit ${b.status}]\n`);
+    const [found = '', said = ''] = (b.stdout ?? '').trim().split(/\r?\n/);
+    expect(b.status === 0 && found.toLowerCase().endsWith('/emerald-verify/stage/bin/emmer') && said.trim() === version, `Git Bash runs bin/emmer by its bare name (${found}, ${said.trim()})`);
+  }
 
   r = emerald('daemon', 'start');
   expect(r.code === 0 && /^started emmerd/.test(r.out), `daemon start through the shim: ${r.out.trim()}`);

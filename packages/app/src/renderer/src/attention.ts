@@ -1,11 +1,12 @@
 import { describeState, findPane } from '@emerald/shared';
 import type { SessionInfo } from '@emerald/shared';
+import type { AttentionRequest } from '../../preload/api.ts';
 import { ackIfDone, showSessionAuto, shownTab } from './actions.ts';
-import { answeringSession, attentionState, chiming, isRecentInput } from './attention-model.ts';
+import { answeringSession, attentionState, chiming, isRecentInput, taskbarCounts } from './attention-model.ts';
 import { chime, syncRepeat } from './attention-sound.ts';
 import { isLookFirstKey } from './keys.ts';
 import { isPulse } from './pulse-sync-model.ts';
-import { getState, subscribe } from './store.ts';
+import { getState, isFrontWindow, subscribe } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { acknowledgeAttention, getUiState, hushAttention, observeAttention, setChimeMode, subscribeUi } from './ui.ts';
 
@@ -61,8 +62,9 @@ let lastPaneInput: { paneId: string; at: number } | null = null;
 // What the main process was last told about the attention set (M9 fix
 // 104), so a sessions push that changed nothing sends nothing; an arrival
 // the renderer chimed for is sent even at the same count, since the
-// taskbar flashes with every chime.
-let lastSent: { wanting: number; flash: boolean } | null = null;
+// taskbar flashes with every chime, and since M9 fix 870 a change of the
+// working or live count is a change too.
+let lastSent: AttentionRequest | null = null;
 // One send per tick (M9 fix 125): an arrival reaches here twice in the
 // same call stack, from the UI listener when the set grows (no flash) and
 // from the sessions listener that chimes for it (flash), which wrote two
@@ -80,10 +82,10 @@ function sendAttention(wanting: number, flash: boolean): void {
 }
 
 function flushAttention(): void {
-  const next = pending;
+  if (pending === null) return;
+  const next: AttentionRequest = { ...pending, ...taskbarCounts(getState().sessions.values()) };
   pending = null;
-  if (next === null) return;
-  if (lastSent !== null && lastSent.wanting === next.wanting && !next.flash) return;
+  if (lastSent !== null && lastSent.wanting === next.wanting && lastSent.working === next.working && lastSent.live === next.live && !next.flash) return;
   lastSent = next;
   window.emerald.notify.attention(next);
 }
@@ -105,7 +107,11 @@ export function installAttention(): () => void {
     const sessions = getState().sessions;
     const { arrived, settled } = observeAttention(sessions.values(), answeringNow());
     const ui = getUiState();
-    const sounding = arrived.length > 0 && ui.attentionSound !== 'off';
+    // The chime, the toast and the repeat are the front window's (M9 fix
+    // 867), so two windows chime once for an arrival; every window's own
+    // taskbar button still wears the count.
+    const front = isFrontWindow();
+    const sounding = front && arrived.length > 0 && ui.attentionSound !== 'off';
     const stateOf = (id: string): string => {
       const s = sessions.get(id);
       return s === undefined ? 'gone' : attentionState(s);
@@ -125,19 +131,19 @@ export function installAttention(): () => void {
     // setting: whenever it beeps it flashes, and with the sound off the
     // badge alone says how many are wanting.
     sendAttention(ui.attention.wanting.size, sounding);
-    if (ui.attentionNotify) {
+    if (front && ui.attentionNotify) {
       for (const id of arrived) {
         const session = sessions.get(id);
         if (session !== undefined) window.emerald.notify.post({ sessionId: id, title: session.name, body: notificationBody(session) });
       }
     }
-    syncRepeat(chiming(ui.attention) && ui.attentionSound === 'repeat', ui.chimeMode);
+    syncRepeat(isFrontWindow() && chiming(ui.attention) && ui.attentionSound === 'repeat', ui.chimeMode);
   };
   // The setting can change while something is pulsing: off must stop the
   // repeat and repeat must start it. So can the hushed set (fix 189).
   const onUi = () => {
     const ui = getUiState();
-    syncRepeat(chiming(ui.attention) && ui.attentionSound === 'repeat', ui.chimeMode);
+    syncRepeat(isFrontWindow() && chiming(ui.attention) && ui.attentionSound === 'repeat', ui.chimeMode);
     // An acknowledge empties the set here, which is what clears the badge.
     sendAttention(ui.attention.wanting.size, false);
   };

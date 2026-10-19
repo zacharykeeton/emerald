@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, enterSequence, formatChord, isCopyKey, isModifierKey, isPasteKey, matchPlain, matchPrefixed, parseKeySpec, plainKeyFor } from './keys-model.ts';
+import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, LOOK_FIRST_ACTIONS, enterSequence, formatChord, isCopyKey, isModifierKey, isPasteKey, matchPlain, matchPrefixed, parseKeySpec, plainKeyFor } from './keys-model.ts';
 import type { KeyLike } from './keys-model.ts';
 
 const key = (code: string, mods: Partial<Omit<KeyLike, 'code'>> = {}): KeyLike => ({
@@ -174,4 +174,8 @@ test('the shade chords: Ctrl+Shift+U and U after the prefix for Shade or lift al
   assert.equal(matchPlain(key('KeyU', { ctrlKey: true })), null, "Ctrl+U alone stays the shell's ^U");
   assert.equal(plainKeyFor('shade-all'), 'Ctrl+Shift+U');
   assert.equal(plainKeyFor('shade-pane'), 'Ctrl+Shift+K');
+});
+
+test('the look-first actions: the tab keys, the jump to the waiting session and the shade chords (M9 fixes 189, 201 and 873)', () => {
+  assert.deepEqual([...LOOK_FIRST_ACTIONS].sort(), ['jump-waiting', 'next-layout-tab', 'next-tab', 'prev-layout-tab', 'prev-tab', 'shade-all', 'shade-pane']);
 });

@@ -154,18 +154,27 @@ export function resolvePathLink(cwd: string, p: string): string {
 }
 
 // M9 fix 653: a folder is a link too. The hover's title says where a
-// Ctrl+click goes (a file's text is fix 357's, word for word), and the
-// click's route is read off the stat's kind and the keys: a folder opens
-// in Explorer with or without Shift, a file opens a tab, or with Shift is
+// Ctrl+click goes, and the click's route is read off the stat's kind and
+// the keys: a folder opens in Explorer with or without Shift, a file
+// opens in a file pane beside the pane since M9 fix 864 (a tab on a
+// daemon too old for a file pane, `beside` false), or with Shift is
 // shown selected in its folder; no Ctrl, no link.
-export function pathLinkTitle(full: string, kind: 'file' | 'dir'): string {
-  return kind === 'dir' ? `Ctrl+click opens ${full} in Explorer` : `Ctrl+click opens ${full}`;
+export function pathLinkTitle(full: string, kind: 'file' | 'dir', beside: boolean): string {
+  if (kind === 'dir') return `Ctrl+click opens ${full} in Explorer`;
+  return beside ? `Ctrl+click opens ${full} in a pane beside` : `Ctrl+click opens ${full}`;
 }
 
-export type PathLinkAction = 'tab' | 'reveal' | 'open-folder';
+// M9 fix 863: a URL's hover says where a Ctrl+click goes, a browser pane
+// beside when the daemon can hold one and fix 204's text when not.
+export function urlLinkTitle(uri: string, beside: boolean): string {
+  return beside ? `Ctrl+click opens ${uri} in a pane beside` : `Ctrl+click opens ${uri}`;
+}
 
-export function pathLinkAction(kind: 'file' | 'dir', keys: { ctrlKey: boolean; shiftKey: boolean }): PathLinkAction | null {
+export type PathLinkAction = 'beside' | 'tab' | 'reveal' | 'open-folder';
+
+export function pathLinkAction(kind: 'file' | 'dir', keys: { ctrlKey: boolean; shiftKey: boolean }, beside: boolean): PathLinkAction | null {
   if (!keys.ctrlKey) return null;
   if (kind === 'dir') return 'open-folder';
-  return keys.shiftKey ? 'reveal' : 'tab';
+  if (keys.shiftKey) return 'reveal';
+  return beside ? 'beside' : 'tab';
 }

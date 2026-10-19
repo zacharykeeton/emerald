@@ -1,6 +1,8 @@
 // M9 fix 672: emmer browser's driver. The daemon pushes browser.requested
 // to this main process; the command runs on the pane's guest through its
-// webContents.debugger, attached for that command alone, and the answer
+// webContents.debugger, attached from a pane's first command until it has
+// had none for a minute, the person's click or key, or the page's end
+// (M9 fix 876), and the answer
 // goes back as browser.done. The page takes the window's keyboard for a
 // key or a fill alone (emerald:browser-take-focus, typeInto below), and
 // the renderer hands it back when the command ends; every other verb
@@ -11,9 +13,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ipcMain, webContents, type DownloadItem, type WebContents } from 'electron';
-import { browserUrl } from '@emerald/shared';
+import { browserUrl, dragOffset } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb, Requests, ServerMessage } from '@emerald/shared';
-import { BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, fromElectron, keySpec, parseRef, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type SnapshotRow } from './browser-drive-model.ts';
+import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, dragPath, FILL_TARGET_FN, fillPlan, fromElectron, holdIdleMs, keySpec, pageThrew, parseRef, parseRegion, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type FillTarget, type SnapshotFilter, type SnapshotRow } from './browser-drive-model.ts';
 
 // The pane's driven mark, pushed to the window as emerald:browser-drive.
 export type DriveState = { by: string; running: boolean; paused: boolean } | null;
@@ -28,9 +30,9 @@ export interface DriverOptions {
   // The emerald home; screenshots go under it.
   home: string;
   push: (paneId: string, state: DriveState) => void;
-  // The main window's contents, the one sender a guest registration is
-  // taken from.
-  mainContents: () => WebContents | null;
+  // Whether the contents is one of the app's windows, the only senders a
+  // guest registration is taken from (one window before M9 fix 866).
+  isWindow: (contents: WebContents) => boolean;
 }
 
 export interface BrowserDriver {
@@ -55,6 +57,8 @@ interface Pane {
   // The last snapshot's refs and rows, and the navigation count then.
   refs: Map<string, number> | null;
   rows: Map<string, SnapshotRow>;
+  // M9 fix 875: the last snapshot's region refs (@r1), for --within alone.
+  regions: Map<string, number>;
   refsAt: number;
   // Commands on one pane run one at a time.
   chain: Promise<void>;
@@ -69,6 +73,9 @@ interface Pane {
   paused: boolean;
   synthetic: number;
   by: string;
+  // M9 fix 876: the timer that lets go of the page once it has had no command for the hold, and whether a command is running now.
+  hold: NodeJS.Timeout | null;
+  busy: boolean;
 }
 
 class Failed extends Error {}
@@ -78,10 +85,11 @@ const failed = (text: string): never => {
 
 export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): BrowserDriver {
   const panes = new Map<string, Pane>();
+  const holdMs = holdIdleMs(process.env['EMERALD_BROWSER_HOLD_MS']);
   const paneOf = (id: string): Pane => {
     let p = panes.get(id);
     if (p === undefined) {
-      p = { contents: null, navigations: 0, refs: null, rows: new Map(), refsAt: 0, chain: Promise.resolve(), runs: 0, events: new EventLog(), driven: false, paused: false, synthetic: 0, by: 'emmer' };
+      p = { contents: null, navigations: 0, refs: null, rows: new Map(), regions: new Map(), refsAt: 0, chain: Promise.resolve(), runs: 0, events: new EventLog(), driven: false, paused: false, synthetic: 0, by: 'emmer', hold: null, busy: false };
       panes.set(id, p);
     }
     return p;
@@ -89,6 +97,29 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   const paneHolding = (contents: WebContents): [string, Pane] | null => {
     for (const entry of panes) if (entry[1].contents === contents) return entry;
     return null;
+  };
+  // M9 fix 876: lets go of a held page, its debugger detached and the
+  // page's focus its own again. The pane's id is looked up afresh, since a
+  // move (fix 669) gives a pane a new one. A held page shows its focus
+  // ring and caret as a focused one does, so the pane's driven mark stays
+  // up while it is held and goes here, unless a pause keeps its own.
+  const idOf = (p: Pane): string => {
+    for (const [k, v] of panes) if (v === p) return k;
+    return '';
+  };
+  const release = (p: Pane, why: string): void => {
+    if (p.hold !== null) clearTimeout(p.hold);
+    p.hold = null;
+    const c = p.contents;
+    if (c === null || c.isDestroyed() || !c.debugger.isAttached()) return;
+    try {
+      c.debugger.detach();
+    } catch {
+      // Gone with the guest, or detached by the page's own close.
+    }
+    const id = idOf(p);
+    if (!p.paused && id !== '') opts.push(id, null);
+    opts.log(`browser: pane ${id.slice(0, 8)} released (${why})`);
   };
   // Listeners go on a guest once, whichever pane holds it now.
   const wired = new WeakSet<WebContents>();
@@ -107,6 +138,7 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       panes.set(paneId, p);
     } else {
       p = paneOf(paneId);
+      if (p.contents !== null && p.contents !== contents) release(p, 'a new page');
       p.contents = contents;
       p.navigations = 0;
       p.refs = null;
@@ -117,6 +149,17 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     if (wired.has(contents)) return;
     wired.add(contents);
     const holder = () => paneHolding(contents);
+    // M9 fix 876: a held page's debugger detached from outside (the
+    // devtools, the page's crash) ends the hold; a detach of the driver's
+    // own, or one during a command, finds no hold and does nothing.
+    contents.debugger.on('detach', (_e, reason) => {
+      const h = holder();
+      if (h === null || h[1].hold === null) return;
+      clearTimeout(h[1].hold);
+      h[1].hold = null;
+      if (!h[1].paused) opts.push(h[0], null);
+      opts.log(`browser: pane ${h[0].slice(0, 8)} released (detached: ${reason})`);
+    });
     contents.on('did-navigate', () => {
       const h = holder();
       if (h !== null) h[1].navigations += 1;
@@ -140,6 +183,9 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       const kind = pauseFor(pane, input);
       if (kind === null) return;
       pane.paused = true;
+      // A pause during a command is let go at that command's end (run), so
+      // its sends in flight are not cut.
+      if (!pane.busy) release(pane, 'paused');
       opts.push(id, { by: pane.by, running: false, paused: true });
       opts.log(`browser: pane ${id.slice(0, 8)} paused by the person's ${kind}`);
     };
@@ -154,7 +200,10 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     });
     contents.once('destroyed', () => {
       const h = holder();
-      if (h !== null) h[1].contents = null;
+      if (h === null) return;
+      if (h[1].hold !== null) clearTimeout(h[1].hold);
+      h[1].hold = null;
+      h[1].contents = null;
     });
   };
 
@@ -172,14 +221,13 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   };
 
   ipcMain.on('emerald:browser-resume', (event, paneId: unknown) => {
-    if (typeof paneId !== 'string' || event.sender !== opts.mainContents()) return;
+    if (typeof paneId !== 'string' || !opts.isWindow(event.sender)) return;
     resume(paneId, 'the Resume button');
   });
 
   ipcMain.on('emerald:browser-guest', (event, paneId: unknown, id: unknown) => {
-    const main = opts.mainContents();
     const guest = typeof id === 'number' ? webContents.fromId(id) : undefined;
-    if (typeof paneId !== 'string' || main === null || event.sender !== main || guest === undefined || guest.getType() !== 'webview' || guest.hostWebContents !== main) {
+    if (typeof paneId !== 'string' || !opts.isWindow(event.sender) || guest === undefined || guest.getType() !== 'webview' || guest.hostWebContents !== event.sender) {
       opts.log(`browser: guest refused for pane ${String(paneId).slice(0, 8)}`);
       return;
     }
@@ -211,6 +259,8 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     if (contents === null || contents.isDestroyed()) {
       return { ok: false, reason: 'failed', text: `pane ${short} has no page yet (its address is empty, or it is still loading)` };
     }
+    if (p.hold !== null) clearTimeout(p.hold);
+    p.hold = null;
     const started = Date.now();
     const mine = ++p.runs;
     p.driven = true;
@@ -219,9 +269,13 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     opts.push(req.paneId, { by: req.by, running: true, paused: false });
     let answer: BrowserAnswer;
     let attached = false;
+    p.busy = true;
     try {
+      // M9 fix 876: the debugger stays attached between commands, the page
+      // acting focused, so a menu a click opened is open for the next
+      // command; release lets go of it.
       try {
-        contents.debugger.attach('1.3');
+        if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
         attached = true;
       } catch (err) {
         failed(`could not drive the page: ${err instanceof Error ? err.message : String(err)}`);
@@ -246,19 +300,34 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     } catch (err) {
       answer = err instanceof Failed ? { ok: false, reason: 'failed', text: err.message } : { ok: false, reason: 'failed', text: `the page did not take ${req.verb}: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
-      if (attached) {
-        try {
-          contents.debugger.detach();
-        } catch {
-          // Gone with the guest, or detached by the page's own close.
+      p.busy = false;
+    }
+    if (attached) {
+      if (!answer.ok && answer.reason === 'timeout') {
+        // A verb that may still be running past its budget; its late
+        // failure on the detach is nobody's (withBudget).
+        release(p, 'timeout');
+      } else if (p.paused) {
+        release(p, 'paused');
+      } else if (!contents.isDestroyed() && contents.debugger.isAttached()) {
+        // Focus emulation is all that is held: the accessibility tree
+        // costs the page until it is turned off again.
+        for (const method of ['Accessibility.disable', 'DOM.disable']) {
+          try {
+            await contents.debugger.sendCommand(method);
+          } catch {
+            // A page gone meanwhile has nothing to turn off.
+          }
         }
+        p.hold = setTimeout(() => release(p, `idle ${Math.round(holdMs / 1000)} s`), holdMs);
       }
     }
     opts.log(`browser: ${req.verb} on pane ${short} answered ${answer.ok ? 'ok' : answer.reason} in ${Date.now() - started} ms`);
-    // A pause raised while the command ran keeps its mark.
+    // A pause raised while the command ran keeps its mark; a held page keeps
+    // it until release takes it down.
     if (!p.paused) {
       opts.push(req.paneId, { by: req.by, running: false, paused: false });
-      setTimeout(() => {
+      if (p.hold === null) setTimeout(() => {
         if (p.runs === mine && !p.paused) opts.push(req.paneId, null);
       }, BROWSER_MARK_LINGER_MS);
     }
@@ -288,6 +357,21 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     return { id: id!, ref: ref!, row: p.rows.get(ref!) };
   }
 
+  // M9 fix 875: --within's ref, a control's through resolveRef or a
+  // region's checked the same way against the last snapshot's regions.
+  function resolveWithin(p: Pane, arg: string): { id: number; ref: string } {
+    const region = parseRegion(arg);
+    if (region === null) {
+      const { id, ref } = resolveRef(p, arg);
+      return { id, ref };
+    }
+    if (p.refs === null) failed('no snapshot yet; emmer browser snapshot gives the refs');
+    if (p.refsAt !== p.navigations) failed(`@${region} is from before the page changed; take a new snapshot`);
+    const id = p.regions.get(region);
+    if (id === undefined) failed(`no @${region} in the last snapshot (${p.regions.size === 0 ? 'it had none' : `it had @r1 to @r${p.regions.size}`})`);
+    return { id: id!, ref: region };
+  }
+
   // A key or typed text reaches a guest only while its page holds the
   // window's keyboard: a CDP key event on a guest is routed to the
   // window's focused widget, so with the focus on a shell it lands
@@ -302,12 +386,15 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   let focusSeq = 0;
   const focusWaits = new Map<number, (ok: boolean) => void>();
   ipcMain.on('emerald:browser-took-focus', (event, token: unknown, ok: unknown) => {
-    if (event.sender !== opts.mainContents() || typeof token !== 'number') return;
+    if (!opts.isWindow(event.sender) || typeof token !== 'number') return;
     focusWaits.get(token)?.(ok === true);
     focusWaits.delete(token);
   });
   const typeInto = async (paneId: string, verbName: string): Promise<void> => {
-    const main = opts.mainContents();
+    // The window hosting the pane's page (M9 fix 866), of however many.
+    const guest = panes.get(paneId)?.contents ?? null;
+    const host = guest === null || guest.isDestroyed() ? null : guest.hostWebContents;
+    const main = host === null || host === undefined || host.isDestroyed() ? null : host;
     if (main === null) failed(`no window to give the page the keyboard for ${verbName}`);
     const token = ++focusSeq;
     const ok = await new Promise<boolean>((resolve) => {
@@ -341,12 +428,18 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     const v: BrowserVerb = req.verb;
     switch (v) {
       case 'snapshot': {
+        // M9 fix 875: a filter keeps the printed rows; the refs stored are
+        // the whole page's, so a ref from a filtered list still clicks.
+        const within = req.filter?.within === undefined ? undefined : resolveWithin(p, req.filter.within);
+        const filter: SnapshotFilter = { ...(req.filter?.name === undefined ? {} : { name: req.filter.name }), ...(within === undefined ? {} : { within }) };
         const tree = await send('Accessibility.getFullAXTree', {});
-        const snap = snapshotOf((tree['nodes'] as AxNode[]) ?? [], { title: contents.getTitle(), url: contents.getURL() });
+        const snap = snapshotOf((tree['nodes'] as AxNode[]) ?? [], { title: contents.getTitle(), url: contents.getURL() }, filter);
+        if (!snap.found) failed(`@${within!.ref} is not on the page now; take a new snapshot`);
         p.refs = snap.refs;
+        p.regions = snap.regions;
         p.rows = new Map(snap.rows.map((r) => [r.ref, r]));
         p.refsAt = p.navigations;
-        return { ok: true, text: snap.text, data: snap.rows };
+        return { ok: true, text: snap.text, data: snap.shown };
       }
       case 'click':
       case 'hover': {
@@ -368,10 +461,27 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       }
       case 'fill': {
         const r = resolveRef(p, a);
-        await typeInto(req.paneId, 'fill');
-        await send('DOM.focus', { backendNodeId: r.id });
         const node = await send('DOM.resolveNode', { backendNodeId: r.id });
         const objectId = (node['object'] as { objectId: string }).objectId;
+        // M9 fix 877: a select picks its option and a checkbox, a radio, a
+        // file input or a multiple select is refused, before the page takes
+        // the keyboard.
+        const kind = await send('Runtime.callFunctionOn', { objectId, functionDeclaration: FILL_TARGET_FN, returnByValue: true });
+        const target = ((kind['result'] as { value?: unknown } | undefined)?.value as FillTarget | undefined) ?? { kind: 'field' };
+        const plan = fillPlan(target, b, `@${r.ref}`, described(r));
+        if (plan.type === 'refuse') return failed(plan.text);
+        if (plan.type === 'pick') {
+          const picked = await send('Runtime.callFunctionOn', {
+            objectId,
+            functionDeclaration: "function (i) { this.selectedIndex = i; this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); }",
+            arguments: [{ value: plan.index }],
+          });
+          const threw = pageThrew(picked);
+          if (threw !== null) failed(`the page refused the option for ${described(r)}: ${threw}`);
+          return { ok: true, text: `selected ${described(r)} option ${JSON.stringify(plan.option)}` };
+        }
+        await typeInto(req.paneId, 'fill');
+        await send('DOM.focus', { backendNodeId: r.id });
         await send('Runtime.callFunctionOn', { objectId, functionDeclaration: "function () { if (typeof this.select === 'function') this.select(); }" });
         await send('Input.insertText', { text: b });
         const read = await send('Runtime.callFunctionOn', { objectId, functionDeclaration: 'function () { return this.value; }', returnByValue: true });
@@ -379,13 +489,18 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
         if ((read['result'] as { value?: unknown }).value !== b) {
           // A field that ignores typed text (a framework's controlled input
           // reset on the next render): the prototype's own setter and the
-          // events a framework listens for.
-          await send('Runtime.callFunctionOn', {
+          // events a framework listens for. An element with no value setter
+          // (a contenteditable) keeps what was typed, and a setter that
+          // throws fails the fill (M9 fix 877).
+          const set = await send('Runtime.callFunctionOn', {
             objectId,
-            functionDeclaration: "function (v) { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), 'value'); d.set.call(this, v); this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); }",
+            functionDeclaration: "function (v) { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), 'value'); if (d === undefined || typeof d.set !== 'function') return false; d.set.call(this, v); this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); return true; }",
             arguments: [{ value: b }],
+            returnByValue: true,
           });
-          direct = true;
+          const threw = pageThrew(set);
+          if (threw !== null) failed(`the page refused the text for ${described(r)}: ${threw}`);
+          direct = (set['result'] as { value?: unknown } | undefined)?.value === true;
         }
         return { ok: true, text: `filled ${described(r)} with ${b.length} characters${direct ? ' (set directly)' : ''}` };
       }
@@ -464,6 +579,34 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
           failed(`@${r.ref} is not a file input`);
         }
         return { ok: true, text: `set @${r.ref} to ${b}` };
+      }
+      case 'drag': {
+        // M9 fix 874: a press, a move in steps and a release, the shape a drag-and-drop library such as dnd-kit takes as a drag (it starts past a few pixels of move).
+        const from = resolveRef(p, a);
+        const offset = dragOffset(b);
+        const onto = offset === null ? resolveRef(p, b) : null;
+        const pause = () => new Promise((resolve) => setTimeout(resolve, BROWSER_DRAG_PAUSE_MS));
+        const start = await boxCentre(send, from);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: start.x, y: start.y, button: 'left', buttons: 1, clickCount: 1 });
+        let at = start;
+        try {
+          await pause();
+          // The end is read after the press, since scrolling the source
+          // into view may have moved the target.
+          const end = offset === null ? await boxCentre(send, onto!) : { x: start.x + offset.dx, y: start.y + offset.dy };
+          for (const point of dragPath(start, end, BROWSER_DRAG_STEPS)) {
+            await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'left', buttons: 1 });
+            at = point;
+            await pause();
+          }
+        } finally {
+          // The button is let go whatever went wrong, so a target with no
+          // box leaves nothing held and its own words are the answer.
+          try {
+            await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: 0, clickCount: 1 });
+          } catch {}
+        }
+        return { ok: true, text: onto === null ? `dragged ${described(from)} by ${b}` : `dragged ${described(from)} onto ${described(onto)}` };
       }
       case 'events':
       case 'resume':

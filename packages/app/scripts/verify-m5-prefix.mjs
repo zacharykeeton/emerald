@@ -434,7 +434,11 @@ try {
     throw new Error(`timed out waiting for Escape emptied the box and the sessions are listed again, saw ${JSON.stringify(seen)}`);
   }
   // On a pane with a session the Pane group follows, naming the session.
-  const fpCentre = await s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(fp)}] .term-host').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  // A quarter of the way in, not the centre: after the splits above the pane
+  // is about 38 px wide since M9 fix 885 widened the rail's default, and its
+  // centre falls on xterm's scrollbar, which takes the press and leaves the
+  // focus where it was.
+  const fpCentre = await s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(fp)}] .term-host').getBoundingClientRect(); return { x: r.x + r.width / 4, y: r.y + r.height / 2 }; })()`);
   await s.click(fpCentre.x, fpCentre.y);
   await s.waitFor(focusedIs(fp), 'the pane with shell B focused again');
   const bName = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === B).name;

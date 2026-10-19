@@ -47,7 +47,15 @@ function electronToast(title: string, body: string): ToastHandle {
   return handle as ToastHandle;
 }
 
-export function createNotifier(getWindow: () => BrowserWindow | null, onClick: (sessionId: string) => void, log: NotifyLog): Notifier {
+// The windows the notifier asks about (M9 fix 866): whether any window of
+// the app has the focus, and the window a session's click should raise
+// (the one showing it, else the one in front).
+export interface NotifyWindows {
+  focused: () => boolean;
+  forSession: (sessionId: string) => BrowserWindow | null;
+}
+
+export function createNotifier(windows: NotifyWindows, onClick: (sessionId: string) => void, log: NotifyLog): Notifier {
   const logFile = process.env['EMERALD_NOTIFY_LOG'];
   const always = process.env['EMERALD_NOTIFY_ALWAYS'] !== undefined;
   const held = process.env['EMERALD_HOME'] !== undefined && logFile === undefined && !always;
@@ -55,15 +63,12 @@ export function createNotifier(getWindow: () => BrowserWindow | null, onClick: (
     logFile,
     always,
     held,
-    focused: () => {
-      const win = getWindow();
-      return win !== null && !win.isDestroyed() && win.isFocused();
-    },
+    focused: windows.focused,
     now: Date.now,
     appendLine: (file, line) => fs.appendFileSync(file, line),
     toasts: { supported: () => Notification.isSupported(), create: electronToast },
     onClick: (sessionId) => {
-      const w = getWindow();
+      const w = windows.forSession(sessionId);
       if (w !== null && !w.isDestroyed()) {
         if (w.isMinimized()) w.restore();
         w.show();

@@ -22,11 +22,11 @@ const { clickNewShell, expect, freshPort, getLayout, killTree, launch, leaves, r
 
 let app = null;
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 120 s');
+  console.error('[verify] WATCHDOG: run exceeded 180 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   setTimeout(() => process.exit(3), 500);
-}, 120000);
+}, 180000);
 
 const home = os.homedir();
 const s = await launch(freshPort(), { freshState: true });
@@ -147,6 +147,33 @@ try {
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'the card closed with the state');
   step('Stop closes the card');
 
+  // M9 fix 880: a permission answered in the terminal, never the card:
+  // the card dims on what was asked and opens no box.
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the probe' });
+  await post({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ask-880' } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'working'`, 'fix 880: the shell plays Claude and works');
+  await type(sessionId, "cls; Write-Host ''; Write-Host ' Bash command'; Write-Host '  echo ask-880'; Write-Host ' Do you want to proceed?'; Write-Host ' > 1. Yes'; Write-Host '   2. No'; Write-Host -NoNewline ' Esc to cancel'; $null = [Console]::ReadKey($true); cls; Write-Host -NoNewline 'ran ask-880'; Read-Host | Out-Null");
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('cancel'), 'fix 880: the permission drawn, the cursor on its footer');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'echo ask-880' } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'fix 880: the row needs input');
+  const badge880 = await centerOf(`${rowSel} .sidebar-row-state`);
+  await s.click(badge880.x, badge880.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-option[data-key="2"]')`, 'fix 880: the card with its two options');
+  await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: '1' })`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('ran ask-880'), 'fix 880: the terminal took the key and cleared its dialog');
+  await sleep(2500);
+  const c880 = await card();
+  const sent880 = await s.evalJs(`[...document.querySelectorAll('.answer-popover .answer-popover-option')].map((b) => b.dataset.sent ?? null)`);
+  console.log(`[verify] fix 880: the card after the terminal's answer reads ${JSON.stringify({ ...c880, sent: sent880 })}`);
+  expect(c880 !== null && JSON.stringify(c880.keys) === JSON.stringify(['1', '2', 'esc']), `fix 880: the card keeps what was asked, got ${JSON.stringify(c880)}`);
+  expect(sent880.length > 0 && sent880.every((v) => v === 'true'), `fix 880: every option is marked sent, got ${JSON.stringify(sent880)}`);
+  expect(c880.box === false, `fix 880: no answer box, got ${JSON.stringify(c880)}`);
+  step('fix 880: a permission answered in the terminal leaves the sidebar card dimmed on what was asked, with no box');
+  await type(sessionId, '');
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`['done', 'idle'].includes(document.querySelector(${JSON.stringify(rowSel)})?.dataset.state)`, 'fix 880: the turn ended');
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 880: the card closed with the state');
+
   // A question: the card offers a box, and its text reaches the session.
   await type(sessionId, `cls; Write-Host ''; Write-Host -NoNewline 'What should the function be called? '; Read-Host | Out-Null`);
   await waitCursorRow(sessionId, (row) => row.includes('called?'), 'the question is on the screen');
@@ -204,6 +231,38 @@ try {
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'the question card closed');
   step('fix 777: the badge card draws an AskUserQuestion, its tabs, its question and the descriptions, the row reading needs input: a question');
+
+  // M9 fix 879: the Review your answers tab as the capture of 2.1.302
+  // draws it, with no footer: the question with its answer, Submit answers
+  // and Cancel as digits, no second Cancel, and Back.
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'review the answers' });
+  await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'working'`, 'fix 879: working on the review');
+  const tabRowR = `('' + ${ch('2190')} + '  ' + ${ch('2612')} + ' Checks  ' + ${ch('2714')} + ' Submit  ' + ${ch('2192')})`;
+  const rowsR = ['', 'Review your answers', '', ' (dot) Which checks should the sample run?', '   (to) Types', '', 'Ready to submit your answers?', '', '> 1. Submit answers', '  2. Cancel'];
+  const glyphR = (row) => row.replace('(dot)', `' + ${ch('25CF')} + '`).replace('(to)', `' + ${ch('2192')} + '`);
+  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRowR}; ${rowsR.map((r) => `Write-Host ('${glyphR(r)}')`).join('; ')}; $e = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $e.KeyChar); Read-Host | Out-Null`);
+  await waitScreen(sessionId, (rs) => rs.some((r) => r.trimEnd().endsWith('2. Cancel')), 'fix 879: the review drawn');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'fix 879: the row needs input for the review');
+  const badge4 = await centerOf(`${rowSel} .sidebar-row-state`);
+  await s.click(badge4.x, badge4.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-review')`, 'fix 879: the card with the review');
+  const rc = await s.evalJs(`(() => { const c = document.querySelector('.answer-popover'); return { question: c.querySelector('.answer-popover-question')?.textContent ?? null, items: [...c.querySelectorAll('.answer-popover-review-item')].map((i) => [i.querySelector('.answer-popover-review-q')?.textContent ?? null, i.querySelector('.answer-popover-review-a')?.textContent ?? null]), keys: [...c.querySelectorAll('.answer-popover-option')].map((b) => b.dataset.key), labels: [...c.querySelectorAll('.answer-popover-option .answer-popover-label')].map((l) => l.textContent), screen: !!c.querySelector('.answer-popover-screen'), input: !!c.querySelector('.answer-popover-input') }; })()`);
+  console.log(`[verify] fix 879: the sidebar's review card reads ${JSON.stringify(rc)}`);
+  expect(rc.question === 'Review your answers', `fix 879: the review's title, got ${JSON.stringify(rc)}`);
+  expect(JSON.stringify(rc.items) === JSON.stringify([['Which checks should the sample run?', 'Types']]), `fix 879: the question with its answer, got ${JSON.stringify(rc)}`);
+  expect(rc.labels.slice(0, 2).join(',') === 'Submit answers,Cancel', `fix 879: Submit answers and Cancel, got ${JSON.stringify(rc)}`);
+  expect(rc.keys.join(',') === '1,2,back', `fix 879: the two options and Back, no second Cancel, got ${JSON.stringify(rc)}`);
+  expect(!rc.screen && !rc.input, `fix 879: no excerpt and no box, got ${JSON.stringify(rc)}`);
+  await s.screenshot('m55-answer-review.png');
+  await s.evalJs(`document.querySelector('.answer-popover .answer-popover-option[data-key="1"]').click()`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('got 1'), 'fix 879: Submit answers sent its digit');
+  await type(sessionId, '');
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 879: the review card closed');
+  step('fix 879: the sidebar card draws the Review your answers tab, the question with its answer, and one Cancel');
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

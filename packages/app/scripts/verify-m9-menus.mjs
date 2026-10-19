@@ -591,7 +591,7 @@ try {
   await s.rightClick(tabCenter.x, tabCenter.y);
   await s.waitFor(`!!document.querySelector('.layout-tab-menu')`, 'the layout tab menu');
   // M63: Shade all and Lift all sit between them, off here since the one pane left is empty.
-  expect((await tabItems(s)).join(',') === 'Rename,Shade all (disabled),Lift all (disabled),Close tab (disabled)', 'Rename, the shade pair off on an empty pane, and a disabled Close tab on the last tab, got ' + JSON.stringify(await tabItems(s)));
+  expect((await tabItems(s)).join(',') === 'Rename,Shade all (disabled),Lift all (disabled),Move to new window (disabled),Close tab (disabled)', 'Rename, the shade pair off on an empty pane, and a disabled Close tab on the last tab, got ' + JSON.stringify(await tabItems(s)));
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`!document.querySelector('.layout-tab-menu')`, 'tab menu closed');
   expect(await s.evalJs(`!!document.querySelector('.tab-add')`), 'the + after the tabs');
@@ -600,7 +600,7 @@ try {
   const second = await centerOf(s, '.tab.tab-panes[data-current]');
   await s.rightClick(second.x, second.y);
   await s.waitFor(`!!document.querySelector('.layout-tab-menu')`, 'the second tab menu');
-  expect((await tabItems(s)).join(',') === 'Rename,Shade all (disabled),Lift all (disabled),Close tab', 'Close tab is on with two tabs, got ' + JSON.stringify(await tabItems(s)));
+  expect((await tabItems(s)).join(',') === 'Rename,Shade all (disabled),Lift all (disabled),Move to new window,Close tab', 'Close tab is on with two tabs, got ' + JSON.stringify(await tabItems(s)));
   await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Close tab').click()`);
   await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 1`, 'the tab closed from its menu');
   step('Layout tab menu: Rename, Shade all and Lift all (off on an empty pane), Close tab off on the last tab; the + makes one');
@@ -625,7 +625,9 @@ try {
   // The fourth item (M9 fix 239) reads the updater, off under EMERALD_NO_UPDATE.
   // Open a file… first (M9 fix 341), its plain chord since M9 fix 364.
   // The skin item (M9 fix 569) sits before the check item, which stays last.
-  expect(JSON.stringify(appList) === JSON.stringify(['Open a file…|Ctrl+Shift+G', `What's new|${version}`, 'Key cheat sheet|Ctrl+Shift+?', 'Run an action…|Ctrl+Shift+P', 'Skin: Classic|', 'Check for updates|off in this build']), "Open a file with its chord, What's new with the version, the cheat sheet and the palette with their keys, the skin item, Check for updates off, got " + JSON.stringify(appList));
+  // New window (M9 fix 866) goes second, the harness daemon being at level 73;
+  // the usage record's switch (M9 fix 887) sits after the skin.
+  expect(JSON.stringify(appList) === JSON.stringify(['Open a file…|Ctrl+Shift+G', 'New window|', `What's new|${version}`, 'Key cheat sheet|Ctrl+Shift+?', 'Run an action…|Ctrl+Shift+P', 'Skin: Classic|', 'Usage record: off|', 'Check for updates|off in this build']), "Open a file with its chord, New window, What's new with the version, the cheat sheet and the palette with their keys, the skin item, the usage record, Check for updates off, got " + JSON.stringify(appList));
   expect(await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].at(-1).disabled`), 'the check item is disabled while the updater is off');
   const menuBox = await s.evalJs(`(() => { const m = document.querySelector('.app-menu').getBoundingClientRect(); const z = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { under: m.top >= z.bottom - 1, left: Math.abs(m.left - z.left) <= 2 }; })()`);
   expect(menuBox.under && menuBox.left, `the menu hangs from the mark's bottom left (${JSON.stringify(menuBox)})`);
@@ -647,6 +649,30 @@ try {
   await s.waitFor(`!document.querySelector('.cheat-sheet')`, 'Escape closed the sheet');
   expect(await s.evalJs(`document.querySelector('.empty-pane')?.textContent.includes('Right-click any pane for more, or the Z at the top left.') === !!document.querySelector('.empty-state')`), 'the Right-click sentence shows only in the No sessions block');
   step("App menu on the Z mark: What's new with the version, the cheat sheet and the palette, the tab and the sheet open from it");
+  // M9 fix 887: the usage record's switch is on the app menu, after the skin and before the check; a click flips it and the mark's data-usage, and the speaker's menu no longer lists it.
+  const usageItem887 = () => s.evalJs(`(() => { const items = [...document.querySelectorAll('.app-menu .menu-item')]; const i = items.findIndex((b) => b.querySelector('.menu-label').textContent.startsWith('Usage record: ')); return { i, n: items.length, label: items[i]?.querySelector('.menu-label').textContent ?? null, title: items[i]?.getAttribute('title') ?? '' }; })()`);
+  await s.click(mark.x, mark.y);
+  await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu for the usage switch');
+  const usageOff887 = await usageItem887();
+  // Item 6 of 8: New window (M9 fix 866) sits second at the harness's level 73.
+  expect(usageOff887.i === 6 && usageOff887.n === 8 && usageOff887.label === 'Usage record: off' && usageOff887.title.includes('never sent anywhere') && usageOff887.title.endsWith('Click to turn it on'), `the usage record is item 6 of 8, off, with its title (${JSON.stringify(usageOff887)})`);
+  await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')][${usageOff887.i}].click()`);
+  await s.waitFor(`!document.querySelector('.app-menu') && document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the usage switch on from the app menu');
+  expect(await s.evalJs(`JSON.parse(localStorage.getItem('emerald.attention')).usage === true`), 'the switch is kept in emerald.attention');
+  await s.click(mark.x, mark.y);
+  await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu again for the usage switch');
+  const usageOn887 = await usageItem887();
+  expect(usageOn887.label === 'Usage record: on' && usageOn887.title.endsWith('Click to turn it off'), `the item reads on with the off title (${JSON.stringify(usageOn887)})`);
+  await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')][${usageOn887.i}].click()`);
+  await s.waitFor(`!document.querySelector('.app-menu') && document.querySelector('.title-bar-mark')?.dataset.usage === 'off'`, 'the usage switch off again');
+  const speaker887 = await centerOf(s, '.attention-sound');
+  await s.rightClick(speaker887.x, speaker887.y);
+  await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
+  const speakerLabels887 = await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-label')].map((b) => b.textContent)`);
+  expect(speakerLabels887.length === 4 && !speakerLabels887.some((t) => t.startsWith('Usage record')), `the speaker menu holds four labels and no usage record (${JSON.stringify(speakerLabels887)})`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+  step("M9 fix 887: Usage record on the app menu after the skin, a click flips it and the mark's data-usage, and the speaker menu holds the sound and notifications alone");
   // M9 fix 239: the title row's buttons are counted whole, and the update
   // badge is not among them while the check is off; the one button is
   // fix 234's mark. A branch adding a button to the row changes the count.

@@ -6,7 +6,7 @@ import { getUiState, subscribeUi } from './ui.ts';
 import { createTurnGate, frontView, openViews, viewDiff } from './use-record-model.ts';
 
 // The usage record's calls (M9 fix 676). Nothing is sent while the switch
-// on the speaker button's menu is off, which is the default. An action is
+// on the app menu (fix 887) is off, which is the default. An action is
 // recorded by the first statement of the function its input reached, one
 // per synchronous turn; views are read by a diff of the open set, so every
 // route that opens one is seen once.

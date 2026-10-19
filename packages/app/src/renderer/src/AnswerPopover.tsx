@@ -4,9 +4,9 @@ import type { SessionInfo } from '@emerald/shared';
 import { ackIfDone, sendAskSubmit, sendFreeAnswer, typeInto } from './actions.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
-import { answerOptions, askQuestion, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
+import { answerOptions, askQuestion, askReview, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption, AskPress } from './screen-prompt-model.ts';
-import { askBoxShown, askHeading } from './chat-model.ts';
+import { answeredElsewhere, askBoxShown, askHeading } from './chat-model.ts';
 import { acknowledgeAttention } from './ui.ts';
 import { TrustPopover } from './TrustCard.tsx';
 
@@ -82,14 +82,33 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   // something row is an input that sends a free answer.
   // M9 fix 801: one press per dialog, as the chat view's card takes it; a
   // sent card draws what it answered until the press is over.
+  // M9 fix 880: an ask answered elsewhere (the terminal face, the chat
+  // view's card) dims the card on what was asked, as its own press would.
   const [pressed, setPressed] = useState<(AskPress & { screen: Screen | null }) | null>(null);
   const shown = pressed !== null ? pressed.screen : screen;
   useEffect(() => {
     if (pressed !== null && screen !== null && pressOver(pressed, screen)) setPressed(null);
   }, [screen, pressed]);
-  const ask = shown === null ? null : askQuestion(shown.rows);
+  const lastDialog = useRef<{ spell: number; key: string; screen: Screen } | null>(null);
+  useEffect(() => {
+    if (screen === null) return;
+    const key = dialogKey(screen.rows, screen.cursor);
+    if (key !== null) {
+      lastDialog.current = { spell: session.stateSince, key, screen };
+      return;
+    }
+    const last = lastDialog.current;
+    if (last !== null && answeredElsewhere({ key, pressed: pressed !== null, spell: session.stateSince, dialogSpell: last.spell })) {
+      setPressed({ at: screen.sentAt, key: last.key, screen: last.screen });
+    }
+  }, [screen, pressed, session.stateSince]);
+  // M9 fix 879: the Review your answers tab, as the chat view's card draws it.
+  const review = shown === null ? null : askReview(shown.rows);
+  const ask = shown === null || review !== null ? null : askQuestion(shown.rows);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
-  const options: (AnswerOption | AskOption)[] = ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  const options: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  // A dialog with a Cancel of its own draws no second one (fix 879).
+  const escShown = !options.some((o) => o.label === 'Cancel');
   const send = (data: string) => {
     typeInto(session.id, data);
     // An answer is a look at the row, as a click in the pane would be.
@@ -142,7 +161,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
       },
     );
   };
-  const askText = askBoxShown({ reason: session.needsInputReason, recognised: ask !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
+  const askText = askBoxShown({ reason: session.needsInputReason, recognised: ask !== null || review !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
   // A question wants words, so the box takes the keyboard as the card
   // opens; a permission keeps it in the terminal, the buttons need none.
   useEffect(() => {
@@ -151,7 +170,32 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   return (
     <PopoverCard id={`answer:${session.id}`} className="answer-popover" data={{ 'data-session-id': session.id }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave} holdEscape>
       <div className="answer-popover-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
-      {ask !== null ? (
+      {review !== null ? (
+        <>
+          {review.tabs.length > 0 && (
+            <div className="answer-popover-tabs">
+              {review.tabs
+                .filter((t) => t.state !== 'submit')
+                .map((t, i) => (
+                  <span key={i} className="answer-popover-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
+                    {t.state === 'answered' && <span className="answer-popover-tab-mark">✓</span>}
+                    {t.name}
+                  </span>
+                ))}
+            </div>
+          )}
+          <div className="answer-popover-question">Review your answers</div>
+          {review.warning !== null && <div className="answer-popover-review-warning">{review.warning}</div>}
+          <div className="answer-popover-review">
+            {review.items.map((item, i) => (
+              <div key={i} className="answer-popover-review-item">
+                <span className="answer-popover-review-q">{item.question}</span>
+                <span className="answer-popover-review-a">{item.answer}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : ask !== null ? (
         <>
           {ask.tabs.length > 0 && (
             <div className="answer-popover-tabs">
@@ -226,9 +270,16 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
         )}
         {/* M9 fix 848: no Esc key cap here, since Escape on this card only
             closes it; the button is the session's Escape. */}
-        <button type="button" className="answer-popover-option answer-popover-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
-          <span className="answer-popover-label">Cancel</span>
-        </button>
+        {escShown && (
+          <button type="button" className="answer-popover-option answer-popover-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
+            <span className="answer-popover-label">Cancel</span>
+          </button>
+        )}
+        {review !== null && (
+          <button type="button" className="answer-popover-option answer-popover-back" data-key="back" data-sent={sentMark} title="Sends ← to the session, back to the questions" onClick={() => press('\x1b[D')}>
+            <span className="answer-popover-label">Back</span>
+          </button>
+        )}
       </div>
       {askText && (
         <div className="answer-popover-form">

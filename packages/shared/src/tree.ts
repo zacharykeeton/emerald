@@ -2,7 +2,7 @@ import { unitBounds } from './activity-model.ts';
 import { isGraphScale } from './layout.ts';
 import { browserUrl } from './browser-url.ts';
 import { BROWSER_PROFILE } from './browser-drive.ts';
-import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
+import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, LayoutWindow, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
 
 // Pure operations on the split tree. Every function returns a new tree and
 // never mutates its input. They take anything with a root and a focused
@@ -365,8 +365,32 @@ export function validateLayout(value: unknown): Layout {
     if (typeof name !== 'string' || name.trim() === '') throw new LayoutError(`${where}.name must be a non-empty string`);
     tabs.push({ id, name, ...validateTree(raw, ids, where) });
   }
+  const windows = validateWindows(value['windows']);
   if (!tabIds.has(value['currentTabId'])) throw new LayoutError(`layout.currentTabId ${value['currentTabId']} is not a tab`);
-  return { tabs, currentTabId: value['currentTabId'], revision };
+  return { tabs, currentTabId: value['currentTabId'], revision, ...(windows === undefined ? {} : { windows }) };
+}
+
+// The windows field (M9 fix 865), its shape alone: which tab is in which
+// window is fitWindows's to repair, not a reason to refuse an edit.
+function validateWindows(value: unknown): LayoutWindow[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) throw new LayoutError('layout.windows must be a non-empty list');
+  const seen = new Set<string>();
+  const out: LayoutWindow[] = [];
+  for (const [i, raw] of value.entries()) {
+    const where = `layout.windows[${i}]`;
+    if (!isRecord(raw)) throw new LayoutError(`${where} must be an object`);
+    const id = raw['id'];
+    if (typeof id !== 'string' || id.length === 0) throw new LayoutError(`${where}.id must be a non-empty string`);
+    if (seen.has(id)) throw new LayoutError(`${where}.id ${id} is used twice`);
+    seen.add(id);
+    const tabIds = raw['tabIds'];
+    if (!Array.isArray(tabIds) || !tabIds.every((t) => typeof t === 'string')) throw new LayoutError(`${where}.tabIds must be a list of strings`);
+    const currentTabId = raw['currentTabId'];
+    if (typeof currentTabId !== 'string') throw new LayoutError(`${where}.currentTabId must be a string`);
+    out.push({ id, tabIds: tabIds as string[], currentTabId });
+  }
+  return out;
 }
 
 // True for the shape before M36: a tree with no tabs list. Read before

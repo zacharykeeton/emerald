@@ -3,12 +3,12 @@
 // the window gives back and the bounds every hop checks. No node here.
 import { BROWSER_PARTITION } from './browser-url.ts';
 
-// M9 fix 673 adds upload, events and resume.
-export type BrowserVerb = 'snapshot' | 'click' | 'hover' | 'fill' | 'key' | 'eval' | 'screenshot' | 'wait' | 'navigate' | 'upload' | 'events' | 'resume';
+// M9 fix 673 adds upload, events and resume; fix 874 adds drag.
+export type BrowserVerb = 'snapshot' | 'click' | 'hover' | 'drag' | 'fill' | 'key' | 'eval' | 'screenshot' | 'wait' | 'navigate' | 'upload' | 'events' | 'resume';
 
 // In the order emmer browser's usage lists them; the daemon's refusal
 // joins them, so a verb added here is named there too.
-export const BROWSER_VERBS: readonly BrowserVerb[] = ['snapshot', 'click', 'hover', 'fill', 'key', 'eval', 'screenshot', 'wait', 'navigate', 'upload', 'events', 'resume'];
+export const BROWSER_VERBS: readonly BrowserVerb[] = ['snapshot', 'click', 'hover', 'drag', 'fill', 'key', 'eval', 'screenshot', 'wait', 'navigate', 'upload', 'events', 'resume'];
 
 // What the window answers for one command. reason is present exactly
 // when ok is false: timeout is the verb's own budget spent, paused is the
@@ -55,3 +55,17 @@ export const BROWSER_ARG_CHARS = 65536;
 export const BROWSER_TIMEOUT_MS = 10000;
 export const BROWSER_TIMEOUT_MIN_MS = 1000;
 export const BROWSER_TIMEOUT_MAX_MS = 120000;
+
+// M9 fix 874: drag's target as dx,dy, CSS pixels from the source's centre, a sign and a decimal point allowed; null for anything else.
+export function dragOffset(s: string): { dx: number; dy: number } | null {
+  const m = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(s);
+  return m === null ? null : { dx: Number(m[1]), dy: Number(m[2]) };
+}
+
+// M9 fix 875: what a snapshot prints: rows whose name or value holds name, any case, and rows inside within, a region's ref (@r1) or a control's (@e3); the refs stay the whole page's.
+export interface BrowserFilter {
+  name?: string;
+  within?: string;
+}
+export const BROWSER_FILTER_CHARS = 200;
+export const BROWSER_FILTER_REF = /^@?[er]\d{1,9}$/;

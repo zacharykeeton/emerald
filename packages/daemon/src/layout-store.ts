@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
-import { LayoutError, currentTab, defaultLayout, isSingleTree, listPanes, replaceTab, setPaneSession, validateLayout, validateSingleTree, wrapSingleTree } from '@emerald/shared';
+import { LayoutError, closeWindow, currentTab, defaultLayout, fitWindows, isSingleTree, listPanes, openWindow, randomId, replaceTab, setFrontWindow, setPaneSession, validateLayout, validateSingleTree, wrapSingleTree } from '@emerald/shared';
 import type { Layout } from '@emerald/shared';
 import { RequestError } from './errors.ts';
 import type { Logger } from './log.ts';
@@ -49,7 +49,7 @@ export class LayoutStore extends EventEmitter {
         this.layout = wrapSingleTree(validateSingleTree(parsed.layout));
         this.log.info('layout from before M36 read as one tab', { revision: this.layout.revision, file: this.filePath });
       } else {
-        this.layout = validateLayout(parsed.layout);
+        this.layout = fitWindows(validateLayout(parsed.layout), null);
         this.log.info('layout loaded', { revision: this.layout.revision, tabs: this.layout.tabs.length, file: this.filePath });
       }
     } catch (err) {
@@ -79,13 +79,49 @@ export class LayoutStore extends EventEmitter {
     } catch (err) {
       throw new RequestError('bad-request', err instanceof Error ? err.message : String(err));
     }
+    // M9 fix 865: a client that sends no windows keeps the store's, and its
+    // new tab lands in the front window.
+    next = fitWindows(next, this.layout);
     if (next.revision !== this.layout.revision) {
       throw new RequestError(
         'stale-revision',
         `layout edit was based on revision ${next.revision} but the current revision is ${this.layout.revision}`,
       );
     }
-    this.layout = { ...next, revision: next.revision + 1 };
+    return this.accept(next);
+  }
+
+  // The windows' three edits (M9 fix 865), made on the daemon's side so
+  // no client needs the revision: a new window in front holding the tab
+  // named or a new tab, a window closed with its tabs, a window put in
+  // front. An edit that changes nothing answers the layout as it is.
+  openWindow(tabId: string | null): { layout: Layout; windowId: string } {
+    const windowId = randomId();
+    const next = this.edit(() => openWindow(this.layout, windowId, tabId));
+    return { layout: next === this.layout ? this.layout : this.accept(next), windowId };
+  }
+
+  closeWindow(windowId: string): Layout {
+    const next = this.edit(() => closeWindow(this.layout, windowId));
+    return next === this.layout ? this.layout : this.accept(next);
+  }
+
+  setFront(windowId: string): Layout {
+    const next = this.edit(() => setFrontWindow(this.layout, windowId));
+    return next === this.layout ? this.layout : this.accept(next);
+  }
+
+  private edit(fn: () => Layout): Layout {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof LayoutError) throw new RequestError('bad-request', err.message);
+      throw err;
+    }
+  }
+
+  private accept(next: Layout): Layout {
+    this.layout = { ...next, revision: this.layout.revision + 1 };
     this.persist();
     this.emit('changed', this.layout);
     return this.layout;

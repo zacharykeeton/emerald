@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DIRTY_MARK, PANES, WHATS_NEW_PATH, activate, activityWindow, activityPath, closeAll, commitsFolder, commitsPath, closeFile, closeOthers, defaultView, deletedFilePanes, dirtyMark, emptyTabs, isDocument, isAnimatedKind, isFileTab, isImage, isJson, isMarkdown, isMermaidFile, isPreview, isTranscript, isWhatsNew, openFile, pinTab, quickSuggestionsFor, renameFilePanes, renameTabs, setTabQuery, setView, tabName, tabQuery, tabsFromJson, viewFor } from './tabs-model.ts';
-import { statsFolder, statsPath } from './tabs-model.ts';
+import { fileViewAt, statsFolder, statsPath } from './tabs-model.ts';
 import type { Layout, LayoutNode } from '@emerald/shared';
 
 const a = 'C:\\repo\\a.ts';
@@ -86,6 +86,12 @@ test('a mermaid file starts rendered and a markdown file is not one (fix 658)', 
   assert.equal(defaultView('C:/x/flow.MERMAID'), 'rendered');
   assert.equal(isMermaidFile('C:/x/flow.md'), false);
   assert.equal(isMermaidFile('C:/x/flow.mmd'), true);
+});
+
+test('fileViewAt: Raw for a file with a view of its own at a line, the bare view otherwise (M9 fix 864)', () => {
+  assert.deepEqual(fileViewAt('C:\\r\\a.ts', 3), { kind: 'file', path: 'C:\\r\\a.ts' });
+  assert.deepEqual(fileViewAt('C:\\r\\README.md', 3), { kind: 'file', path: 'C:\\r\\README.md', view: 'raw' });
+  assert.deepEqual(fileViewAt('C:\\r\\README.md', undefined), { kind: 'file', path: 'C:\\r\\README.md' });
 });
 
 test('an image is an image by its extension and never on a network path; an SVG starts rendered, a raster has no view (fix 615)', () => {

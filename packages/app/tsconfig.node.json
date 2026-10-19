@@ -20,7 +20,7 @@
     "forceConsistentCasingInFileNames": true
   },
   // The main and preload processes, with no DOM: a renderer file reached
-  // from here has to be pure, and the eight named below are the ones the
+  // from here has to be pure, and the nine named below are the ones the
   // two sides share today. A composite project lists every file it holds,
   // so a new cross-import fails with TS6307 naming the file, which is the
   // boundary saying no rather than a chore. The renderer's own files, its
@@ -32,6 +32,7 @@
     "electron.vite.config.ts",
     "src/main/**/*",
     "src/preload/**/*",
+    "src/renderer/src/daemon-model.ts",
     "src/renderer/src/files-model.ts",
     "src/renderer/src/git-changes-model.ts",
     "src/renderer/src/git-status-model.ts",

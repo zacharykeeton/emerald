@@ -1,8 +1,8 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
-import type { BrowserAnswer, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -150,6 +150,8 @@ export const FILE_OPEN_ANSWER_LEVEL = 58;
 // The first app level whose main process drives a browser pane's page
 // (M9 fix 672); an older window never gets the push.
 export const BROWSER_DRIVE_LEVEL = 63;
+// The first app level whose driver takes drag and a snapshot's filter (M9 fixes 874 and 875); a drag or a filtered snapshot to an older window is counted as no driver, since a window at 63 to 71 would ignore the filter and print the whole page as if filtered.
+export const BROWSER_DRAG_LEVEL = 72;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -572,18 +574,19 @@ export class PipeServer {
   // the verb's budget and the slack. No argument is logged, since an
   // eval or a fill can carry a secret.
   private requestBrowserRun(req: BrowserRunAsk): Promise<BrowserRunAnswer> {
-    const { paneId, verb, args, by, timeoutMs } = req;
+    const { paneId, verb, args, by, timeoutMs, filter } = req;
     const apps = this.subscribedCount('app');
     if (apps === 0) return Promise.resolve({ apps: 0 });
-    const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= BROWSER_DRIVE_LEVEL);
+    const need = verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
+    const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= need);
     const short = paneId.slice(0, 8);
     if (drivers.length === 0) {
-      this.opts.log.info(`browser: no window at level ${BROWSER_DRIVE_LEVEL} to drive pane ${short}`);
+      this.opts.log.info(`browser: no window at level ${need} to drive pane ${short}`);
       return Promise.resolve({ apps, drivers: 0 });
     }
     const runId = ++this.runSeq;
     this.opts.log.info(`browser: ${verb} on pane ${short} for ${by} relayed to the app`);
-    for (const client of drivers) client.send({ type: 'browser.requested', runId, paneId, verb, args, by, timeoutMs });
+    for (const client of drivers) client.send({ type: 'browser.requested', runId, paneId, verb, args, by, timeoutMs, ...(filter === undefined ? {} : { filter }) });
     const wait = timeoutMs + (this.opts.browserRunSlackMs ?? BROWSER_RUN_SLACK_MS);
     return new Promise<BrowserRunAnswer>((resolve) => {
       const timer = setTimeout(() => {
@@ -1030,7 +1033,26 @@ class ClientConnection {
         if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < BROWSER_TIMEOUT_MIN_MS || timeoutMs > BROWSER_TIMEOUT_MAX_MS) {
           throw new SessionError('bad-request', `timeoutMs must be a whole number from ${BROWSER_TIMEOUT_MIN_MS} to ${BROWSER_TIMEOUT_MAX_MS}`);
         }
-        return this.hooks.requestBrowserRun({ paneId, verb: verb as BrowserVerb, args: args as string[], by, timeoutMs });
+        // M9 fix 875: a snapshot's filter, relayed only when it holds a field.
+        const rawFilter = (req as Record<string, unknown>)['filter'];
+        const filter: BrowserFilter = {};
+        if (rawFilter !== undefined) {
+          if (typeof rawFilter !== 'object' || rawFilter === null || Array.isArray(rawFilter) || !Object.keys(rawFilter).every((k) => k === 'name' || k === 'within')) {
+            throw new SessionError('bad-request', 'filter must be { name?, within? }');
+          }
+          if (verb !== 'snapshot') throw new SessionError('bad-request', 'filter is for snapshot');
+          const { name, within } = rawFilter as Record<string, unknown>;
+          if (name !== undefined) {
+            if (typeof name !== 'string' || name.length < 1 || name.length > BROWSER_FILTER_CHARS) throw new SessionError('bad-request', `filter.name must be a text of 1 to ${BROWSER_FILTER_CHARS} characters`);
+            filter.name = name;
+          }
+          if (within !== undefined) {
+            if (typeof within !== 'string' || !BROWSER_FILTER_REF.test(within)) throw new SessionError('bad-request', 'filter.within must be a ref such as @r1 or @e3');
+            filter.within = within;
+          }
+        }
+        const filtered = filter.name !== undefined || filter.within !== undefined;
+        return this.hooks.requestBrowserRun({ paneId, verb: verb as BrowserVerb, args: args as string[], by, timeoutMs, ...(filtered ? { filter } : {}) });
       }
       case 'browser.done': {
         const runId = expectNumber(req, 'runId');
@@ -1082,6 +1104,12 @@ class ClientConnection {
         return { layout: this.layouts.get() };
       case 'layout.set':
         return { layout: this.layouts.set(req.layout) };
+      case 'window.open':
+        return this.layouts.openWindow(req.tabId === undefined || req.tabId === null ? null : expectString(req, 'tabId'));
+      case 'window.close':
+        return { layout: this.layouts.closeWindow(expectString(req, 'windowId')) };
+      case 'window.front':
+        return { layout: this.layouts.setFront(expectString(req, 'windowId')) };
       case 'prompts.list':
         return { prompts: this.prompts.list() };
       case 'prompts.set':

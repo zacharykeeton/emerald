@@ -259,6 +259,13 @@ export function defaultView(path: string): FileTabView | null {
   return null;
 }
 
+// The view a path opened beside at a line takes (M9 fix 864): Raw for a
+// file with a view of its own, since only the editor shows a line, as a
+// tab's open at a line does (ui.ts openTab).
+export function fileViewAt(path: string, line: number | undefined): FilePaneView {
+  return line !== undefined && defaultView(path) !== null ? { kind: 'file', path, view: 'raw' } : { kind: 'file', path };
+}
+
 // A markdown, SVG, transcript or JSON tab has a view; anything else is the
 // editor and asking says raw.
 export function viewFor(m: TabsModel, path: string): FileTabView {

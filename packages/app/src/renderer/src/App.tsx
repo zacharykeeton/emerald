@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { allPanes, currentTab, findPane } from '@emerald/shared';
+import { allPanes, currentTab, findPane, windowsOf } from '@emerald/shared';
 import { installAttention } from './attention.ts';
 import { BrowserLayer } from './BrowserLayer.tsx';
 import { CheatSheet, PrefixIndicator } from './CheatSheet.tsx';
@@ -28,11 +28,11 @@ import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
 import { PANES, commitsFolder, isDocument, isWhatsNew, statsFolder } from './tabs-model.ts';
 import { start, useStore } from './store.ts';
-import { clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, useUi } from './ui.ts';
+import { adoptWindowTabs, clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, pruneWindowTabs, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
 
 export function App() {
-  const { connected, layout } = useStore('connected', 'layout');
+  const { connected, layout, allLayout, windowId } = useStore('connected', 'layout', 'allLayout', 'windowId');
   const { zoomedPaneId, tabs } = useUi();
   const fileTab = tabs.active === PANES ? null : tabs.active;
   const firstTab = useRef(true);
@@ -85,15 +85,23 @@ export function App() {
   }, [layout, zoomedPaneId]);
 
   // A closed pane takes its text size with it; a pane in another tab is
-  // still a pane.
+  // still a pane, and so is a pane in another window (M9 fix 867), whose
+  // window shares this profile's storage.
   useEffect(() => {
-    if (layout === null) return;
-    const live = new Set(allPanes(layout).map((p) => p.id));
+    if (allLayout === null) return;
+    const live = new Set(allPanes(allLayout).map((p) => p.id));
     pruneFontSizes(live);
     pruneShaded(live);
     pruneChatPanes(live);
-    pruneSplitFolders(new Set(allPanes(layout).filter((p) => p.sessionId === null && p.view === null).map((p) => p.id)));
-  }, [layout]);
+    pruneSplitFolders(new Set(allPanes(allLayout).filter((p) => p.sessionId === null && p.view === null).map((p) => p.id)));
+    pruneWindowTabs(new Set(windowsOf(allLayout).map((w) => w.id)));
+  }, [allLayout]);
+
+  // This window's file tabs under its own key (M9 fix 867), once the main
+  // process has said which window this page is.
+  useEffect(() => {
+    if (windowId !== null) adoptWindowTabs(windowId);
+  }, [windowId]);
 
   // Coming back to the panes puts the keyboard in the focused terminal;
   // a file tab takes it itself (FileView). The first render is left

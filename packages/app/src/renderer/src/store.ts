@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from 'react';
-import { currentTab, pushSample, replaceTab, tabHolding } from '@emerald/shared';
+import { currentTab, frontWindow, mergeWindowView, pushSample, replaceTab, tabHolding, windowView, windowsOf } from '@emerald/shared';
 import { EMPTY_CONFLICTS } from '@emerald/shared';
 import type { ConflictReport, Layout, LayoutTab, SessionInfo } from '@emerald/shared';
 import type { DaemonCrash, DaemonInfo, RendererPush } from '../../preload/api.ts';
@@ -18,8 +18,16 @@ import { RATE_FEATURE_LEVEL } from './session-mark-model.ts';
 
 export interface State {
   connected: boolean;
-  // null until the first layout.get answers.
+  // null until the first layout.get answers. This window's own view
+  // (M9 fix 867): its tabs and its tab on show, windowView of allLayout,
+  // which is allLayout itself while the layout has one window.
   layout: Layout | null;
+  // The whole layout as the daemon pushed it, every window's tabs, for the
+  // readers that mean every window (a session on a pane anywhere).
+  allLayout: Layout | null;
+  // The layout window this page shows, from the main process; null until
+  // the sync has asked.
+  windowId: string | null;
   sessions: ReadonlyMap<string, SessionInfo>;
   // The sessions removed from the list that the daemon still keeps (M57),
   // each with its removedAt, for the Commits tab's lanes; a daemon before
@@ -48,7 +56,7 @@ export interface State {
 // object until a preview is on, then a copy with the previewed colour
 // on its one session, so a reader never sees the preview and the saved
 // colour at once.
-let state: State = { connected: true, layout: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: null, crashed: null, preview: null };
+let state: State = { connected: true, layout: null, allLayout: null, windowId: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: null, crashed: null, preview: null };
 let snapshot: State = state;
 const listeners = new Set<() => void>();
 let started = false;
@@ -61,6 +69,20 @@ function setState(patch: Partial<State>): void {
 
 export function getState(): State {
   return snapshot;
+}
+
+// The whole layout and this window's view of it, set together (M9 fix 867).
+function layoutPatch(all: Layout, windowId: string | null = state.windowId): Pick<State, 'allLayout' | 'layout'> {
+  return { allLayout: all, layout: windowView(all, windowId) };
+}
+
+// True while this window is the one in front (the one holding the
+// layout's current tab), and always with one window: the chime, the toast
+// and the repeat are the front window's alone.
+export function isFrontWindow(): boolean {
+  const all = state.allLayout;
+  if (all === null || all.windows === undefined) return true;
+  return frontWindow(all).id === (state.windowId ?? windowsOf(all)[0]!.id);
 }
 
 // The colour the daemon has for a session, under any preview: undefined
@@ -160,7 +182,7 @@ export function start(): void {
 // the first push.
 async function sync(): Promise<void> {
   await window.emerald.request('subscribe', { topics: ['sessions', 'layout'] });
-  const [{ layout }, { sessions }, daemon, crash] = await Promise.all([
+  const [{ layout }, { sessions }, daemon, crash, windowId] = await Promise.all([
     window.emerald.request('layout.get', {}),
     // The removed ones too (M57); a daemon before level 25 reads no flag
     // and answers the listed ones alone.
@@ -169,6 +191,8 @@ async function sync(): Promise<void> {
     // The crash the main process holds (M9 fix 832), for a renderer that
     // reloaded before Not now.
     window.emerald.daemonCrash(),
+    // The layout window this page shows (M9 fix 867).
+    window.emerald.windowId(),
   ]);
   // The rate topic (M41) is its own request after the daemon is known: a
   // daemon before level 14 answers bad-request to a topic it has not got,
@@ -185,7 +209,8 @@ async function sync(): Promise<void> {
   const removed = sessions.filter((s) => typeof s.removedAt === 'number');
   setState({
     connected: true,
-    layout: normalizeLayout(layout),
+    windowId,
+    ...layoutPatch(normalizeLayout(layout), windowId),
     sessions: new Map(listed.map((s) => [s.id, normalizeSession(s)])),
     removed: new Map(removed.map((s) => [s.id, normalizeSession(s)])),
     folders: new Map(folders.map((f) => [f.folder, f.label])),
@@ -222,14 +247,15 @@ export function onPush(msg: RendererPush): void {
       setState({ crashed: msg.crash });
       return;
     case 'layout.changed': {
-      const layout = normalizeLayout(msg.layout);
+      const patch = layoutPatch(normalizeLayout(msg.layout));
+      const layout = patch.layout!;
       const tab = currentTab(layout);
       const before = state.layout === null ? null : currentTab(state.layout);
       if (before?.id !== tab.id) console.log(`[emerald] tab -> ${tab.name} (revision ${layout.revision})`);
       if (before?.focusedPaneId !== tab.focusedPaneId) {
         console.log(`[emerald] focus -> pane ${tab.focusedPaneId.slice(0, 8)} (revision ${layout.revision})`);
       }
-      setState({ layout });
+      setState(patch);
       return;
     }
     case 'session.changed': {
@@ -307,24 +333,29 @@ export function editLayout(fn: (layout: Layout) => Layout): Promise<Layout> {
 
 async function applyEdit(fn: (layout: Layout) => Layout): Promise<Layout> {
   for (let attempt = 0; attempt < 2; attempt++) {
+    // The edit runs on this window's view and is folded back into the
+    // whole before it goes (M9 fix 867); with one window the view is the
+    // whole and the fold is the view itself.
     let base = state.layout;
     if (base === null) {
-      base = normalizeLayout((await window.emerald.request('layout.get', {})).layout);
-      setState({ layout: base });
+      const patch = layoutPatch(normalizeLayout((await window.emerald.request('layout.get', {})).layout));
+      setState(patch);
+      base = patch.layout!;
     }
     const next = fn(base);
     if (next === base) return base;
     try {
       // The push carries the same layout, but the reply is what this edit
       // awaited on, so apply it here too and the next queued edit sees it.
-      const reply = await window.emerald.request('layout.set', { layout: layoutForWire(next, state.daemon) });
-      const layout = normalizeLayout(reply.layout);
-      if (state.layout === null || layout.revision > state.layout.revision) setState({ layout });
-      return layout;
+      const whole = mergeWindowView(state.allLayout ?? next, next, state.windowId);
+      const reply = await window.emerald.request('layout.set', { layout: layoutForWire(whole, state.daemon) });
+      const patch = layoutPatch(normalizeLayout(reply.layout));
+      if (state.allLayout === null || patch.allLayout!.revision > state.allLayout.revision) setState(patch);
+      return patch.layout!;
     } catch (err) {
       if ((err as { code?: string }).code !== 'stale-revision') throw err;
       const { layout } = await window.emerald.request('layout.get', {});
-      setState({ layout: normalizeLayout(layout) });
+      setState(layoutPatch(normalizeLayout(layout)));
     }
   }
   throw new Error('layout edit lost to another client twice');

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { SessionInfo, TrustDialog } from '@emerald/shared';
-import { trustDialog, trustKeys } from '@emerald/shared';
+import { trustDialog, trustKeys, trustParagraphs } from '@emerald/shared';
 import { ackIfDone, typeInto } from './actions.ts';
 import { PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
@@ -24,18 +24,20 @@ const OPTION_TITLE = 'Sends the arrow keys and Enter to the session';
 // M9 fix 847: the dialog's text with the session's own folder on a line of
 // its own under the heading, where the dialog drew its path (which the TUI
 // may wrap); a block inside the pre, so the pre's text still starts with
-// the heading.
+// the heading. Since fix 881 the rows are drawn as paragraphs
+// (trustParagraphs), the pre rewrapping them at the card's width.
 function trustText(screen: TrustScreen | null, dialog: TrustDialog | null, cwd: string, pathClass: string): ReactNode {
   if (screen === null) return 'Reading the screen…';
   if (dialog === null) return '(the dialog is not drawn yet)';
-  if (!dialog.pathDropped) return dialog.lines.join('\n');
+  const shown = trustParagraphs(dialog.lines);
+  if (!dialog.pathDropped) return shown.join('\n');
   return (
     <>
-      {dialog.lines[0]}
+      {shown[0]}
       <span className={pathClass} title={cwd}>
         {cwd}
       </span>
-      {dialog.lines.slice(1).join('\n')}
+      {shown.slice(1).join('\n')}
     </>
   );
 }

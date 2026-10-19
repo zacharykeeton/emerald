@@ -156,16 +156,17 @@ try {
   await s.type('x');
   await s.waitFor(`!!document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}] [data-exited-notice]')`, 'exited notice shows on a key');
   const notice = await s.evalJs(
-    `(() => { const n = document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}] [data-exited-notice]'); return n ? { title: n.querySelector('.pane-exited-notice-title')?.textContent ?? null, body: n.querySelector('.pane-exited-notice-body')?.textContent ?? null, resume: !!n.querySelector('.pane-exited-notice-resume') } : null; })()`,
+    `(() => { const n = document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}] [data-exited-notice]'); return n ? { title: n.querySelector('.pane-exited-notice-title')?.textContent ?? null, body: n.querySelector('.pane-exited-notice-body')?.textContent ?? null, resume: !!n.querySelector('.pane-exited-notice-resume'), close: n.querySelector('.pane-exited-notice-close')?.textContent ?? null, closeTitle: n.querySelector('.pane-exited-notice-close')?.title ?? null, xTitle: document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}] .pane-close')?.title ?? null } : null; })()`,
   );
   expect(notice?.title === 'exited', `notice's first line, got ${JSON.stringify(notice)}`);
   expect(notice?.body === "This session's process has ended; its last screen is kept.", `notice's body line, got ${JSON.stringify(notice)}`);
   expect(notice?.resume === true, 'notice carries its own Resume button');
+  expect(notice?.close === 'Close' && notice.closeTitle === notice.xTitle && notice.closeTitle === `Close: forget ${t2.name} and close the pane`, `fix 861: the notice offers Close, titled as the title bar's ×, got ${JSON.stringify(notice)}`);
   // M9 fix 841: on the terminal face too the notice sits on an opaque card inside the pane.
   const card = await s.evalJs(
-    `(() => { const p = document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}]'); const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') }; })()`,
+    `(() => { const p = document.querySelector('[data-pane-id=${JSON.stringify(p2.id)}]'); const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') && !!c.querySelector('.pane-exited-notice-close'), row: (() => { const a = c.querySelector('.pane-exited-notice-resume')?.getBoundingClientRect(); const b = c.querySelector('.pane-exited-notice-close')?.getBoundingClientRect(); return a !== undefined && b !== undefined && Math.abs(a.top - b.top) < 1 && Math.abs(a.height - b.height) < 1 && a.right <= b.left; })() }; })()`,
   );
-  expect(card !== null && /^rgb\(\d+, \d+, \d+\)$/.test(card.bg) && card.inside && card.parts, `fix 841: the notice sits on an opaque card inside the pane, got ${JSON.stringify(card)}`);
+  expect(card !== null && /^rgb\(\d+, \d+, \d+\)$/.test(card.bg) && card.inside && card.parts && card.row, `fix 841 and 861: the notice sits on an opaque card inside the pane, Resume and Close side by side at one height, got ${JSON.stringify(card)}`);
   await s.screenshot('m5-resume-fix841-card.png');
   expect((await termText(s, p2.id)).includes('[killed from emerald]'), 'the key did not reach the pty; the kept screen is unchanged');
   step('typing into the exited pane sends nothing and shows the notice instead');

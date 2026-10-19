@@ -4,7 +4,8 @@
 // the scroll position survives it; Raw shows the Monaco editor and
 // Rendered brings the article back; a .json file has no switch; the
 // choice survives a reload; typing in a .ts file opens the word suggestion
-// box on a solid ground and typing in a markdown file opens none (fix 634).
+// box on a solid ground and typing in a markdown file opens none (fix 634);
+// a Ctrl+click on a link opens a browser pane beside (fix 863).
 // Uses a private home and pipe unless the
 // environment already names them.
 // Run: npm run verify:markdown -w @emerald/app
@@ -14,7 +15,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm13-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m13';
-const { CTRL, expect, freshPort, killTree, launch, sleep, startSession, step, stopDaemon } = await import('./cdp.mjs');
+const { CTRL, expect, freshPort, getLayout, killTree, launch, leaves, sleep, startSession, step, stopDaemon } = await import('./cdp.mjs');
 
 let app = null;
 setTimeout(() => {
@@ -54,6 +55,8 @@ const readmeText = [
   '| 1 | 2 |',
   '',
   filler,
+  '',
+  'A refused page for the Ctrl+click: [port nine](http://127.0.0.1:9/863).',
   '',
 ].join('\n');
 fs.writeFileSync(readme, readmeText);
@@ -153,6 +156,34 @@ try {
   expect((await pageTargets()).length === 1, 'still one page target after the middle-click');
   expect((await s.evalJs(`location.href`)) === href, 'the window did not navigate');
   step('window.open and a middle-click on a link open no window and go to openExternal');
+
+  // M9 fix 863: a Ctrl+click on a link in a markdown tab opens a browser
+  // pane beside the focused pane, the panes put in front, since a file
+  // tab has no pane of its own; nothing goes to the browser. The discard
+  // port refuses at once, so the guest reaches no network.
+  {
+    const url863 = 'http://127.0.0.1:9/863';
+    const shellPane = leaves(await getLayout(s))[0].id;
+    await s.evalJs(`window.__opened = null`);
+    await s.evalJs(`[...document.querySelectorAll('.markdown a')].find((a) => a.getAttribute('href') === ${JSON.stringify(url863)}).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }))`);
+    const browserLeaf = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser' && p.view.url === url863) ?? null;
+    const until = Date.now() + 5000;
+    while (((await browserLeaf()) === null || !(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`))) && Date.now() < until) await sleep(150);
+    const leaf = await browserLeaf();
+    expect(leaf !== null, `the Ctrl+click opened a browser pane on ${url863}`);
+    expect(JSON.stringify(leaf.view) === JSON.stringify({ kind: 'browser', url: url863 }), `the pane holds the page alone, got ${JSON.stringify(leaf.view)}`);
+    expect(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`), 'the panes put in front');
+    const root = (await getLayout(s)).root;
+    expect(root.kind === 'split' && root.direction === 'row' && root.first.id === shellPane && root.second.id === leaf.id, `the browser pane sits beside the shell's pane, got ${JSON.stringify(root.kind === 'split' ? { direction: root.direction, first: root.first.id, second: root.second.id } : root.kind)}`);
+    if (stubbed) expect((await s.evalJs(`window.__opened`)) === null, `nothing reached openExternal (${await s.evalJs(`window.__opened`)})`);
+    else expect(heldCount(url863) === 0, `nothing went to openExternal (${heldCount(url863)} held lines)`);
+    await s.screenshot('m13-fix863-beside.png');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(leaf.id)}] .pane-hide`)}).click()`);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'the browser pane closed, one pane again');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`.tab[data-tab=${JSON.stringify(readme)}]`)}).click()`);
+    await s.waitFor(`!!document.querySelector('.markdown-view')`, 'back on the README');
+  }
+  step('M9 fix 863: a Ctrl+click on a link in a markdown tab opens a browser pane beside the focused pane, the panes in front, and nothing goes to the browser');
 
   // A write on disk shows without a refresh, and the place is kept.
   await s.evalJs(`document.querySelector('.markdown-view').scrollTop = 400`);

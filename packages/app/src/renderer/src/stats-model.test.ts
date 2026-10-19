@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { GitProjectCounts } from '../../preload/api.ts';
-import { historyText, monthName, releasesOf, spanText, spanTitle, tokensText, usdText, yieldText } from './stats-model.ts';
+import { asOfText, historyDay, historyText, monthName, releasesOf, releasesSince, spanText, spanTitle, tokensText, usdText, yieldText } from './stats-model.ts';
 
 const counts = (over: Partial<GitProjectCounts>): GitProjectCounts => ({ root: 'C:\\code\\x', branch: 'main', commits: 10, firstCommitAt: null, tags: 0, bumps: 0, bumpsFile: null, ...over });
 
@@ -33,6 +33,21 @@ test('yieldText prices a release and a hundred commits and counts releases per $
   assert.equal(yieldText(5012.33, false, 26, 0), '$192.78 per release · 5.2 releases per $1,000');
   assert.equal(yieldText(5012.33, true, 26, 2930), '~$192.78 per release · ~$171.07 per hundred commits · 5.2 releases per $1,000');
   assert.equal(yieldText(0, false, 26, 2930), 'no spend recorded');
+  // M9 fix 885: the thousands marked in the count of releases.
+  assert.equal(yieldText(0.65, false, 27, 0), '$0.02 per release · 41,538.5 releases per $1,000');
+  assert.equal(yieldText(0.65, false, 27, 0, null), '$0.02 per release · 41,538.5 releases per $1,000');
+});
+
+test('the yield from the log\'s first day, the releases since, the as-of time and the log\'s first day (M9 fix 885)', () => {
+  const now = new Date(2026, 9, 17, 12).getTime();
+  assert.equal(yieldText(5012.33, false, 26, 2930, new Date(2026, 9, 5, 9).getTime(), now), "$192.78 per release · $171.07 per hundred commits · 5.2 releases per $1,000; releases and commits from Oct 5, the log's first day");
+  assert.equal(releasesSince(counts({ tags: 3 })), null, 'null without since');
+  assert.equal(releasesSince(counts({ tags: 3, since: { from: 1, commits: 5, tags: 2, bumps: 7 } })), 2, 'the tags with tags');
+  assert.equal(releasesSince(counts({ tags: 0, bumps: 9, since: { from: 1, commits: 5, tags: 0, bumps: 7 } })), 7, 'the bumps without');
+  assert.equal(releasesSince(counts({ tags: 0, bumps: null, since: { from: 1, commits: 5, tags: 0, bumps: null } })), 0);
+  assert.equal(asOfText(new Date(2026, 9, 17, 9, 5).getTime()), 'as of 09:05');
+  assert.equal(historyDay(new Date(2026, 9, 5, 9).getTime()), new Date(2026, 9, 5).getTime());
+  assert.equal(historyDay(null), null);
 });
 
 test('the figures\' formatters: dollars with thousands, billions of tokens, a month by name (M9 fix 837)', () => {

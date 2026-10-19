@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addTab, currentTab, defaultLayout, replaceTab, setPaneSession, setPaneView, splitPane, switchTab } from '@emerald/shared';
-import { isShowOffscreen, newTabNameFor, viewName, wouldReplace } from './show-model.ts';
+import { folderTabName, isShowOffscreen, newTabNameFor, viewName, wouldReplace } from './show-model.ts';
 
 function counter(): () => string {
   let n = 0;
@@ -75,6 +75,13 @@ test('newTabNameFor names the tab as the folder heading reads (fix 578)', () => 
   assert.equal(newTabNameFor({ groupCwd: 'C:\\work\\repo', name: 'shell 3' }, new Map()), 'repo');
   assert.equal(newTabNameFor({ groupCwd: 'C:\\work\\repo', name: 'shell 3' }, new Map([['C:\\work\\repo', 'Main']])), 'Main');
   assert.equal(newTabNameFor({ groupCwd: '', name: 'shell 3' }, new Map()), 'shell 3');
+});
+
+test('folderTabName names a tab from outside by the sidebar label, else the folder (M9 fix 886)', () => {
+  assert.equal(folderTabName('C:\\work\\repo', new Map()), 'repo');
+  assert.equal(folderTabName('C:\\work\\repo\\', new Map()), 'repo');
+  assert.equal(folderTabName('C:\\work\\repo', new Map([['C:\\work\\repo', 'Main']])), 'Main');
+  assert.equal(folderTabName('', new Map()), '');
 });
 
 test('a browser view is named Browser, with its host once it has a page (M9 fix 659)', () => {

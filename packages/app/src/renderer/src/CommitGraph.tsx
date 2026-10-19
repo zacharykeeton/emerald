@@ -171,6 +171,8 @@ interface Props {
   // lanes' newest commit nodes and the base figures beside stale lanes'
   // fork marks; null or empty draws nothing.
   forecast?: ConflictReading | null | undefined;
+  // The rows that draw nothing (M9 fix 869): a replay's commits not landed yet and agents not out yet.
+  hidden?: ReadonlySet<number> | undefined;
 }
 
 // The rows the drawing spans (M9 fix 211) and how many: every item's
@@ -193,7 +195,9 @@ export function laneAcross(slot: number, block: number, horizontal: boolean, p: 
   return horizontal ? p.label + p.laneX0 + (slot + gaps) * p.track + block * p.trackGap : p.laneX0 + (slot + gaps) * p.laneGap + block * p.sessionGap;
 }
 
-export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards, labelCards, agentCard, agentMark, outsideCard, now, bare = false, focusedSessionId = null, scale = 1, raisedHash = null, forecast = null }: Props) {
+const NO_ROWS: ReadonlySet<number> = new Set();
+
+export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards, labelCards, agentCard, agentMark, outsideCard, now, bare = false, focusedSessionId = null, scale = 1, raisedHash = null, forecast = null, hidden = NO_ROWS }: Props) {
   const p = pitch(scale);
   const { items, lanes, blocks, lines, dots } = graph;
   const n = items.length;
@@ -433,13 +437,13 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
   const labelAnchor = reverse ? 'end' : 'start';
   const turn = (time: number, across: number): string | undefined => (horizontal ? undefined : `rotate(-90 ${across} ${time})`);
   for (const it of items) {
-    if (it.kind !== 'agent' || it.lane === null || !drawLabels) continue;
+    if (it.kind !== 'agent' || it.lane === null || !drawLabels || hidden.has(it.row)) continue;
     agentBoxes.push(textBox(u(t(it.row)) + labelSide * (p.mark / 2 + 2), a(it.lane) + 3, cutLabel(agentMark(it).label), labelAnchor));
   }
   for (const it of items) {
     // A commit whose block draws no lanes (M72) has no node: the row
     // stays and the gutter shows nothing beside it.
-    if (it.lane === null) continue;
+    if (it.lane === null || hidden.has(it.row)) continue;
     const block = blockOfSession.get(it.sessionId) ?? 0;
     const [cx, cy] = xy(t(it.row), a(it.lane));
     if (it.kind === 'commit') {

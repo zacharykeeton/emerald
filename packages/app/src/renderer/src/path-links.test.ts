@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isAbsolutePath, joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink } from './path-links.ts';
+import { isAbsolutePath, joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, urlLinkTitle } from './path-links.ts';
 import type { WrapBuffer, WrapLine } from './path-links.ts';
 
 const texts = (line: string) => pathLinksIn(line).map((l) => l.text);
@@ -93,18 +93,29 @@ test('joinWrappedRows joins a path xterm wrapped at the pane edge, a row apiece 
   assert.deepEqual(joinWrappedRows(plain, 0), { text: 'just one line', cellOf: [...'just one line'].map((_, x) => ({ y: 0, x })) });
 });
 
-test('pathLinkTitle: a folder opens in Explorer, a file keeps the fix 357 text (M9 fix 653)', () => {
-  assert.equal(pathLinkTitle('C:\\repo\\f653\\in', 'dir'), 'Ctrl+click opens C:\\repo\\f653\\in in Explorer');
-  assert.equal(pathLinkTitle('C:\\repo\\r653.txt', 'file'), 'Ctrl+click opens C:\\repo\\r653.txt');
+test('pathLinkTitle: a folder opens in Explorer, a file says beside when a file pane can take it (M9 fixes 653 and 864)', () => {
+  assert.equal(pathLinkTitle('C:\\repo\\f653\\in', 'dir', true), 'Ctrl+click opens C:\\repo\\f653\\in in Explorer');
+  assert.equal(pathLinkTitle('C:\\repo\\f653\\in', 'dir', false), 'Ctrl+click opens C:\\repo\\f653\\in in Explorer');
+  assert.equal(pathLinkTitle('C:\\repo\\r653.txt', 'file', true), 'Ctrl+click opens C:\\repo\\r653.txt in a pane beside');
+  assert.equal(pathLinkTitle('C:\\repo\\r653.txt', 'file', false), 'Ctrl+click opens C:\\repo\\r653.txt');
+});
+
+test('urlLinkTitle: a URL says beside when a browser pane can take it, and the fix 204 text when not (M9 fix 863)', () => {
+  assert.equal(urlLinkTitle('https://ex.io/204', true), 'Ctrl+click opens https://ex.io/204 in a pane beside');
+  assert.equal(urlLinkTitle('https://ex.io/204', false), 'Ctrl+click opens https://ex.io/204');
 });
 
 test('pathLinkAction: Ctrl takes the link, Shift turns a file into a reveal, a folder opens either way (M9 fix 653)', () => {
-  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: false }), 'tab');
-  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: true }), 'reveal');
-  assert.equal(pathLinkAction('dir', { ctrlKey: true, shiftKey: false }), 'open-folder');
-  assert.equal(pathLinkAction('dir', { ctrlKey: true, shiftKey: true }), 'open-folder');
-  assert.equal(pathLinkAction('file', { ctrlKey: false, shiftKey: false }), null);
-  assert.equal(pathLinkAction('file', { ctrlKey: false, shiftKey: true }), null);
-  assert.equal(pathLinkAction('dir', { ctrlKey: false, shiftKey: false }), null);
-  assert.equal(pathLinkAction('dir', { ctrlKey: false, shiftKey: true }), null);
+  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: false }, true), 'beside');
+  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: true }, true), 'reveal');
+  assert.equal(pathLinkAction('dir', { ctrlKey: true, shiftKey: false }, true), 'open-folder');
+  assert.equal(pathLinkAction('dir', { ctrlKey: true, shiftKey: true }, true), 'open-folder');
+  assert.equal(pathLinkAction('file', { ctrlKey: false, shiftKey: false }, true), null);
+  assert.equal(pathLinkAction('file', { ctrlKey: false, shiftKey: true }, true), null);
+  assert.equal(pathLinkAction('dir', { ctrlKey: false, shiftKey: false }, true), null);
+  assert.equal(pathLinkAction('dir', { ctrlKey: false, shiftKey: true }, true), null);
+  // A daemon too old for a file pane keeps the tab (M9 fix 864).
+  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: false }, false), 'tab');
+  assert.equal(pathLinkAction('file', { ctrlKey: true, shiftKey: true }, false), 'reveal');
+  assert.equal(pathLinkAction('dir', { ctrlKey: true, shiftKey: false }, false), 'open-folder');
 });

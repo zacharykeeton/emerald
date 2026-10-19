@@ -36,7 +36,7 @@ import type { Shown } from './shown-sessions.ts';
 import { useStore } from './store.ts';
 import { TurnLineAnchor } from './TurnCard.tsx';
 import { UsageStrip } from './UsageStrip.tsx';
-import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, cycleAttentionSound, markSessionUnread, openFileTab, setSessionHushed, openNewSession, openReviewTab, openTranscriptTab, setAttentionNotify, setAttentionSound, setShowOffscreen, setSidebarFilter, setSidebarOrder, setSidebarWidth, setUsageRecord, toggleSidebar, toggleSidebarFold, toggleTeamUnfold, useUi } from './ui.ts';
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, cycleAttentionSound, markSessionUnread, openFileTab, setSessionHushed, openNewSession, openReviewTab, openTranscriptTab, setAttentionNotify, setAttentionSound, setShowOffscreen, setSidebarFilter, setSidebarOrder, setSidebarWidth, toggleSidebar, toggleSidebarFold, toggleTeamUnfold, useUi } from './ui.ts';
 import { useNow } from './use-now.ts';
 import { FOLDER_LABEL_MAX, LOAD_SPAN_MS, Limits, loadCeiling, loadPeak } from '@emerald/shared';
 import { SIDEBAR_FILTERS, emptyFilterText, filterCounts, filterGroups } from './sidebar-filter-model.ts';
@@ -67,7 +67,7 @@ const REMOVAL_TITLE = 'Closed: removed from the list when the count ends. Hover 
 // title never disagree. Clicking a row shows the session in the focused
 // pane, or jumps to the pane already showing it.
 export function Sidebar() {
-  const { sessions, layout, daemon, folders } = useStore('sessions', 'layout', 'daemon', 'folders');
+  const { sessions, layout, allLayout, daemon, folders } = useStore('sessions', 'layout', 'allLayout', 'daemon', 'folders');
   // The shell sessions running a command (M46), by their output rate,
   // for the headings' units: one Set for every heading, held while its
   // members are the same (M9 fix 354). Above the collapsed rail's early
@@ -140,9 +140,9 @@ export function Sidebar() {
   // and the order stay, and the counts on the chips are of every session.
   // The unshown chip (M9 fix 249) reads the sessions on a pane of any
   // tab, the same set the rows' "on no pane" word and the headings' count
-  // read.
+  // read; a pane in another window is a pane (M9 fix 867).
   const allGroups = groupSessions(sessions.values(), sidebarOrder, folders);
-  const onPanes: ReadonlySet<string> = layout === null ? new Set() : sessionsOnPanes(layout);
+  const onPanes: ReadonlySet<string> = allLayout === null ? new Set() : sessionsOnPanes(allLayout);
   // M9 fix 787: an Exited row counting down shows under any chip.
   const countingIds: ReadonlySet<string> = new Set([...removing].filter(([, c]) => c.started).map(([id]) => id));
   const groups = filterGroups(allGroups, sidebarFilter, onPanes, countingIds);
@@ -1479,7 +1479,7 @@ const CHIME_NOTES: Record<ChimeMode, string> = {
 };
 
 function AttentionSoundButton() {
-  const { attentionSound, attentionNotify, usageRecord, chimeMode } = useUi();
+  const { attentionSound, attentionNotify, chimeMode } = useUi();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const onContextMenu = (ev: React.MouseEvent) => {
     ev.preventDefault();
@@ -1495,7 +1495,6 @@ function AttentionSoundButton() {
         className="attention-sound"
         data-sound={attentionSound}
         data-notify={attentionNotify ? 'on' : 'off'}
-        data-usage={usageRecord ? 'on' : 'off'}
         data-chime={chimeMode}
         title={`${SOUND_TITLES[attentionSound]} Right click for the notification setting.${CHIME_NOTES[chimeMode]}`}
         onClick={cycleAttentionSound}
@@ -1521,14 +1520,6 @@ function AttentionSoundButton() {
               onClick: pick(() => setAttentionNotify(!attentionNotify)),
               title: 'A system notification when a session needs you and the window is not focused. Click to turn it ' + (attentionNotify ? 'off' : 'on'),
               separator: true,
-            },
-            // M9 fix 676: the usage record, off until turned on here.
-            {
-              label: usageRecord ? 'Usage record: on' : 'Usage record: off',
-              onClick: pick(() => setUsageRecord(!usageRecord)),
-              title:
-                'A local record of which emerald actions and views you use, for emmer usage report; kept in logs/usage.jsonl under your emerald home and never sent anywhere. Click to turn it ' +
-                (usageRecord ? 'off' : 'on'),
             },
           ]}
         />

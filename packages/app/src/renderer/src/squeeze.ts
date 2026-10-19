@@ -1,10 +1,15 @@
 import { useLayoutEffect, type RefObject } from 'react';
-import { clipped, squeezeLevel } from './squeeze-model.ts';
+import { clipped, exactClipped, squeezeLevel, squeezeTolerance } from './squeeze-model.ts';
 
 // A line that gives in whole steps (M9 fixes 76 and 77): the element
 // carries data-squeeze, the CSS hides a part per level, and this finds the
 // first level at which nothing is clipped, the element itself or any
-// descendant matching `tell`. The search runs in a layout effect on deps,
+// descendant matching `tell`. A part that ends in an ellipsis is clipped
+// at any overflow, since Chrome draws the ellipsis at a fraction of a
+// pixel and the pane title's state word read `do…` at a level the pixel
+// let through; a part marked data-squeeze-exact (that word, which now
+// clips) is measured to the fraction and gives once half a pixel of it is
+// cut; a box keeps fix 76's pixel (M9 fix 859). The search runs in a layout effect on deps,
 // so no frame paints the wrong level and it runs where a ResizeObserver
 // does not (a covered harness window, the rule the pane's refit follows:
 // the width comes through state, so the deps carry it); the observer is
@@ -23,12 +28,21 @@ export function useSqueeze(ref: RefObject<HTMLElement | null>, levels: number, t
         if (el.hasAttribute('data-squeeze')) el.removeAttribute('data-squeeze');
         return;
       }
+      const over = (node: HTMLElement) => {
+        if (node.hasAttribute('data-squeeze-exact')) {
+          // A range's box is the text's own, unclipped by the overflow.
+          const text = document.createRange();
+          text.selectNodeContents(node);
+          return exactClipped(text.getBoundingClientRect().right, node.getBoundingClientRect().right);
+        }
+        return clipped(node, squeezeTolerance(getComputedStyle(node).textOverflow));
+      };
       const fits = (level: number) => {
         el.setAttribute('data-squeeze', String(level));
-        if (clipped(el)) return false;
+        if (over(el)) return false;
         if (tell === null) return true;
         for (const part of el.querySelectorAll<HTMLElement>(tell)) {
-          if (clipped(part)) return false;
+          if (over(part)) return false;
         }
         return true;
       };

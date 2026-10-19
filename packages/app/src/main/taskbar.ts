@@ -13,7 +13,8 @@ import type { TaskbarLog, TaskbarWindow } from './taskbar-policy.ts';
 // since M9 fix 560, tested there; this adapts a BrowserWindow to it: the
 // flash is flashFrame (which Windows clears on its own when the window
 // takes focus), a count is the cached badge frame with its description,
-// and the pulse is a setInterval.
+// and the pulse is a setInterval; the bar is setProgressBar, the tooltip
+// setThumbnailToolTip (M9 fix 870).
 
 export type { TaskbarLog };
 
@@ -44,6 +45,9 @@ export function createTaskbar(getWindow: () => BrowserWindow | null, log: Taskba
         if (count === null) win.setOverlayIcon(null, '');
         else win.setOverlayIcon(frame(count, bright), `${count} ${count === 1 ? 'session wants' : 'sessions want'} you`);
       },
+      // Electron removes the bar below zero; the mode is normal by default.
+      setProgress: (fraction) => win.setProgressBar(fraction === null ? -1 : fraction),
+      setTooltip: (text) => win.setThumbnailToolTip(text),
     };
   };
   const policy = createTaskbarPolicy(adapt, {

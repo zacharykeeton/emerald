@@ -158,6 +158,11 @@ test('the usage errors: --timeout out of range or on another verb, a missing tex
     [['fill', 'e1', '--clear', '--stdin'], '--clear and --stdin together'],
     [['fill', 'e1', '--stdin', '--file', 'x'], '--stdin and --file together'],
     [['fill', 'e1', 'hello', '--stdin'], 'unexpected argument "hello"'],
+    [['click', 'e1', '--name', 'x'], '--name is for snapshot'],
+    [['click', 'e1', '--within', '@r1'], '--within is for snapshot'],
+    [['snapshot', '--within', 'x'], '--within takes a ref such as @r1 or @e3'],
+    [['snapshot', '--name', ''], '--name takes 1 to 200 characters'],
+    [['snapshot', '--name', 'n'.repeat(201)], '--name takes 1 to 200 characters'],
   ] as const) {
     const err = await failure(runBrowser([...argv]));
     assert.equal(err.exitCode, EXIT.usage, argv.join(' '));
@@ -207,6 +212,43 @@ test('fill and eval read --stdin and --file verbatim, fill drops one trailing ne
 test('anything after a bare -- is a positional, so eval -- -1 sends -1', async () => {
   await capture(() => runBrowser(['eval', '--', '-1']));
   assert.deepEqual(runs.at(-1)!['args'], ['-1']);
+});
+
+test('drag sends a ref and a ref or dx,dy at level 72, and refuses a target of neither form (M9 fix 874)', async () => {
+  level = 72;
+  await capture(() => runBrowser(['drag', 'e1', 'e2']));
+  assert.deepEqual(runs.at(-1)!['args'], ['e1', 'e2']);
+  await capture(() => runBrowser(['drag', '@e1', '0,-60']));
+  assert.deepEqual(runs.at(-1)!['args'], ['@e1', '0,-60']);
+  await capture(() => runBrowser(['drag', 'e1', '--', '-20,0']));
+  assert.deepEqual(runs.at(-1)!['args'], ['e1', '-20,0']);
+  const sent = runs.length;
+  let err = await failure(runBrowser(['drag', 'e1']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'missing target');
+  err = await failure(runBrowser(['drag', 'e1', 'nowhere']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'drag goes to a ref or to dx,dy in CSS pixels, such as @e7 or 0,-40; got "nowhere"');
+  assert.equal(runs.length, sent);
+  level = 71;
+  err = await failure(runBrowser(['drag', 'e1', 'e2']));
+  assert.match(err.message, /^emmerd fake is older than emmer browser drag \(level 71, needs 72\); restart it from the app's banner$/);
+  assert.equal((await capture(() => runBrowser(['snapshot']))).code, EXIT.ok);
+  level = 72;
+  runReply = { apps: 1, drivers: 0 };
+  err = await failure(runBrowser(['drag', 'e1', 'e2']));
+  assert.equal(err.message, 'the window is older than emmer browser drag (it needs level 72); quit Emerald and open it again');
+});
+
+test('snapshot --name and --within send a filter at level 72, and a bare snapshot none (M9 fix 875)', async () => {
+  level = 72;
+  await capture(() => runBrowser(['snapshot', '--name', 'Save', '--within', '@r2']));
+  assert.deepEqual(runs.at(-1)!['filter'], { name: 'Save', within: '@r2' });
+  await capture(() => runBrowser(['snapshot']));
+  assert.equal(Object.hasOwn(runs.at(-1)!, 'filter'), false);
+  level = 71;
+  const err = await failure(runBrowser(['snapshot', '--name', 'x']));
+  assert.match(err.message, /^emmerd fake is older than emmer browser snapshot --name and --within \(level 71, needs 72\); restart it from the app's banner$/);
 });
 
 test('a daemon older than level 63 is refused for every verb, open included', async () => {

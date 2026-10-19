@@ -104,7 +104,11 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // replaces the reply, a tool_use part counts, an Edit, Write, MultiEdit or
 // NotebookEdit names a file edited, a Read one read, and a Bash command
 // that can move HEAD is a commit. Side-chain lines (a subagent's) are
-// skipped, and so is a broken line.
+// skipped, and so is a broken line. A line Claude Code wrote for itself (a
+// background task's end, an agent's report, another session's message, M9
+// fix 805's notificationOf) opens no turn; since fix 883 the task's end, a
+// plain user line, is caught too, and Claude's answer to it is the open
+// turn's reply.
 export function parseTurns(text: string): Turn[] {
   const turns: Turn[] = [];
   let turn: Turn | null = null;
@@ -112,7 +116,7 @@ export function parseTurns(text: string): Turn[] {
     const o = parseObject(raw);
     if (o === null || o['isSidechain'] === true) continue;
     const at = lineTime(o);
-    const prompt = promptOf(o);
+    const prompt = notificationOf(o, at) === null ? promptOf(o) : null;
     if (prompt !== null) {
       turn = { prompt, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0 };
       turns.push(turn);

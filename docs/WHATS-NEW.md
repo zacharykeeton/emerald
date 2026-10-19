@@ -2,6 +2,50 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 859 to 887, 2026-10-18
+
+Twenty-nine fixes, most of them what was asked for in 0.1.825: the pane title's buttons, Close on the exited card, a Ctrl+click that opens beside, the usage record's switch, a Stats tab on the rail, a replay of the commit graph and a second window. Beside them come a second round of `emmer browser` verbs, a taskbar button that shows how busy the window is, and a second round for the answer cards. The daemon goes from level 71 to 73, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**A second window.** Click the emerald mark at the top left and pick `New window`, second on the menu, or right-click a layout tab and pick `Move to new window`. Each window has its own layout tabs and its own tab on show, and its sidebar and rail list every session, so a window can sit on each monitor. A second launch from the Start menu opens a window too. Closing a window that is not the last closes its tabs and keeps their sessions in the sidebar, and the next start opens every window again, at the default size for now.
+
+**A Ctrl+click opens beside.** Ctrl+click a link a terminal prints, or a link in a chat reply or a rendered markdown file, and it opens in a browser pane beside the pane you clicked in; Ctrl+click a file path or a picture's path in a terminal or a chat face, and it opens in a file pane beside, at the line when the path names one. Drag the new pane anywhere after, onto a layout tab or the `+` included. A picture's path in a reply is a link wherever the file is, and `Open in a pane` on a path's right-click menu lands beside too.
+
+**Replay from here.** Right-click a commit row in the Activity tab's graph and pick `Replay from here`: the later rows dim, then the graph draws itself again commit by commit as it happened, ten minutes of the record a second and every longer idle stretch squeezed to a second, the session's and its agents' marks working only while they did. Escape or a click on the graph puts the live graph back.
+
+**Stats on the rail.** The rail has a fourth tab, Stats, beside Files, Activity and Sessions, showing the statistics of the folder the rail is on. The rail opens wider, at 330 px, so the four tab words fit. The figures are read at most once a minute and say when (`as of 14:05`), and `Statistics in a tab` is now on every folder's menu in the Files rail, not only its root's.
+
+**The pane title and the exited card.** A narrowing pane title keeps both splits, Focus and the shade to its last levels: the chat button goes first, then hide and close, then the splits. Its state word shows whole or not at all, never cut, and the model's words go whole too. Narrow a pane by dragging its divider and watch. The card over a pane whose process has ended now offers Close beside Resume, which forgets the session and closes the pane as the title bar's × does.
+
+### Details
+
+**The taskbar button.** The window's taskbar button carries a progress bar filled to the share of sessions working, three of five reading 60 percent, and its tooltip names both counts, `3 working, 1 wants you`, or `Nothing running`.
+
+**Shade chords leave the done badge.** Ctrl+Shift+K and Ctrl+Shift+U, plain or after the prefix, no longer acknowledge anything, so a done badge in the focused pane stays until you click it or press another key.
+
+**A Claude that left a shell.** A status line that arrives after its Claude has left a shell no longer puts that Claude's figures back on the shell's row.
+
+**The answer cards' review.** Claude Code's `Review your answers` tab draws on both cards as each question with its answer, `Submit answers` and `Cancel` as buttons, and a `Back` button that returns to the questions. A card whose dialog offers its own `Cancel` no longer shows a second one.
+
+**An ask answered elsewhere.** An ask answered in the terminal or on the other card leaves both cards dimmed on what was asked, with no answer box opening under them.
+
+**The trust card's text.** The folder trust card reads as the dialog's paragraphs, rewrapped to the card's width, rather than as the terminal's broken rows.
+
+**A click in the conversation.** A click on the chat view's text keeps the keyboard in the view, so Escape and Ctrl+O still work after it.
+
+**Background tasks in the Turns view.** A background task's end folds into its turn in a transcript's Turns view and the Sessions rail, rather than opening a turn of its own on raw XML.
+
+**The statistics' figures.** The yield per $1,000 is written with thousands separators, the month table's credited column is headed `By sessions` with a tooltip saying what it counts, and when the span starts before the activity log does, the yield counts only the commits and releases from the log's first day.
+
+**A tab from Explorer.** A tab opened by Explorer's Open in Emerald is named after the folder, the sidebar's label for it when it has one, `src 2` beside a tab already called `src`.
+
+**The usage record's switch.** `Usage record: off` moved from the speaker button's right-click menu to the app menu under the emerald mark, after the skin and above Check for updates.
+
+**`emmer` from Git Bash.** `emmer` now runs by its bare name in Git Bash, through a small script beside `emmer.cmd`, its arguments reaching it as typed; Git Bash still turns an argument that looks like a path, such as `/clear`, into a Windows one unless `MSYS_NO_PATHCONV=1` is set.
+
+**Browser verbs.** `emmer browser drag <ref> <ref>`, or `<ref> <dx>,<dy>`, presses, moves in ten steps and releases, as a drag-and-drop list expects; `snapshot --name <text>` and `--within <ref>` print only the rows asked for, a dialog, a list or another region getting an `@r` ref of its own for `--within`; a driven page stays focused from one command to the next for a minute, so a menu a `click` opened is still open for the next `snapshot`; and `fill` picks a select's option by its value or its text, refusing a checkbox, a file input or a multiple select with the verb to use instead.
+
 ## Fixes 825 to 858, 2026-10-18
 
 Thirty-four fixes, most of them what was met in 0.1.797: the pane title, the exited notice and row, the copy note and the agent card. Beside them come a Statistics tab for a project, Open in Emerald on Explorer's folder menu, two bugs from the last run and install, and `emmer` verbs that take their text from a file or a pipe. The daemon goes from level 67 to 71, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

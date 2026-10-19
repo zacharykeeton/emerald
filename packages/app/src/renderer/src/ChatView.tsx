@@ -23,11 +23,11 @@ import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
-import { answerOptions, askQuestion, ghostSuggestion, promptExcerpt } from './screen-prompt-model.ts';
+import { answerOptions, askQuestion, askReview, ghostSuggestion, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
 import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
-import { askBoxShown } from './chat-model.ts';
+import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { SessionMark } from './session-mark.tsx';
 import { copyAndNote } from './actions.ts';
 import { PaneNote } from './CheatSheet.tsx';
@@ -1071,6 +1071,10 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       <div
         className="chat-timeline"
         ref={timelineRef}
+        // M9 fix 882: focusable, so a click on the conversation's text keeps
+        // the keyboard in the view (Escape, Ctrl+O, PageUp and PageDown) and
+        // leaves a selection as made.
+        tabIndex={-1}
         // M9 fix 806: Copy on select here too, a selection in the
         // conversation copied as the left button is let go, a tick later
         // as the terminal waits for its drag to settle. Not in the ask
@@ -1469,7 +1473,10 @@ interface Screen {
 // the same one ASK_PRESS_RETRY_MS on, and never opens its box after a
 // press. Since fix 845 a multi-select has a Submit button (Enter on the
 // card presses it), which sends the Downs to Claude Code's Submit row and
-// Enter.
+// Enter. Since fix 879 the Review your answers tab draws as a review, each
+// question with its answer, its Submit answers and Cancel pressed by their
+// digits. Since fix 880 an ask answered elsewhere (the terminal face, the
+// sidebar's card) dims the card on what was asked, as its own press would.
 function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionInfo; screen: (Screen & { sentAt: number }) | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null }) {
   // M9 fix 717: a permission for the Edit the transcript wrote last is the
   // edit card, its file a path link like any other.
@@ -1484,15 +1491,35 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   useEffect(() => {
     if (pressed !== null && screen !== null && pressOver(pressed, screen)) setPressed(null);
   }, [screen, pressed]);
-  const ask = shown === null ? null : askQuestion(shown.rows);
-  const editCard = edit !== null && session.needsInputReason === 'permission' && ask === null ? edit : null;
+  // M9 fix 880: the last dialog this needs-input spell drew, so a read with
+  // none is told apart as the ask answered elsewhere.
+  const lastDialog = useRef<{ spell: number; key: string; screen: Screen & { sentAt: number } } | null>(null);
+  useEffect(() => {
+    if (screen === null) return;
+    const key = dialogKey(screen.rows, screen.cursor);
+    if (key !== null) {
+      lastDialog.current = { spell: session.stateSince, key, screen };
+      return;
+    }
+    const last = lastDialog.current;
+    if (last !== null && answeredElsewhere({ key, pressed: pressed !== null, spell: session.stateSince, dialogSpell: last.spell })) {
+      setPressed({ at: screen.sentAt, key: last.key, screen: last.screen });
+    }
+  }, [screen, pressed, session.stateSince]);
+  const review = shown === null ? null : askReview(shown.rows);
+  const ask = shown === null || review !== null ? null : askQuestion(shown.rows);
+  const editCard = edit !== null && session.needsInputReason === 'permission' && ask === null && review === null ? edit : null;
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
-  const options: (AnswerOption | AskOption)[] = ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  const options: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  // M9 fix 879: a dialog with a Cancel of its own (the review's) draws no
+  // second one; Escape there cancels the ask as Cancel does (read on
+  // 2.1.302), and the card's Escape key still sends it.
+  const escShown = !options.some((o) => o.label === 'Cancel');
   // Not before the first read, or the box would take the keyboard and go
   // with it the moment the options are read.
-  const askText = screen !== null && askBoxShown({ reason: session.needsInputReason, recognised: ask !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
+  const askText = screen !== null && askBoxShown({ reason: session.needsInputReason, recognised: ask !== null || review !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
   const send = (data: string) => {
     typeInto(session.id, data);
     // An answer is a look at the row, as a click in the pane would be.
@@ -1571,6 +1598,10 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
           ev.preventDefault();
           ev.stopPropagation();
           press('\x1b');
+        } else if (ev.key === 'ArrowLeft' && review !== null) {
+          // The review's Left goes back to the questions (read on 2.1.302).
+          ev.preventDefault();
+          press('\x1b[D');
         } else if (ev.key === 'Enter' && submitShown) {
           ev.preventDefault();
           pressSubmit();
@@ -1588,6 +1619,32 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
       <div className="chat-ask" {...links.handlers}>
         {editCard !== null ? (
           <EditCardHead session={session} edit={editCard} />
+        ) : review !== null ? (
+          <>
+            <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
+            {review.tabs.length > 0 && (
+              <div className="chat-ask-tabs">
+                {review.tabs
+                  .filter((t) => t.state !== 'submit')
+                  .map((t, i) => (
+                    <span key={i} className="chat-ask-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
+                      {t.state === 'answered' && <span className="chat-ask-tab-mark">✓</span>}
+                      {t.name}
+                    </span>
+                  ))}
+              </div>
+            )}
+            <div className="chat-ask-question">Review your answers</div>
+            {review.warning !== null && <div className="chat-ask-review-warning">{review.warning}</div>}
+            <div className="chat-ask-review">
+              {review.items.map((item, i) => (
+                <div key={i} className="chat-ask-review-item">
+                  <span className="chat-ask-review-q">{item.question}</span>
+                  <span className="chat-ask-review-a">{item.answer}</span>
+                </div>
+              ))}
+            </div>
+          </>
         ) : ask !== null ? (
           <>
             <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
@@ -1666,10 +1723,18 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
               <span className="chat-ask-label">{ask.submit.label}</span>
             </button>
           )}
-          <button type="button" className="chat-ask-option chat-ask-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
-            <span className="chat-ask-key">Esc</span>
-            <span className="chat-ask-label">Cancel</span>
-          </button>
+          {escShown && (
+            <button type="button" className="chat-ask-option chat-ask-esc" data-key="esc" data-sent={sentMark} title="Sends Escape to the session" onClick={() => press('\x1b')}>
+              <span className="chat-ask-key">Esc</span>
+              <span className="chat-ask-label">Cancel</span>
+            </button>
+          )}
+          {review !== null && (
+            <button type="button" className="chat-ask-option chat-ask-back" data-key="back" data-sent={sentMark} title="Sends ← to the session, back to the questions" onClick={() => press('\x1b[D')}>
+              <span className="chat-ask-key">←</span>
+              <span className="chat-ask-label">Back</span>
+            </button>
+          )}
         </div>
         {askText && (
           <input

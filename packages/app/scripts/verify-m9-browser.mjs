@@ -108,8 +108,9 @@ try {
   // tile on a row of its own under that; none clipped at either width, and
   // at the 320 px the narrow rules were written for. The harness window's
   // single pane is 678 px wide, so the wide and the narrow read emulate
-  // the viewport (the sidebar and the window's chrome take 522 px of it
-  // at these widths) and clear it after.
+  // the viewport and clear it after. The sidebar, the rail and the window's
+  // chrome around the pane are measured, not written in: they took 522 px
+  // until M9 fix 885 widened the rail's default to 330 (592 since).
   const tileRead = () =>
     s.evalJs(`(() => { const tiles = [...document.querySelectorAll('.empty-pane .empty-kind')].map((t) => ({ name: t.querySelector('.empty-kind-name').textContent, r: t.getBoundingClientRect() })); return { pane: Math.round(document.querySelector('.empty-pane').getBoundingClientRect().width), names: tiles.map((t) => t.name), tops: tiles.map((t) => t.r.top), bottoms: tiles.map((t) => t.r.bottom), widths: tiles.map((t) => t.r.width), box: document.querySelector('.empty-kinds').getBoundingClientRect().width, clipped: [...document.querySelectorAll('.empty-pane .empty-kind-name')].some((n) => n.scrollWidth > n.clientWidth) }; })()`);
   const NAMES = JSON.stringify(['Shell', 'Claude session', 'Browser']);
@@ -119,7 +120,8 @@ try {
     await sleep(400);
   };
   const stacked = await tileRead();
-  console.log(`[666] the empty pane is ${stacked.pane} px wide`);
+  const around = (await s.evalJs(`window.innerWidth`)) - stacked.pane;
+  console.log(`[666] the empty pane is ${stacked.pane} px wide, ${around} px of the window around it`);
   expect(JSON.stringify(stacked.names) === NAMES && !stacked.clipped, `the three tiles by name, none clipped (${JSON.stringify(stacked)})`);
   expect(stacked.pane <= 760 && stacked.tops[2] >= stacked.bottoms[0] - 0.5 && stacked.widths[2] >= stacked.box * 0.9, `under 760 px the Browser tile has a row of its own (${JSON.stringify(stacked)})`);
   await s.screenshot('browser-tiles.png');
@@ -128,20 +130,20 @@ try {
   console.log(`[666] the empty pane is ${wide.pane} px wide`);
   expect(wide.pane > 760 && JSON.stringify(wide.names) === NAMES && !wide.clipped && Math.max(...wide.tops) - Math.min(...wide.tops) <= 1, `over 760 px the three tiles share one top and none is clipped (${JSON.stringify(wide)})`);
   await s.screenshot('browser-tiles-wide.png');
-  await emulate(842);
+  await emulate(320 + around);
   const narrow = await tileRead();
   console.log(`[666] the empty pane is ${narrow.pane} px wide`);
   expect(Math.abs(narrow.pane - 320) <= 4 && JSON.stringify(narrow.names) === NAMES && !narrow.clipped && narrow.tops[2] >= narrow.bottoms[0] - 0.5 && narrow.tops[2] >= narrow.bottoms[1] - 0.5 && narrow.widths[2] >= narrow.box * 0.9, `at 320 px the names are whole and the Browser tile sits under both (${JSON.stringify(narrow)})`);
   // M9 fix 706: two tiles a row and whole at 340, 328 and 312 px of pane,
   // one above another at 308 and 278.
   for (const w of [340, 328, 312]) {
-    await emulate(w + 522);
+    await emulate(w + around);
     const r = await tileRead();
     console.log(`[706] the empty pane is ${r.pane} px wide`);
     expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && Math.abs(r.tops[0] - r.tops[1]) <= 1, `at ${w} px the names are whole with two tiles a row (${JSON.stringify(r)})`);
   }
   for (const w of [308, 278]) {
-    await emulate(w + 522);
+    await emulate(w + around);
     const r = await tileRead();
     console.log(`[706] the empty pane is ${r.pane} px wide`);
     expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && r.tops[1] >= r.bottoms[0] - 0.5 && r.tops[2] >= r.bottoms[1] - 0.5, `at ${w} px the names are whole, one tile above another (${JSON.stringify(r)})`);
@@ -154,7 +156,7 @@ try {
   const hintRead = () =>
     s.evalJs(`[...document.querySelectorAll('.empty-pane .empty-kind')].map((t) => { const n = t.querySelector('.empty-kind-name'); const k = t.querySelector('.empty-kind-key'); const box = t.querySelector('.empty-kind-hint'); const shown = k !== null && box !== null && getComputedStyle(box).display !== 'none' && k.getBoundingClientRect().top < box.getBoundingClientRect().bottom - 0.5; return { kind: t.dataset.kind, whole: n.scrollWidth <= n.clientWidth, over: n.scrollWidth - n.clientWidth, hint: k?.textContent ?? null, shown }; })`);
   for (const w of [380, 420, 600]) {
-    await emulate(w + 522);
+    await emulate(w + around);
     const pane = (await tileRead()).pane;
     expect(Math.abs(pane - w) <= 4, `the empty pane is ${w} px wide, got ${pane}`);
     const r = await hintRead();

@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { agentLineText, currentTab, describeState, findPane, formatDuration, formatUsd, markKind, modelWord, tokensRowText, workingMotion } from '@emerald/shared';
-import type { GraphViewState, Layout, SessionInfo, UsageMessage } from '@emerald/shared';
+import type { ActivitySession, GraphViewState, Layout, SessionInfo, UsageMessage } from '@emerald/shared';
 import type { GitGraph, GraphCommit } from '../../preload/api.ts';
 import { AgentCard } from './AgentCard.tsx';
 import { COL_PX, CommitGraph, ROW_PX, drawnRange, stepScale } from './CommitGraph.tsx';
@@ -38,6 +38,9 @@ import { ensureHistoryTranscripts, useHistoryTranscripts } from './history-index
 import { Menu } from './Menu.tsx';
 import type { MenuItem } from './Menu.tsx';
 import { useStore } from './store.ts';
+import { activitySupported } from './daemon-model.ts';
+import { buildReplay, frameAt, nextChange, replayGraph, replayInput, replayNote } from './replay-model.ts';
+import type { Replay, ReplayFrame } from './replay-model.ts';
 import { GRAPH_KEY, VIEW_KEY, cleanGraph } from './view-state.ts';
 import type { CommitsSnapshot } from './view-state.ts';
 import { observeBand } from './band-visibility.ts';
@@ -104,6 +107,22 @@ interface GraphPrefs {
   remotes: boolean;
 }
 
+// A replay of the graph from one commit (M9 fix 869): the folder, view
+// and commit it was asked for, the model and timing once the working
+// record has answered (null while loading), the note on where the record
+// starts, when it started playing, and the replay ms a seek holds it at.
+interface ReplayRun {
+  folder: string;
+  view: GraphMode;
+  hash: string;
+  model: SessionGraph | null;
+  replay: Replay | null;
+  note: string | null;
+  historyFrom: number | null;
+  startedAt: number;
+  pausedAt: number | null;
+}
+
 // How long a commit the watch just brought in stays marked on the graph.
 const FRESH_MS = 1000;
 
@@ -165,7 +184,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
   const pending = folder !== null && read === EMPTY;
   const now = useNow();
   const folded = foldedProp && inPane;
-  const { sessions, removed, layout } = useStore('sessions', 'removed', 'layout');
+  const { sessions, removed, layout, daemon, connected } = useStore('sessions', 'removed', 'layout', 'daemon', 'connected');
   // The session behind the focused pane of the current tab (M9 fix 186),
   // for the graph's "you are here"; a view pane or an empty one lights
   // nothing. Every window showing this folder's graph reads the same
@@ -174,8 +193,9 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
   // The removed sessions too (M57), so a lane outlives Clear exited.
   const sessionList = [...sessions.values(), ...removed.values()];
   // The right-click menu: the direction items, and above them the items
-  // for the block of the row it opened on (M72), when it did.
-  const [menu, setMenu] = useState<{ x: number; y: number; block: string | null } | null>(null);
+  // for the block of the row it opened on (M72), when it did, and the
+  // row's commit for Replay from here (M9 fix 869).
+  const [menu, setMenu] = useState<{ x: number; y: number; block: string | null; hash: string | null } | null>(null);
   const fresh = useFresh(graph);
   // The centre action (M9 fix 170), set by the view once it has its box.
   const centre = useRef<(() => void) | null>(null);
@@ -232,6 +252,96 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
       ? sessionGraph(graph.commits, sessionList, view, roots, graph.defaultBranch, history, { layout: new Map(Object.entries(prefs.layout)), drawn: (keys) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author })
       : sessionGraph(writeInput.commits, writeInput.sessions, view, [folder], null, new Map(), { layout: new Map(Object.entries(prefs.layout)), drawn: (keys) => drawnBlocks(prefs, keys, live) });
   const writes = writeInput?.writes ?? EMPTY_WRITES;
+  // The replay (M9 fix 869): the model is built once from the record and
+  // held, so the live poll's new commits wait until it ends; the live
+  // model above goes on being computed under it. The panel sleeps until
+  // the next thing changes rather than rendering on a frame tick.
+  const [run, setRun] = useState<ReplayRun | null>(null);
+  const [, setReplayTick] = useState(0);
+  const runReplay = run?.replay ?? null;
+  const replayAtNow = run === null || runReplay === null ? 0 : (run.pausedAt ?? Math.min(runReplay.length, Date.now() - run.startedAt));
+  const startReplay = (hash: string) => {
+    const commit = graph.commits.find((c) => c.hash === hash);
+    if (folder === null || commit === undefined) return;
+    const asked = { folder, view, hash };
+    setRun({ ...asked, model: null, replay: null, note: null, historyFrom: null, startedAt: 0, pausedAt: null });
+    const commits = graph.commits;
+    const records = sessionList;
+    const options = { layout: new Map(Object.entries(prefs.layout)), drawn: (keys: readonly string[]) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author };
+    const defaultBranch = graph.defaultBranch;
+    const askedAt = Date.now();
+    // requestsSince at the ask's own time keeps the request points out of
+    // the answer; the replay reads only the spans.
+    const ask: Promise<{ rows: readonly ActivitySession[]; historyFrom: number | null; answered: boolean }> =
+      activitySupported(daemon) && connected
+        ? window.emerald.request('activity.spans', { from: commit.at, to: askedAt, requestsSince: askedAt }).then(
+            (res) => ({ rows: res.sessions, historyFrom: res.historyFrom ?? null, answered: true }),
+            () => ({ rows: [], historyFrom: null, answered: false }),
+          )
+        : Promise.resolve({ rows: [], historyFrom: null, answered: false });
+    void ask.then(({ rows: activity, historyFrom, answered }) => {
+      const input = replayInput(records, activity, new Set(commits.map((c) => c.hash)));
+      const m = sessionGraph(commits, input.sessions, asked.view, roots, defaultBranch, history, options);
+      const r = buildReplay(m, input.marks, hash, Date.now());
+      setRun((cur) => {
+        if (cur === null || cur.folder !== asked.folder || cur.hash !== asked.hash || cur.view !== asked.view || cur.replay !== null) return cur;
+        if (r === null || r.length === 0) return null;
+        return { ...cur, model: m, replay: r, note: replayNote(r.from, historyFrom, answered), historyFrom, startedAt: Date.now() };
+      });
+    });
+  };
+  // Playing: a timer to the next change, and the end of the run at the
+  // end of the replay unless a seek holds it, the end decided in the
+  // timer by an updater so a seek that lands first keeps the run.
+  useEffect(() => {
+    if (run === null || runReplay === null || run.pausedAt !== null) return;
+    const next = nextChange(runReplay, replayAtNow);
+    const timer = setTimeout(
+      () => {
+        if (next >= runReplay.length) setRun((cur) => (cur === null || cur.replay !== runReplay || cur.pausedAt !== null ? cur : null));
+        else setReplayTick((n) => n + 1);
+      },
+      Math.max(0, next - replayAtNow) + 1,
+    );
+    return () => clearTimeout(timer);
+  }, [run, runReplay, replayAtNow]);
+  // A change of folder or view ends it.
+  useEffect(() => {
+    if (run !== null && (run.folder !== folder || run.view !== view)) setRun(null);
+  }, [run, folder, view]);
+  // Escape stops it, and never reaches a focused terminal, where it would
+  // interrupt Claude (fix 848's shape); an open card's own Escape still
+  // closes the card.
+  const replaying = run !== null;
+  useEffect(() => {
+    if (!replaying) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      setRun(null);
+    };
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true });
+  }, [replaying]);
+  // A seek, for the script alone: no product control sends it. It holds
+  // the replay at the time asked until Escape. A layout effect, so the
+  // listener is there by the time the replay's first frame is in the DOM:
+  // a fixture's replay plays in tens of milliseconds, and the script's
+  // seek goes out the moment it sees the panel on.
+  useLayoutEffect(() => {
+    if (runReplay === null) return;
+    const length = runReplay.length;
+    const onSeek = (ev: Event) => {
+      const at = Number((ev as CustomEvent<{ at: number }>).detail?.at);
+      if (!Number.isFinite(at)) return;
+      setRun((cur) => (cur === null ? cur : { ...cur, pausedAt: Math.max(0, Math.min(length, at)) }));
+    };
+    window.addEventListener('emerald:graph-replay-seek', onSeek);
+    return () => window.removeEventListener('emerald:graph-replay-seek', onSeek);
+  }, [runReplay]);
+  const stopReplay = run === null ? null : () => setRun(null);
+  const replayShown: { replay: Replay; frame: ReplayFrame } | null = runReplay === null ? null : { replay: runReplay, frame: frameAt(runReplay, replayAtNow) };
   const blockKeys = model.blocks.map((b) => blockKey(b.sessionId));
   const draw = drawState(prefs, blockKeys);
   const drawnCount = model.blocks.filter((b) => b.drawn).length;
@@ -378,8 +488,11 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
       if (r.error !== null) setInitError(r.error);
     });
   };
+  // The menu's commit and its block's items (M9 fix 869 reads the first).
+  const menuHash = menu?.hash ?? null;
+  const menuBlockItems = menu === null ? [] : blockItems(menu.block, menu.block === null ? null : linesOf(menu.block === OUTSIDE_KEY ? null : menu.block), menu.block === null ? '' : blockName(menu.block === OUTSIDE_KEY ? null : menu.block), () => setMenu(null));
   return (
-    <div className="commits-panel" data-folder={folder ?? undefined} data-graph={folder === null ? undefined : pending ? 'pending' : graph.root === null ? 'none' : 'ready'} data-view={view} data-lanes={model.lanes.length} data-blocks={model.blocks.length} data-columns={model.columns} data-drawn={drawnCount} data-draw={draw} data-orientation={prefs.orientation} data-reverse={prefs.reverse ? '' : undefined} data-controls={inPane ? (folded ? 'folded' : 'shown') : undefined} data-rows={rows ? 'on' : 'off'} data-remotes={withRemotes ? 'on' : 'off'}>
+    <div className="commits-panel" data-folder={folder ?? undefined} data-graph={folder === null ? undefined : pending ? 'pending' : graph.root === null ? 'none' : 'ready'} data-view={view} data-lanes={model.lanes.length} data-blocks={model.blocks.length} data-columns={model.columns} data-drawn={drawnCount} data-draw={draw} data-orientation={prefs.orientation} data-reverse={prefs.reverse ? '' : undefined} data-controls={inPane ? (folded ? 'folded' : 'shown') : undefined} data-rows={rows ? 'on' : 'off'} data-remotes={withRemotes ? 'on' : 'off'} data-replay={run === null ? undefined : run.replay === null ? 'loading' : 'on'} data-replay-at={runReplay === null ? undefined : String(replayAtNow)} data-replay-length={runReplay === null ? undefined : String(runReplay.length)} data-replay-paused={run === null || runReplay === null || run.pausedAt === null ? undefined : ''}>
       {graph.root !== null && shownBranch !== null && !folded && (
         <div className="commits-branch" title={`The branch checked out in ${graph.root}`}>
           <span className="commits-branch-glyph">⑂</span>
@@ -498,12 +611,22 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
           )}
         </div>
       )}
+      {run !== null && runReplay !== null && (
+        <div className="commits-replay" data-hash={run.hash}>
+          <span className="commits-replay-text">{`Replaying from ${run.hash.slice(0, 7)} · Escape stops`}</span>
+          {run.note !== null && (
+            <span className="commits-replay-note" data-from={run.historyFrom === null ? undefined : String(run.historyFrom)} title={run.note}>
+              {run.note}
+            </span>
+          )}
+        </div>
+      )}
       <div className="files-list">
         {folder === null && <div className="files-empty">No session in this pane</div>}
         {noRepo && model.items.length === 0 && <div className="files-empty">No session has written a file here</div>}
         {graph.root !== null && graph.commits.length === 0 && <div className="files-empty">No commits yet</div>}
         {(graph.root !== null || noRepo) && model.items.length > 0 && (
-          <GraphView model={model} graph={graph} writes={writes} sessionList={sessionList} prefs={prefs} rows={rows} fresh={fresh} now={now} createdAt={createdAt} onMenu={folded ? null : (x, y, block) => setMenu({ x, y, block })} centre={centre} cardOf={cardOf} agentCard={agentCard} agentMark={agentMark} linesOf={linesOf} focusedSessionId={focusedSessionId} onScale={onScale} withRemotes={withRemotes} />
+          <GraphView model={run?.model ?? model} replay={replayShown} onStop={stopReplay} graph={graph} writes={writes} sessionList={sessionList} prefs={prefs} rows={rows} fresh={fresh} now={now} createdAt={createdAt} onMenu={folded ? null : (x, y, block, hash) => setMenu({ x, y, block, hash })} centre={centre} cardOf={cardOf} agentCard={agentCard} agentMark={agentMark} linesOf={linesOf} focusedSessionId={focusedSessionId} onScale={onScale} withRemotes={withRemotes} />
         )}
       </div>
       {menu !== null && (
@@ -513,11 +636,26 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
           className="commits-menu"
           onClose={() => setMenu(null)}
           items={[
-            ...blockItems(menu.block, menu.block === null ? null : linesOf(menu.block === OUTSIDE_KEY ? null : menu.block), menu.block === null ? '' : blockName(menu.block === OUTSIDE_KEY ? null : menu.block), () => setMenu(null)),
+            ...menuBlockItems,
+            // A folder with no repository draws writes, not commits, so
+            // it offers no replay (M9 fix 869).
+            ...(menuHash === null || graph.root === null
+              ? []
+              : [
+                  {
+                    label: 'Replay from here',
+                    title: "Replay the graph from this commit as it happened, faster: the later rows dim and come back as their commits land, and the agents' marks turn on and off as they did; Escape stops it",
+                    separator: menuBlockItems.length > 0,
+                    onClick: () => {
+                      setMenu(null);
+                      startReplay(menuHash);
+                    },
+                  },
+                ]),
             ...directionItems(prefs, (reverse) => {
               choosePrefs({ ...prefs, reverse });
               setMenu(null);
-            }),
+            }).map((item, i) => (i === 0 && menuHash !== null && graph.root !== null ? { ...item, separator: true } : item)),
             {
               label: '  Centre the graph',
               title: CENTRE_TITLE,
@@ -626,7 +764,10 @@ type CardOf = (sessionId: string, agent?: LaneCardAgent) => LaneCardAnchor | nul
 // onScale (M9 fix 213): Ctrl+wheel over the view steps the zoom through
 // it, the point under the pointer kept where it is; null when the pane's
 // daemon cannot keep the field, and the chord does nothing.
-function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now, createdAt, onMenu, centre, cardOf, agentCard, agentMark: markOf, linesOf, focusedSessionId, onScale, withRemotes }: { model: SessionGraph; graph: GitGraph; writes: ReadonlyMap<string, GraphWrite>; sessionList: readonly SessionInfo[]; prefs: GraphPrefs; rows: boolean; fresh: ReadonlySet<string>; now: number; createdAt: number | null; onMenu: ((x: number, y: number, block: string | null) => void) | null; centre: React.MutableRefObject<(() => void) | null>; cardOf: CardOf; agentCard: (item: AgentItem) => LaneCardAnchor | null; agentMark: (item: AgentItem) => { kind: 'claude' | 'shell'; label: string; family: string | null }; linesOf: (sessionId: string | null) => CardLines | null; focusedSessionId: string | null; onScale: ((scale: number) => void) | null; withRemotes: boolean }) {
+// replay and onStop (M9 fix 869): a replay's timing and the frame on
+// show, drawn over the held model, and the way back to the live graph,
+// which a click or a right-click on the view takes; null when none runs.
+function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, rows, fresh, now, createdAt, onMenu, centre, cardOf, agentCard, agentMark: markOf, linesOf, focusedSessionId, onScale, withRemotes }: { model: SessionGraph; replay: { replay: Replay; frame: ReplayFrame } | null; onStop: (() => void) | null; graph: GitGraph; writes: ReadonlyMap<string, GraphWrite>; sessionList: readonly SessionInfo[]; prefs: GraphPrefs; rows: boolean; fresh: ReadonlySet<string>; now: number; createdAt: number | null; onMenu: ((x: number, y: number, block: string | null, hash: string | null) => void) | null; centre: React.MutableRefObject<(() => void) | null>; cardOf: CardOf; agentCard: (item: AgentItem) => LaneCardAnchor | null; agentMark: (item: AgentItem) => { kind: 'claude' | 'shell'; label: string; family: string | null }; linesOf: (sessionId: string | null) => CardLines | null; focusedSessionId: string | null; onScale: ((scale: number) => void) | null; withRemotes: boolean }) {
   const start = createdAt === null ? null : Math.floor(createdAt / 1000) * 1000;
   const merged = new Set(graph.merged);
   // The cards: one per session block (M60), and one per branch pill,
@@ -664,6 +805,13 @@ function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now,
   // block draws under a stand-in id, and the price is read off the
   // record whole, which credits every span's commits.
   const recordOf = (id: string | null): SessionInfo | null => (id === null ? null : (sessionOf.get(spanIdOf(id)?.sessionId ?? id) ?? null));
+  // A replayed agent row's record (M9 fix 869): a span part's id is not
+  // in sessionOf, so the row reaches its record and wears the part's name.
+  const replayRecord = (id: string): SessionInfo | null => {
+    const r = recordOf(id);
+    const name = nameOf.get(id);
+    return r === null || name === undefined ? r : { ...r, name };
+  };
   const ownerOf = new Map<string, string>();
   for (const it of model.items) if (it.kind === 'commit' && it.sessionId !== null) ownerOf.set(it.commit.hash, it.sessionId);
   const recordOfHash = (hash: string): SessionInfo | null => recordOf(ownerOf.get(hash) ?? null);
@@ -762,14 +910,38 @@ function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now,
   // no branches to pair.
   const { conflicts, sessions: liveSessions } = useStore('conflicts', 'sessions');
   const forecast = conflicts.conflicts.length === 0 && Object.keys(conflicts.base).length === 0 ? null : conflictReading(model, conflicts, conflictPeers(liveSessions), now);
-  const picture = <CommitGraph graph={model} orientation={prefs.orientation} reverse={prefs.reverse} merged={merged} fresh={fresh} cards={cards} labelCards={pillCards} agentCard={agentCard} agentMark={agentMark} outsideCard={outsideCard} now={now} bare={!rows} focusedSessionId={focusedSessionId} scale={prefs.scale} raisedHash={raised} forecast={forecast} />;
+  // During a replay (M9 fix 869) the picture is the frame's: no flash,
+  // since several commits can land at once and the flash animates a
+  // node's radius on the main thread, and no forecast or focus band,
+  // both readings of now rather than of the record.
+  const picture =
+    replay === null ? (
+      <CommitGraph graph={model} orientation={prefs.orientation} reverse={prefs.reverse} merged={merged} fresh={fresh} cards={cards} labelCards={pillCards} agentCard={agentCard} agentMark={agentMark} outsideCard={outsideCard} now={now} bare={!rows} focusedSessionId={focusedSessionId} scale={prefs.scale} raisedHash={raised} forecast={forecast} />
+    ) : (
+      <CommitGraph graph={replayGraph(model, replay.frame)} hidden={replay.frame.hidden} orientation={prefs.orientation} reverse={prefs.reverse} merged={merged} fresh={NO_FRESH} cards={cards} labelCards={pillCards} agentCard={agentCard} agentMark={agentMark} outsideCard={outsideCard} now={now} bare={!rows} focusedSessionId={null} scale={prefs.scale} raisedHash={raised} forecast={null} />
+    );
+  // The rows' clock: the record's time on show during a replay.
+  const rowNow = replay === null ? now : replay.frame.record;
+  // A click on the graph ends a replay and pins no card on the same
+  // click; a right-click ends it and goes on, so the menu opens on the
+  // live graph.
+  const stopHandlers =
+    onStop === null
+      ? {}
+      : {
+          onClickCapture: (ev: React.MouseEvent) => {
+            ev.stopPropagation();
+            onStop();
+          },
+          onContextMenuCapture: () => onStop(),
+        };
   // The zoom's variable (fix 213): the CSS reads the scale for the stroke
   // weights, the dot radii, the marks and the rows.
   const zoomStyle = { '--commits-scale': prefs.scale } as React.CSSProperties;
   const onContextMenu = (ev: React.MouseEvent) => {
     if (onMenu === null) return;
     ev.preventDefault();
-    onMenu(ev.clientX, ev.clientY, null);
+    onMenu(ev.clientX, ev.clientY, null, null);
   };
   const viewRef = useRef<HTMLDivElement>(null);
   // The room past the ends (fixes 129 and 169): on its side, and upright
@@ -859,7 +1031,7 @@ function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now,
   if (prefs.orientation === 'horizontal') {
     return (
       <div ref={boxRef} className="commits-view-box">
-        <div ref={viewRef} className="commits-graph-view" data-orientation="horizontal" data-reverse={prefs.reverse ? '' : undefined} data-scale={prefs.scale} style={zoomStyle} onContextMenu={onContextMenu}>
+        <div ref={viewRef} className="commits-graph-view" data-orientation="horizontal" data-reverse={prefs.reverse ? '' : undefined} data-scale={prefs.scale} style={zoomStyle} onContextMenu={onContextMenu} {...stopHandlers}>
           {roomBefore}
           {picture}
           {roomAfter}
@@ -871,7 +1043,7 @@ function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now,
   const ordered = [...model.items];
   if (prefs.reverse) ordered.reverse();
   return (
-    <div ref={viewRef} className="commits-graph-view" data-orientation="vertical" data-reverse={prefs.reverse ? '' : undefined} data-rows={rows ? 'on' : 'off'} data-scale={prefs.scale} style={zoomStyle} onContextMenu={onContextMenu}>
+    <div ref={viewRef} className="commits-graph-view" data-orientation="vertical" data-reverse={prefs.reverse ? '' : undefined} data-rows={rows ? 'on' : 'off'} data-scale={prefs.scale} style={zoomStyle} onContextMenu={onContextMenu} {...stopHandlers}>
       {roomBefore}
       {/* The box carries the fades at the cut edges (M9 fix 141); the gutter inside it is the scrolling one. */}
       <div className="commits-gutter-box">
@@ -884,9 +1056,9 @@ function GraphView({ model, graph, writes, sessionList, prefs, rows, fresh, now,
       <div className="commits-graph-rows">
         {ordered.map((it) =>
           it.kind === 'agent' ? (
-            <AgentRow key={`agent-${it.sessionId}-${it.member?.id ?? 'own'}`} item={it} session={sessionOf.get(it.sessionId) ?? null} color={colorOf(it.sessionId)} model={agentModel(it, sessionOf.get(it.sessionId))} now={now} card={agentCard(it)} />
+            <AgentRow key={`agent-${it.sessionId}-${it.member?.id ?? 'own'}`} item={it} session={replay === null ? (sessionOf.get(it.sessionId) ?? null) : replayRecord(it.sessionId)} color={colorOf(it.sessionId)} model={agentModel(it, sessionOf.get(it.sessionId))} now={now} card={agentCard(it)} replay={replay === null ? undefined : agentReplay(replay, it.row)} />
           ) : (
-            <CommitRow key={it.commit.hash} item={it} write={writes.get(it.commit.hash) ?? null} ownerName={it.sessionId === null ? null : (nameOf.get(it.sessionId) ?? null)} color={colorOf(it.sessionId)} branch={branches.get(it.commit.hash) ?? null} defaultBranch={graph.defaultBranch} now={now} recent={start !== null && it.commit.at >= start} lines={linesOf(it.sessionId)} record={recordOf(it.sessionId)} pricing={pricing} twins={twinInfo(it.commit, graph.commits, branchOfHash)} lit={raised !== null && (it.commit.twins?.includes(raised) ?? false)} onMenu={onMenu === null ? undefined : (x, y) => onMenu(x, y, blockKey(it.sessionId))} onRaise={onRaise}>
+            <CommitRow key={it.commit.hash} item={it} write={writes.get(it.commit.hash) ?? null} ownerName={it.sessionId === null ? null : (nameOf.get(it.sessionId) ?? null)} color={colorOf(it.sessionId)} branch={branches.get(it.commit.hash) ?? null} defaultBranch={graph.defaultBranch} now={rowNow} recent={start !== null && it.commit.at >= start} lines={linesOf(it.sessionId)} record={recordOf(it.sessionId)} pricing={pricing} twins={twinInfo(it.commit, graph.commits, branchOfHash)} lit={raised !== null && (it.commit.twins?.includes(raised) ?? false)} onMenu={onMenu === null ? undefined : (x, y) => onMenu(x, y, blockKey(it.sessionId), it.commit.hash)} onRaise={onRaise} replay={replay === null ? undefined : { dim: replay.frame.hidden.has(it.row), lands: replay.replay.lands.get(it.row) ?? null }}>
               {it.commit.refs.map((b) => (
                 <Pill key={b} branch={b} color={colorOf(it.sessionId)} merged={merged.has(b)} agent={agents.get(b) ?? null} card={pillCards.get(b) ?? null} />
               ))}
@@ -940,6 +1112,23 @@ function PillAnchor({ card, data, style, title, children }: { card: LaneCardAnch
   );
 }
 
+// An agent row's reading during a replay (M9 fix 869).
+interface AgentReplay {
+  shown: boolean;
+  working: boolean;
+  prompt: string | null;
+  spans: string;
+}
+
+function agentReplay(replay: { replay: Replay; frame: ReplayFrame }, row: number): AgentReplay {
+  const { frame } = replay;
+  const spans = (replay.replay.marks.get(row)?.spans ?? []).map((sp) => `${sp.from}-${sp.to}`).join(' ');
+  return { shown: !frame.hidden.has(row), working: frame.working.has(row), prompt: frame.prompts.get(row) ?? null, spans };
+}
+
+// No flash during a replay.
+const NO_FRESH: ReadonlySet<string> = new Set();
+
 // An agent's row (M65): not a commit. The status word, the activity line
 // shimmering while the agent works (the M40 sweep) and still once it
 // has returned, the branch as a dashed pill when the worktree holds
@@ -962,7 +1151,12 @@ function PillAnchor({ card, data, style, title, children }: { card: LaneCardAnch
 // Escape or a press outside closes, Popover.tsx's usual manners. An
 // item with no session behind it (agentCard returns null) opens
 // nothing, the row's own click and hover left inert.
-function AgentRow({ item, session, color, model, now, card }: { item: AgentItem; session: SessionInfo | null; color: string | null; model: string | null; now: number; card: LaneCardAnchor | null }) {
+// replay (M9 fix 869): during a replay, whether the row is out yet,
+// whether the record says it works at this moment and on what prompt,
+// and its mark's spans in replay ms for the script; the row then reads
+// working or idle off the record, and no age, since the record keeps no
+// state times to age from.
+function AgentRow({ item, session, color, model, now, card, replay }: { item: AgentItem; session: SessionInfo | null; color: string | null; model: string | null; now: number; card: LaneCardAnchor | null; replay?: AgentReplay | undefined }) {
   const { member } = item;
   const style = color === null ? undefined : ({ '--lane': color } as React.CSSProperties);
   const ref = useRef<HTMLDivElement>(null);
@@ -971,11 +1165,12 @@ function AgentRow({ item, session, color, model, now, card }: { item: AgentItem;
   const popoverData = { 'data-popover-for': card?.id, 'data-popover-open': state.open };
   if (member === null) {
     if (session === null) return null;
-    const working = workingMotion(session) !== null;
-    const label = describeState(session);
+    const live = describeState(session);
+    const working = replay === undefined ? workingMotion(session) !== null : replay.working;
+    const label = replay === undefined ? live : replay.working ? { text: 'working', tone: 'working' as const } : { text: 'idle', tone: 'idle' as const };
     return (
       <>
-        <div ref={ref} className="commits-row commits-agent-row" data-session={item.sessionId} data-working={working ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-tone={label.tone} style={style} {...popoverData} {...handlers}>
+        <div ref={ref} className="commits-row commits-agent-row" data-session={item.sessionId} data-working={working ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-tone={label.tone} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
           <span className="commits-wash" />
           {model !== null && <span className="commits-agent-model">{model}</span>}
           <span className="commits-agent-status" data-tone={label.tone}>
@@ -985,21 +1180,23 @@ function AgentRow({ item, session, color, model, now, card }: { item: AgentItem;
             {session.name}
           </span>
           <span className="commits-agent-activity" data-working={working ? '' : undefined} ref={observeBand}>
-            {agentLineText(session)}
+            {replay === undefined ? agentLineText(session) : (replay.prompt ?? '')}
           </span>
-          <span className="commits-age" title={`${label.text} for ${formatDuration(session.stateSince, now)}`}>
-            {formatDuration(session.stateSince, now)}
-          </span>
+          {replay === undefined && (
+            <span className="commits-age" title={`${label.text} for ${formatDuration(session.stateSince, now)}`}>
+              {formatDuration(session.stateSince, now)}
+            </span>
+          )}
         </div>
         {card !== null && state.card(ref.current, card.card)}
       </>
     );
   }
-  const working = member.outcome === 'running';
+  const working = replay === undefined ? member.outcome === 'running' : replay.working;
   const elapsed = working ? formatDuration(member.startedAt, now) : formatDuration(member.startedAt, member.endedAt ?? now);
   return (
     <>
-      <div ref={ref} className="commits-row commits-agent-row" data-member={member.id} data-session={item.sessionId} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} style={style} {...popoverData} {...handlers}>
+      <div ref={ref} className="commits-row commits-agent-row" data-member={member.id} data-session={item.sessionId} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
         <span className="commits-wash" />
         {model !== null && <span className="commits-agent-model">{model}</span>}
         <span className="commits-agent-status">{working ? 'working' : 'idle'}</span>
@@ -1007,16 +1204,18 @@ function AgentRow({ item, session, color, model, now, card }: { item: AgentItem;
           {agentRole(member)}
         </span>
         <span className="commits-agent-activity" data-working={working ? '' : undefined} ref={observeBand}>
-          {member.activity ?? agentLabel(member)}
+          {replay === undefined ? (member.activity ?? agentLabel(member)) : agentLabel(member)}
         </span>
         {item.pending && member.branch !== null && (
           <span className="commits-pill" data-branch={member.branch} data-pending="" title={`${member.branch}: ${agentLabel(member)}'s worktree, nothing committed yet`}>
             <span className="commits-pill-text">{member.branch}</span>
           </span>
         )}
-        <span className="commits-age" title={working ? `out for ${elapsed}` : `returned after ${elapsed}`}>
-          {elapsed}
-        </span>
+        {replay === undefined && (
+          <span className="commits-age" title={working ? `out for ${elapsed}` : `returned after ${elapsed}`}>
+            {elapsed}
+          </span>
+        )}
       </div>
       {card !== null && state.card(ref.current, card.card)}
     </>
@@ -1461,7 +1660,9 @@ interface Pricing {
 // copies' hashes in data-twins, and is lit (data-lit) while another
 // copy's row is hovered or its card open, off the same raised hash the
 // graph's leaders read.
-function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, recent, lines, record, pricing, twins, lit, onMenu, onRaise, children }: { item: CommitItem; write: GraphWrite | null; ownerName: string | null; color: string | null; branch: CommitBranch | null; defaultBranch: string | null; now: number; recent: boolean; lines: CardLines | null; record: SessionInfo | null; pricing: Pricing; twins: TwinInfo | null; lit: boolean; onMenu: ((x: number, y: number) => void) | undefined; onRaise: (hash: string, on: boolean) => void; children?: React.ReactNode }) {
+// replay (M9 fix 869): during a replay, whether the row is dimmed until
+// its commit lands and the replay ms it lands at, for the script.
+function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, recent, lines, record, pricing, twins, lit, onMenu, onRaise, replay, children }: { item: CommitItem; write: GraphWrite | null; ownerName: string | null; color: string | null; branch: CommitBranch | null; defaultBranch: string | null; now: number; recent: boolean; lines: CardLines | null; record: SessionInfo | null; pricing: Pricing; twins: TwinInfo | null; lit: boolean; onMenu: ((x: number, y: number) => void) | undefined; onRaise: (hash: string, on: boolean) => void; replay?: { dim: boolean; lands: number | null } | undefined; children?: React.ReactNode }) {
   const { commit } = item;
   const depth = branch?.depth ?? 0;
   // The lean's tooltip (M9 fix 253) names the branch and how far off the
@@ -1530,6 +1731,8 @@ function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, 
       data-depth={depth}
       data-twins={twins === null ? undefined : twins.others.join(' ')}
       data-lit={lit ? '' : undefined}
+      data-replay={replay === undefined ? undefined : replay.dim ? 'dim' : 'shown'}
+      data-replay-lands={replay === undefined || replay.lands === null ? undefined : String(replay.lands)}
       style={{ ...(color === null ? {} : { '--lane': color }), '--depth': depth } as React.CSSProperties}
       // The row opens the commit card on a hover (M73 task 4); a click pins it, the hash's own click still folding the block's lines.
       ref={rowRef}
@@ -1577,7 +1780,7 @@ function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, 
           ·
         </span>
       ))}
-      <span className="commits-age">{formatDuration(commit.at, now)}</span>
+      {replay?.dim !== true && <span className="commits-age">{formatDuration(commit.at, now)}</span>}
       {card.card(rowRef.current, (props) => (write === null ? <CommitCard commit={commit} by={by} hidden={hidden} price={price} agent={agentName !== null} color={color} branch={branch} twins={twins} {...props} /> : <WriteCard write={write} now={now} hidden={hidden} {...props} />))}
     </div>
   );

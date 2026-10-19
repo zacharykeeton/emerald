@@ -482,10 +482,12 @@ try {
   await s.waitFor(`document.querySelectorAll('.pane-shade').length === 1 && !!${q(paneSel(p1) + ' .pane-shade')}`, 'Ctrl+Shift+K shaded the focused pane alone');
   await s.key('K', 'KeyK', 75, CTRL | SHIFT);
   await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+Shift+K again lifted it');
-  // The keys were a person's gesture, which acks every done session
-  // (attention.ts, M31), so the first one is idle now; it goes back to
-  // where this step found it, done and resting, which the idle-shade step
-  // and fix 291's face below need of the first pane. A Stop alone leaves
+  // The chords acknowledge nothing since fix 873, but the focus set onto
+  // the first pane just after the right-clicks may have let the pane take
+  // its done session as seen (fix 30, inside the recent-input window); a
+  // turn puts it back where this step found it, done and resting, which
+  // the idle-shade step and fix 291's face below need of the first pane.
+  // A Stop alone leaves
   // an idle session idle, so a turn first, and the Stop waits out the
   // recent-input window (RECENT_INPUT_MS, 10 s), inside which a reply
   // into the focused pane is taken as seen at once (fix 30).

@@ -73,6 +73,17 @@ export interface Binding {
 
 export const DEFAULT_PREFIX = 'Ctrl+B';
 
+// M9 fix 189: the keys that switch tabs are a look-first move, not a look
+// at the focused pane, so the attention listener (which runs after the
+// keys' one on the same keydown) must not acknowledge the focused session
+// for them. The handler marks the event and attention.ts asks. The jump to
+// the session waiting longest (fix 201) is the same kind of move: a
+// press that acknowledged the pane it left would take the next waiting
+// session out of the list it is walking. The shade chords too (M9 fix
+// 873): shading panes is a look away, and a chord that acked the focused
+// pane took its done badge with it.
+export const LOOK_FIRST_ACTIONS: ReadonlySet<Action> = new Set(['next-tab', 'prev-tab', 'next-layout-tab', 'prev-layout-tab', 'jump-waiting', 'shade-all', 'shade-pane']);
+
 const chord = (code: string, mods: Partial<Omit<Chord, 'code'>> = {}): Chord => ({
   code,
   ctrl: mods.ctrl ?? false,
@@ -162,7 +173,7 @@ export const BINDINGS: readonly Binding[] = [
   { action: 'design-mode', label: 'Design Mode', plain: cs('KeyD'), prefixed: chord('KeyD') },
   // M9 fix 689: the focused Claude pane between its chat view and its
   // terminal. M was free both plain and after the prefix; Ctrl+Shift+I
-  // is a dev build's devtools.
+  // is the View menu's devtools, in every build (index.ts's menu; M9 fix 862).
   { action: 'toggle-chat', label: 'Chat or terminal', plain: cs('KeyM'), prefixed: chord('KeyM') },
   // M9 fix 844: Shade all as a chord, lifting every shade when all are
   // down, and the focused pane's own shade. U and K were free both plain

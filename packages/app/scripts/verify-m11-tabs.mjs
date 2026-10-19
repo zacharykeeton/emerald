@@ -25,7 +25,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm11-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m11';
-const { ALT, CTRL, SHIFT, expect, focusedPaneIs, freshPort, getLayout, getTabs, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, startSession, startShellByKey, step, stopDaemon, emeraldHome, zreq } = await import('./cdp.mjs');
+const { ALT, CTRL, SHIFT, expect, focusedPaneIs, freshPort, getLayout, getTabs, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, startSession, startShellByKey, step, stopDaemon, emeraldHome, windowPage, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 27 to 32 s quiet; it fired once at step 30 of 38 under a batch's load
@@ -917,7 +917,7 @@ try {
   await s.rightClick(secondBox.x, secondBox.y);
   await s.waitFor(`document.querySelector('.layout-tab-menu')?.dataset.tabId === ${JSON.stringify(secondTabId)}`, 'the layout tab menu');
   const tabLabels = await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].map(b => b.querySelector('.menu-label').textContent + (b.disabled ? ' (disabled)' : ''))`);
-  expect(tabLabels.join(',') === 'Rename,Shade all,Lift all,Close tab', `the menu items (M63 adds the shade pair): ${tabLabels.join(',')}`);
+  expect(tabLabels.join(',') === 'Rename,Shade all,Lift all,Move to new window,Close tab', `the menu items (M63 adds the shade pair, fix 867 Move to new window): ${tabLabels.join(',')}`);
   await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Rename').click()`);
   await s.waitFor(`!!document.querySelector('.tab-rename')`, 'the rename box');
   await setInput(s, '.tab-rename', 'build');
@@ -943,7 +943,7 @@ try {
   await s.rightClick(lastBox.x, lastBox.y);
   await s.waitFor(`!!document.querySelector('.layout-tab-menu')`, 'the menu on the last tab');
   const lastLabels = await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].map(b => b.querySelector('.menu-label').textContent + (b.disabled ? ' (disabled)' : ''))`);
-  expect(lastLabels.join(',') === 'Rename,Shade all,Lift all,Close tab (disabled)', `the last tab's menu: ${lastLabels.join(',')}`);
+  expect(lastLabels.join(',') === 'Rename,Shade all,Lift all,Move to new window (disabled),Close tab (disabled)', `the last tab's menu: ${lastLabels.join(',')}`);
   await s.key('Escape', 'Escape', 27);
   await s.waitFor(`!document.querySelector('.layout-tab-menu')`, 'menu closed');
   step('the last tab cannot close');
@@ -1344,16 +1344,16 @@ try {
       return 0;
     }
   };
-  const pickAttention700 = async (label) => {
-    const c = await s.evalJs(`(() => { const r = document.querySelector('.attention-sound').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    await s.rightClick(c.x, c.y);
-    await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
-    await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
-    await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+  const pickUsage700 = async (label) => {
+    const c = await s.evalJs(`(() => { const r = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.click(c.x, c.y);
+    await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu open');
+    await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+    await s.waitFor(`!document.querySelector('.app-menu')`, 'the app menu closed');
   };
-  await s.waitFor(`!!document.querySelector('.attention-sound')`, 'the speaker button for the usage switch', 5000);
-  await pickAttention700('Usage record: off');
-  await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
+  await s.waitFor(`!!document.querySelector('.title-bar-mark')`, 'the app menu mark for the usage switch', 5000);
+  await pickUsage700('Usage record: off');
+  await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
   const usageOffset700 = usageSize700();
   const secondEnv = { ...process.env, EMERALD_WINDOW: 'background', EMERALD_WHATS_NEW: 'off', EMERALD_CLAUDE_HOME: process.env.EMERALD_CLAUDE_HOME ?? '' };
   const second = spawn(path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe'), [`--user-data-dir=${profileOf(emeraldHome)}`, path.join(repoRoot, 'packages', 'app', 'out', 'main', 'index.js'), hello], { stdio: ['ignore', 'pipe', 'pipe'], env: secondEnv });
@@ -1390,8 +1390,8 @@ try {
   expect(launched700.length === 1 && launched700[0].name === 'file-launch' && launched700[0].from === 'click', `the launch with a file is recorded as file-launch from a click, not cli-open, got ${JSON.stringify(launched700)}`);
   await s.key('w', 'KeyW', 87, CTRL);
   await s.waitFor(`document.querySelectorAll('.tab-file').length === ${tabsBefore341.length}`, 'closed');
-  await pickAttention700('Usage record: on');
-  await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the usage switch off again', 5000);
+  await pickUsage700('Usage record: on');
+  await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'off'`, 'the usage switch off again', 5000);
   step('fix 342 and 700: a second launch with a file exits 0, the file opens as a pinned tab in the running window, and the record names it file-launch');
 
   // M9 fix 853: Explorer's Open in Emerald (shell) is a second launch with
@@ -1440,6 +1440,7 @@ try {
       }
     }
     expect(tab !== null, `${label}: a new tab in front with a session in its pane, got ${JSON.stringify((await getTabs(s)).currentTabId)} against ${JSON.stringify(idsBefore)}`);
+    expect(tab.name === path.basename(folder853), `${label}: the new tab is named after the folder (fix 886), wanted ${path.basename(folder853)}, got ${tab.name}`);
     const { sessions } = await zreq(s, 'session.list', {});
     const sess = sessions.find((x) => x.id === tab.root.sessionId);
     expect(sess !== undefined && sess.kind === 'shell' && sess.spawnCwd.toLowerCase() === folder853.toLowerCase(), `${label}: the new tab's session is a shell in ${folder853}, got ${JSON.stringify(sess === undefined ? null : { kind: sess.kind, spawnCwd: sess.spawnCwd })}`);
@@ -1454,7 +1455,7 @@ try {
   const fromSecond853 = log853.filter((l) => l.trimEnd().endsWith(`${folder853} (shell) from a second launch`));
   expect(holders853.length === 0, `no second lock holder in main.log (a second window), got ${JSON.stringify(holders853)}`);
   expect(fromSecond853.length === 2, `main.log has the running window take both folders, got ${JSON.stringify(fromSecond853)}`);
-  step('fix 853: a second launch with --open-shell and a folder, and one with the folder quoted as Explorer quotes a drive root, each exits 0 and opens a new tab with a shell in the folder in the running window, one lock holder in main.log');
+  step('fix 853: a second launch with --open-shell and a folder, and one with the folder quoted as Explorer quotes a drive root, each exits 0 and opens a new tab with a shell in the folder in the running window, the tab named after the folder (fix 886), one lock holder in main.log');
 
   // M9 fix 627: a layout tab's mark says what it holds and whether any of
   // it is active. Four new tabs with a session each, made after every
@@ -1508,6 +1509,154 @@ try {
   await s.waitFor(`${loopCommand627}.then(st => st === 'ok')`, 'the loop ended ok on the record', 40000);
   await s.waitFor(`(() => { const m = ${tabMarkJs(loop627.tabId)}; return m !== null && m.kind === 'shell' && !m.running; })()`, 'the loop tab wears the shell mark still once the loop has ended', 10000);
   step('M9 fix 627: a layout tab wears the Claude mark while a Claude in it works, the shell mark blinking while only its shells run, the still Claude mark with a Claude open and the shell mark still with shells alone');
+
+  // M9 fixes 865 to 867: a second window. One window so far, its strip
+  // holding the earlier steps' tabs and fix 627's four, loop627's in front,
+  // and no windows field on the layout. Every id goes into a selector
+  // through JSON.stringify (window and tab ids are UUIDs).
+  const tabSel867 = (tabId) => `.tab.tab-panes[data-tab-id=${JSON.stringify(tabId)}]`;
+  const stripIds867 = (w) => w.evalJs(`[...document.querySelectorAll('.tab.tab-panes')].map((t) => t.dataset.tabId)`);
+  const currentIn867 = (w) => w.evalJs(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId ?? null`);
+  const windowCount867 = (n) => `window.emerald.request('layout.get', {}).then((r) => (r.layout.windows ?? []).length === ${n})`;
+  const moveToWindow867 = async (tabId) => {
+    const box = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(tabId))}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.rightClick(box.x, box.y);
+    await s.waitFor(`document.querySelector('.layout-tab-menu')?.dataset.tabId === ${JSON.stringify(tabId)}`, 'the layout tab menu for the move');
+    const labels = await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].map(b => b.querySelector('.menu-label').textContent + (b.disabled ? ' (disabled)' : ''))`);
+    expect(labels.join(',') === 'Rename,Shade all,Lift all,Move to new window,Close tab', `the tab's menu offers Move to new window, got ${labels.join(',')}`);
+    await s.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Move to new window').click()`);
+    await s.waitFor(windowCount867(2), 'the layout holds two windows', 5000);
+    return getTabs(s);
+  };
+  const mainLog867 = () => fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  // Copied from verify-m50-mirror.mjs: the buffer's lines, blanks trimmed.
+  const bufferLines867 = (w, paneId) =>
+    w.evalJs(
+      `(() => { const t = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(paneId)}] .term-host`)})?.emeraldTerm; if (!t) return null; const b = t.buffer.active; const out = []; for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? ''); return out; })()`,
+    );
+  const countIn867 = async (w, paneId, text) => ((await bufferLines867(w, paneId)) ?? []).filter((l) => l.includes(text)).length;
+  // A row click on a session on no pane of the first window, the focused
+  // pane holding a live one, asks; Show here puts it in that pane.
+  const showHere867 = async (sessionId) => {
+    await s.evalJs(`document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(sessionId)}]`)}).click()`);
+    await s.waitFor(`document.querySelector('.show-chooser')?.dataset.sessionId === ${JSON.stringify(sessionId)}`, 'the chooser for the row', 5000);
+    await s.evalJs(`[...document.querySelectorAll('.show-chooser .menu-item')].find(b => b.querySelector('.menu-label').textContent.endsWith('Show here')).click()`);
+  };
+  const until867 = async (fn, what, ms = 5000) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (await fn()) return;
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await sleep(150);
+    }
+  };
+
+  // (a) Move to new window on bare627's tab.
+  expect((await getTabs(s)).windows === undefined, 'one window: no windows field on the layout');
+  let L867 = await moveToWindow867(bare627.tabId);
+  const second867 = L867.windows[1].id;
+  expect(L867.windows[0].id === 'first', `the first window keeps its id, got ${L867.windows[0].id}`);
+  expect(JSON.stringify(L867.windows[1].tabIds) === JSON.stringify([bare627.tabId]) && L867.windows[1].currentTabId === bare627.tabId, `the new window holds bare627's tab alone, got ${JSON.stringify(L867.windows[1])}`);
+  expect(L867.currentTabId === bare627.tabId, 'the new window is in front');
+  expect(!L867.windows[0].tabIds.includes(bare627.tabId) && L867.windows[0].currentTabId === loop627.tabId, `the first window lost the tab and stays on loop627's, got ${JSON.stringify(L867.windows[0])}`);
+
+  // (b) The second window's page.
+  let s2 = await windowPage(s.port, second867);
+  await s2.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 1`, "the second window's strip", 10000);
+  expect(JSON.stringify(await stripIds867(s2)) === JSON.stringify([bare627.tabId]) && (await currentIn867(s2)) === bare627.tabId, `the second window's strip is bare627's tab, current, got ${JSON.stringify(await stripIds867(s2))}`);
+  const barePane867 = L867.tabs.find((t) => t.id === bare627.tabId).root;
+  expect(barePane867.kind === 'pane' && barePane867.sessionId === bare627.sessionId, "its tab's pane is on bare627's session");
+  await s2.waitFor(`!!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(barePane867.id)}] .term-host`)})`, "bare627's terminal in the second window", 10000);
+  const rows867 = await s.evalJs(`document.querySelectorAll('.sidebar-row').length`);
+  await s2.waitFor(`document.querySelectorAll('.sidebar-row').length === ${rows867}`, 'the second window lists every session', 10000);
+  expect(!(await stripIds867(s)).includes(bare627.tabId), "the first window's strip lost the tab");
+  const spots867 = mainLog867().split(/\r?\n/);
+  const firstSpot867 = spots867.filter((l) => /background window at \d+,\d+/.test(l)).at(-1)?.match(/at (\d+),(\d+)/);
+  const secondSpot867 = spots867.filter((l) => l.includes(`background window ${second867} at `)).at(-1)?.match(/at (\d+),(\d+)/);
+  expect(firstSpot867 !== undefined && secondSpot867 !== undefined && Number(secondSpot867[1]) === Number(firstSpot867[1]) + 1300 && secondSpot867[2] === firstSpot867[2], `the second window sits 1300 px right of the first, got ${JSON.stringify([firstSpot867?.[0], secondSpot867?.[0]])}`);
+  step('fix 867: Move to new window opens a second window holding that tab alone, in front, with its own strip and the full sidebar, beside the first off screen');
+
+  // (c) A switch in one window leaves the other alone; + adds to its own.
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).click()`);
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(claudeIdle627.tabId)}`, "the first window on claudeIdle627's tab", 5000);
+  L867 = await getTabs(s);
+  expect(L867.windows[0].currentTabId === claudeIdle627.tabId && L867.windows[1].currentTabId === bare627.tabId, `each window on its own tab, got ${JSON.stringify(L867.windows)}`);
+  expect((await currentIn867(s2)) === bare627.tabId, "the second window's current tab unchanged");
+  const firstCount867 = (await stripIds867(s)).length;
+  await s2.evalJs(`document.querySelector('.tab-add').click()`);
+  await s2.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 2`, "+ in the second window adds a tab there", 5000);
+  L867 = await getTabs(s);
+  const plus867 = L867.windows[1].tabIds.find((id) => id !== bare627.tabId);
+  expect(L867.windows[1].tabIds.length === 2 && L867.windows[1].currentTabId === plus867, `the second window holds the new tab, current, got ${JSON.stringify(L867.windows[1])}`);
+  expect((await stripIds867(s)).length === firstCount867, "the first window's strip unchanged");
+  step('fix 867: a switch in one window leaves the other on its tab, and + in the second window adds its tab there alone');
+
+  // (d) emmer open goes to the window in front, the second.
+  const file867 = path.join(seed, 'window-867.md');
+  fs.writeFileSync(file867, '# Window 867\n');
+  const opened867 = cliOpen(file867);
+  expect(opened867.code === 0, `emmer open exits 0, got ${opened867.code} ${opened867.err}`);
+  await s2.waitFor(`document.querySelector('.tab-file[data-active]')?.dataset.tab === ${JSON.stringify(file867)} && !document.querySelector('.tab-file[data-active][data-preview]')`, 'the file pinned and active in the second window', 5000);
+  expect(await s.evalJs(`!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(file867)}]`)})`), 'the first window has no tab on it');
+  const ownKey867 = await s2.evalJs(`localStorage.getItem(${JSON.stringify('emerald.tabs:' + second867)}) ?? ''`);
+  const firstKey867 = await s.evalJs(`localStorage.getItem('emerald.tabs') ?? ''`);
+  expect(ownKey867.includes(JSON.stringify(file867).slice(1, -1)) && !firstKey867.includes(JSON.stringify(file867).slice(1, -1)), "the file is in the second window's key alone");
+  step('fix 867: emmer open lands in the window in front, which keeps its file tabs under its own key');
+
+  // (e) One session on show in both windows.
+  const firstPane867 = L867.tabs.find((t) => t.id === claudeIdle627.tabId).root.id;
+  await s2.evalJs(`document.querySelector(${JSON.stringify(tabSel867(bare627.tabId))}).click()`);
+  await s2.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(bare627.tabId)}`, "the second window back on bare627's tab", 5000);
+  await s2.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(bare627.sessionId)}, data: "Write-Output ('pre' + '-867')" + String.fromCharCode(13) })`);
+  await until867(async () => (await countIn867(s2, barePane867.id, 'pre-867')) > 0, 'pre-867 in the second window', 10000);
+  await showHere867(bare627.sessionId);
+  await s.waitFor(`window.emerald.request('layout.get', {}).then((r) => r.layout.tabs.find((t) => t.id === ${JSON.stringify(claudeIdle627.tabId)})?.root.sessionId === ${JSON.stringify(bare627.sessionId)})`, "bare627 in the first window's pane", 5000);
+  await until867(async () => (await countIn867(s, firstPane867, 'pre-867')) > 0, 'pre-867 in the first window', 10000);
+  await sleep(1000);
+  const inSecond867 = await countIn867(s2, barePane867.id, 'pre-867');
+  const inFirst867 = await countIn867(s, firstPane867, 'pre-867');
+  expect(inSecond867 === 1 && inFirst867 === 1, `the line once in each window, got ${inSecond867} in the second and ${inFirst867} in the first`);
+  await showHere867(claudeIdle627.sessionId);
+  await s.waitFor(`window.emerald.request('layout.get', {}).then((r) => r.layout.tabs.find((t) => t.id === ${JSON.stringify(claudeIdle627.tabId)})?.root.sessionId === ${JSON.stringify(claudeIdle627.sessionId)})`, "claudeIdle627 back in the first window's pane", 5000);
+  await sleep(1500);
+  await s2.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(bare627.sessionId)}, data: "Write-Output ('post' + '-867')" + String.fromCharCode(13) })`);
+  await until867(async () => (await countIn867(s2, barePane867.id, 'post-867')) > 0, 'post-867 in the second window after the first let the session go', 5000);
+  step('fix 866 and 867: a session on show in both windows is written once in each, and keeps writing to the second after the first lets it go');
+
+  // (f) Closing the second window closes its tabs and keeps their sessions.
+  const firstTabs867 = (await stripIds867(s)).length;
+  await s2.send('Page.close').catch(() => {});
+  s2.close();
+  await s.waitFor(windowCount867(0), 'the layout back to no windows field', 5000);
+  L867 = await getTabs(s);
+  expect(!L867.tabs.some((t) => t.id === bare627.tabId || t.id === plus867), "the second window's two tabs closed with it");
+  const bareRecord867 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === bare627.sessionId);
+  expect(bareRecord867 !== undefined && bareRecord867.state !== 'exited', "bare627's session still listed and running");
+  expect((await stripIds867(s)).length === firstTabs867 && (await s.evalJs(`!!document.querySelector('.app-body')`)), 'the first window and the app stay');
+  await until867(async () => !(await (await fetch(`http://127.0.0.1:${s.port}/json`)).json()).some((p) => p.type === 'page' && p.url.includes(`window=${second867}`)), 'no page for the second window', 5000);
+  expect(mainLog867().includes(`window ${second867} closed: its 2 tabs closed, their sessions kept`), "main.log says the window's two tabs closed");
+  step('fix 866: closing the second window closes its tabs, their sessions running and listed, and the first window and the app stay');
+
+  // (g) A restart opens every window again.
+  L867 = await moveToWindow867(claudeWorking627.tabId);
+  const third867 = L867.windows[1].id;
+  const firstSet867 = [...L867.windows[0].tabIds].sort();
+  s.close();
+  killTree(s.child);
+  s = await launch(freshPort());
+  app = s;
+  await s.waitFor(`!!document.querySelector('.tab[data-tab="panes"]')`, 'the layout synced on the relaunched window', 15000);
+  const s3 = await windowPage(s.port, third867, 20000);
+  L867 = await getTabs(s);
+  expect(JSON.stringify(L867.windows?.map((w) => w.id)) === JSON.stringify(['first', third867]), `the layout's windows after the restart, got ${JSON.stringify(L867.windows?.map((w) => w.id))}`);
+  await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${firstSet867.length}`, "the first window's strip after the restart", 10000);
+  expect(JSON.stringify([...(await stripIds867(s))].sort()) === JSON.stringify(firstSet867), "the first window shows its own tabs");
+  await s3.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 1`, "the second window's strip after the restart", 10000);
+  expect(JSON.stringify(await stripIds867(s3)) === JSON.stringify([claudeWorking627.tabId]), `the second window shows claudeWorking627's tab, got ${JSON.stringify(await stripIds867(s3))}`);
+  await s3.send('Page.close').catch(() => {});
+  s3.close();
+  await s.waitFor(windowCount867(0), 'the layout back to one window', 5000);
+  step('fix 866: a restart opens every window of the layout again, each on its own tabs');
 
   step('PASS');
 } catch (err) {

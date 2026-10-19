@@ -10,7 +10,7 @@
 //     node_modules/@emerald/shared/package.json, dist/*.js
 //     node_modules/node-pty/package.json, lib/*.js, prebuilds/win32-<arch>/
 //     node_modules/@xterm/headless/package.json, lib-headless/xterm-headless.js
-//     bin/emmer.cmd, emmer-path.ps1
+//     bin/emmer.cmd, emmer (the Git Bash shim, M9 fix 884), emmer-path.ps1
 //     schemes/*.json, the terminal's shipped colour schemes (M9 fix 225)
 //     WHATS-NEW.md, the notes the What's New tab shows (M9 fix 227)
 //
@@ -116,6 +116,7 @@ export function stage({ arch = 'arm64' } = {}) {
 
   copyFile(path.join(appDir, 'resources', 'bin', 'emmer.cmd'), path.join(stageDir, 'bin', 'emmer.cmd'));
   copyFile(path.join(appDir, 'resources', 'bin', 'emmer-path.ps1'), path.join(stageDir, 'bin', 'emmer-path.ps1'));
+  copyFile(path.join(appDir, 'resources', 'bin', 'emmer'), path.join(stageDir, 'bin', 'emmer'));
   // The colour schemes land under resources/schemes next to app.asar,
   // where main/index.ts's resolveSchemesDir reads them in a packaged app.
   copyTree(path.join(appDir, 'resources', 'schemes'), path.join(stageDir, 'schemes'), (name) => name.endsWith('.json'));

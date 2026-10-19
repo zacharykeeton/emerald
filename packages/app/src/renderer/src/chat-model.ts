@@ -117,6 +117,16 @@ export function askBoxShown(o: { reason: NeedsInputReason | null | undefined; re
   return !o.pressed && !o.recognised && !unreadQuestion && (o.reason === 'question' || o.reason === 'elicitation' || o.options === 0);
 }
 
+// M9 fix 880: a read with no dialog after one in the same needs-input
+// spell (the record's stateSince) is the ask answered somewhere else, the
+// terminal face or the other card; the card then takes it as fix 801's
+// press, dimmed on what was asked, with no box. A spell whose reads never
+// drew a dialog is a dialog the reader cannot parse, which keeps fix
+// 801's box.
+export function answeredElsewhere(o: { key: string | null; pressed: boolean; spell: number; dialogSpell: number | null }): boolean {
+  return o.key === null && !o.pressed && o.dialogSpell !== null && o.dialogSpell === o.spell;
+}
+
 // M9 fix 713: the view's one read of the session's screen, this often,
 // feeding the live line's spinner, the mode chip and the ask card (the
 // card read it on its own before, as the sidebar's card does).

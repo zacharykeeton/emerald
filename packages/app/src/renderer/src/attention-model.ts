@@ -28,6 +28,19 @@ export function attentionState(session: { state: SessionState; stale?: boolean; 
   return session.state === 'working' && session.stale === true ? 'quiet' : session.state;
 }
 
+// The taskbar's bar (M9 fix 870): how many sessions are mid-turn by the
+// sidebar's own word, and how many are not exited, the share's denominator;
+// an exited row counting down is not one.
+export function taskbarCounts(sessions: Iterable<Parameters<typeof attentionState>[0]>): { working: number; live: number } {
+  let working = 0;
+  let live = 0;
+  for (const s of sessions) {
+    if (s.state !== 'exited') live += 1;
+    if (attentionState(s) === 'working') working += 1;
+  }
+  return { working, live };
+}
+
 export type AttentionSound = 'off' | 'once' | 'repeat';
 export const ATTENTION_SOUNDS: readonly AttentionSound[] = ['repeat', 'once', 'off'];
 

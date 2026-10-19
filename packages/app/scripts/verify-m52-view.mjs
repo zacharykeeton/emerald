@@ -10,7 +10,8 @@
 // as a document tab from the rail's Expand and the heading (M61); a file
 // row, the row menu and a file tab put a file in a pane (M9 fix 180); the
 // rail follows a file tab or a file pane to its repository (M9 fix 331)
-// and climbs above the folder it follows (M9 fix 332). Uses a private
+// and climbs above the folder it follows (M9 fix 332); a URL a pane
+// prints Ctrl+clicked into a browser pane beside it (M9 fix 863). Uses a private
 // home and pipe unless the environment already names them.
 // Run: npm run verify:view -w @emerald/app
 import { execFileSync } from 'node:child_process';
@@ -30,7 +31,7 @@ process.env['EMERALD_WT_SETTINGS'] = wtSettings;
 const openedPaths = path.join(os.tmpdir(), 'emerald-verify', `m52-opened-${process.pid}.log`);
 fs.rmSync(openedPaths, { force: true });
 process.env['EMERALD_OPEN_LOG'] = openedPaths;
-const { clickNewShell, daemonPid, expect, focusedPaneIs, freshPort, getLayout, killTree, launch, leaves, sleep, startSessionByKey, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { clickNewShell, daemonPid, expect, focusedPaneIs, freshPort, getLayout, killTree, launch, leaves, railAtOldWidth, sleep, startSessionByKey, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 71 s quiet at the close-out of fixes 494 to 541, and the load of a
@@ -65,6 +66,10 @@ git('commit', '-q', '-m', 'second');
 const home = os.homedir();
 let s = await launch(freshPort(), { freshState: true });
 app = s;
+// M9 fix 885 widened the rail's default to 330 px; the panes and the zoomed
+// pane below were written against the old area (the absolute path's 77
+// columns), and the rail's reads here are of its root, not its width.
+await railAtOldWidth(s);
 
 const boxOf = (paneId) =>
   s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(paneId)}]').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
@@ -876,9 +881,13 @@ try {
   // A shell in the second repository, in a pane split off the repo pane.
   // The repo pane is split twice below, so its box is measured at each
   // click rather than held.
+  // A quarter of the way in, not the centre: after two splits the repo pane
+  // is about 38 px wide since M9 fix 885 widened the rail's default, and its
+  // centre falls on xterm's scrollbar, which takes the press and leaves the
+  // focus where it was.
   const clickRepoPane = async () => {
     const b = await boxOf(repoPane);
-    await s.click(Math.round(b.x + b.width / 2), Math.round(b.y + b.height / 2));
+    await s.click(Math.round(b.x + b.width / 4), Math.round(b.y + b.height / 2));
   };
   await clickRepoPane();
   await s.waitFor(focusedPaneIs(repoPane), 'the repo shell focused before the split');
@@ -996,7 +1005,8 @@ try {
   // (the DOM's own events on the screen element, the fix 204 recipe,
   // since a CDP mouseMoved takes seconds to land) puts the resolved
   // path on the host with the tooltip, and a Ctrl+click on the relative
-  // one opens a pinned tab with the editor's cursor on the line.
+  // one opens a file pane beside the repo pane with the editor's cursor
+  // on the line, no tab (M9 fix 864; a pinned tab before it).
   const notesFile = path.join(repo, 'notes', 'lines.txt');
   fs.mkdirSync(path.dirname(notesFile), { recursive: true });
   fs.writeFileSync(notesFile, 'one\ntwo\nthree\nfour\nfive\n');
@@ -1010,35 +1020,81 @@ try {
   await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(repoPane)}] .pane-zoom`)}).click()`);
   await s.waitFor(`document.querySelector('.splitview.zoomed') !== null`, 'the repo pane zoomed');
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.emeraldTerm !== undefined`, 'the repo shell in its pane for the path step', 10000);
-  const absToken = path.join(repo, 'a.txt');
-  const relToken = 'notes/lines.txt:3';
-  await s.waitFor(`(document.querySelector(${JSON.stringify(linkHost357)})?.emeraldTerm?.cols ?? 0) >= ${absToken.length + 2}`, `the zoomed pane wide enough for the absolute path (${absToken.length} columns)`, 10000);
-  // One token a line, so each sits whole on its row.
-  await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(repoShell)}, data: 'Write-Host ' + ${JSON.stringify(relToken)} + '; Write-Host ' + ${JSON.stringify(absToken)} + String.fromCharCode(13) })`);
   // The screen cell at the middle of a token, on the row that holds
   // the token alone (the output), not the command's echo, which wraps.
   const pathCell = (token) =>
     `(() => { const host = document.querySelector(${JSON.stringify(linkHost357)}); const t = host?.emeraldTerm; if (!t) return null; const b = t.buffer.active; for (let i = 0; i < b.length; i++) { const text = b.getLine(i)?.translateToString(true) ?? ''; const at = text.indexOf(${JSON.stringify(token)}); if (at >= 0 && text.trim() === ${JSON.stringify(token)}) { const cell = t._core._renderService.dimensions.css.cell; const r = host.querySelector('.xterm-screen').getBoundingClientRect(); return { x: r.left + (at + ${Math.floor(token.length / 2)}) * cell.width, y: r.top + (i - b.viewportY) * cell.height + cell.height / 2, row: i - b.viewportY }; } } return null; })()`;
   const dumpBuf357 = `(() => { const t = document.querySelector(${JSON.stringify(linkHost357)})?.emeraldTerm; if (!t) return 'no term'; const b = t.buffer.active; const out = []; for (let i = 0; i < b.length; i++) { const l = b.getLine(i)?.translateToString(true) ?? ''; if (l.trim() !== '') out.push(l); } return out.join(' | '); })()`;
+  const screenEvent357 = (type, at, extra = '') =>
+    s.evalJs(`document.querySelector(${JSON.stringify(linkHost357 + ' .xterm-screen')}).dispatchEvent(new MouseEvent(${JSON.stringify(type)}, { clientX: ${at.x}, clientY: ${at.y}, bubbles: true, cancelable: true, button: 0 ${extra} }))`);
+  const hostTitle357 = () => s.evalJs(`document.querySelector(${JSON.stringify(linkHost357)})?.title ?? null`);
+  // The split holding a pane, so "beside P" can be read as a row split
+  // with P first and the new pane second (M9 fix 863).
+  const splitHolding = (node, id) => (node.kind !== 'split' ? null : node.first.id === id || node.second.id === id ? node : (splitHolding(node.first, id) ?? splitHolding(node.second, id)));
+  // M9 fix 863: a URL a pane prints, Ctrl+clicked, opens in a browser
+  // pane beside that pane, and nothing goes to the system browser. The
+  // discard port refuses at once, so the guest reaches no network and
+  // the reads are the layout's alone. The browser pane is closed and the
+  // repo pane zoomed again after, so the fix 357 part starts where it did.
+  {
+    const url863 = 'http://127.0.0.1:9/863';
+    await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(repoShell)}, data: 'Write-Host ' + ${JSON.stringify(url863)} + String.fromCharCode(13) })`);
+    const printed = Date.now() + 10000;
+    while ((await s.evalJs(pathCell(url863))) === null && Date.now() < printed) await sleep(250);
+    const urlCell = await s.evalJs(pathCell(url863));
+    if (urlCell === null) throw new Error(`the URL never printed on the repo shell: ${await s.evalJs(dumpBuf357)}`);
+    await screenEvent357('mousemove', urlCell);
+    await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(url863)}`, 'the URL on the host', 5000);
+    expect((await hostTitle357()) === `Ctrl+click opens ${url863} in a pane beside`, `the URL's tooltip says beside (fix 863), got ${await hostTitle357()}`);
+    await screenEvent357('mousedown', urlCell, ', ctrlKey: true');
+    await screenEvent357('mouseup', urlCell, ', ctrlKey: true');
+    const browserLeaf = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser' && p.view.url === url863) ?? null;
+    const until = Date.now() + 5000;
+    while ((await browserLeaf()) === null && Date.now() < until) await sleep(150);
+    const leaf = await browserLeaf();
+    expect(leaf !== null, `the Ctrl+click opened a browser pane on ${url863}`);
+    expect(JSON.stringify(leaf.view) === JSON.stringify({ kind: 'browser', url: url863 }), `the pane holds the page alone, got ${JSON.stringify(leaf.view)}`);
+    const split = splitHolding((await getLayout(s)).root, leaf.id);
+    expect(split !== null && split.direction === 'row' && split.first.id === repoPane && split.second.id === leaf.id, `the browser pane sits beside the repo pane, got ${JSON.stringify(split && { direction: split.direction, first: split.first.id, second: split.second.id })}`);
+    expect(await s.evalJs(`document.querySelector('.splitview.zoomed') === null`), 'the zoom cleared for the pane beside');
+    expect(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`), 'the panes still on show');
+    const opened = fs.existsSync(openedPaths) ? fs.readFileSync(openedPaths, 'utf8').split(/\r?\n/) : [];
+    expect(!opened.includes(url863), `nothing went to the system browser, the open log holds ${JSON.stringify(opened)}`);
+    await s.screenshot('m52-fix863-beside.png');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(leaf.id)}] .pane-hide`)}).click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(leaf.id)}]`)}) && document.querySelectorAll('.pane').length === 4`, 'the browser pane closed, four panes again');
+    step('M9 fix 863: a URL a pane prints says beside on hover, and a Ctrl+click opens it in a browser pane beside that pane, nothing sent to the system browser');
+    await clickRepoPane();
+    await s.waitFor(focusedPaneIs(repoPane), 'the repo shell focused again for the path step');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(repoPane)}] .pane-zoom`)}).click()`);
+    await s.waitFor(`document.querySelector('.splitview.zoomed') !== null`, 'the repo pane zoomed again');
+    // The pointer leaves the URL only once the pane is zoomed again: the
+    // split and the unzoom moved the screen, so the cell read at the hover
+    // lies outside it until then and xterm sees no move off the link.
+    await screenEvent357('mousemove', { x: urlCell.x, y: urlCell.y + 200 });
+    await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`, 'the pointer off the URL clears the host', 5000);
+  }
+  const absToken = path.join(repo, 'a.txt');
+  const relToken = 'notes/lines.txt:3';
+  await s.waitFor(`(document.querySelector(${JSON.stringify(linkHost357)})?.emeraldTerm?.cols ?? 0) >= ${absToken.length + 2}`, `the zoomed pane wide enough for the absolute path (${absToken.length} columns)`, 10000);
+  // One token a line, so each sits whole on its row.
+  await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(repoShell)}, data: 'Write-Host ' + ${JSON.stringify(relToken)} + '; Write-Host ' + ${JSON.stringify(absToken)} + String.fromCharCode(13) })`);
   {
     const printed = Date.now() + 10000;
     while ((await s.evalJs(pathCell(absToken))) === null && Date.now() < printed) await sleep(250);
     if ((await s.evalJs(pathCell(absToken))) === null) throw new Error(`the paths never printed on the repo shell: ${await s.evalJs(dumpBuf357)}`);
   }
-  const screenEvent357 = (type, at, extra = '') =>
-    s.evalJs(`document.querySelector(${JSON.stringify(linkHost357 + ' .xterm-screen')}).dispatchEvent(new MouseEvent(${JSON.stringify(type)}, { clientX: ${at.x}, clientY: ${at.y}, bubbles: true, cancelable: true, button: 0 ${extra} }))`);
-  const hostTitle357 = () => s.evalJs(`document.querySelector(${JSON.stringify(linkHost357)})?.title ?? null`);
   const absCell = await s.evalJs(pathCell(absToken));
   await screenEvent357('mousemove', absCell);
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(absToken)}`, 'the absolute path on the host', 5000);
-  expect((await hostTitle357()) === `Ctrl+click opens ${absToken}`, `the tooltip names the absolute path, got ${await hostTitle357()}`);
+  expect((await hostTitle357()) === `Ctrl+click opens ${absToken} in a pane beside`, `the tooltip names the absolute path and says beside (fix 864), got ${await hostTitle357()}`);
   await screenEvent357('mousemove', { x: absCell.x, y: absCell.y + 200 });
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`, 'the pointer off the path clears the host', 5000);
   const relCell = await s.evalJs(pathCell(relToken));
   expect(relCell !== null, `the relative path is on a row of its own, got ${JSON.stringify(relCell)}`);
   await screenEvent357('mousemove', relCell);
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(notesFile)}`, 'the relative path resolved against the shell folder on the host', 5000);
-  expect((await hostTitle357()) === `Ctrl+click opens ${notesFile}`, `the tooltip names the resolved path, got ${await hostTitle357()}`);
+  expect((await hostTitle357()) === `Ctrl+click opens ${notesFile} in a pane beside`, `the tooltip names the resolved path and says beside (fix 864), got ${await hostTitle357()}`);
   await s.screenshot('m52-fix357-path-link.png');
   const tabsBefore357 = await s.evalJs(`document.querySelectorAll('.tab-file').length`);
   await screenEvent357('mousedown', relCell);
@@ -1047,23 +1103,34 @@ try {
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore357, 'a plain click opens nothing');
   await screenEvent357('mousedown', relCell, ', ctrlKey: true');
   await screenEvent357('mouseup', relCell, ', ctrlKey: true');
-  const notesTabSel = `[...document.querySelectorAll('.tab-file')].find((t) => t.dataset.tab === ${JSON.stringify(notesFile)})`;
-  await s.waitFor(`!!${notesTabSel} && document.querySelector('.tab-strip').dataset.activeTab !== 'panes'`, 'the Ctrl+click opened the file as a tab in front', 5000);
-  expect((await s.evalJs(`${notesTabSel}.dataset.preview ?? null`)) === null, 'the tab is pinned, not a preview');
-  // The tab's own view, since the fix 332 steps left a file pane up.
-  const notesView = `[...document.querySelectorAll('.file-view')].find((v) => v.dataset.path === ${JSON.stringify(notesFile)})`;
-  await s.waitFor(`(() => { const e = ${notesView}?.querySelector('.file-editor')?.emeraldEditor; return !!e && !!e.getModel() && e.getPosition().lineNumber === 3; })()`, "the editor's cursor on line 3", 5000);
-  await s.screenshot('m52-fix357-pinned-tab.png');
-  step('M9 fix 357: a path a pane prints is a link, the hover names the resolved file, a plain click opens nothing and a Ctrl+click pins a tab at its line');
-  // The tab and the file go, so the steps below see the strip and the
-  // repository as they were.
-  await s.evalJs(`${notesTabSel}.querySelector('.tab-close').click()`);
-  await s.waitFor(`!${notesTabSel}`, 'the path tab closed');
+  // M9 fix 864: the Ctrl+click opens a file pane beside the repo pane, no
+  // tab, and the pane's own editor takes the line (a .txt has no view of
+  // its own, so the view carries no view key).
+  const notesLeaf = async () => leaves(await getLayout(s)).find((p) => JSON.stringify(p.view) === JSON.stringify({ kind: 'file', path: notesFile })) ?? null;
+  {
+    const until = Date.now() + 5000;
+    while ((await notesLeaf()) === null && Date.now() < until) await sleep(150);
+  }
+  const notesPane = await notesLeaf();
+  expect(notesPane !== null, `the Ctrl+click opened a file pane on ${notesFile}, got ${JSON.stringify(leaves(await getLayout(s)).map((p) => p.view))}`);
+  {
+    const split = splitHolding((await getLayout(s)).root, notesPane.id);
+    expect(split !== null && split.direction === 'row' && split.first.id === repoPane && split.second.id === notesPane.id, `the file pane sits beside the repo pane, got ${JSON.stringify(split && { direction: split.direction, first: split.first.id, second: split.second.id })}`);
+  }
+  expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore357, 'the Ctrl+click opened no tab');
+  expect(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`), 'the panes still on show');
+  expect(await s.evalJs(`document.querySelector('.splitview.zoomed') === null`), 'the zoom cleared for the pane beside');
+  await s.waitFor(`(() => { const e = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(notesPane.id)}] .file-view .file-editor`)})?.emeraldEditor; return !!e && !!e.getModel() && e.getPosition().lineNumber === 3; })()`, "the pane's editor cursor on line 3", 5000);
+  await s.screenshot('m52-fix864-beside.png');
+  step('M9 fix 357 and 864: a path a pane prints is a link, the hover says beside, a plain click opens nothing and a Ctrl+click opens a file pane beside that pane at its line, no tab');
+  // The pane and the file go, so the steps below see the repo pane narrow
+  // and unzoomed, as they did when the Ctrl+click opened a tab: the split
+  // already cleared the zoom, so no click on the zoom button is made.
+  await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(notesPane.id)}] .pane-hide`)}).click()`);
+  await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(notesPane.id)}]`)}) && document.querySelectorAll('.pane').length === 4`, 'the file pane closed, four panes again');
   fs.rmSync(path.dirname(notesFile), { recursive: true, force: true });
-  await s.evalJs(`document.querySelector('.tab[data-tab="panes"]').click()`);
-  await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`, 'the panes on show after the path step');
-  await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(repoPane)}] .pane-zoom`)}).click()`);
-  await s.waitFor(`document.querySelector('.splitview.zoomed') === null`, 'the repo pane unzoomed after the path step');
+  expect(await s.evalJs(`document.querySelector('.splitview.zoomed') === null`), 'the repo pane unzoomed after the path step');
+  expect(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`), 'the panes on show after the path step');
 
   // M9 fix 423: a path wrapped across the pane's rows, by its own length
   // and no space to break it, is still one link. The repo pane is back
@@ -1097,7 +1164,7 @@ try {
   const wrapPos = await s.evalJs(wrapCell);
   await screenEvent357('mousemove', wrapPos);
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(wrapToken)}`, "the wrapped path, hovered from its own row, resolves whole", 5000);
-  expect((await hostTitle357()) === `Ctrl+click opens ${wrapToken}`, `the tooltip names the whole wrapped path, got ${await hostTitle357()}`);
+  expect((await hostTitle357()) === `Ctrl+click opens ${wrapToken} in a pane beside`, `the tooltip names the whole wrapped path, got ${await hostTitle357()}`);
   await screenEvent357('mousemove', { x: wrapPos.x, y: wrapPos.y + 200 });
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`, 'the pointer off the wrapped path clears the host', 5000);
   step("M9 fix 423: a path wrapped across the pane's rows by its own length is still one link, hovered whole from the row its wrap lands on");
@@ -1142,7 +1209,7 @@ try {
   // M9 fix 653: a folder a pane prints is a link too. Hovered, the host
   // names it with `in Explorer`; a plain click does nothing; a Ctrl+click
   // opens it in Explorer, held here as an `open-folder` line in the open
-  // log, and opens no tab. A file keeps fix 357's tooltip word for word,
+  // log, and opens no tab. A file's tooltip says beside (M9 fix 864),
   // and a Ctrl+Shift+click on it shows it in its folder (a `reveal` line)
   // with no tab and no selection left on the pane. The repo pane is
   // narrow here (fix 423's width), so both tokens are short.
@@ -1189,7 +1256,7 @@ try {
   const fileCell653 = await s.evalJs(pathCell(fileToken653));
   await screenEvent357('mousemove', fileCell653);
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(file653)}`, 'the file path on the host', 5000);
-  expect((await hostTitle357()) === `Ctrl+click opens ${file653}`, `the file's tooltip is fix 357's, unchanged, got ${await hostTitle357()}`);
+  expect((await hostTitle357()) === `Ctrl+click opens ${file653} in a pane beside`, `the file's tooltip says beside (fix 864), got ${await hostTitle357()}`);
   // The clicks on the folder above left xterm a selection start, so a
   // Shift+click would select from there to here unless the pane drops it.
   await screenEvent357('mousedown', fileCell653, ', ctrlKey: true, shiftKey: true');
@@ -1321,6 +1388,7 @@ try {
   delete process.env['EMERALD_DAEMON_FEATURE_LEVEL'];
   s = await launch(s.port + 1, { freshState: true });
   app = s;
+  await railAtOldWidth(s);
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'the empty pane on a fresh state');
   await s.evalJs(`document.querySelector(${JSON.stringify(tabSel)}).click()`);
   await s.waitFor(`!!document.querySelector('.activity-card .activity-open-pane')`, 'the rail offers the day in a pane');

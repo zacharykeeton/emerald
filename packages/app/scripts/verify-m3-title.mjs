@@ -102,8 +102,9 @@ try {
   // tooltip used to carry it; the word itself has no title attribute.
   const stateSel = `[data-pane-id=${JSON.stringify(p1.id)}] .pane-state`;
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(stateSel)}).getAttribute('title')`)) === null, 'the state word carries no tooltip');
-  // The chat button holds with the splits to the eighth squeeze level
-  // since M9 fix 840, after the state word (the fifth), so on the
+  // The chat button holds to the eighth squeeze level since M9 fix 840
+  // and the splits to the tenth since fix 860, after the state word (the
+  // fifth), so on the
   // harness's narrow pane the word can be gone; pane 1 is widened to
   // three quarters of the root split for the read and the card, and put
   // back after.

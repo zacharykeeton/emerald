@@ -223,7 +223,7 @@ export function ActivityTab({ path }: { path: string }) {
 }
 
 export function ActivityView({ window: key, path, onShow, onClose, state: stateProp, onState, folded: foldedProp = false, onFold, panesScope = true, paneId, hereScope = false }: Props) {
-  const { sessions, layout } = useStore('sessions', 'layout');
+  const { sessions, layout, allLayout } = useStore('sessions', 'layout', 'allLayout');
   const window = useMemo(() => unitBounds(key) ?? unitBounds(dayKey(Date.now()))!, [key]);
   const bounds = window;
   const day = dayKey(window.from);
@@ -259,8 +259,9 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
   // The folder scope reads each session's folder off the store, as the
   // rail's section does; the panes scope reads the sessions on a pane of
   // any tab off the layout (sessionsOnPanes, M9 fix 249), agents
-  // following their parent since a row carries the parent's id.
-  const paneIds = useMemo(() => (layout === null ? new Set<string>() : sessionsOnPanes(layout)), [layout]);
+  // following their parent since a row carries the parent's id; every
+  // window's panes count (M9 fix 867).
+  const paneIds = useMemo(() => (allLayout === null ? new Set<string>() : sessionsOnPanes(allLayout)), [allLayout]);
   // The here scope (M9 fix 261) reads the panes of the tab holding this
   // pane, and names it; a pane no tab holds (mid-edit) reads as none.
   const ownTab = useMemo(() => (layout === null || paneId === undefined ? null : tabHolding(layout, paneId)), [layout, paneId]);

@@ -163,6 +163,65 @@ test('clearUnknown empties panes on ids no record holds, in one revision, and le
   assert.deepEqual(onDisk.layout, store.get());
 });
 
+test('openWindow moves a tab to a new window in front, persisted, and closeWindow takes it and its tabs back to a layout with no windows field (M9 fix 865)', () => {
+  const file = tempFile();
+  const store = new LayoutStore(file, silentLogger);
+  store.load();
+  const two = store.set(addTab(store.get()));
+  const moving = two.currentTabId;
+  const changed: Layout[] = [];
+  store.on('changed', (l: Layout) => changed.push(l));
+
+  const { layout: opened, windowId } = store.openWindow(moving);
+  assert.equal(opened.revision, two.revision + 1);
+  assert.equal(opened.currentTabId, moving, 'the new window in front');
+  assert.deepEqual(opened.windows!.map((w) => [w.id, w.tabIds]), [['first', [two.tabs[0]!.id]], [windowId, [moving]]]);
+  const reread = new LayoutStore(file, silentLogger);
+  reread.load();
+  assert.deepEqual(reread.get(), opened, 'the windows are read back');
+
+  const closed = store.closeWindow(windowId);
+  assert.equal(closed.revision, opened.revision + 1);
+  assert.equal('windows' in closed, false);
+  assert.deepEqual(closed.tabs.map((t) => t.id), [two.tabs[0]!.id], 'its tab closed with it');
+  const again = new LayoutStore(file, silentLogger);
+  again.load();
+  assert.deepEqual(again.get(), closed);
+  assert.deepEqual(changed, [opened, closed]);
+});
+
+test('a set with no windows keeps the store\'s windows and puts a new tab in the front window (M9 fix 865)', () => {
+  const store = new LayoutStore(tempFile(), silentLogger);
+  store.load();
+  const two = store.set(addTab(store.get()));
+  const { layout: opened, windowId } = store.openWindow(two.currentTabId);
+  const { windows: _windows, ...bare } = opened;
+  const next = store.set(addTab(bare));
+  const second = next.windows!.find((w) => w.id === windowId)!;
+  assert.equal(second.tabIds.length, 2);
+  assert.equal(second.currentTabId, next.currentTabId);
+  assert.deepEqual(next.windows![0]!.tabIds, [two.tabs[0]!.id]);
+});
+
+test('openWindow on a window\'s only tab, closeWindow on the last window and both on an unknown id: bad-request or no change, the revision kept (M9 fix 865)', () => {
+  const store = new LayoutStore(tempFile(), silentLogger);
+  store.load();
+  const one = store.get();
+  assert.throws(() => store.openWindow(one.currentTabId), { code: 'bad-request', message: 'the only tab of a window cannot move to a new window' });
+  assert.throws(() => store.openWindow('nope'), { code: 'bad-request', message: 'no tab nope' });
+  assert.equal(store.get().revision, one.revision);
+  assert.equal(store.closeWindow('nope'), one);
+  assert.equal(store.setFront('nope'), one);
+  // A window of its own from an empty tab, then the first closed: the one
+  // left is not the first and keeps its field, and the last cannot close.
+  const { windowId } = store.openWindow(null);
+  const lone = store.closeWindow('first');
+  assert.deepEqual(lone.windows!.map((w) => w.id), [windowId]);
+  const before = store.get().revision;
+  assert.throws(() => store.closeWindow(windowId), { code: 'bad-request', message: 'the last window cannot close' });
+  assert.equal(store.get().revision, before);
+});
+
 test('load reads back what set persisted', () => {
   const file = tempFile();
   const a = new LayoutStore(file, silentLogger);

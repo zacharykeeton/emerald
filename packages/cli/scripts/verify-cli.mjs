@@ -277,7 +277,7 @@ try {
   // later read of the layout moves.
   expect(/^  browser +drive the page in a browser pane: a snapshot of its controls, a click, a fill, a key, a screenshot \(emmer help browser lists the verbs\)$/m.test(r.out), 'help lists browser with its summary');
   r = emerald('browser');
-  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot {2,}the page's controls, each with a ref \(@e1\), its role, name, value and state$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot \[--name <text>\] \[--within <ref>\]  the page's controls, each with a ref \(@e1\), its role, name, value and state, and its regions \(@r1\); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control$/m.test(r.err) && /^  drag <ref> <ref>\|<dx>,<dy> {2,}a press on the control, a move in steps and a release on the second control, or dx,dy CSS pixels from its centre \(a negative dx after --\)$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'frob');
   expect(r.code === 64 && r.err.split('\n')[0] === 'emmer: unknown verb "frob"; emmer help browser lists them', `browser frob: unknown verb, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'snapshot');
@@ -298,7 +298,7 @@ try {
   expect(r.code === 64 && r.err.includes('--days wants a whole number from 1 to 365, got 0'), `usage report --days 0: exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('usage', 'report');
   expect(r.code === 0 && /^# Emerald usage, the last 30 days \(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\)$/m.test(r.out), `usage report: exit 0 and the heading (${r.code}: ${JSON.stringify(r.out.slice(0, 200))})`);
-  expect(r.out.includes("Nothing recorded yet: the usage record is off until it is turned on from the speaker button's right-click menu (Usage record)."), 'usage report says nothing is recorded yet');
+  expect(r.out.includes("Nothing recorded yet: the usage record is off until it is turned on from the app menu under the emerald mark (Usage record)."), 'usage report says nothing is recorded yet');
   expect(!r.out.includes('The record was') && r.out.includes('## Never used\n'), 'usage report with no record: no span line and the plain Never used heading');
   expect(r.out.includes(`| ${awayKey} | 1 | 1 | 4 |`), `usage report counts the night's day: one session, one project, four lines (${JSON.stringify(r.out)})`);
   r = emerald('help');

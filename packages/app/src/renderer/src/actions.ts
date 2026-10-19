@@ -15,6 +15,7 @@ import {
   findSplit,
   firstPane,
   focusPane,
+  freeTabName,
   listPanes,
   markKind,
   paneShowing,
@@ -33,7 +34,7 @@ import {
 } from '@emerald/shared';
 import type { Layout, LayoutTab, PaneContent, PaneView, ShellId, SplitDirection, SplitPlace } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
-import { newTabNameFor, viewName } from './show-model.ts';
+import { folderTabName, newTabNameFor, viewName } from './show-model.ts';
 import { zoneToSplit } from './drop-zone-model.ts';
 import type { DropZone } from './drop-zone-model.ts';
 import { markFresh } from './fresh-panes.ts';
@@ -261,6 +262,27 @@ async function openViewBesideUnrecorded(view: PaneView): Promise<void> {
   await editTab((t) => setPaneView(t, paneId, view), paneId);
 }
 
+// M9 fixes 863 and 864: a Ctrl+click on a link or a path opens it in a
+// new pane beside the pane the click was in, never the focused one, and
+// the person drags it anywhere after; a click from a file tab, which has
+// no pane, goes beside the focused pane with the panes put in front.
+// Resolves with the new pane, so a path at a line can be revealed there.
+export async function openBeside(view: PaneView, fromPaneId: string | null): Promise<string> {
+  recordUse(view.kind === 'browser' ? 'link-beside' : 'path-beside');
+  let shown = view;
+  if (view.kind === 'browser') {
+    const url = browserUrl(view.url);
+    if (url === null) throw new Error('not a page URL');
+    shown = { kind: 'browser', url };
+  }
+  showTab(PANES);
+  const layout = getState().layout;
+  const besidePane = fromPaneId !== null && layout !== null && tabHolding(layout, fromPaneId) !== null;
+  const paneId = besidePane ? await roomBeside(fromPaneId) : await roomBesideFocused();
+  await editTab((t) => setPaneView(t, paneId, shown), paneId);
+  return paneId;
+}
+
 // A file opened from outside the rail (M9 fix 341): the chooser, a drop
 // on the strip or the rail, `emmer open`, a launch with a file. Pinned,
 // since nothing will click a preview tab it did not open. With `pane`
@@ -349,7 +371,7 @@ export async function openFolderFromOutside(folder: string, kind: 'claude' | 'sh
       // A file tab in front goes back to the panes, as the key does.
       showTab(PANES);
       const before = getState().layout?.tabs.map((t) => t.id) ?? [];
-      const next = await newTab();
+      const next = await newTab(folderTabName(folder, getState().folders));
       const tab = currentTab(next);
       return before.includes(tab.id) ? null : { tabId: tab.id, paneId: tab.focusedPaneId };
     },
@@ -1066,7 +1088,7 @@ export async function roomBesideFocused(): Promise<string> {
 
 // Room beside a named pane (M9 fix 376): its tab put in front and the
 // pane split to its right, the way roomBesideFocused splits the focused
-// one; the pane named holds a session, so it is never taken as it is.
+// one; the pane named holds a session or a view, so it is never taken as it is.
 // Resolves with the new pane. M9 fix 449: always a split, so always
 // flashed once it mounts; markFresh runs inside the edit, same reason as
 // roomBesideFocused's above.
@@ -1220,11 +1242,13 @@ function editTabs(fn: (layout: Layout) => Layout): Promise<Layout> {
 // fix 363: the strip's kept order is read before the add (a fresh
 // profile's guess otherwise puts the new tab ahead of a file already
 // open), and the new tab's key is written back last, after every file.
-export function newTab(): Promise<Layout> {
+// With a name (M9 fix 886), that name, numbered past any tab that has it.
+export function newTab(name?: string): Promise<Layout> {
   let oldLayoutTabIds: readonly string[] | null = null;
   return editTabs((l) => {
     oldLayoutTabIds = l.tabs.map((t) => t.id);
-    return addTab(l);
+    const added = addTab(l);
+    return name === undefined || name.trim() === '' ? added : renameTab(added, added.currentTabId, freeTabName(l, name.trim()));
   }).then((next) => {
     if (oldLayoutTabIds !== null) placeNewTab(layoutTabKey(next.currentTabId), oldLayoutTabIds);
     return next;
@@ -1280,6 +1304,14 @@ export function closeLayoutTab(tabId: string): Promise<Layout> {
   recordUse('close-layout-tab');
   clearZoom();
   return editTabs((l) => closeTab(l, tabId));
+}
+
+// A layout tab sent to a window of its own (M9 fix 867): the daemon moves
+// it on the layout, and the main process opens the window from the push.
+export function moveTabToNewWindow(tabId: string): Promise<string> {
+  recordUse('move-tab-to-window');
+  clearZoom();
+  return window.emerald.request('window.open', { tabId }).then((r) => r.windowId);
 }
 
 // The tab on show, or null before the first layout has arrived.

@@ -5,7 +5,7 @@ import type { ActivitySession, ActivityTotals, CappedSpan } from './activity.ts'
 import type { LoadSample, SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
 import type { UpdateState } from './update.ts';
 import type { ConflictReport } from './conflicts.ts';
-import type { BrowserAnswer, BrowserVerb } from './browser-drive.ts';
+import type { BrowserAnswer, BrowserFilter, BrowserVerb } from './browser-drive.ts';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -112,7 +112,10 @@ export const PROTOCOL_VERSION = 1;
 //  69: M9 fix 835, prompt, recent and model on a team member, the first lines of the Agent call's prompt, its last three tool phrases and the model its PostToolUse resolved
 //  70: M9 fix 836, activity.totals, one folder's whole-history totals folded on the daemon's side, a total and a row per month with every folder's price beside it, for the Statistics tab
 //  71: M9 fix 839, toolbar on a browser view, kept only when false, the pane's toolbar row hidden from its menu
-export const DAEMON_FEATURE_LEVEL = 71;
+//  72: M9 fix 874, drag on browser.run, a press, a move in ten steps and a release, relayed to app windows at level 72 alone
+//  72: M9 fix 875, filter on browser.run and browser.requested, a snapshot's printed rows kept to a name or a region, and the snapshot's region rows (@r1), to app windows at level 72
+//  73: M9 fix 865, windows on the layout (each window's tabs and its own current tab, layout.currentTabId the front window's) and window.open, window.close and window.front
+export const DAEMON_FEATURE_LEVEL = 73;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -221,6 +224,10 @@ export interface Requests {
   // The whole value, tabs and all (M36). A single tree, the shape before
   // M36, is still taken as an edit to the tab on show.
   'layout.set':     { req: { layout: Layout | SingleTree };                                res: { layout: Layout } };
+  // Several windows (M9 fix 865): window.open adds a window holding the tab named (moved out of its window, never a window's only tab) or a new empty tab, in front; window.close removes a window and its tabs, the sessions untouched, never the last, and answers the layout unchanged for an id it does not hold; window.front puts a window in front, its current tab becoming layout.currentTabId. Absent from a daemon older than level 73, which answers bad-request.
+  'window.open':    { req: { tabId?: string };                                             res: { layout: Layout; windowId: string } };
+  'window.close':   { req: { windowId: string };                                           res: { layout: Layout } };
+  'window.front':   { req: { windowId: string };                                           res: { layout: Layout } };
   // The saved prompts (M56), by name: set with text null removes one, and
   // a name already taken is replaced. The list comes back sorted by name.
   'prompts.list':   { req: {};                                                             res: { prompts: SavedPrompt[] } };
@@ -323,8 +330,9 @@ export interface Requests {
   // browser, relayed to the windows at level 63 as browser.requested. by
   // is the driving session's name, shown on the pane; drivers counts the
   // windows that can drive; answered is false when none answered by the
-  // deadline, the verb's own timeoutMs and the daemon's slack.
-  'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer } };
+  // deadline, the verb's own timeoutMs and the daemon's slack. filter
+  // (M9 fix 875) keeps a snapshot's printed rows to a name or a region.
+  'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer } };
   // The window's answer to a browser.requested push (M9 fix 672).
   'browser.done':   { req: { runId: number; answer: BrowserAnswer };             res: {} };
   // Whether a Test event carrying this test_id reached the hook sink
@@ -412,7 +420,7 @@ export type ServerMessage =
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.
-  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number }
+  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }
   // A prompt for the emerald mod to submit (M9 fix 741), to the session's
   // mod.channel connection alone. The mod posts ModSubmit with the
   // submitId and whether the prompt entered (M9 fix 781).

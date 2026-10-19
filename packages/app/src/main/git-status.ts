@@ -395,8 +395,10 @@ export function gitRevert(dir: string, rel: string, run: (args: string[], cwd: s
 // the version bumps of a package.json on it, which stand in for releases
 // in a repository with no tags. Never rejects; a folder outside any repo
 // answers zeros and runs nothing. `run` is the worker's gitText unless a
-// test hands in its own.
-export async function gitProjectCounts(dir: string, run: (args: string[], cwd: string) => Promise<string | null> = gitText): Promise<GitProjectCounts> {
+// test hands in its own. With since (M9 fix 885), the commits, tags and
+// version bumps from that time on as well, for the yield of a span the
+// activity log does not cover.
+export async function gitProjectCounts(dir: string, since: number | null = null, run: (args: string[], cwd: string) => Promise<string | null> = gitText): Promise<GitProjectCounts> {
   const none: GitProjectCounts = { root: null, branch: null, commits: 0, firstCommitAt: null, tags: 0, bumps: 0, bumpsFile: null };
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) return none;
   const root = findRepoRoot(dir);
@@ -404,19 +406,23 @@ export async function gitProjectCounts(dir: string, run: (args: string[], cwd: s
   const heads = await run([NO_LOCKS, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/main', 'refs/heads/master'], root);
   const listed = (heads ?? '').split(/\r?\n/).map((l) => l.trim());
   const branch = listed.includes('main') ? 'main' : listed.includes('master') ? 'master' : 'HEAD';
-  const [count, roots, tagged, patch] = await Promise.all([
+  const [count, roots, tagged, patch, counted] = await Promise.all([
     run([NO_LOCKS, 'rev-list', '--count', 'HEAD'], root),
     run([NO_LOCKS, 'log', '--max-parents=0', '--format=%at', 'HEAD'], root),
-    run([NO_LOCKS, 'tag', '--merged', branch], root),
+    // One line per tag, its date for the since count: the tagger's on an
+    // annotated tag, the commit's on a lightweight one.
+    run([NO_LOCKS, 'tag', '--merged', branch, '--format=%(creatordate:unix)'], root),
     // The quotes and the star reach git as written (no shell): the regex
     // is the key with its quotes, and the pathspec any package.json.
-    run([NO_LOCKS, 'log', '-G"version"', '-p', '-U0', '--format=%x1e%H', branch, '--', '*package.json'], root),
+    run([NO_LOCKS, 'log', '-G"version"', '-p', '-U0', '--format=%x1e%H %ct', branch, '--', '*package.json'], root),
+    since === null ? Promise.resolve(null) : run([NO_LOCKS, 'rev-list', '--count', `--since=@${Math.floor(since / 1000)}`, 'HEAD'], root),
   ]);
   const commits = count === null ? 0 : Number.parseInt(count.trim(), 10);
   const firsts = (roots ?? '').split(/\r?\n/).map((l) => Number.parseInt(l.trim(), 10)).filter((n) => Number.isFinite(n));
-  const tags = (tagged ?? '').split(/\r?\n/).filter((l) => l.trim() !== '').length;
-  const bumped = patch === null ? null : versionBumps(patch);
-  return {
+  const tagLines = (tagged ?? '').split(/\r?\n/).filter((l) => l.trim() !== '');
+  const tags = tagLines.length;
+  const bumped = patch === null ? null : versionBumps(patch, since);
+  const counts: GitProjectCounts = {
     root,
     branch,
     commits: Number.isFinite(commits) ? commits : 0,
@@ -425,16 +431,30 @@ export async function gitProjectCounts(dir: string, run: (args: string[], cwd: s
     bumps: bumped === null ? null : bumped.bumps,
     bumpsFile: bumped === null ? null : bumped.file,
   };
+  if (since === null) return counts;
+  const sinceCommits = counted === null ? 0 : Number.parseInt(counted.trim(), 10);
+  counts.since = {
+    from: since,
+    commits: Number.isFinite(sinceCommits) ? sinceCommits : 0,
+    tags: tagLines.filter((l) => Number.parseInt(l.trim(), 10) >= since / 1000).length,
+    bumps: bumped === null ? null : (bumped.bumpsSince ?? 0),
+  };
+  return counts;
 }
 
 // The version bumps in a `log -p -U0` over the package.json files (M9 fix
 // 836): per file, the distinct values its version line took, less one,
 // since the first is where the file started rather than a release. The
 // answer is the file with the most, ties to the shorter path and then the
-// alphabetically first.
-export function versionBumps(patch: string): { bumps: number; file: string | null } {
+// alphabetically first. With since (M9 fix 885), the picked file's bumps
+// from that time on as well, as bumpsSince: its values walked oldest
+// first, the first never a bump, and a value counts when it was not seen
+// before and its commit's time (the chunk's first line, `<hash> <seconds>`,
+// newest chunk first) is at or after since.
+export function versionBumps(patch: string, since: number | null = null): { bumps: number; file: string | null; bumpsSince?: number } {
   const values = new Map<string, Set<string>>();
-  for (const chunk of patch.split('\x1e')) {
+  const chunks = patch.split('\x1e');
+  for (const chunk of chunks) {
     let file: string | null = null;
     for (const line of chunk.split(/\r?\n/)) {
       if (line.startsWith('+++ ')) {
@@ -456,7 +476,28 @@ export function versionBumps(patch: string): { bumps: number; file: string | nul
     const b = best.file;
     if (bumps > best.bumps || (bumps === best.bumps && b !== null && (file.length < b.length || (file.length === b.length && file < b)))) best = { bumps, file };
   }
-  return best;
+  if (since === null) return best;
+  let bumpsSince = 0;
+  if (best.file !== null) {
+    const seen = new Set<string>();
+    for (const chunk of [...chunks].reverse()) {
+      const lines = chunk.split(/\r?\n/);
+      const at = /^\S+\s+(\d+)\s*$/.exec(lines[0] ?? '');
+      let file: string | null = null;
+      for (const line of lines) {
+        if (line.startsWith('+++ ')) {
+          file = line.startsWith('+++ b/') ? line.slice(6) : null;
+          continue;
+        }
+        if (file !== best.file) continue;
+        const m = /^\+\s{0,2}"version"\s*:\s*"([^"]+)"/.exec(line);
+        if (m === null || seen.has(m[1]!)) continue;
+        if (seen.size > 0 && at !== null && Number(at[1]) * 1000 >= since) bumpsSince++;
+        seen.add(m[1]!);
+      }
+    }
+  }
+  return { ...best, bumpsSince };
 }
 
 // The path git is handed for a revert (M9 fix 310), or null when it is

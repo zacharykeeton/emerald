@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { appMenuItems } from './app-menu-model.ts';
+import { windowsSupported } from './daemon-model.ts';
 import { runAction } from './keys.ts';
 import { recordUse } from './use-record.ts';
 import { Menu } from './Menu.tsx';
@@ -9,7 +10,7 @@ import { titleCounts, titleSummary } from './title-bar-model.ts';
 import { HeadingUnits } from './roster.tsx';
 import { updateBadge } from './update-model.ts';
 import { setSkin, useSkin } from './skin.ts';
-import { useUi } from './ui.ts';
+import { setUsageRecord, useUi } from './ui.ts';
 import { TitleGem } from './title-gem.tsx';
 import { titleGlint } from './title-gem-model.ts';
 import type { UpdateState } from './update-model.ts';
@@ -24,9 +25,9 @@ import type { UpdateState } from './update-model.ts';
 // so the row goes too; the main process says when, since under Electron
 // neither the overlay's visible flag nor display-mode moves.
 export function TitleBar() {
-  const { sessions, layout } = useStore('sessions', 'layout');
+  const { sessions, layout, daemon } = useStore('sessions', 'layout', 'daemon');
   const skin = useSkin();
-  const { sidebarCollapsed } = useUi();
+  const { sidebarCollapsed, usageRecord } = useUi();
   // The running shells for the units (M9 fix 354): one Set that holds
   // while its members do, so the row renders on a shell starting or
   // stopping and not on every window of its output.
@@ -88,7 +89,7 @@ export function TitleBar() {
   const badge = update === null ? null : updateBadge(update.current, update.latest, update.phase, update.percent, update.message);
   return (
     <div className="title-bar" hidden={fullscreen}>
-      <button ref={markRef} className="title-bar-mark" title="Menu" aria-haspopup="menu" aria-expanded={menuOpen} data-glint={glint || undefined} onClick={() => setMenuOpen((o) => !o)}>
+      <button ref={markRef} className="title-bar-mark" title="Menu" aria-haspopup="menu" aria-expanded={menuOpen} data-glint={glint || undefined} data-usage={usageRecord ? 'on' : 'off'} onClick={() => setMenuOpen((o) => !o)}>
         {skin === 'emerald' ? <TitleGem /> : 'Z'}
       </button>
       {menuOpen && (
@@ -98,10 +99,11 @@ export function TitleBar() {
           onClose={() => setMenuOpen(false)}
           className="app-menu"
           anchor={markRef.current}
-          items={appMenuItems(version, update, skin).map((item) => ({
+          items={appMenuItems(version, update, skin, usageRecord, windowsSupported(daemon)).map((item) => ({
             label: item.label,
             hint: item.hint,
             disabled: item.disabled,
+            title: item.title,
             onClick: () => {
               setMenuOpen(false);
               if (item.action === 'check-updates') {
@@ -110,6 +112,12 @@ export function TitleBar() {
               } else if (item.action === 'toggle-skin') {
                 recordUse('toggle-skin', 'menu');
                 setSkin(skin === 'emerald' ? 'classic' : 'emerald');
+              } else if (item.action === 'new-window') {
+                // M9 fix 866: the daemon opens it on the layout and main opens the window.
+                recordUse('new-window', 'menu');
+                void window.emerald.request('window.open', {}).catch((err: unknown) => console.warn('[emerald] new window failed', err));
+              } else if (item.action === 'toggle-usage-record') {
+                setUsageRecord(!usageRecord);
               } else void runAction(item.action, 'menu');
             },
           }))}

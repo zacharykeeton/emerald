@@ -12,6 +12,7 @@ export * from './transcript.ts';
 export * from './command-dir.ts';
 export * from './session-order.ts';
 export * from './layout-tabs.ts';
+export * from './layout-windows.ts';
 export * from './team.ts';
 export * from './design-block.ts';
 export * from './tool-phrase.ts';

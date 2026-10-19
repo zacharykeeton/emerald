@@ -104,11 +104,11 @@ try {
       }
     };
     const pick = async (label) => {
-      const c = await s.evalJs(`(() => { const r = document.querySelector('.attention-sound').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-      await s.rightClick(c.x, c.y);
-      await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
-      await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
-      await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+      const c = await s.evalJs(`(() => { const r = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      await s.click(c.x, c.y);
+      await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu open');
+      await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+      await s.waitFor(`!document.querySelector('.app-menu')`, 'the app menu closed');
     };
     const read = (name) => {
       let text = '';
@@ -125,14 +125,14 @@ try {
     };
     return {
       async on() {
-        await s.waitFor(`!!document.querySelector('.attention-sound')`, 'the speaker button for the usage switch', 5000);
+        await s.waitFor(`!!document.querySelector('.title-bar-mark')`, 'the app menu mark for the usage switch', 5000);
         await pick('Usage record: off');
-        await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
+        await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the usage switch on', 5000);
         offset = size();
       },
       async off() {
         await pick('Usage record: on');
-        await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage !== 'on'`, 'the usage switch off', 5000);
+        await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage !== 'on'`, 'the usage switch off', 5000);
       },
       // Polls until `want` lines arrive (or 3 s), then waits a beat so a
       // stray extra line would show in the count.

@@ -1,6 +1,9 @@
 import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, powerMonitor, screen, session, shell } from 'electron';
 import type { WebContents } from 'electron';
-import { BROWSER_PARTITION } from '@emerald/shared';
+import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, paneShowingIn, windowHolding, windowsOf } from '@emerald/shared';
+import type { Layout } from '@emerald/shared';
+import { PtyBroker } from './pty-broker.ts';
+import { WindowSets, backgroundSpot, cascadeBounds, planWindows } from './window-plan.ts';
 import { attachRefusal, forceGuestPreferences, guestNavigationAllowed } from './browser-guard.ts';
 import { GuestKeys } from './guest-keys.ts';
 import type { GuestChord, GuestVerdict } from './guest-keys.ts';
@@ -53,6 +56,7 @@ import { inspectPort } from './inspect.ts';
 import { pipePathOf, emeraldHomeOf } from '@emerald/shared/pipe-name';
 import type { UpdateState } from '../renderer/src/update-model.ts';
 import { USAGE_FLOOR_MS } from '../renderer/src/usage-model.ts';
+import { WINDOWS_LEVEL } from '../renderer/src/daemon-model.ts';
 import type { DaemonInfo } from './pipe-client.ts';
 
 // Where emmerd's main.js lives. In development this file is bundled to
@@ -147,14 +151,151 @@ const client = new PipeClient({
   home: path.resolve(emeraldHomeOf(process.env)),
 });
 const cli = { cliMain: resolveCliMain(), runner, log };
-let win: BrowserWindow | null = null;
+
+// The windows (M9 fix 866). The layout names them (fix 865) and main
+// opens and closes them to match: `windows` by layout window id; the
+// window made at ready is `startup`, with no id until the first layout
+// arrives and binds it to the layout's first window. Every window shares
+// the one pipe connection above.
+const windows = new Map<string, BrowserWindow>();
+let startup: BrowserWindow | null = null;
+let startupId: string | null = null;
+let startupWaits: ((id: string) => void)[] = [];
+let lastLayout: Layout | null = null;
+let lastFocused: BrowserWindow | null = null;
+// Set at before-quit and a window's session-end: a window closing then
+// keeps its record for the next start.
+let quitting = false;
+// The windows reconcile closed itself, whose close sends no window.close.
+const closedByLayout = new WeakSet<BrowserWindow>();
+// Each window's background spot index, the startup window's 0.
+const spotIndex = new Map<BrowserWindow, number>();
+// The pages listening for the file open relay, by webContents id.
+const listening = new Set<number>();
+const broker = new PtyBroker();
+const folderSets = new WindowSets();
+const gitSets = new WindowSets();
+const historyOn = new Set<number>();
+
+const live = (w: BrowserWindow | null | undefined): w is BrowserWindow => w !== null && w !== undefined && !w.isDestroyed();
+
+function allWindows(): BrowserWindow[] {
+  const out = new Set<BrowserWindow>(windows.values());
+  if (startup !== null) out.add(startup);
+  return [...out].filter(live);
+}
+
+function isWindowContents(contents: WebContents): boolean {
+  return allWindows().some((w) => w.webContents === contents);
+}
+
+function windowIdOf(contents: WebContents): string | null {
+  for (const [id, w] of windows) if (live(w) && w.webContents === contents) return id;
+  return null;
+}
+
+function windowsKept(): boolean {
+  return (client.daemonInfo?.featureLevel ?? 0) >= WINDOWS_LEVEL;
+}
+
+// The window in front: the one holding the layout's current tab, else
+// the one focused last, else the startup window, else any.
+function frontBrowserWindow(): BrowserWindow | null {
+  if (lastLayout !== null) {
+    const w = windows.get(frontWindow(lastLayout).id);
+    if (live(w)) return w;
+  }
+  if (live(lastFocused)) return lastFocused;
+  if (live(startup)) return startup;
+  return allWindows()[0] ?? null;
+}
+
+// The window showing a session, else the one in front.
+function windowForSession(sessionId: string): BrowserWindow | null {
+  if (lastLayout !== null) {
+    const at = paneShowingIn(lastLayout, sessionId);
+    const lw = at === null ? null : windowHolding(lastLayout, at.tab.id);
+    const w = lw === null ? undefined : windows.get(lw.id);
+    if (live(w)) return w;
+  }
+  return frontBrowserWindow();
+}
 
 function pushToRenderer(msg: RendererPush): void {
-  if (win === null || win.isDestroyed()) return;
-  win.webContents.send('emerald:message', msg);
+  for (const w of allWindows()) w.webContents.send('emerald:message', msg);
+}
+
+// Every window, for the pushes that are not the daemon's.
+function sendAll(channel: string, ...args: unknown[]): void {
+  for (const w of allWindows()) w.webContents.send(channel, ...args);
+}
+
+// The layout's windows made real: the startup window bound, a window
+// opened for each record with none, a window closed whose record went.
+// A process without the single-instance lock binds alone (planWindows).
+function reconcile(layout: Layout | null): void {
+  if (layout === null || quitting || allWindows().length === 0) return;
+  const openIds = [...windows.entries()].filter(([, w]) => live(w)).map(([id]) => id);
+  const plan = planWindows(windowsOf(layout).map((w) => w.id), openIds, live(startup) && startupId === null, holdsLock);
+  if (plan.bind !== null && live(startup)) {
+    startupId = plan.bind;
+    windows.set(plan.bind, startup);
+    log(`window bound to ${plan.bind}, the layout's first window`);
+    for (const resolve of startupWaits) resolve(plan.bind);
+    startupWaits = [];
+  }
+  for (const id of plan.open) createWindow(id, freeSpotIndex());
+  for (const id of plan.close) {
+    const w = windows.get(id);
+    if (!live(w)) continue;
+    closedByLayout.add(w);
+    log(`window ${id} closed by the layout`);
+    w.close();
+  }
+}
+
+function freeSpotIndex(): number {
+  const taken = new Set(allWindows().map((w) => spotIndex.get(w)));
+  for (let i = 0; ; i++) if (!taken.has(i)) return i;
+}
+
+// A new window from New window or a second launch: the daemon opens it
+// on the layout and the reply's layout opens it here.
+async function openNewWindow(how: string): Promise<void> {
+  if (!windowsKept()) {
+    log(`new window from ${how}: emmerd is below level ${WINDOWS_LEVEL}; the open window lifted instead`);
+    liftWindow(frontBrowserWindow());
+    return;
+  }
+  try {
+    const { layout, windowId } = await client.request('window.open', {});
+    log(`new window ${windowId} from ${how}`);
+    lastLayout = layout;
+    reconcile(layout);
+  } catch (err) {
+    log(`new window from ${how} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// The menu's reloads act on the focused window of ours, else the front one.
+function menuWindow(): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (live(focused) && allWindows().includes(focused)) return focused;
+  return frontBrowserWindow();
+}
+
+function liftWindow(w: BrowserWindow | null): void {
+  if (!live(w) || process.env['EMERALD_WINDOW'] === 'background') return;
+  if (w.isMinimized()) w.restore();
+  w.show();
+  w.focus();
 }
 
 client.on('message', (msg: ServerMessage) => {
+  if (msg.type === 'layout.changed') {
+    lastLayout = msg.layout;
+    reconcile(msg.layout);
+  }
   if (msg.type === 'pty.output') {
     // Decode base64 here so the renderer only ever handles bytes.
     const data = new Uint8Array(Buffer.from(msg.data, 'base64'));
@@ -174,9 +315,40 @@ client.on('message', (msg: ServerMessage) => {
 // before Not now; Not now clears it.
 let lastCrash: DaemonCrash | null = null;
 client.on('connected', (daemon: DaemonInfo) => pushToRenderer({ type: 'daemon.connected', daemon }));
+// Main follows the layout itself (M9 fix 866), since its windows are the
+// layout's; topics only add up on a connection, so the renderers' own
+// subscribe is untouched.
+client.on('connected', () => {
+  void client
+    .request('subscribe', { topics: ['layout'] })
+    .then(() => client.request('layout.get', {}))
+    .then(({ layout }) => {
+      lastLayout = layout;
+      reconcile(layout);
+    })
+    .catch((err: unknown) => log(`layout read for the windows failed: ${err instanceof Error ? err.message : String(err)}`));
+});
 ipcMain.handle('emerald:daemon-restart', () => client.restartDaemon());
 ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
-client.on('disconnected', () => pushToRenderer({ type: 'daemon.disconnected' }));
+client.on('disconnected', () => {
+  broker.clear();
+  pushToRenderer({ type: 'daemon.disconnected' });
+});
+// The layout window a page shows (M9 fix 866): a window opened from a
+// record knows it at once, the startup window once the first layout has
+// bound it. A daemon that never answers leaves the first window's id
+// after the requests' own deadline, so a page's sync is never held for good.
+ipcMain.handle('emerald:window-id', (event): string | Promise<string> => {
+  const id = windowIdOf(event.sender);
+  if (id !== null) return id;
+  return new Promise<string>((resolve) => {
+    const timer = setTimeout(() => resolve(windowIdOf(event.sender) ?? FIRST_WINDOW_ID), READY_DEADLINE_MS);
+    startupWaits.push((bound) => {
+      clearTimeout(timer);
+      resolve(bound);
+    });
+  });
+});
 client.on('daemon-crashed', (crash: DaemonCrash) => {
   lastCrash = crash;
   pushToRenderer({ type: 'daemon.crashed', crash });
@@ -191,7 +363,7 @@ ipcMain.on('emerald:dismiss-crash', () => {
 // The wait has a deadline (M9 fix 453, M75's L38): a daemon that never came
 // up left every such request pending for good.
 const READY_DEADLINE_MS = 10_000;
-ipcMain.handle('emerald:request', async (_event, type: RequestType, body: Requests[RequestType]['req']) => {
+ipcMain.handle('emerald:request', async (event, type: RequestType, body: Requests[RequestType]['req']) => {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error('emmerd did not come up')), READY_DEADLINE_MS);
@@ -201,7 +373,28 @@ ipcMain.handle('emerald:request', async (_event, type: RequestType, body: Reques
   } finally {
     clearTimeout(timer);
   }
-  return client.request(type, body);
+  // The attach broker (M9 fix 866, pty-broker.ts): a detach goes to the
+  // daemon only once no window holds the session, since one detach drops
+  // the connection's only sink for every window.
+  if (type === 'pty.attach' || type === 'pty.detach') {
+    const sessionId = (body as { sessionId?: unknown }).sessionId;
+    if (typeof sessionId === 'string') {
+      if (type === 'pty.attach') broker.attach(sessionId, event.sender.id);
+      else if (!broker.detach(sessionId, event.sender.id)) return {};
+    }
+  }
+  const reply = await client.request(type, body);
+  // A page's own layout read binds the startup window as soon as main's
+  // would (M9 fix 866), so the page's window id is never later than its
+  // layout.
+  if (type === 'layout.get' || type === 'layout.set') {
+    const layout = (reply as { layout?: Layout }).layout;
+    if (layout !== undefined && (lastLayout === null || layout.revision >= lastLayout.revision)) {
+      lastLayout = layout;
+      reconcile(layout);
+    }
+  }
+  return reply;
 });
 ipcMain.on('emerald:send', (_event, msg: ClientMessage) => client.send(msg));
 
@@ -252,19 +445,20 @@ ipcMain.handle('emerald:update-state', () => updater.state());
 // (fix 342), sent to the renderer once it listens, the window lifted as
 // for a notification's click.
 const openRelay = wireFileOpenRelay(client, {
+  // To the window in front (M9 fix 866), held while its page is not
+  // listening yet.
   deliver: (req) => {
-    if (win === null || win.isDestroyed()) return false;
-    win.webContents.send('emerald:open-file', req.path, req.pane, openExtraOf(req));
+    const w = frontBrowserWindow();
+    if (!live(w) || !listening.has(w.webContents.id)) return false;
+    w.webContents.send('emerald:open-file', req.path, req.pane, openExtraOf(req));
     return true;
   },
-  lift: () => {
-    if (win === null || win.isDestroyed() || process.env['EMERALD_WINDOW'] === 'background') return;
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
-  },
+  lift: () => liftWindow(frontBrowserWindow()),
 }, log);
-ipcMain.on('emerald:open-file-ready', () => openRelay.ready());
+ipcMain.on('emerald:open-file-ready', (event) => {
+  listening.add(event.sender.id);
+  openRelay.ready();
+});
 
 // emmer browser's driver (M9 fix 672, browser-driver.ts): a command from
 // the daemon run on a browser pane's page through its debugger, the
@@ -272,10 +466,8 @@ ipcMain.on('emerald:open-file-ready', () => openRelay.ready());
 const browserDriver = wireBrowserDriver(client, {
   log,
   home: path.resolve(emeraldHomeOf(process.env)),
-  push: (paneId, state) => {
-    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:browser-drive', paneId, state);
-  },
-  mainContents: () => (win === null || win.isDestroyed() ? null : win.webContents),
+  push: (paneId, state) => sendAll('emerald:browser-drive', paneId, state),
+  isWindow: isWindowContents,
 });
 
 // The install's marker (M9 fix 282, install-gap.ts): written at the
@@ -481,7 +673,7 @@ function readUserConfig(): UserConfig {
 const hooksWatch = new HooksWatch(
   async () => parseHooksStatus((await runCliJson(cli, ['hooks', 'status', '--json'])).json),
   (status) => {
-    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:hooks-changed', status);
+    sendAll('emerald:hooks-changed', status);
   },
   log,
 );
@@ -512,25 +704,27 @@ ipcMain.handle('emerald:hooks-install', async (): Promise<HooksInstallResult> =>
 // EMERALD_PICK_FOLDER is a harness flag like EMERALD_PICK_FILE below (M9 fix
 // 547): a verify script cannot drive a native dialog, so under it the
 // answer is that folder and no dialog is shown.
-ipcMain.handle('emerald:pick-folder', async (_event, defaultPath: string | null) => {
+ipcMain.handle('emerald:pick-folder', async (event, defaultPath: string | null) => {
   const picked = process.env['EMERALD_PICK_FOLDER'];
   if (picked !== undefined && picked !== '') return picked;
   const opts = { properties: ['openDirectory' as const], ...(defaultPath !== null ? { defaultPath } : {}) };
-  const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const result = owner === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(owner, opts);
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 // The file chooser behind Open a file (M9 fix 341), modal the same way.
 // EMERALD_PICK_FILE is a harness flag, as EMERALD_WHATS_NEW is: a verify
 // script cannot drive a native dialog, so under it the answer is that
 // path and no dialog is shown.
-ipcMain.handle('emerald:pick-file', async (_event, defaultPath: string | null) => {
+ipcMain.handle('emerald:pick-file', async (event, defaultPath: string | null) => {
   const picked = process.env['EMERALD_PICK_FILE'];
   if (picked !== undefined && picked !== '') return picked;
   const opts = {
     properties: ['openFile' as const],
     ...(defaultPath !== null ? { defaultPath } : {}),
   };
-  const result = win === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(win, opts);
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const result = owner === null ? await dialog.showOpenDialog(opts) : await dialog.showOpenDialog(owner, opts);
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
@@ -541,7 +735,7 @@ const watchers = new FolderWatchers((dir, renamed) => {
   // A folder heading's icon read from here or below is read again on its
   // next appearance (folder-icon.ts).
   folderIconForget(dir);
-  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', dir, { renamed });
+  sendAll('emerald:files-changed', dir, { renamed });
 });
 // EMERALD_LIST_CAP is read once, at start (M9 fix 436), for the verify step
 // that cuts a folder of six; a value that is not a positive whole number
@@ -573,7 +767,8 @@ ipcMain.handle('emerald:files-search', (event, root: string, needle: string, mod
   return (mode === 'contents' ? searchContents : searchNames)(root, needle, signal).finally(() => searchRuns.end(event.sender.id, signal));
 });
 ipcMain.handle('emerald:files-search-stop', (event) => searchRuns.stop(event.sender.id));
-ipcMain.handle('emerald:files-watch', (_event, dirs: string[]) => watchers.set(dirs));
+// Each window's folders, the watchers following the union (M9 fix 866).
+ipcMain.handle('emerald:files-watch', (event, dirs: string[]) => watchers.set(folderSets.set(event.sender.id, Array.isArray(dirs) ? dirs : [])));
 ipcMain.handle('emerald:files-open', (_event, p: string) => openPath(p));
 ipcMain.handle('emerald:files-reveal', (_event, p: string) => revealPath(p, log));
 ipcMain.handle('emerald:files-open-folder', (_event, p: string) => openFolder(p, log));
@@ -588,15 +783,15 @@ ipcMain.handle('emerald:files-git-review', (_event, dir: string, base: string) =
 ipcMain.handle('emerald:files-git-show', (_event, dir: string, hash: string, rel: string) => gitShow(dir, hash, rel));
 // Revert a file's changes (M9 fix 310), from the rail's row menu.
 ipcMain.handle('emerald:files-git-revert', (_event, dir: string, rel: string) => gitRevert(dir, rel));
-ipcMain.handle('emerald:files-git-project-counts', (_event, dir: string) => gitProjectCounts(dir));
+ipcMain.handle('emerald:files-git-project-counts', (_event, dir: string, since: unknown) => gitProjectCounts(dir, typeof since === 'number' && Number.isFinite(since) ? since : null));
 // The Commits tab's watch on the repository's logs (M49): a commit pushes
 // the root as a change, which the rail's git poll refetches on. The log
 // line is the watch's only trace (M9 fix 531), one per commit per root.
 const gitLogWatcher = new GitLogWatcher((root) => {
   log(`files-changed push for ${root}`);
-  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', root);
+  sendAll('emerald:files-changed', root);
 });
-ipcMain.handle('emerald:git-watch', (_event, dirs: string[]) => gitLogWatcher.set(Array.isArray(dirs) ? dirs : []));
+ipcMain.handle('emerald:git-watch', (event, dirs: string[]) => gitLogWatcher.set(gitSets.set(event.sender.id, Array.isArray(dirs) ? dirs : [])));
 // Initialise a repository (M9 fix 255): git init in the folder, then the
 // log watch takes the new repository and the folder is pushed as a
 // change so the rail's git poll reads it at once.
@@ -605,7 +800,7 @@ ipcMain.handle('emerald:git-init', async (_event, dir: string) => {
   if (result.root !== null) {
     log(`git init in ${dir}: repository at ${result.root}`);
     gitLogWatcher.refresh();
-    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:files-changed', result.root);
+    sendAll('emerald:files-changed', result.root);
   } else log(`git init in ${dir} failed: ${result.error}`);
   return result;
 });
@@ -644,11 +839,11 @@ ipcMain.handle('emerald:usage-get', async (_event, ask: UsageAsk) => {
 
 // A system notification for a session that wants someone (notify.ts). The
 // click comes back to the renderer, which shows the session.
+// The focus asked of every window, and a click raising the window that
+// shows the session (M9 fix 866).
 const notifier = createNotifier(
-  () => win,
-  (sessionId) => {
-    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:notify-clicked', sessionId);
-  },
+  { focused: () => allWindows().some((w) => w.isFocused()), forSession: windowForSession },
+  (sessionId) => windowForSession(sessionId)?.webContents.send('emerald:notify-clicked', sessionId),
   log,
 );
 ipcMain.on('emerald:notify', (_event, req: NotifyRequest) => notifier.post(req));
@@ -659,15 +854,20 @@ ipcMain.on('emerald:use-record', (_event, line: unknown) => useRecord.write(line
 // The taskbar button flashes and wears the count while sessions want
 // someone (taskbar.ts, M9 fix 104); the renderer sends its attention set
 // on every change.
-const taskbar = createTaskbar(() => win, log);
-ipcMain.on('emerald:attention', (_event, req: AttentionRequest) => taskbar.set(req));
+// One taskbar button per window (M9 fix 866), each set from its own page.
+const taskbars = new Map<number, ReturnType<typeof createTaskbar>>();
+ipcMain.on('emerald:attention', (event, req: AttentionRequest) => taskbars.get(event.sender.id)?.set(req));
 
 // The skin (M9 fix 569): main keeps the one the renderer last sent, in
 // skin.json beside the logs, so the next window opens in it, and repaints
 // what the renderer cannot: the window ground, the caption buttons'
 // overlay and the taskbar badge.
 initSkin(path.join(emeraldHomeOf(process.env), 'skin.json'), log);
-ipcMain.on('emerald:skin-set', (_event, skin: unknown) => applySkin(win, skin));
+// Every window's ground and overlay (M9 fix 866); another window's page
+// keeps its skin until its next reload.
+ipcMain.on('emerald:skin-set', (_event, skin: unknown) => {
+  for (const w of allWindows()) applySkin(w, skin);
+});
 // M9 fix 628: the renderer asks once, on a profile with no skin stored, so
 // the page takes the skin main painted the first frame in.
 ipcMain.on('emerald:skin-get', (event) => {
@@ -677,7 +877,7 @@ ipcMain.on('emerald:skin-get', (event) => {
 // The History panel's scan of Claude Code's transcripts (history.ts). The
 // watcher follows history.jsonl only while the panel is showing.
 const historyWatcher = new HistoryWatcher(() => {
-  if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:history-changed');
+  sendAll('emerald:history-changed');
 }, log);
 ipcMain.handle('emerald:history-scan', () => scanHistory(log));
 ipcMain.handle('emerald:history-turns', (_event, file: string) => readTurns(file, log));
@@ -685,7 +885,12 @@ ipcMain.handle('emerald:history-usage', (_event, conversation: string, known: st
 ipcMain.handle('emerald:history-cost', (_event, file: string) => readTranscriptCost(file, log));
 ipcMain.handle('emerald:history-agents', (_event, conversation: string) => readAgentsRunning(conversation, log));
 ipcMain.handle('emerald:history-project', (_event, dir: string) => repoRoot(dir));
-ipcMain.handle('emerald:history-watch', (_event, on: boolean) => historyWatcher.set(on));
+// On while any window's History panel shows (M9 fix 866).
+ipcMain.handle('emerald:history-watch', (event, on: boolean) => {
+  if (on) historyOn.add(event.sender.id);
+  else historyOn.delete(event.sender.id);
+  historyWatcher.set(historyOn.size > 0);
+});
 // The chat box's `/` menu (M9 fix 719): the skills Claude Code would
 // take in the session's folder, read off disk.
 ipcMain.handle('emerald:skills-list', (_event, folder: string | null) => readSkills(claudeHome(), folder));
@@ -760,7 +965,10 @@ ipcMain.handle('emerald:clipboard-image', async (_event, keyRoute: boolean) => {
 
 const RENDERER_LOG_LINES_PER_SECOND = 5;
 
-function createWindow(): void {
+// id: the layout window it shows, null for the startup window (bound to
+// one once the first layout arrives); index: its background spot, the
+// startup window's 0 (M9 fix 866).
+function createWindow(id: string | null, index: number): void {
   // A verify script's window (cdp.mjs sets EMERALD_WINDOW=background) is
   // shown without taking focus and off the right edge of every display,
   // with no taskbar button, so a run beside the user's own emerald neither
@@ -776,9 +984,14 @@ function createWindow(): void {
   // its accelerators. The minimum keeps the three columns and the buttons
   // from overlapping at a size nobody works at.
   const chrome = chromeOf(currentSkin());
-  win = new BrowserWindow({
+  // A person's later window opens 32 px down and right of the one they
+  // were in (M9 fix 866); no window keeps its size or place yet.
+  const anchor = id === null || background ? null : (live(lastFocused) ? lastFocused : frontBrowserWindow());
+  const cascade = anchor === null ? null : cascadeBounds(anchor.getBounds(), screen.getDisplayMatching(anchor.getBounds()).workArea);
+  const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    ...(cascade === null ? {} : { x: cascade.x, y: cascade.y }),
     minWidth: 640,
     minHeight: 400,
     backgroundColor: chrome.bg,
@@ -797,12 +1010,17 @@ function createWindow(): void {
       webviewTag: true,
     },
   });
-  log(`window opens in the ${currentSkin()} skin`);
+  const contentsId = win.webContents.id;
+  if (id === null) startup = win;
+  else windows.set(id, win);
+  spotIndex.set(win, index);
+  log(id === null ? `window opens in the ${currentSkin()} skin` : `window ${id} opens in the ${currentSkin()} skin`);
   if (background) {
     // Past the primary display alone was in plain view on a machine with
-    // a display to its right (fix 48), so the spot is past the union.
+    // a display to its right (fix 48), so the spot is past the union; a
+    // later window sits a window's width further on (fix 866).
     const right = Math.max(...screen.getAllDisplays().map((d) => d.bounds.x + d.bounds.width));
-    const spot: [number, number] = [right + 50, 50];
+    const spot = backgroundSpot(right, index);
     const w = win;
     // Windows moves the windows of a display that goes away back onto one
     // that is there, and a harness window was found over the user's own
@@ -815,7 +1033,7 @@ function createWindow(): void {
     });
     w.setPosition(spot[0], spot[1]);
     w.showInactive();
-    log(`background window at ${spot[0]},${spot[1]}, past displays ending at ${right}`);
+    log(`background window${id === null ? '' : ` ${id}`} at ${spot[0]},${spot[1]}, past displays ending at ${right}`);
   }
   // The title row hides in full screen (TitleBar.tsx). Windows leaves the
   // caption buttons drawn and the overlay's visible flag true under both
@@ -823,7 +1041,9 @@ function createWindow(): void {
   // a reload while full screen asks again on load.
   const w = win;
   let htmlFullscreen = false;
-  const tellFullscreen = () => pushToRenderer({ type: 'window.fullscreen', on: w.isFullScreen() || htmlFullscreen });
+  const tellFullscreen = () => {
+    if (!w.isDestroyed()) w.webContents.send('emerald:message', { type: 'window.fullscreen', on: w.isFullScreen() || htmlFullscreen } satisfies RendererPush);
+  };
   w.on('enter-full-screen', tellFullscreen);
   w.on('leave-full-screen', tellFullscreen);
   w.on('enter-html-full-screen', () => { htmlFullscreen = true; tellFullscreen(); });
@@ -833,8 +1053,25 @@ function createWindow(): void {
   // will-navigate guard below refused) or a crashed page holds `emerald
   // open` requests until the new page says it listens, rather than
   // sending them to a page whose listener is not installed yet.
-  w.webContents.on('did-navigate', () => openRelay.loading());
-  w.webContents.on('render-process-gone', () => openRelay.loading());
+  w.webContents.on('did-navigate', () => {
+    listening.delete(contentsId);
+    openRelay.loading();
+  });
+  w.webContents.on('render-process-gone', () => {
+    listening.delete(contentsId);
+    openRelay.loading();
+  });
+  // The window in front for the layout (M9 fix 866): a focus tells the
+  // daemon, whose current tab follows.
+  w.on('focus', () => {
+    lastFocused = w;
+    const wid = windowIdOf(w.webContents);
+    if (wid !== null && windowsKept()) client.request('window.front', { windowId: wid }).catch((err: unknown) => log(`window.front for ${wid} failed: ${String(err)}`));
+  });
+  w.on('session-end', () => {
+    quitting = true;
+  });
+  taskbars.set(contentsId, createTaskbar(() => w, log));
   // M9 fix 355: the renderer's warnings and errors reach main.log, so a
   // fallen-back terminal renderer or a failed IPC in the installed build
   // leaves a line somebody can read (its devtools console is nobody's).
@@ -866,11 +1103,39 @@ function createWindow(): void {
     log(rendererLogLine(details.level, details.message, details.sourceId, details.lineNumber));
   });
   win.on('closed', () => {
-    win = null;
-    taskbar.dispose();
-    watchers.close();
-    gitLogWatcher.close();
-    historyWatcher.close();
+    // M9 fix 866: the window's own holds go with it; the layout loses
+    // its record (and its tabs) only when the person closed it, another
+    // window is still open and the app is not quitting.
+    const wid = [...windows.entries()].find(([, x]) => x === w)?.[0] ?? null;
+    if (wid !== null) windows.delete(wid);
+    if (startup === w) startup = null;
+    if (lastFocused === w) lastFocused = null;
+    spotIndex.delete(w);
+    listening.delete(contentsId);
+    taskbars.get(contentsId)?.dispose();
+    taskbars.delete(contentsId);
+    for (const sessionId of broker.drop(contentsId)) client.request('pty.detach', { sessionId }).catch(() => {});
+    if (allWindows().length === 0) {
+      watchers.close();
+      gitLogWatcher.close();
+      historyWatcher.close();
+      return;
+    }
+    watchers.set(folderSets.drop(contentsId));
+    gitLogWatcher.set(gitSets.drop(contentsId));
+    historyOn.delete(contentsId);
+    historyWatcher.set(historyOn.size > 0);
+    if (closedByLayout.has(w) || wid === null) return;
+    if (quitting) {
+      log(`window ${wid} closed with the app quitting: kept for the next start`);
+      return;
+    }
+    if (!windowsKept()) return;
+    const tabs = lastLayout === null ? 0 : (windowsOf(lastLayout).find((x) => x.id === wid)?.tabIds.length ?? 0);
+    client.request('window.close', { windowId: wid }).then(
+      () => log(`window ${wid} closed: its ${tabs} tabs closed, their sessions kept`),
+      () => log(`window ${wid} closed while emmerd was away; its record stays`),
+    );
   });
   // A file dropped where nothing handles the drop would navigate the window
   // to it, blanking the app. The renderer accepts a folder on a pane and
@@ -885,10 +1150,12 @@ function createWindow(): void {
   // the same handler (denyWindows, below).
   denyWindows(win.webContents);
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
+  // A window opened from a record carries its id on its URL, which is how
+  // its page and the harness tell it apart (M9 fix 866).
   if (devUrl !== undefined) {
-    void win.loadURL(devUrl);
+    void win.loadURL(id === null ? devUrl : `${devUrl}?window=${encodeURIComponent(id)}`);
   } else {
-    void win.loadFile(path.join(__dirname, '../renderer/index.html'));
+    void win.loadFile(path.join(__dirname, '../renderer/index.html'), id === null ? {} : { query: { window: id } });
   }
 }
 
@@ -913,23 +1180,35 @@ const launch = launchArgument(process.argv, app.isPackaged, (p) => {
     return null;
   }
 });
-let holdsLock = app.requestSingleInstanceLock({ path: launch?.path ?? null, kind: launch?.kind ?? null });
-const handedOver = launch !== null && !holdsLock;
+// M9 fix 866: a launch with no argument hands over as well, and the running process opens a new window for it. A harness window goes on without the lock as before: a relaunch right after a kill meets the killed window's lock for a moment (docs/GOTCHAS.md, fixes 258 to 273) and would otherwise quit with nothing open. `window` tells the holder whether this launch hands over for a new window, so a harness relaunch that meets a dying holder opens nothing in it.
+const asksWindow = launch === null && process.env['EMERALD_WINDOW'] !== 'background';
+let holdsLock = app.requestSingleInstanceLock({ path: launch?.path ?? null, kind: launch?.kind ?? null, window: asksWindow });
+const handedOver = !holdsLock && (launch !== null || asksWindow);
 log(`single-instance lock ${holdsLock ? 'held' : 'not held'}${launch === null ? '' : `, launched with ${launchLabel(launch)}`}`);
 // The open a launch asks for: a file, or a folder to open a new tab on
 // with a Claude or a shell (fix 853).
 function launchOpen(p: string, kind: LaunchKind): OpenRequest {
   return { path: p, pane: false, launch: true, ...(kind === 'file' ? {} : { kind }) };
 }
-if (launch !== null && handedOver) {
-  log(`${launchLabel(launch)} handed to the running window; quitting`);
+if (handedOver) {
+  log(launch === null ? 'a new window handed to the running window; quitting' : `${launchLabel(launch)} handed to the running window; quitting`);
   app.quit();
 } else {
   if (launch !== null) openRelay.open(launchOpen(launch.path, launch.kind));
   app.on('second-instance', (_event, _argv, _cwd, additionalData) => {
-    const data = additionalData as { path?: unknown; kind?: unknown } | undefined;
+    const data = additionalData as { path?: unknown; kind?: unknown; retry?: unknown; window?: unknown } | undefined;
+    // A window that went on without the lock asking again (below) is not
+    // a launch, and opens nothing here.
+    if (data?.retry === true) return;
     const p = data?.path;
-    if (typeof p !== 'string') return;
+    if (typeof p !== 'string') {
+      // Only a launch that handed over asks for a window; a harness
+      // window, or an older build's launch, goes on as a process of its own.
+      if (data?.window !== true) return;
+      log('a new window from a second launch');
+      void openNewWindow('a second launch');
+      return;
+    }
     // A second launch from an older build sends { path } alone, a file.
     const kind: LaunchKind = data?.kind === 'claude' || data?.kind === 'shell' ? data.kind : 'file';
     log(`${launchLabel({ path: p, kind })} from a second launch`);
@@ -943,8 +1222,12 @@ if (launch !== null && handedOver) {
     const again = () => {
       if (holdsLock || tries >= 20) return;
       tries++;
-      holdsLock = app.requestSingleInstanceLock({ path: null });
-      if (holdsLock) log(`single-instance lock held on try ${tries + 1}`);
+      holdsLock = app.requestSingleInstanceLock({ path: null, retry: true });
+      if (holdsLock) {
+        log(`single-instance lock held on try ${tries + 1}`);
+        // Now this process owns the layout's windows (M9 fix 866).
+        reconcile(lastLayout);
+      }
       // Said once at the last try (M9 fix 480, L40), so a later
       // double-click that opens a second main process has a line to
       // explain it.
@@ -982,10 +1265,12 @@ ipcMain.on('emerald:keys-armed', (_event, on: boolean) => guestKeys.setArmed(on)
 const designMode = wireDesignMode({
   log,
   home: path.resolve(emeraldHomeOf(process.env)),
-  mainContents: () => (win === null || win.isDestroyed() ? null : win.webContents),
+  isWindow: isWindowContents,
   guestFor: (paneId) => browserDriver.guestFor(paneId),
-  note: (text) => {
-    if (win !== null && !win.isDestroyed()) win.webContents.send('emerald:design-note', text);
+  // To the window hosting the page (M9 fix 866).
+  note: (text, guest) => {
+    const host = guest.isDestroyed() ? null : guest.hostWebContents;
+    if (host !== null && host !== undefined && !host.isDestroyed()) host.send('emerald:design-note', text);
   },
   writeText: writeClipboardText,
   writePng: writeClipboardPng,
@@ -1006,8 +1291,10 @@ function onGuestInput(contents: WebContents, e: Electron.Event, input: Electron.
   }
   if (verdict === 'page') return;
   if (verdict === 'window' || verdict === 'window-and-page') {
-    if (win !== null && !win.isDestroyed()) {
-      win.webContents.send('emerald:guest-key', { code: input.code, ctrlKey: input.control, shiftKey: input.shift, altKey: input.alt, metaKey: input.meta });
+    // The window hosting the page (M9 fix 866).
+    const host = contents.hostWebContents;
+    if (host !== null && host !== undefined && !host.isDestroyed()) {
+      host.send('emerald:guest-key', { code: input.code, ctrlKey: input.control, shiftKey: input.shift, altKey: input.alt, metaKey: input.meta });
     }
   }
   if (verdict === 'window-and-page') return;
@@ -1040,17 +1327,19 @@ app.on('web-contents-created', (_event, contents) => {
     // listeners never hear a page's input) and for the click that
     // focuses the page's pane. Mouse moves are left out.
     contents.on('input-event', (_e, input) => {
-      const kind = input.type === 'mouseDown' ? 'mouse' : input.type === 'keyDown' || input.type === 'rawKeyDown' ? 'key' : null;      if (kind === null || win === null || win.isDestroyed()) return;
+      const kind = input.type === 'mouseDown' ? 'mouse' : input.type === 'keyDown' || input.type === 'rawKeyDown' ? 'key' : null;
+      const host = contents.hostWebContents;
+      if (kind === null || host === null || host === undefined || host.isDestroyed()) return;
       // emmer browser's own click or key (M9 fix 672) is not the person:
       // it must not focus the page's pane or count as presence.
       if (browserDriver.dispatching(contents)) return;
-      win.webContents.send('emerald:guest-input', { webContentsId: contents.id, kind });
+      host.send('emerald:guest-input', { webContentsId: contents.id, kind });
     });
     return;
   }
   contents.on('will-navigate', (e) => e.preventDefault());
   contents.on('will-attach-webview', (e, webPreferences, params) => {
-    const refusal = attachRefusal({ partition: params['partition'], src: params['src'], fromMain: win !== null && !win.isDestroyed() && contents === win.webContents });
+    const refusal = attachRefusal({ partition: params['partition'], src: params['src'], fromMain: isWindowContents(contents) });
     if (refusal !== null) {
       e.preventDefault();
       log(`webview refused: ${refusal}`);
@@ -1096,8 +1385,8 @@ app.whenReady().then(() => {
       {
         label: 'View',
         submenu: [
-          { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => { if (win !== null && !win.isDestroyed()) reloadHolding(win.webContents, openRelay, false); } },
-          { label: 'Force Reload', accelerator: 'Shift+CmdOrCtrl+R', click: () => { if (win !== null && !win.isDestroyed()) reloadHolding(win.webContents, openRelay, true); } },
+          { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => { const w = menuWindow(); if (w !== null) reloadHolding(w.webContents, openRelay, false); } },
+          { label: 'Force Reload', accelerator: 'Shift+CmdOrCtrl+R', click: () => { const w = menuWindow(); if (w !== null) reloadHolding(w.webContents, openRelay, true); } },
           { role: 'toggleDevTools' },
           { type: 'separator' },
           { role: 'togglefullscreen' },
@@ -1117,12 +1406,19 @@ app.whenReady().then(() => {
   // Registered here, after the handed-over and gap launches have quit, so
   // those write no will-quit line (M9 fix 657).
   app.on('will-quit', onWillQuit);
+  // M9 fix 866: a window closing while the app quits keeps its record.
+  app.on('before-quit', () => {
+    quitting = true;
+  });
   // M9 fix 671: whether Electron got past the app's last event. A slow
   // exit with this line is Chromium's own shutdown after it; one without
   // it is something in before-quit or will-quit. Here and not beside
   // window-all-closed, so a handed-over or gap launch writes none.
   app.on('quit', (_event, exitCode) => log(`quit, exit code ${exitCode}`));
-  createWindow();
+  createWindow(null, 0);
+  // A layout that arrived before the window (it never does, the connect
+  // being async) is applied now.
+  reconcile(lastLayout);
   installHooksOnFirstLaunch();
   updater.start();
   watchPresence();

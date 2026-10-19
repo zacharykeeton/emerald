@@ -3,18 +3,19 @@ import type { MouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { editCounts } from '@emerald/shared';
 import type { SessionInfo, Step } from '@emerald/shared';
-import { openViewBeside } from './actions.ts';
+import { openBeside } from './actions.ts';
 import { editHunk, lineOf } from './chat-hunk.ts';
 import type { PendingEdit } from './chat-hunk.ts';
 import { renderReply } from './chat-markdown.ts';
 import { PATH_CACHE_MAX, PATH_MENU } from './chat-paths.ts';
 import type { PathAction } from './chat-paths.ts';
-import { fileViewSupported } from './daemon-model.ts';
+import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
 import { normalizePath, relativePath } from './files-model.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuItem } from './Menu.tsx';
 import { getState } from './store.ts';
-import { openFileTab, openReviewTab } from './ui.ts';
+import { fileViewAt } from './tabs-model.ts';
+import { openFileTab, openReviewTab, revealInPane } from './ui.ts';
 
 // The chat view's drawn parts (M9 fixes 716 to 718): a reply rendered as
 // Markdown with its paths live, the path menu, the thumbnails and their
@@ -30,14 +31,18 @@ const knownPath = (abs: string) => known.get(abs);
 // them all: a left click opens the file in a tab, a right click opens
 // the path menu, and a web link in a reply goes to the browser as the
 // Markdown tab's does (MarkdownView.tsx). Every anchor's default is
-// stopped, so nothing navigates the window.
+// stopped, so nothing navigates the window. A Ctrl+click on a web link
+// opens it in a browser pane beside this one (M9 fix 863), and a
+// Ctrl+click on a path opens it in a file pane beside this one, at its
+// line (M9 fix 864).
 export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseEvent<HTMLElement>) => void; onAuxClick: (ev: MouseEvent<HTMLElement>) => void; onContextMenu: (ev: MouseEvent<HTMLElement>) => void }; menu: ReactNode } {
   const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   // React carries a portal's events up the component tree, so a click in
   // the path menu (its root carries data-path too) or a thumbnail's full
   // size reaches these handlers; only the turn's own DOM is read.
   const ours = (ev: MouseEvent<HTMLElement>) => ev.currentTarget.contains(ev.target as Node);
-  const open = (ev: MouseEvent<HTMLElement>) => {
+  const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
+  const open = (ev: MouseEvent<HTMLElement>, beside: boolean) => {
     if (!ours(ev)) return;
     const target = ev.target as HTMLElement;
     const a = target.closest('a');
@@ -45,16 +50,26 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
     const pathEl = target.closest<HTMLElement>('[data-path]');
     if (pathEl !== null) {
       const line = pathEl.getAttribute('data-line');
-      openFileTab(normalizePath(pathEl.getAttribute('data-path') ?? ''), line === null ? undefined : Number(line));
+      const p = normalizePath(pathEl.getAttribute('data-path') ?? '');
+      const at = line === null ? undefined : Number(line);
+      if (beside && fileViewSupported(getState().daemon)) {
+        void openBeside(fileViewAt(p, at), paneId)
+          .then((id) => {
+            if (at !== undefined) revealInPane(id, p, at);
+          })
+          .catch(warn('open beside'));
+      } else openFileTab(p, at);
       return;
     }
     const href = a?.getAttribute('href') ?? null;
-    if (href !== null && /^https?:/i.test(href)) void window.emerald.files.openExternal(href).catch((err: unknown) => console.warn('[emerald] open link failed', err));
+    if (href === null || !/^https?:/i.test(href)) return;
+    if (beside && browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: href }, paneId).catch(warn('open link beside'));
+    else void window.emerald.files.openExternal(href).catch(warn('open link'));
   };
   const handlers = {
-    onClick: open,
+    onClick: (ev: MouseEvent<HTMLElement>) => open(ev, ev.ctrlKey),
     onAuxClick: (ev: MouseEvent<HTMLElement>) => {
-      if (ev.button === 1) open(ev);
+      if (ev.button === 1) open(ev, false);
     },
     onContextMenu: (ev: MouseEvent<HTMLElement>) => {
       if (!ours(ev)) return;
@@ -66,10 +81,9 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
       setMenu({ x: ev.clientX, y: ev.clientY, path: normalizePath(pathEl.getAttribute('data-path') ?? '') });
     },
   };
-  const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
   const act = (action: PathAction, path: string): void => {
     if (action === 'tab') openFileTab(path);
-    else if (action === 'pane') void openViewBeside({ kind: 'file', path }).catch(warn('open in a pane'));
+    else if (action === 'pane') void openBeside({ kind: 'file', path }, paneId).catch(warn('open in a pane'));
     else if (action === 'windows') void window.emerald.files.open(path).catch(warn('open'));
     else if (action === 'reveal') void window.emerald.files.reveal(path).catch(warn('reveal'));
     // The box (m9-chat-box) listens and puts the path in the message.

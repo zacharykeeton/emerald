@@ -414,7 +414,7 @@ async function sessionsSection(home: string, from: number, now: number): Promise
   return out;
 }
 
-export const NOTHING_RECORDED = "Nothing recorded yet: the usage record is off until it is turned on from the speaker button's right-click menu (Usage record).";
+export const NOTHING_RECORDED = "Nothing recorded yet: the usage record is off until it is turned on from the app menu under the emerald mark (Usage record).";
 
 export async function buildUsageReport(home: string, now: number, days: number): Promise<string> {
   const from = windowStart(now, days);

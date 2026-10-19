@@ -5,7 +5,7 @@ import type { Step, StepResult, StepTurn } from '@emerald/shared';
 import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
-import { askBoxShown } from './chat-model.ts';
+import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 
 test('chatPanes: the pairs round trip, and a corrupt entry reads as nothing', () => {
   const panes = new Map([
@@ -80,6 +80,15 @@ test('askBoxShown: no box for an unparsed AskUserQuestion (fix 802)', () => {
   const asked = { words: 'AskUserQuestion', toolUseId: 'u1', agentId: null, at: 0 };
   assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: asked }), false);
   assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: null }), true);
+});
+
+// M9 fix 880: no dialog after one in the same spell is an ask answered elsewhere.
+test('answeredElsewhere: no dialog, unpressed, after a dialog in the same spell (fix 880)', () => {
+  assert.equal(answeredElsewhere({ key: null, pressed: false, spell: 5, dialogSpell: 5 }), true);
+  assert.equal(answeredElsewhere({ key: null, pressed: false, spell: 5, dialogSpell: 4 }), false, 'a dialog from another spell');
+  assert.equal(answeredElsewhere({ key: null, pressed: false, spell: 5, dialogSpell: null }), false, 'no dialog seen');
+  assert.equal(answeredElsewhere({ key: null, pressed: true, spell: 5, dialogSpell: 5 }), false, 'pressed here');
+  assert.equal(answeredElsewhere({ key: '["options"]', pressed: false, spell: 5, dialogSpell: 5 }), false, 'the dialog still drawn');
 });
 
 test('opensMenu: a picker command first in the box, case-sensitive', () => {

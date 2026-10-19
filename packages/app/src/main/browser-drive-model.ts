@@ -9,6 +9,8 @@ export const ACTIONABLE_ROLES: ReadonlySet<string> = new Set([
   'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option',
   'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'switch', 'slider', 'spinbutton', 'treeitem',
 ]);
+// M9 fix 875: the roles a snapshot lists as a region with a ref of its own (@r1), for --within alone; the verbs take @e refs only.
+export const REGION_ROLES: ReadonlySet<string> = new Set(['dialog', 'alertdialog', 'menu', 'menubar', 'list', 'navigation', 'main', 'complementary', 'banner', 'contentinfo', 'form', 'search', 'region', 'toolbar', 'tablist', 'tree', 'grid', 'table']);
 
 // A name or a value is cut at this many characters, and a snapshot lists
 // this many rows at most, so one page cannot flood a Claude's context.
@@ -18,6 +20,53 @@ export const BROWSER_SNAPSHOT_CAP = 500;
 // often wait looks again, in ms.
 export const BROWSER_MARK_LINGER_MS = 5000;
 export const BROWSER_WAIT_POLL_MS = 100;
+// M9 fix 876: how long a driven page stays held, its debugger attached and the page acting focused, after its last command, in ms; EMERALD_BROWSER_HOLD_MS names another for a harness.
+export const BROWSER_HOLD_IDLE_MS = 60_000;
+export function holdIdleMs(raw: string | undefined): number {
+  const n = Number(raw);
+  return raw !== undefined && raw !== '' && Number.isFinite(n) && n > 0 ? n : BROWSER_HOLD_IDLE_MS;
+}
+
+// M9 fix 877: a fill's target as the page reads it, and what fill does with it; a refusal lists at most this many of a select's options.
+export const BROWSER_OPTIONS_LISTED = 20;
+export const FILL_TARGET_FN = "function () { if (this.localName === 'select') return this.multiple ? { kind: 'multiple' } : { kind: 'select', options: Array.from(this.options, (o) => ({ value: o.value, text: o.text.trim() })) }; if (this.localName === 'input' && (this.type === 'checkbox' || this.type === 'radio' || this.type === 'file')) return { kind: this.type }; return { kind: 'field' }; }";
+export type FillTarget = { kind: 'field' | 'checkbox' | 'radio' | 'file' | 'multiple' } | { kind: 'select'; options: { value: string; text: string }[] };
+export function fillPlan(target: FillTarget, text: string, ref: string, described: string): { type: 'field' } | { type: 'pick'; index: number; option: string } | { type: 'refuse'; text: string } {
+  switch (target.kind) {
+    case 'field':
+      return { type: 'field' };
+    case 'checkbox':
+      return { type: 'refuse', text: `${ref} is a checkbox; click it to tick it` };
+    case 'radio':
+      return { type: 'refuse', text: `${ref} is a radio button; click it to pick it` };
+    case 'file':
+      return { type: 'refuse', text: `${ref} is a file input; emmer browser upload ${ref} <path> sets its file` };
+    case 'multiple':
+      return { type: 'refuse', text: 'fill takes a single select; a multiple select is not driven' };
+    case 'select': {
+      const { options } = target;
+      if (options.length === 0) return { type: 'refuse', text: `${described} has no options` };
+      let index = options.findIndex((o) => o.value === text);
+      if (index < 0) index = options.findIndex((o) => o.text.trim() === text.trim());
+      if (index >= 0) return { type: 'pick', index, option: options[index]!.text };
+      const texts = options.map((o) => o.text);
+      const listed = texts.length > BROWSER_OPTIONS_LISTED
+        ? `its first ${BROWSER_OPTIONS_LISTED} options are ${texts.slice(0, BROWSER_OPTIONS_LISTED).join(', ')} and ${texts.length - BROWSER_OPTIONS_LISTED} more`
+        : `its options are ${texts.join(', ')}`;
+      return { type: 'refuse', text: `no option ${JSON.stringify(text)} in ${described}; ${listed}` };
+    }
+  }
+}
+
+// What a Runtime.callFunctionOn or Runtime.evaluate reply says the page threw, as the first line of it, or null when it threw nothing.
+export function pageThrew(reply: Record<string, unknown>): string | null {
+  const ex = reply['exceptionDetails'] as { text?: string; exception?: { description?: string } } | undefined;
+  if (ex === undefined) return null;
+  return (ex.exception?.description ?? ex.text ?? '').split('\n')[0]!;
+}
+// M9 fix 874: a drag's moves and the pause after the press and each move, in ms; some drag-and-drop libraries read the pointer once a frame.
+export const BROWSER_DRAG_STEPS = 10;
+export const BROWSER_DRAG_PAUSE_MS = 16;
 
 // M9 fix 856: where wait finds a text: the page's own text, else a field's value (an app whose heading is an input), else an aria-label. One expression per poll, as the innerText read was.
 export function waitExpression(text: string): string {
@@ -75,57 +124,107 @@ function statesOf(node: AxNode): string[] {
   return out;
 }
 
+// M9 fix 875: what a filtered snapshot prints: the lines whose name or
+// value holds name, any case, and the lines inside within, the node of a
+// region's or a control's ref (its backendDOMNodeId and the ref with no @).
+export interface SnapshotFilter {
+  name?: string;
+  within?: { id: number; ref: string };
+}
+
 // The page as lines a Claude reads: a first line with the title and the
 // address, then each control in document order with a ref (@e1, @e2...)
 // that click, fill and the rest take, and each heading without one.
 // refs maps a ref to its backendDOMNodeId, which the verbs resolve.
-export function snapshotOf(nodes: AxNode[], page: { title: string; url: string }): { text: string; refs: Map<string, number>; rows: SnapshotRow[] } {
+// M9 fix 875: regions get @r refs of their own, every control is numbered whatever the cap or the filter, and a filter keeps only the printed lines.
+export function snapshotOf(
+  nodes: AxNode[],
+  page: { title: string; url: string },
+  filter: SnapshotFilter = {},
+): { text: string; refs: Map<string, number>; regions: Map<string, number>; rows: SnapshotRow[]; shown: SnapshotRow[]; found: boolean } {
   const byId = new Map(nodes.map((n) => [n.nodeId, n]));
   const children = new Set(nodes.flatMap((n) => n.childIds ?? []));
   const roots = nodes.filter((n) => !children.has(n.nodeId));
   const lines: string[] = [`page ${JSON.stringify(page.title)} ${page.url}`];
   const refs = new Map<string, number>();
+  const regions = new Map<string, number>();
   const rows: SnapshotRow[] = [];
+  const shown: SnapshotRow[] = [];
+  const needle = filter.name?.toLowerCase();
+  const within = filter.within;
+  let found = within === undefined;
+  let passed = 0;
   let listed = 0;
   let more = 0;
+  // A line passes when the walk is inside within's node and its uncut
+  // name, or a control's value, holds the name; past the cap it is counted.
+  const offer = (inside: boolean, texts: string[], line: () => string, row: SnapshotRow | null): void => {
+    if (!inside) return;
+    if (needle !== undefined && !texts.some((t) => t.toLowerCase().includes(needle))) return;
+    passed += 1;
+    if (listed >= BROWSER_SNAPSHOT_CAP) {
+      more += 1;
+      return;
+    }
+    lines.push(line());
+    if (row !== null) shown.push(row);
+    listed += 1;
+  };
   const seen = new Set<string>();
-  const walk = (node: AxNode): void => {
+  const walk = (node: AxNode, outer: boolean): void => {
     if (seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
+    let inside = outer;
+    if (within !== undefined && node.backendDOMNodeId === within.id) {
+      found = true;
+      inside = true;
+    }
     if (!node.ignored) {
       const role = text(node.role);
-      const name = cut(text(node.name));
+      const whole = text(node.name);
+      const name = cut(whole);
       if (role === 'heading') {
-        if (listed < BROWSER_SNAPSHOT_CAP) {
-          const level = (node.properties ?? []).find((p) => p.name === 'level')?.value?.value;
-          lines.push(`heading ${JSON.stringify(name)}${typeof level === 'number' ? ` level=${level}` : ''}`);
-          listed += 1;
-        } else more += 1;
+        const level = (node.properties ?? []).find((p) => p.name === 'level')?.value?.value;
+        offer(inside, [whole], () => `heading ${JSON.stringify(name)}${typeof level === 'number' ? ` level=${level}` : ''}`, null);
       } else if (ACTIONABLE_ROLES.has(role) && typeof node.backendDOMNodeId === 'number') {
-        if (listed < BROWSER_SNAPSHOT_CAP) {
-          const ref = `e${refs.size + 1}`;
-          refs.set(ref, node.backendDOMNodeId);
-          const value = cut(text(node.value));
-          const states = statesOf(node);
-          lines.push(`@${ref} ${role} ${JSON.stringify(name)}${value !== '' ? ` value=${JSON.stringify(value)}` : ''}${states.length > 0 ? ` [${states.join(' ')}]` : ''}`);
-          rows.push({ ref, role, name, ...(value !== '' ? { value } : {}), states });
-          listed += 1;
-        } else more += 1;
+        const ref = `e${refs.size + 1}`;
+        refs.set(ref, node.backendDOMNodeId);
+        const wholeValue = text(node.value);
+        const value = cut(wholeValue);
+        const states = statesOf(node);
+        const row: SnapshotRow = { ref, role, name, ...(value !== '' ? { value } : {}), states };
+        rows.push(row);
+        offer(inside, [whole, wholeValue], () => `@${ref} ${role} ${JSON.stringify(name)}${value !== '' ? ` value=${JSON.stringify(value)}` : ''}${states.length > 0 ? ` [${states.join(' ')}]` : ''}`, row);
+      } else if (REGION_ROLES.has(role) && typeof node.backendDOMNodeId === 'number') {
+        const ref = `r${regions.size + 1}`;
+        regions.set(ref, node.backendDOMNodeId);
+        offer(inside, [whole], () => `@${ref} ${role} ${JSON.stringify(name)}`, { ref, role, name, states: [] });
       }
     }
     for (const id of node.childIds ?? []) {
       const child = byId.get(id);
-      if (child !== undefined) walk(child);
+      if (child !== undefined) walk(child, inside);
     }
   };
-  for (const root of roots) walk(root);
+  for (const root of roots) walk(root, within === undefined);
   if (more > 0) lines.push(`... ${more} more not listed`);
-  return { text: lines.join('\n'), refs, rows };
+  if (passed === 0 && (needle !== undefined || within !== undefined)) {
+    const under = within === undefined ? '' : `under @${within.ref}`;
+    const matches = filter.name === undefined ? '' : `matches ${JSON.stringify(filter.name)}`;
+    lines.push(`no row ${[under, matches].filter((s) => s !== '').join(' ')}`);
+  }
+  return { text: lines.join('\n'), refs, regions, rows, shown, found };
 }
 
 // @e3 or e3 to e3; anything else is not a ref.
 export function parseRef(s: string): string | null {
   const m = /^@?(e\d+)$/.exec(s);
+  return m === null ? null : m[1]!;
+}
+
+// M9 fix 875: @r2 or r2 to r2, a region's ref for --within alone.
+export function parseRegion(s: string): string | null {
+  const m = /^@?(r\d+)$/.exec(s);
   return m === null ? null : m[1]!;
 }
 
@@ -199,6 +298,16 @@ export function centre(quad: number[]): { x: number; y: number } {
     y += quad[i + 1] ?? 0;
   }
   return { x: x / 4, y: y / 4 };
+}
+
+// M9 fix 874: the points a drag moves through, steps of them evenly from
+// one point to the other, the last the end itself.
+export function dragPath(from: { x: number; y: number }, to: { x: number; y: number }, steps: number): Array<{ x: number; y: number }> {
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 1; i <= steps; i += 1) {
+    out.push(i === steps ? { x: to.x, y: to.y } : { x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps });
+  }
+  return out;
 }
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0');

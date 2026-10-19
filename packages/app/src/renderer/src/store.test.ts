@@ -156,6 +156,8 @@ function stubCrashWindow(held: { pid: number; code: string } | null): { dismisse
       request,
       daemonInfo: async () => ({ pid: 17600, version: '0.1.825', featureLevel: 1, otherHome: null }),
       daemonCrash: async () => held,
+      // M9 fix 867: the sync asks which window the page shows.
+      windowId: async () => 'first',
       dismissCrash: () => (dismissed += 1),
     },
   };

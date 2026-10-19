@@ -300,6 +300,12 @@ try {
   expect(!controlOut.includes('[13;2u'), 'no kitty sequence reached the shell');
   step('Shift+Enter in the control shell: the line ran, no escape in its scrollback');
   await clickPane(s, p2.id);
+  // M9 fix 872: an observer on pane 2 records each change of data-dropping
+  // with the terminal's visibility, from before the /exit, since fix 842's
+  // drop is one spawn round trip, shorter than the loop's 200 ms below. It
+  // is on the pane and re-queries the wrap, so a wrap remounted for the
+  // shell is still read; a record is kept only when dropping changes.
+  await s.evalJs(`(() => { const pane = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p2.id)}]`)}); window.__drop872 = []; const read = () => { const w = pane.querySelector('.term-wrap'); const h = w?.querySelector('.term-host'); const dropping = w?.dataset.dropping !== undefined; if (window.__drop872.at(-1)?.dropping === dropping) return; window.__drop872.push({ dropping, visibility: h ? getComputedStyle(h).visibility : null }); }; read(); window.__obs872 = new MutationObserver(read); window.__obs872.observe(pane, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-dropping'] }); return true; })()`);
 
   // Exit Claude: SessionEnd then the PTY closes.
   await typeLine(s, '/exit');
@@ -310,9 +316,9 @@ try {
   // M9 fix 813: the pane drops to a shell, and the Claude row counts down.
   const dropDeadline = Date.now() + 10000;
   let dropped813 = null;
-  // M9 fix 842: each read that finds pane 2 still on the exited Claude with
-  // the row counting is inside the drop, where the terminal is hidden.
-  const gap = [];
+  // M9 fix 842, read by fix 872: an observer on pane 2 records each change of
+  // data-dropping with the terminal's visibility, since the drop is one
+  // spawn round trip, shorter than this loop's 200 ms.
   const wrapSel = JSON.stringify(`[data-pane-id=${JSON.stringify(p2.id)}] .term-wrap`);
   const wrapRead = () => s.evalJs(`(() => { const w = document.querySelector(${wrapSel}); const h = w?.querySelector('.term-host'); return { dropping: w?.dataset.dropping !== undefined, visibility: h ? getComputedStyle(h).visibility : null }; })()`);
   while (Date.now() < dropDeadline) {
@@ -320,15 +326,18 @@ try {
     const listed = onPane === null || onPane === claudeId ? null : (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === onPane);
     const counting = await s.evalJs(`document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(claudeId)}]`)})?.dataset.removing !== undefined`);
     dropped813 = { onPane, kind: listed?.kind ?? null, counting };
-    if (onPane === claudeId && counting === true) gap.push(await wrapRead());
     if (listed?.kind === 'shell' && counting === true) break;
     await sleep(200);
   }
   expect(dropped813?.kind === 'shell' && dropped813.counting === true, `fix 813: /exit dropped pane 2 to a shell and the Claude row counts down, got ${JSON.stringify(dropped813)}`);
-  expect(gap.every((g) => g.dropping && g.visibility === 'hidden'), `fix 842: while pane 2 drops to a shell its terminal is hidden, got ${JSON.stringify(gap)}`);
+  const drop872 = await s.evalJs('(() => { window.__obs872?.disconnect(); return window.__drop872 ?? null; })()');
+  const firstOn = drop872 === null ? -1 : drop872.findIndex((r) => r.dropping);
+  const on872 = firstOn < 0 ? [] : drop872.filter((r) => r.dropping);
+  expect(on872.length > 0 && on872.every((r) => r.visibility === 'hidden'), `fix 842: while pane 2 drops to a shell its terminal is hidden, got ${JSON.stringify(drop872)}`);
+  expect(drop872.slice(firstOn).some((r) => !r.dropping), `fix 842: the drop ends with data-dropping off, got ${JSON.stringify(drop872)}`);
   expect(!(await wrapRead()).dropping, 'fix 842: once the shell is on pane 2 its terminal carries no data-dropping');
   names = eventsFor(claudeId).map((e) => e.event);
-  step(`exit code ${exited.exitCode}; SessionEnd logged: ${names.includes('SessionEnd')}, ${gap.length} reads in the drop (fix 842)`);
+  step(`exit code ${exited.exitCode}; SessionEnd logged: ${names.includes('SessionEnd')}, ${on872.length} observed records in the drop (fix 842, read by fix 872)`);
 
   // The control shell and Orca were never involved.
   const control = await stateOf(s, controlId);

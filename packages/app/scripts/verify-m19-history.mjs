@@ -188,8 +188,15 @@ try {
   const railTabs = await s.evalJs(
     `(() => { const tabs = [...document.querySelectorAll('.rail-tab')]; const row = document.querySelector('.rail-tabs'); const shown = (t) => { const l = t.querySelector('.rail-tab-label'); return getComputedStyle(l).display !== 'none' ? l.textContent : ''; }; return { words: tabs.map(shown), titles: tabs.map((t) => t.title), fits: row.scrollWidth <= row.clientWidth, width: row.clientWidth }; })()`,
   );
-  expect(railTabs.words.join(',') === 'Files,Activity,Sessions', `at the default rail the three tabs read their words, got ${railTabs.words.join(',')}`);
-  expect(railTabs.titles.join(',') === "Files,What the sessions did: the day's time above, the repository's commits below,Sessions of Claude Code on this machine", `the tooltips keep their words, got ${railTabs.titles.join(',')}`);
+  // M9 fix 885: the default rail is RAIL_DEFAULT_WIDTH and shows four
+  // words, Stats added; its title names the folder when the rail is on one.
+  const railRoot885 = await s.evalJs(`document.querySelector('.files-rail').dataset.root ?? ''`);
+  const statsTitle885 = railRoot885 === '' ? 'Statistics' : railTabs.titles[3];
+  expect(railTabs.words.join(',') === 'Files,Activity,Sessions,Stats', `at the default rail the four tabs show their words (fix 885), got ${railTabs.words.join(',')}`);
+  expect(
+    railTabs.titles.join(',') === `Files,What the sessions did: the day's time above, the repository's commits below,Sessions of Claude Code on this machine,${statsTitle885}` && (railRoot885 !== '' ? railTabs.titles[3].startsWith('Statistics of ') : true),
+    `the tooltips keep their words, got ${railTabs.titles.join(',')} (root ${JSON.stringify(railRoot885)})`,
+  );
   expect(railTabs.fits, `the tab row fits the ${railTabs.width}px rail`);
   await startSession(s, { kind: 'shell', cwd: repo });
   await s.waitFor(`document.querySelectorAll('.term-host').length === 1`, 'shell in the repo');

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trustDialog, trustKeys } from './trust-dialog.ts';
+import { trustDialog, trustKeys, trustParagraphs } from './trust-dialog.ts';
 
 // The trust dialog as Claude Code 2.1.302 drew it for a fresh folder under
 // %TEMP%, read off the daemon's screen at 120 x 30 (M9 fix 808's capture),
@@ -42,6 +42,48 @@ test('trustDialog reads the captured dialog: two options in drawn order, the poi
   // M9 fix 847: the path is left out, the cards drawing the session's own.
   assert.equal(d.pathDropped, true);
   assert.ok(!d.lines.some((l) => l.includes('trust-1792')), 'the path rows are left out');
+});
+
+// M9 fix 881: CAPTURED with each text row rewrapped at 60 columns, as a
+// narrower terminal draws it.
+const CAPTURED_60 = [
+  '',
+  RULE,
+  ' Accessing workspace:',
+  '',
+  ' C:\\Users\\someone\\AppData\\Local\\Temp\\emerald-verify\\trust-1792',
+  '',
+  ' Quick safety check: Is this a project you created or one',
+  ' you trust? (Like your own code, a well-known open source',
+  ' project, or work from your team). If not, take a moment to',
+  " review what's in this folder first.",
+  '',
+  " Claude Code'll be able to read, edit, and execute files",
+  ' here.',
+  '',
+  ' Security guide',
+  '',
+  ' ❯ No, exit',
+  '   Yes, I trust this folder',
+  '',
+  ' Enter to confirm · Esc to cancel',
+];
+
+test('trustParagraphs joins each run of wrapped rows into one line, whatever width the TUI drew (M9 fix 881)', () => {
+  const paragraphs = [
+    'Accessing workspace:',
+    '',
+    "Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.",
+    '',
+    "Claude Code'll be able to read, edit, and execute files here.",
+    '',
+    'Security guide',
+  ];
+  assert.deepEqual(trustParagraphs(trustDialog(CAPTURED)!.lines), paragraphs);
+  assert.notDeepEqual(trustDialog(CAPTURED_60)!.lines, trustDialog(CAPTURED)!.lines);
+  assert.deepEqual(trustParagraphs(trustDialog(CAPTURED_60)!.lines), paragraphs);
+  assert.deepEqual(trustParagraphs(['a', 'b', '', 'c']), ['a b', '', 'c']);
+  assert.deepEqual(trustParagraphs(['Accessing workspace:']), ['Accessing workspace:']);
 });
 
 test('trustDialog leaves out a path the TUI wrapped onto two rows (M9 fix 847)', () => {

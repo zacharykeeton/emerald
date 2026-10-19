@@ -89,6 +89,27 @@ export function trustDialog(rows: readonly string[]): TrustDialog | null {
   return { lines, options, pathDropped };
 }
 
+// M9 fix 881: the dialog's text as paragraphs, each run of rows the TUI
+// wrapped at its own width joined back into one line, so a card rewraps it
+// at its own. A word the TUI broke inside, longer than the row, would read
+// with a space in it.
+export function trustParagraphs(lines: readonly string[]): string[] {
+  const out: string[] = [];
+  let run: string[] = [];
+  const close = () => {
+    if (run.length === 0) return;
+    if (out.length > 0) out.push('');
+    out.push(run.join(' '));
+    run = [];
+  };
+  for (const line of lines) {
+    if (line === '') close();
+    else run.push(line);
+  }
+  close();
+  return out;
+}
+
 // The keys that move the pointer to the picked option and confirm it; null
 // when no option holds the pointer, since then a key could land anywhere.
 export function trustKeys(dialog: TrustDialog, pick: 'yes' | 'no'): string | null {

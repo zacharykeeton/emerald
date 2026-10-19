@@ -48,3 +48,33 @@ test('a path outside the folder or with no folder stays plain (M9 fix 716)', () 
   assert.ok(renderReply('`docs/x.md`', '', all).html.includes('<code>docs/x.md</code>'));
   assert.ok(renderReply('`docs/x`', 'C:\\repo', () => 'other').html.includes('<code>docs/x</code>'));
 });
+
+const pictures = (abs: string) => (abs === 'C:\\other\\shots\\a.png' || abs === 'C:\\other\\shots\\frame_864.png' ? ('file' as const) : undefined);
+const pictureReply = 'the frame `C:/other/shots/a.png` and C:\\other\\shots\\frame_864.png, see.';
+
+test('a picture outside the folder is a link in a code span and bare in the text once a stat says it is a file (M9 fix 864)', () => {
+  const { html } = renderReply(pictureReply, 'C:\\repo', pictures);
+  assert.ok(html.includes('<code class="chat-path" data-path="C:\\other\\shots\\a.png">C:/other/shots/a.png</code>'), html);
+  assert.ok(html.includes('<span class="chat-path" data-path="C:\\other\\shots\\frame_864.png">C:\\other\\shots\\frame_864.png</span>, see.'), html);
+});
+
+test('an unstatted picture is asked for and drawn plain (M9 fix 864)', () => {
+  const { html, ask } = renderReply(pictureReply, 'C:\\repo', () => undefined);
+  assert.deepEqual(ask, ['C:\\other\\shots\\a.png', 'C:\\other\\shots\\frame_864.png']);
+  assert.ok(!html.includes('chat-path'), html);
+});
+
+test("a picture in the text resolves a relative path with a folder, and a bare name, another file or a link's text stays plain (M9 fix 864)", () => {
+  const reply = 'see img/shot.png, logo.png, C:\\other\\x.ts and [C:\\other\\b.png](https://example.com/x)';
+  assert.deepEqual(renderReply(reply, 'C:\\repo', () => undefined).ask, ['C:\\repo\\img\\shot.png']);
+  const { html } = renderReply(reply, 'C:\\repo', () => 'file');
+  assert.equal(html.match(/chat-path/g)?.length, 1, html);
+  assert.ok(html.includes('<span class="chat-path" data-path="C:\\repo\\img\\shot.png">img/shot.png</span>'), html);
+  assert.ok(html.includes('<a href="https://example.com/x">C:\\other\\b.png</a>'), html);
+});
+
+test('a picture with no folder links only by a drive path (M9 fix 864)', () => {
+  const { html } = renderReply('`img/a.png` and C:\\other\\a.png', '', () => 'file');
+  assert.ok(html.includes('<code>img/a.png</code>'), html);
+  assert.ok(html.includes('<span class="chat-path" data-path="C:\\other\\a.png">C:\\other\\a.png</span>'), html);
+});

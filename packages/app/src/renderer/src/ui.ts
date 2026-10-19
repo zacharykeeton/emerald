@@ -13,6 +13,7 @@ import type { ChimeMode } from '../../preload/api.ts';
 import { isDirty } from './file-edits.ts';
 import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, emptyTabs, isDocument, openFile, pinTab, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
 import { renamedPath } from './files-model.ts';
+import { tabsKeyFor, windowIdFromSearch, windowOfTabsKey } from './window-keys.ts';
 import { cycleKeys, currentKey, layoutTabOf, moveKey, orderFromJson, orderWithNew, replaceKey, stripOrder } from './tab-order.ts';
 import type { FileTabView, TabsModel } from './tabs-model.ts';
 import { reviewFolderPath, reviewPath } from './review-model.ts';
@@ -165,8 +166,8 @@ export interface UiState {
   // notification. Kept in localStorage beside the sound.
   attentionNotify: boolean;
   // Whether the usage record (M9 fix 676) writes logs/usage.jsonl. Off
-  // until switched on from the speaker button's menu, kept beside the two
-  // above.
+  // until switched on from the app menu under the mark (M9 fix 887), kept
+  // beside the two above.
   usageRecord: boolean;
   // Which chime this window plays (M9 fix 47): the real one, a muted one
   // under a private EMERALD_HOME, or the test chime when the run asked to
@@ -226,10 +227,10 @@ export interface UiState {
   plan: PlanEntry[];
 }
 
-export type RailTab = 'files' | 'timeline' | 'history';
+export type RailTab = 'files' | 'timeline' | 'history' | 'stats';
 // A 'changes' saved before fix 70 folded the tab into Files falls back
 // to the tree.
-export const RAIL_TABS: readonly RailTab[] = ['files', 'timeline', 'history'];
+export const RAIL_TABS: readonly RailTab[] = ['files', 'timeline', 'history', 'stats'];
 
 export interface NewSessionPreset {
   folder: string;
@@ -295,9 +296,14 @@ const FONT_SIZES_KEY = 'emerald.fontSizes';
 export const SIDEBAR_MIN_WIDTH = 160;
 export const SIDEBAR_MAX_WIDTH = 600;
 const SIDEBAR_DEFAULT_WIDTH = 260;
+// M9 fix 885: the rail's default fits four tabs' words (Files, Activity, Sessions, Stats); the sidebar keeps 260. SIDEBAR_MAX_WIDTH (600) is above it.
+const RAIL_DEFAULT_WIDTH = 330;
 const STORAGE_KEY = 'emerald.sidebar';
 const FILES_KEY = 'emerald.files';
-const TABS_KEY = 'emerald.tabs';
+// The document tabs' key is this window's own (M9 fix 867, window-keys.ts):
+// read off the page's URL at load, and moved once the main process names
+// the window (adoptWindowTabs) when the URL could not say.
+let tabsKey = tabsKeyFor(windowIdFromSearch(typeof location === 'undefined' ? '' : location.search));
 const RAIL_TAB_KEY = 'emerald.railTab';
 const FILES_CHANGED_KEY = 'emerald.filesChanged';
 const ATTENTION_KEY = 'emerald.attention';
@@ -398,6 +404,11 @@ export function subscribeUi(listener: () => void): () => void {
 
 export function useUi(): UiState {
   return useSyncExternalStore(subscribeUi, getUiState);
+}
+
+// The plan list alone (M9 fix 885): every setState but setPlan keeps its identity, so a reader of the plan does not render on the rest of the UI state.
+export function usePlan(): PlanEntry[] {
+  return useSyncExternalStore(subscribeUi, () => state.plan);
 }
 
 export function openPicker(paneId: string, mode: 'sessions' | 'actions' = 'sessions'): void {
@@ -1006,7 +1017,7 @@ function loadRailTab(): RailTab {
 // Corrupt or unavailable storage is not worth breaking the window over,
 // so anything unusable is the default.
 function loadPanel(key: string): { collapsed: boolean; width: number } {
-  const fallback = { collapsed: false, width: SIDEBAR_DEFAULT_WIDTH };
+  const fallback = { collapsed: false, width: RAIL_DEFAULT_WIDTH };
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) return fallback;
@@ -1015,7 +1026,8 @@ function loadPanel(key: string): { collapsed: boolean; width: number } {
     const { collapsed, width } = parsed as { collapsed?: unknown; width?: unknown };
     return {
       collapsed: collapsed === true,
-      width: typeof width === 'number' && Number.isFinite(width) ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width)) : SIDEBAR_DEFAULT_WIDTH,
+      // 260 was the old default: a profile that never moved the rail follows the new default.
+      width: typeof width === 'number' && Number.isFinite(width) && width !== SIDEBAR_DEFAULT_WIDTH ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width)) : RAIL_DEFAULT_WIDTH,
     };
   } catch {
     return fallback;
@@ -1167,7 +1179,7 @@ export function closeFileTabsUnder(path: string): void {
 
 function saveTabs(): void {
   try {
-    localStorage.setItem(TABS_KEY, JSON.stringify({ ...state.tabs, order: state.tabOrder }));
+    localStorage.setItem(tabsKey, JSON.stringify({ ...state.tabs, order: state.tabOrder }));
   } catch {
     // The tabs just will not survive the restart.
   }
@@ -1457,7 +1469,7 @@ export function setDocumentQuery(path: string, query: string | null): void {
 
 function loadTabs(): TabsModel {
   try {
-    const raw = localStorage.getItem(TABS_KEY);
+    const raw = localStorage.getItem(tabsKey);
     return raw === null ? emptyTabs() : tabsFromJson(JSON.parse(raw));
   } catch {
     return emptyTabs();
@@ -1468,12 +1480,38 @@ function loadTabs(): TabsModel {
 // from before M9 fix 182 has none, which reads as the old order.
 function loadTabOrder(): string[] {
   try {
-    const raw = localStorage.getItem(TABS_KEY);
+    const raw = localStorage.getItem(tabsKey);
     if (raw === null) return [];
     const json = JSON.parse(raw) as { order?: unknown } | null;
     return orderFromJson(json?.order, tabKey);
   } catch {
     return [];
+  }
+}
+
+// The window the main process named for this page (M9 fix 867): the
+// startup window bound to a window that is not the first (the first was
+// closed in an earlier run) moves to that window's key and reads its
+// file tabs from it. Nothing changes when the key is the one in use.
+export function adoptWindowTabs(windowId: string | null): void {
+  const key = tabsKeyFor(windowId);
+  if (key === tabsKey) return;
+  tabsKey = key;
+  setState({ ...state, tabs: loadTabs(), tabOrder: loadTabOrder() });
+}
+
+// The keys of windows the layout no longer holds go.
+export function pruneWindowTabs(liveIds: ReadonlySet<string>): void {
+  try {
+    const gone: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      const id = key === null ? null : windowOfTabsKey(key);
+      if (id !== null && !liveIds.has(id)) gone.push(key!);
+    }
+    for (const key of gone) localStorage.removeItem(key);
+  } catch {
+    // Storage denied; the keys stay until a later prune.
   }
 }
 

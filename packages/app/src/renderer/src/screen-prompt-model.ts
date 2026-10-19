@@ -164,6 +164,9 @@ export function answerOptions(rows: readonly string[]): AnswerOption[] {
 // `Chat about this`, and the footer. Since fix 845 a multi-select (each
 // label behind a [ ] or [✔] box) reads its unnumbered Submit row, Next on
 // all but the last tab, as the dialog's button, never as a description.
+// Since fix 879 the Review your answers tab a multi-question or
+// multi-select ask ends on, which draws no footer, is read by askReview:
+// the tabs, each question with its answer, and Submit answers and Cancel.
 export interface AskTab {
   name: string;
   state: 'answered' | 'open' | 'submit';
@@ -291,8 +294,77 @@ export function askQuestion(rows: readonly string[]): AskQuestion | null {
   return { tabs: tabRow < 0 ? [] : askTabs(b[tabRow]!), question: run.join(' '), options, multi, submit: multi ? submit : null };
 }
 
+// M9 fix 879: the Review your answers tab, read off the bare rows: the tab
+// row, `Review your answers`, a warning when a question is unanswered,
+// each answered question (`● ...`) with its answer (`→ ...`) under it,
+// `Ready to submit your answers?` and the options Submit answers and
+// Cancel. It draws no footer, so askQuestion reads none of it.
+export interface AskReview {
+  tabs: AskTab[];
+  warning: string | null;
+  items: { question: string; answer: string }[];
+  options: AskOption[];
+}
+
+export function askReview(rows: readonly string[]): AskReview | null {
+  const b = rows.map(bare);
+  const one = optionOne(rows);
+  if (one < 0 || NUMBERED.exec(b[one]!)?.[2] !== 'Submit answers') return null;
+  let title = -1;
+  for (let i = one - 1; i >= 0 && one - i <= DIALOG_REACH; i--) {
+    if (isRule(rows[i]!)) break;
+    if (b[i] === 'Review your answers') {
+      title = i;
+      break;
+    }
+  }
+  if (title < 0) return null;
+  let tabRow = -1;
+  for (let i = title - 1; i >= 0 && one - i <= DIALOG_REACH; i--) {
+    if (isRule(rows[i]!)) break;
+    if (TAB_MARK.test(b[i]!)) {
+      tabRow = i;
+      break;
+    }
+  }
+  if (tabRow < 0) return null;
+  const options: AskOption[] = [];
+  for (let i = one, next = 1; i < b.length; i++, next++) {
+    const m = NUMBERED.exec(b[i]!);
+    if (m === null || m[1] !== String(next)) break;
+    options.push({ key: m[1], label: m[2] ?? '', description: '', pointer: /^[❯>]/.test(b[i]!) });
+  }
+  let warning: string | null = null;
+  const items: { question: string; answer: string }[] = [];
+  let open: { question: string; answer: string } | null = null;
+  let answered = false;
+  for (let i = title + 1; i < one; i++) {
+    const row = b[i]!;
+    if (row.startsWith('●')) {
+      open = { question: row.replace(/^●\s*/, ''), answer: '' };
+      answered = false;
+      items.push(open);
+    } else if (open !== null && !answered && row.startsWith('→')) {
+      open.answer = row.replace(/^→\s*/, '');
+      answered = true;
+    } else if (row === '') {
+      open = null;
+    } else if (open !== null) {
+      // A wrapped row, joined back onto what it continues.
+      if (answered) open.answer = `${open.answer} ${row}`;
+      else open.question = `${open.question} ${row}`;
+    } else if (items.length === 0 && warning === null) {
+      const text = row.replace(/^[^A-Za-z]+/, '');
+      if (text.startsWith('You have not answered')) warning = text;
+    }
+  }
+  // The review is the Submit tab, whatever askTabs infers from an open one.
+  const tabs = askTabs(b[tabRow]!).map((t) => ({ ...t, current: t.state === 'submit' }));
+  return { tabs, warning, items, options };
+}
+
 export function isQuestionDialog(rows: readonly string[]): boolean {
-  return askQuestion(rows) !== null;
+  return askQuestion(rows) !== null || askReview(rows) !== null;
 }
 
 // M9 fix 803: the Type something row, a text field in Claude Code 2.1.302

@@ -2,6 +2,8 @@ import MarkdownIt from 'markdown-it';
 import type { Token } from 'markdown-it';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { MouseEvent } from 'react';
+import { openBeside } from './actions.ts';
+import { browserViewSupported } from './daemon-model.ts';
 import { parentPath } from './files-model.ts';
 import { defaultFolds, foldSections } from './markdown-fold-model.ts';
 import type { FoldSection } from './markdown-fold-model.ts';
@@ -9,6 +11,7 @@ import { installImageSrc } from './markdown-url.ts';
 import { installMermaidFence } from './markdown-mermaid.ts';
 import type { MermaidSide, MermaidTheme } from './markdown-mermaid.ts';
 import { drawMermaid, showSide } from './mermaid-draw.ts';
+import { getState } from './store.ts';
 
 // A markdown file rendered for reading. markdown-it with html off, so no
 // tag written in the file reaches the DOM and there is nothing to
@@ -52,7 +55,7 @@ function viewState(path: string): ViewState {
 // folded, so the tab opens on what is new; a plain file opens whole.
 // diagramTheme: mermaid's theme for the ground the document sits on, the
 // skin's dark one unless the file wears a light scheme of its own.
-export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'dark' }: { path: string; text: string; foldOlder?: boolean; diagramTheme?: MermaidTheme }) {
+export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'dark', paneId }: { path: string; text: string; foldOlder?: boolean; diagramTheme?: MermaidTheme; paneId?: string | undefined }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const articleRef = useRef<HTMLElement>(null);
   const folder = parentPath(path);
@@ -101,11 +104,14 @@ export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'da
   // process turns away anything but http and https. A click on a folding
   // heading toggles its section in place; the html memo is not remade,
   // since the DOM already shows the fold and the next render from a
-  // change on disk reads the set.
-  const openLink = (a: HTMLAnchorElement) => {
+  // change on disk reads the set. A Ctrl+click opens one in a browser
+  // pane beside the pane the file is in, or beside the focused pane from
+  // a file tab (M9 fix 863).
+  const openLink = (a: HTMLAnchorElement, beside: boolean) => {
     const href = a.getAttribute('href');
-    if (href === null) return;
-    if (/^https?:/i.test(href)) void window.emerald.files.openExternal(href).catch((err: unknown) => console.warn('[emerald] open link failed', err));
+    if (href === null || !/^https?:/i.test(href)) return;
+    if (beside && browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: href }, paneId ?? null).catch((err: unknown) => console.warn('[emerald] open link beside failed', err));
+    else void window.emerald.files.openExternal(href).catch((err: unknown) => console.warn('[emerald] open link failed', err));
   };
   // A middle-click is an auxclick, not a click, and its default opens the
   // link in a new window (M9 fix 477); it goes to the browser the same way.
@@ -114,7 +120,7 @@ export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'da
     const a = (ev.target as HTMLElement).closest('a');
     if (a === null) return;
     ev.preventDefault();
-    openLink(a);
+    openLink(a, false);
   };
   const onClick = (ev: MouseEvent<HTMLDivElement>) => {
     const target = ev.target as HTMLElement;
@@ -131,7 +137,7 @@ export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'da
     const a = target.closest('a');
     if (a !== null) {
       ev.preventDefault();
-      openLink(a);
+      openLink(a, ev.ctrlKey);
       return;
     }
     const heading = target.closest('h2, h3');

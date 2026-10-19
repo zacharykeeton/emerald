@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
-import type { BrowserAnswer, BrowserVerb } from '@emerald/shared';
+import { BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, dragOffset, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
+import type { BrowserAnswer, BrowserFilter, BrowserVerb } from '@emerald/shared';
 import { integerOption, parse, positionals, readText } from '../args.ts';
 import { browserTarget } from '../browser-target.ts';
 import { CliError, EXIT, NO_WINDOW, usageError } from '../cli-error.ts';
@@ -25,18 +25,23 @@ const options = {
   stdin: { type: 'boolean', default: false },
   file: { type: 'string' },
   clear: { type: 'boolean', default: false },
+  name: { type: 'string' },
+  within: { type: 'string' },
 } as const;
 
 // The first daemon that relays browser.run (M9 fix 672).
 const BROWSER_LEVEL = 63;
+// The first daemon and window that take drag and a snapshot's filter (M9 fixes 874 and 875).
+const BROWSER_DRAG_LEVEL = 72;
 
 const USAGE = [
   'emmer browser <verb> [<args>] [--pane <id>] [--json]',
   '  open <url> [--profile <name>]  a browser pane on the page, beside the pane of the session this runs in; --profile gives it cookies and storage of its own',
-  "  snapshot                      the page's controls, each with a ref (@e1), its role, name, value and state",
+  "  snapshot [--name <text>] [--within <ref>]  the page's controls, each with a ref (@e1), its role, name, value and state, and its regions (@r1); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control",
   "  click <ref>                   a click at the control's centre",
   '  hover <ref>                   the pointer moved over the control',
-  '  fill <ref> <text>|--stdin|--file <path>|--clear  the text typed into a field, in place of what it held; --clear empties it',
+  '  drag <ref> <ref>|<dx>,<dy>    a press on the control, a move in steps and a release on the second control, or dx,dy CSS pixels from its centre (a negative dx after --)',
+  '  fill <ref> <text>|--stdin|--file <path>|--clear  the text typed into a field, in place of what it held; --clear empties it; a select takes the option by its value or text',
   '  key <key>                     one key: Enter, Escape, Tab, an arrow, a letter, with Ctrl+, Shift+ or Alt+ before it',
   '  eval <js>|--stdin|--file <path>  an expression run in the page; prints its value as JSON',
   '  screenshot                    a PNG of the page under the emerald home; prints its path',
@@ -56,6 +61,7 @@ const ARGS: Record<BrowserVerb | 'open', string[]> = {
   snapshot: [],
   click: ['ref'],
   hover: ['ref'],
+  drag: ['ref', 'target'],
   fill: ['ref', 'text'],
   key: ['key'],
   eval: ['js'],
@@ -126,11 +132,23 @@ export async function runBrowser(argv: string[]): Promise<number> {
     if (!isFile(file)) throw new CliError(`no file ${file}`);
     args[1] = file;
   }
+  if (verb === 'drag' && !/^@?e\d+$/.test(args[1]!) && dragOffset(args[1]!) === null) {
+    throw usageError(`drag goes to a ref or to dx,dy in CSS pixels, such as @e7 or 0,-40; got ${JSON.stringify(args[1])}`);
+  }
+  // M9 fix 875: a snapshot's printed rows kept to a name or a region.
+  if (v.name !== undefined && verb !== 'snapshot') throw usageError('--name is for snapshot');
+  if (v.within !== undefined && verb !== 'snapshot') throw usageError('--within is for snapshot');
+  if (v.name !== undefined && (v.name.length < 1 || v.name.length > BROWSER_FILTER_CHARS)) throw usageError(`--name takes 1 to ${BROWSER_FILTER_CHARS} characters`);
+  if (v.within !== undefined && !BROWSER_FILTER_REF.test(v.within)) throw usageError('--within takes a ref such as @r1 or @e3');
+  const filter: BrowserFilter = { ...(v.name === undefined ? {} : { name: v.name }), ...(v.within === undefined ? {} : { within: v.within }) };
+  const filtered = v.name !== undefined || v.within !== undefined;
+  const needs = verb === 'drag' || filtered ? BROWSER_DRAG_LEVEL : BROWSER_LEVEL;
+  const what = verb === 'drag' ? 'emmer browser drag' : filtered ? 'emmer browser snapshot --name and --within' : 'emmer browser';
   const own = process.env['EMERALD_SESSION_ID'];
   const { client, hello } = await connectHello();
   try {
     const level = hello.featureLevel ?? 1;
-    if (level < BROWSER_LEVEL) throw new CliError(`emmerd ${hello.daemonVersion} is older than emmer browser (level ${level}, needs ${BROWSER_LEVEL}); restart it from the app's banner`);
+    if (level < needs) throw new CliError(`emmerd ${hello.daemonVersion} is older than ${what} (level ${level}, needs ${needs}); restart it from the app's banner`);
     const { layout } = await client.request('layout.get', {});
     if (verb === 'open') {
       // Beside the caller's own pane, else the focused pane of the tab in
@@ -155,9 +173,9 @@ export async function runBrowser(argv: string[]): Promise<number> {
       const { sessions } = await client.request('session.list', {});
       by = sessions.find((s) => s.id === own)?.name ?? 'emmer';
     }
-    const res = await client.request('browser.run', { paneId: pane.id, verb: verb as BrowserVerb, args, by, timeoutMs });
+    const res = await client.request('browser.run', { paneId: pane.id, verb: verb as BrowserVerb, args, by, timeoutMs, ...(filtered ? { filter } : {}) });
     if (res.apps === 0) throw new CliError(NO_WINDOW, EXIT.noWindow);
-    if (res.drivers === 0) throw new CliError(`the window is older than emmer browser (it needs level ${BROWSER_LEVEL}); quit Emerald and open it again`);
+    if (res.drivers === 0) throw new CliError(`the window is older than ${what} (it needs level ${needs}); quit Emerald and open it again`);
     if (res.answered === false || res.answer === undefined) {
       throw new CliError(`sent to the window; it did not answer within ${Math.round((timeoutMs + 5000) / 1000)} s`, EXIT.noAnswer);
     }

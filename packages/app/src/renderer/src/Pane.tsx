@@ -11,7 +11,7 @@ import { SHELL_LABELS } from '@emerald/shared';
 import type { SessionInfo, ShellId, SplitDirection, TeamMember } from '@emerald/shared';
 import type { AttentionState } from './attention-model.ts';
 import '@xterm/xterm/css/xterm.css';
-import { closeSessionHere, copyAndNote, hidePaneHere, renameSession, resumeSession, setSessionScheme, splitHere, splitWith, startShellHere, typeInto } from './actions.ts';
+import { closeSessionHere, copyAndNote, hidePaneHere, openBeside, renameSession, resumeSession, setSessionScheme, splitHere, splitWith, startShellHere, typeInto } from './actions.ts';
 import { hadRecentInput } from './attention.ts';
 import { attentionState, waitOverlay } from './attention-model.ts';
 import { takeFresh } from './fresh-panes.ts';
@@ -57,9 +57,9 @@ import { folderName } from './files-model.ts';
 import { lastFolder } from './recent-folders.ts';
 import { ackable, compactPercent, contextPercentText, contextText, describeState, hasState, idleClock, idleClockTitle, markKind, memberParts, modelEffortWords, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
 import { editTab, getState, useStore } from './store.ts';
-import { otherShells } from './daemon-model.ts';
+import { browserViewSupported, fileViewSupported, otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
-import { joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink } from './path-links.ts';
+import { joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, urlLinkTitle } from './path-links.ts';
 import type { FileStat } from '../../preload/api.ts';
 import { TokensArrow, TokensText } from './TokensText.tsx';
 import { RollingFigure } from './RollingFigure.tsx';
@@ -67,7 +67,8 @@ import { HushButton } from './HushButton.tsx';
 import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
 import { PaneNote } from './CheatSheet.tsx';
-import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
+import { fileViewAt } from './tabs-model.ts';
+import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, revealInPane, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
   paneId: string;
@@ -302,25 +303,29 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // data-squeeze, which the hook sets by measuring the state word at each
   // level. A second level drops the tokens (M9 fix 146), which hold
   // until then, and the checklist count with them (M9 fix 153). The
-  // dollars and the context percent go at the third (fix 222). Then the
+  // dollars, the context percent and the model's words go at the third
+  // (fixes 222 and 859). Then the
   // line itself, in the order of M9 fix 237: the state word at the fifth
   // (the row and the shade face still say it, and the mark's colour and
   // motion carry it here), the name at the sixth with the reading, the
   // folded roster and the seam (a pane too narrow to name has no room
   // for a figure), and the title's own room tightened at the seventh.
   // The buttons give only once every word and figure has (M9 fix 840,
-  // the user's rule): the chat button and the two splits at the eighth
-  // (a narrow pane is not one to split or flip, and the chords and the
-  // menu still do; fix 724), hide and close at the ninth (a pane that
-  // narrow is one to zoom or shade, not close, and the keys and the
-  // menu still close it); the mark, the zoom and the shade never give,
+  // the user's rule): the chat button at the eighth (the most
+  // expendable, M9 fix 860; the chord and the menu still flip the face,
+  // fix 724), hide and close at the ninth (a pane that narrow is one to
+  // zoom or shade, not close, and the keys and the menu still close it),
+  // the two splits at the tenth, once the mark, the four buttons and the
+  // tightened paddings no longer fit; the mark, the zoom and the shade never give,
   // since the zoom is what a narrow pane needs most (fix 181 had it go
   // first, and a person widened the window to reach the button whose
   // point was not to) and the shade is the other thing a person does to
   // a sliver of a pane. The hook measures the state word while it
-  // shows; from the fifth level the word is gone and the title's own
+  // shows, to the fraction of a pixel, since its ellipsis drew at any
+  // overflow (M9 fix 859; the word now clips and is marked exact, so it
+  // is whole or gone); from the fifth level the word is gone and the title's own
   // overflow is the measure, the buttons' box being the last thing on
-  // the line. Every title has the nine levels (ten counting the whole
+  // the line. Every title has the ten levels (eleven counting the whole
   // line at 0); one without tokens or a count passes through an empty
   // second, and every title through the fourth, which hides nothing of
   // its own, which is simpler than renumbering. The reading's box is
@@ -329,7 +334,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // which the box overflows does not fit; hidden, it measures 0 against 0.
   const titleRef = useRef<HTMLDivElement>(null);
   const team = session === undefined ? null : teamCounts(session);
-  useSqueeze(titleRef, 10, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
+  useSqueeze(titleRef, 11, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
   // The session's colour on the pane as well as its title (M9 fix 43): the
   // focus ring is the pane's ::after, so it reads the variable from here.
   // An empty pane and a session with no colour keep the amber.
@@ -403,11 +408,11 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
           {(session === undefined || hasState(session)) && (
             // The word opens the turn card (M73 task 4), which carries the state's sentence and the terminal title its tooltip did.
             session === undefined ? (
-              <span className="pane-state state-unknown" data-state="unknown">
+              <span className="pane-state state-unknown" data-state="unknown" data-squeeze-exact="">
                 unknown
               </span>
             ) : (
-              <TurnStateAnchor session={session} className={`pane-state state-${label?.tone ?? 'unknown'}`} data={{ 'data-state': session.state, 'data-working': motion ?? undefined }}>
+              <TurnStateAnchor session={session} className={`pane-state state-${label?.tone ?? 'unknown'}`} data={{ 'data-state': session.state, 'data-working': motion ?? undefined, 'data-squeeze-exact': '' }}>
                 {label?.text ?? 'unknown'}
               </TurnStateAnchor>
             )
@@ -510,7 +515,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       {sessionId === null ? (
         <EmptyPane paneId={paneId} onDone={closePicker} showSplits onlyPane={onlyPane} />
       ) : (
-        <TerminalView paneId={paneId} sessionId={sessionId} focused={focused && !pickerOpen} shaded={shaded} autoShade={autoShade} wanting={wanting} figure={figure} face={face} />
+        <TerminalView paneId={paneId} sessionId={sessionId} focused={focused && !pickerOpen} shaded={shaded} autoShade={autoShade} wanting={wanting} figure={figure} face={face} onlyPane={onlyPane} />
       )}
       {sessionId !== null && pickerOpen && (
         <div className="picker-overlay">
@@ -758,7 +763,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
   };
   return (
     <span className="pane-title-actions" onMouseDown={(ev) => ev.preventDefault()}>
-      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives with the splits (M9 fix 724), at the eighth level once every word has gone (fix 840); the chord stays. */}
+      {/* The face (M9 fix 689), first on a Claude session's pane: an icon of what a click gives. It gives at the eighth level once every word has gone (fix 840), alone and before the splits (fix 860); the chord stays. */}
       {face !== undefined && session !== undefined && (
         <button
           className="pane-face-toggle"
@@ -860,7 +865,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
 // follows in the same commit adopts it into the new host. React runs every
 // unmount cleanup before any mount effect in one commit, so the handle is
 // there for the re-mount; a pane that is truly gone disposes on the timer.
-function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, figure, face }: { paneId: string; sessionId: string; focused: boolean; shaded: boolean; autoShade: boolean; wanting: AttentionState | undefined; figure: RunningFigure | null; face: 'terminal' | 'chat' }) {
+function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, figure, face, onlyPane }: { paneId: string; sessionId: string; focused: boolean; shaded: boolean; autoShade: boolean; wanting: AttentionState | undefined; figure: RunningFigure | null; face: 'terminal' | 'chat'; onlyPane: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   // Fits the terminal to its host and tells the PTY; set once the terminal is open.
@@ -1054,8 +1059,8 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       data-kept={kept ? '' : undefined}
       data-dropping={dropping.has(sessionId) ? '' : undefined}
       // A click anywhere in the pane dismisses the exited notice, except
-      // the notice's own Resume button, which stops the click reaching
-      // here (M9 fix 313).
+      // the notice's own Resume and Close buttons, which stop the click
+      // reaching here (M9 fixes 313 and 861).
       onClick={() => {
         if (notice) setNotice(false);
       }}
@@ -1074,22 +1079,34 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
           and a click in the pane does not put it away. */}
       {sessionState === 'exited' && (notice || face === 'chat') && session !== undefined && (
         <div className="pane-exited-notice" data-exited-notice="">
-          {/* M9 fix 841: on a solid card, as a dialog is, on both faces. */}
+          {/* M9 fix 841: on a solid card, as a dialog is, on both faces. Close beside Resume forgets the session and closes the pane, as the title bar's × does (M9 fix 861). */}
           <div className="pane-exited-notice-card">
             <div className="pane-exited-notice-title">exited</div>
             <div className="pane-exited-notice-body">
               {face === 'chat' ? "This session's process has ended; its conversation is kept." : "This session's process has ended; its last screen is kept."}
             </div>
-            <button
-              className="pane-exited-notice-resume"
-              title={resumeTitle(session)}
-              onClick={(ev) => {
-                ev.stopPropagation();
-                void resumeSession(session.id).catch(warn('resume'));
-              }}
-            >
-              Resume
-            </button>
+            <div className="pane-exited-notice-actions">
+              <button
+                className="pane-exited-notice-resume"
+                title={resumeTitle(session)}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  void resumeSession(session.id).catch(warn('resume'));
+                }}
+              >
+                Resume
+              </button>
+              <button
+                className="pane-exited-notice-close secondary"
+                title={closeTitle(session, onlyPane)}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  closeSessionHere(paneId);
+                }}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1702,8 +1719,10 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   };
   loadWebgl(null);
   // M9 fix 204: a URL a session prints is a link, underlined on hover by
-  // the addon and opened in the browser on Ctrl+click alone, since a
-  // plain click is the terminal's (Claude's own prompt box takes clicks).
+  // the addon and opened on Ctrl+click alone, since a plain click is the
+  // terminal's (Claude's own prompt box takes clicks). Since fix 863 the
+  // URL opens in a browser pane beside this one, the system browser on a
+  // daemon too old for one.
   // The main process refuses anything but http and https. The hovered
   // link is written on the host, as a tooltip saying how to open it and
   // for the verify script, since the WebGL renderer leaves no DOM to read.
@@ -1711,12 +1730,14 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     new WebLinksAddon(
       (ev, uri) => {
         if (!ev.ctrlKey) return;
-        void window.emerald.files.openExternal(uri).catch((err: unknown) => console.warn('[emerald] open link failed', err));
+        const fail = (err: unknown) => console.warn('[emerald] open link failed', err);
+        if (browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: uri }, paneIdRef.current).catch(fail);
+        else void window.emerald.files.openExternal(uri).catch(fail);
       },
       {
         hover: (_ev, uri) => {
           host.dataset['link'] = uri;
-          host.title = `Ctrl+click opens ${uri}`;
+          host.title = urlLinkTitle(uri, browserViewSupported(getState().daemon));
         },
         leave: () => {
           delete host.dataset['link'];
@@ -1725,8 +1746,10 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
       },
     ),
   );
-  // M9 fix 357: a file path a session prints is a link too, a pinned
-  // tab at the line on Ctrl+click. Not a second WebLinksAddon: that
+  // M9 fix 357: a file path a session prints is a link too, opened on
+  // Ctrl+click in a file pane beside this one at the line (M9 fix 864; a
+  // pinned tab before it, and still on a daemon too old for a file
+  // pane). Not a second WebLinksAddon: that
   // addon keeps only a match `new URL` parses, which no path is, so the
   // provider is this one, in its shape (a row's text scanned for the
   // pattern, each match a link on that row's cells). A relative path is
@@ -1771,7 +1794,14 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
               .then((st) => {
                 if (!('kind' in st)) return;
                 const fail = (err: unknown) => console.warn('[emerald] open path failed', err);
-                switch (pathLinkAction(st.kind, ev)) {
+                switch (pathLinkAction(st.kind, ev, fileViewSupported(getState().daemon))) {
+                  case 'beside':
+                    void openBeside(fileViewAt(full, at), paneIdRef.current)
+                      .then((paneId) => {
+                        if (at !== undefined) revealInPane(paneId, full, at, column);
+                      })
+                      .catch(fail);
+                    return;
                   case 'tab':
                     openFileTab(full, at, column);
                     pinFileTab(full);
@@ -1796,7 +1826,7 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
               if (hoveredPath !== full || !('kind' in st)) return;
               host.dataset['link'] = full;
               host.dataset['linkKind'] = st.kind;
-              host.title = pathLinkTitle(full, st.kind);
+              host.title = pathLinkTitle(full, st.kind, fileViewSupported(getState().daemon));
             };
             const cached = hoverStatCache.get(full);
             if (cached !== undefined) {

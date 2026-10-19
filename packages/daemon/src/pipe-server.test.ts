@@ -141,6 +141,42 @@ test('layout.get, layout.set, stale rejection and layout.changed push', async ()
   silent.close();
 });
 
+test('window.open, window.front and window.close over the wire, each pushed as layout.changed, the last window refused (M9 fix 865)', async () => {
+  const subscriber = await PipeClient.connect(PIPE);
+  await subscriber.request('subscribe', { topics: ['layout'] });
+  const client = await PipeClient.connect(PIPE);
+  try {
+    const pushes: Layout[] = [];
+    subscriber.on('message', (m: ServerMessage) => {
+      if (m.type === 'layout.changed') pushes.push(m.layout);
+    });
+    const { layout: base } = await client.request('layout.get', {});
+    const opened = await client.request('window.open', {});
+    assert.equal(typeof opened.windowId, 'string');
+    assert.deepEqual(opened.layout.windows!.map((w) => w.id), ['first', opened.windowId]);
+    assert.equal(opened.layout.tabs.length, base.tabs.length + 1);
+    const { layout: fronted } = await client.request('window.front', { windowId: 'first' });
+    assert.equal(fronted.currentTabId, base.currentTabId);
+    const { layout: closed } = await client.request('window.close', { windowId: opened.windowId });
+    assert.equal('windows' in closed, false);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(pushes, [opened.layout, fronted, closed], 'three pushes, one per edit');
+
+    // The last window: one left that is not the first, which cannot close.
+    const again = await client.request('window.open', {});
+    const { layout: lone } = await client.request('window.close', { windowId: 'first' });
+    assert.deepEqual(lone.windows!.map((w) => w.id), [again.windowId]);
+    await assert.rejects(client.request('window.close', { windowId: again.windowId }), { code: 'bad-request', message: 'the last window cannot close' });
+    await assert.rejects(client.request('window.close', {} as never), { code: 'bad-request' });
+    // Back to the shape the later tests expect: one first window, no field.
+    const { layout: restored } = await client.request('layout.set', { layout: { ...lone, windows: [{ id: 'first', tabIds: lone.tabs.map((t) => t.id), currentTabId: lone.currentTabId }] } });
+    assert.equal('windows' in restored, false);
+  } finally {
+    subscriber.close();
+    client.close();
+  }
+});
+
 test('malformed framing drops the client', async () => {
   const client = await PipeClient.connect(PIPE);
   const closed = once(client, 'close');
@@ -371,7 +407,7 @@ test('browser.run relays a command to a window at level 63 and holds the reply (
     const took = Date.now() - started;
     assert.ok(took >= 1050 && took < 3000, `answered false after ${took} ms`);
 
-    await assert.rejects(cli.request('browser.run', { ...ask, verb: 'frob' } as never), { code: 'bad-request', message: 'verb must be one of snapshot, click, hover, fill, key, eval, screenshot, wait, navigate, upload, events, resume' });
+    await assert.rejects(cli.request('browser.run', { ...ask, verb: 'frob' } as never), { code: 'bad-request', message: 'verb must be one of snapshot, click, hover, drag, fill, key, eval, screenshot, wait, navigate, upload, events, resume' });
     // M9 fix 673: resume is a verb, relayed like the rest.
     const resumed = waitFor(app, (m) => m.type === 'browser.requested' && m.verb === 'resume');
     const resumeReply = cli.request('browser.run', { ...ask, verb: 'resume' });
@@ -383,6 +419,74 @@ test('browser.run relays a command to a window at level 63 and holds the reply (
     await assert.rejects(cli.request('browser.run', { ...ask, timeoutMs: 500 }), { code: 'bad-request', message: 'timeoutMs must be a whole number from 1000 to 120000' });
     await assert.rejects(cli.request('browser.run', { ...ask, by: 'b'.repeat(101) }), { code: 'bad-request', message: 'by must be a name of 100 characters or fewer' });
     await assert.rejects(app.request('browser.done', { runId: 1, answer: { ok: false, text: 'x' } } as never), { code: 'bad-request', message: 'answer must be { ok, text } with a reason when not ok' });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+test('browser.run relays drag to a window at level 72 alone (M9 fix 874)', async () => {
+  const pipe = `${PIPE}-browser-drag`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { paneId: 'pane-1234567890', verb: 'drag' as const, args: ['e1', '0,-60'], by: 'alpha', timeoutMs: 1000 };
+
+    // A window at 71 drives the older verbs and is counted as no driver for drag.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 71 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 0 });
+    // M9 fix 875: a filtered snapshot needs 72 too, since an older window would print the whole page.
+    assert.deepEqual(await cli.request('browser.run', { ...ask, verb: 'snapshot', args: [], filter: { name: 'Save' } }), { apps: 1, drivers: 0 });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'browser.requested'), []);
+    const snapPushed = waitFor(old, (m) => m.type === 'browser.requested' && m.verb === 'snapshot');
+    const snapReply = cli.request('browser.run', { ...ask, verb: 'snapshot', args: [] });
+    const snapPush = (await snapPushed) as { runId: number };
+    await old.request('browser.done', { runId: snapPush.runId, answer: { ok: true, text: 'page' } });
+    assert.equal((await snapReply).answered, true);
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 72 });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', ask);
+    const push = await requested;
+    const runId = (push as { runId: number }).runId;
+    assert.deepEqual(push, { type: 'browser.requested', runId, paneId: 'pane-1234567890', verb: 'drag', args: ['e1', '0,-60'], by: 'alpha', timeoutMs: 1000 });
+    const answer = { ok: true, text: 'dragged @e1 by 0,-60' };
+    await app.request('browser.done', { runId, answer });
+    assert.deepEqual(await reply, { apps: 1, drivers: 1, answered: true, answer });
+
+    // M9 fix 875: the filter rides on the push; an empty one is no filter.
+    const snap = { ...ask, verb: 'snapshot' as const, args: [] };
+    const filterPushed = waitFor(app, (m) => m.type === 'browser.requested' && m.runId > runId);
+    const filterReply = cli.request('browser.run', { ...snap, filter: { name: 'Save', within: '@r2' } });
+    const filterPush = (await filterPushed) as { runId: number };
+    assert.deepEqual(filterPush, { type: 'browser.requested', runId: filterPush.runId, paneId: 'pane-1234567890', verb: 'snapshot', args: [], by: 'alpha', timeoutMs: 1000, filter: { name: 'Save', within: '@r2' } });
+    await app.request('browser.done', { runId: filterPush.runId, answer });
+    await filterReply;
+    const emptyPushed = waitFor(app, (m) => m.type === 'browser.requested' && m.runId > filterPush.runId);
+    const emptyReply = cli.request('browser.run', { ...snap, filter: {} });
+    const emptyPush = (await emptyPushed) as { runId: number };
+    assert.equal(Object.hasOwn(emptyPush, 'filter'), false);
+    await app.request('browser.done', { runId: emptyPush.runId, answer });
+    await emptyReply;
+    await assert.rejects(cli.request('browser.run', { ...ask, verb: 'click', args: ['e1'], filter: { name: 'Save' } }), { code: 'bad-request', message: 'filter is for snapshot' });
+    await assert.rejects(cli.request('browser.run', { ...snap, filter: 'x' } as never), { code: 'bad-request', message: 'filter must be { name?, within? }' });
+    await assert.rejects(cli.request('browser.run', { ...snap, filter: { name: '' } }), { code: 'bad-request', message: 'filter.name must be a text of 1 to 200 characters' });
+    await assert.rejects(cli.request('browser.run', { ...snap, filter: { within: 'x' } }), { code: 'bad-request', message: 'filter.within must be a ref such as @r1 or @e3' });
     app.close();
     cli.close();
   } finally {
@@ -744,6 +848,42 @@ test('spawn, attach with replay, input, exit and kill guard', async () => {
 
   late.close();
   client.close();
+});
+
+test('one connection\'s second pty.attach replays the ring again and its one pty.detach ends the stream (what the app\'s attach broker counts on, M9 fix 866)', async () => {
+  const client = await PipeClient.connect(PIPE);
+  const { session } = await client.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 100, rows: 30 });
+  try {
+    await new Promise((r) => setTimeout(r, 1500));
+    const received: ServerMessage[] = [];
+    const onMsg = (m: ServerMessage) => received.push(m);
+    client.on('message', onMsg);
+    const replays = () => received.filter((m) => m.type === 'pty.output' && m.sessionId === session.id && m.replay === true).length;
+    await client.request('pty.attach', { sessionId: session.id });
+    assert.equal(replays(), 1, 'the first attach replays');
+    // A second window of the same main process attaches on the same
+    // connection: the daemon starts the stream over and replays again.
+    await client.request('pty.attach', { sessionId: session.id });
+    assert.equal(replays(), 2, 'the second attach on one connection replays the ring again');
+
+    const marker = `ATTACH866_${Date.now()}`;
+    const seen = waitFor(client, (m) => m.type === 'pty.output' && m.replay !== true && Buffer.from(m.data, 'base64').toString().includes(`OUT:${marker}`));
+    client.send({ type: 'pty.input', sessionId: session.id, data: `Write-Output ('OUT:' + '${marker}')\r` });
+    await seen;
+
+    // One detach drops the connection's only sink, whoever else was watching.
+    await client.request('pty.detach', { sessionId: session.id });
+    const after = `DETACH866_${Date.now()}`;
+    const from = received.length;
+    client.send({ type: 'pty.input', sessionId: session.id, data: `Write-Output ('OUT:' + '${after}')\r` });
+    await new Promise((r) => setTimeout(r, 1000));
+    const heard = received.slice(from).some((m) => m.type === 'pty.output' && Buffer.from(m.data, 'base64').toString().includes(`OUT:${after}`));
+    assert.equal(heard, false, 'after the one detach the connection hears no more output');
+    client.off('message', onMsg);
+  } finally {
+    await client.request('session.kill', { sessionId: session.id }).catch(() => {});
+    client.close();
+  }
 });
 
 // M9 fix 454: the daemon claims the pipe before its start and the server

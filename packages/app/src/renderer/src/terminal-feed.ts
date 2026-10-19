@@ -16,6 +16,10 @@ import { getState, subscribe } from './store.ts';
 // panes (the old pane's handle parked, the new one opened) keeps its
 // attachment and its scrollback throughout.
 //
+// Several windows of one process share the pipe connection (M9 fix 867):
+// a replay this feed did not ask for is another window's attach, and
+// starts its terminals over.
+//
 // The size is the feed's too, since two panes on one PTY cannot each
 // size it: the rules are in mirror-model.ts (the focused pane's when that
 // pane shows the session, else the last choice while its pane lasts,
@@ -74,6 +78,8 @@ interface Attachment {
   // pty.attach has been sent (its reply may be pending): a handle opened
   // now must not attach again.
   attached: boolean;
+  // A pty.attach this feed sent has had no replay yet (M9 fix 867).
+  awaitingReplay: boolean;
   // A reattach is in flight; a second call while it is meets nothing.
   reattaching: boolean;
   chosen: Chosen | null;
@@ -125,7 +131,7 @@ export class TerminalFeed {
     this.listen();
     let a = this.attachments.get(sessionId);
     if (a === undefined) {
-      a = { sessionId, ring: new MirrorRing(this.deps.ringBytes ?? Limits.ringBufferBytes), handles: [], attached: false, reattaching: false, chosen: null, detachTimer: null, pid: null };
+      a = { sessionId, ring: new MirrorRing(this.deps.ringBytes ?? Limits.ringBufferBytes), handles: [], attached: false, awaitingReplay: false, reattaching: false, chosen: null, detachTimer: null, pid: null };
       this.attachments.set(sessionId, a);
     }
     if (a.detachTimer !== null) {
@@ -232,6 +238,7 @@ export class TerminalFeed {
   private attach(a: Attachment): Promise<void> {
     const { sessionId } = a;
     a.attached = true;
+    a.awaitingReplay = true;
     a.pid = this.deps.pidOf?.(sessionId) ?? null;
     this.stats.attaches += 1;
     if (a.chosen !== null) this.deps.emerald.send({ type: 'pty.resize', sessionId, cols: a.chosen.fit.cols, rows: a.chosen.fit.rows });
@@ -252,7 +259,19 @@ export class TerminalFeed {
   private onPush(msg: RendererPush): void {
     if (msg.type === 'pty.output') {
       const a = this.attachments.get(msg.sessionId);
-      if (a !== undefined) this.broadcast(a, msg.data);
+      // Not attached yet: the output is another window's, and this
+      // feed's own replay will bring the scrollback.
+      if (a === undefined || !a.attached) return;
+      if (msg.replay === true) {
+        // A replay this feed did not ask for is another window's attach
+        // on the same connection, which starts the stream over (M9 fix 867).
+        if (!a.awaitingReplay) {
+          a.ring.clear();
+          for (const h of a.handles) h.term.reset();
+        }
+        a.awaitingReplay = false;
+      }
+      this.broadcast(a, msg.data);
     } else if (msg.type === 'pty.exit') {
       const a = this.attachments.get(msg.sessionId);
       if (a === undefined) return;

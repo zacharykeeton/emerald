@@ -100,15 +100,24 @@ export interface LayoutTab extends PaneTree {
   name: string;
 }
 
+// M9 fix 865: a window of the app, which owns its tabs (a tab is in exactly one window) and shows one of them; ids are the daemon's, and the window the app opened first on a layout with no windows field is FIRST_WINDOW_ID.
+export interface LayoutWindow {
+  id: string;
+  tabIds: string[];
+  currentTabId: string;
+}
+
 export interface Layout {
   tabs: LayoutTab[];
-  // The tab the window shows; every client shows the same one.
+  // The tab the front window shows (the window focused last, M9 fix 865); with one window, the tab on show.
   currentTabId: string;
   // Daemon increments on every accepted change. A client sends the revision it
   // based its edit on and the daemon rejects stale edits, so two panes racing
   // to split cannot silently overwrite each other. One revision for every
   // tab, so a switch and a split race the same way.
   revision: number;
+  // The windows (M9 fix 865), in the order the app opens them; absent while there is one window and it is FIRST_WINDOW_ID, so a one-window layout is the shape it always was.
+  windows?: LayoutWindow[];
 }
 
 // The wire and disk shape before M36: one tree, no tabs. Still read from

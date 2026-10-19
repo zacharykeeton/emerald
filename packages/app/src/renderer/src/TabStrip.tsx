@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { LayoutTab, SessionInfo } from '@emerald/shared';
 import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
-import { closeLayoutTab, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
+import { closeLayoutTab, moveTabToNewWindow, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
 import { shadeablePanes } from './shade-model.ts';
 import { plainKeyFor } from './keys-model.ts';
 import { Menu } from './Menu.tsx';
@@ -12,7 +12,7 @@ import { ClaudeStar } from './skin-star.tsx';
 import { reviewFolder, reviewSessionId } from './review-model.ts';
 import { folderName } from './files-model.ts';
 import { ClockIcon, FileIcon, FolderIcon, GraphIcon, NewsIcon, PanesIcon, StatsIcon } from './icons.tsx';
-import { fileViewSupported, tabsSupported } from './daemon-model.ts';
+import { fileViewSupported, tabsSupported, windowsSupported } from './daemon-model.ts';
 import { startDrag } from './pane-drag.ts';
 import { describeEntry, entryAlive, stepHistory } from './focus-history.ts';
 import { nextStop } from './focus-history-model.ts';
@@ -373,6 +373,8 @@ export function TabStrip() {
             onClose={() => setTabMenu(null)}
             onRename={() => setRenaming(tabMenu.tab.id)}
             onCloseTab={() => close(tabMenu.tab)}
+            windowsKept={windowsSupported(daemon)}
+            onMoveToWindow={() => void moveTabToNewWindow(tabMenu.tab.id).catch(warn('move to new window'))}
           />
         )}
       </div>
@@ -505,13 +507,18 @@ interface LayoutTabMenuProps {
   onClose: () => void;
   onRename: () => void;
   onCloseTab: () => void;
+  // The daemon holds windows (M9 fix 867, level 73).
+  windowsKept: boolean;
+  onMoveToWindow: () => void;
 }
 
 // Rename and Close for a layout tab, and Shade all and Lift all (M63) for
 // the panes of the tab, so a wall of sessions goes calm in one press. The
 // close item is there but off on the last tab, so it can say why rather
 // than vanish; the shade pair is off on a tab with no pane on a session.
-function LayoutTabMenu({ tab, last, x, y, onClose, onRename, onCloseTab }: LayoutTabMenuProps) {
+// Move to new window (M9 fix 867) sends the tab to a window of its own,
+// off on the window's only tab.
+function LayoutTabMenu({ tab, last, x, y, onClose, onRename, onCloseTab, windowsKept, onMoveToWindow }: LayoutTabMenuProps) {
   const done = (fn: () => void) => () => {
     onClose();
     fn();
@@ -542,6 +549,17 @@ function LayoutTabMenu({ tab, last, x, y, onClose, onRename, onCloseTab }: Layou
           title: panes.length === 0 ? 'No pane on a session' : 'Lift every shade on this tab',
           onClick: done(() => liftPanes(panes)),
         },
+        ...(windowsKept
+          ? [
+              {
+                label: 'Move to new window',
+                disabled: last,
+                title: last ? 'The only tab of this window cannot move' : 'Opens a window of its own holding this tab',
+                onClick: done(onMoveToWindow),
+                separator: true,
+              },
+            ]
+          : []),
         {
           label: 'Close tab',
           disabled: last,

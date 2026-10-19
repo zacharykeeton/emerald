@@ -42,7 +42,7 @@ process.env['EMERALD_OPEN_LOG'] = openedLinks;
 // chooser being a native dialog no script can drive.
 const pickedDir = path.join(os.tmpdir(), 'emerald-verify', 'm9-picked');
 process.env['EMERALD_PICK_FOLDER'] = pickedDir;
-const { blockRunner, CTRL, SHIFT, daemonPid, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
+const { blockRunner, CTRL, SHIFT, daemonPid, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
 // M9 fix 605: the steps after the prelude are blocks, each a closure a
@@ -164,6 +164,11 @@ try {
   expect(fs.existsSync(profileOf(process.env['EMERALD_HOME'])), 'the running window keeps its profile');
   step('M9 fix 115: PASS, both windows');
 
+  // M9 fix 885 widened the rail's default to 330 px; the walks below drive
+  // panes by the root ratio from widths written against the old area (fix
+  // 77's from 600 px, past 0.95 of a 608 px split), and they are about the
+  // panes, not the rail.
+  await railAtOldWidth(s);
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
   await s.waitFor(
     `(document.querySelector('.empty-pane .empty-start')?.innerText ?? '').startsWith(${JSON.stringify('Start shell in ' + path.basename(home))}) && document.querySelector('.empty-pane .empty-kind[data-kind="shell"]')?.getAttribute('aria-pressed') === 'true'`,
@@ -1648,8 +1653,9 @@ try {
     // 80 by the root ratio (the splitter's path, set as state): the state
     // word goes at the fifth level, the name at the sixth with the folded
     // roster and the reading, and only then the buttons (M9 fix 840): the
-    // chat button and the splits at the eighth, hide and close at the
-    // ninth, the zoom and the shade staying to the end, inside the
+    // chat button at the eighth, hide and close at the ninth and the
+    // splits at the tenth (M9 fix 860), the zoom and the shade staying to
+    // the end, inside the
     // title's box. The walk starts at 520px since fix 840 (300 before),
     // as the held buttons take about 65px more through the seventh
     // level and the state word was already gone at 420; from
@@ -1674,31 +1680,42 @@ try {
       };
     })()`);
     const floorReadings = [];
-    // The floor is about 75px (the mark, the two buttons and the tightened paddings), so the walk ends at 80.
-    for (let target = 520; target >= 80; target -= 20) {
+    // The floor is about 75px (the mark, the zoom, the shade and the tightened paddings) and the splits hold to about 120px (fix 860), so the walk ends at 80, in 10px steps below 240 so it lands on the eighth level, one button wide on this Claude pane.
+    for (let target = 520; target >= 80; target -= target > 240 ? 20 : 10) {
       await paneTo(target);
       floorReadings.push(await floorRead());
+      // M9 fix 860: a frame of the title at every width, the buttons as
+      // they give, for the install's look (860-floor-<width>.png).
+      const floorBox = await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(floorSel + ' .pane-title')}).getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; })()`);
+      const floorShot = Buffer.from((await s.send('Page.captureScreenshot', { format: 'png', clip: { ...floorBox, scale: 2 }, fromSurface: true })).data, 'base64');
+      try {
+        fs.writeFileSync(path.join(shotsDir, `860-floor-${target}.png`), floorShot);
+      } catch {
+        fs.writeFileSync(path.join(shotsDir, `860-floor-${target}-${Date.now()}.png`), floorShot);
+      }
     }
     let lastFloorLevel = -1;
     let stateGoneAt = null;
     let nameGoneAt = null;
+    let faceGoneAt = null;
     let splitsGoneAt = null;
     let closeGoneAt = null;
     for (const r of floorReadings) {
       expect(r.level >= lastFloorLevel, `fix 237: the level never falls as the pane narrows, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
       lastFloorLevel = r.level;
       expect(r.state === (r.level < 5) && r.name === (r.level < 6) && r.roster === (r.level < 6) && r.context === (r.level < 6), `fix 237: at ${r.width}px level ${r.level} the state shows below 5 and the name, the roster and the reading below 6, got ${JSON.stringify(r)}`);
-      expect(r.splits === (r.level < 8) && r.face === (r.level < 8) && r.hide === (r.level < 9) && r.close === (r.level < 9), `fix 840: at ${r.width}px level ${r.level} the chat button and the splits show below 8 and hide and close below 9, got ${JSON.stringify(r)}`);
+      expect(r.face === (r.level < 8) && r.hide === (r.level < 9) && r.close === (r.level < 9) && r.splits === (r.level < 10), `fix 860: at ${r.width}px level ${r.level} the chat button shows below 8, hide and close below 9 and the splits below 10, got ${JSON.stringify(r)}`);
       expect(r.mark && r.zoom && r.shade && r.zoomInside && r.shadeInside, `fix 237: at ${r.width}px level ${r.level} the mark, the zoom and the shade show inside the title, got ${JSON.stringify(r)}`);
       if (!r.state && stateGoneAt === null) stateGoneAt = r;
       if (!r.name && nameGoneAt === null) nameGoneAt = r;
+      if (!r.face && faceGoneAt === null) faceGoneAt = r;
       if (!r.splits && splitsGoneAt === null) splitsGoneAt = r;
       if (!r.close && closeGoneAt === null) closeGoneAt = r;
     }
-    expect(stateGoneAt !== null && nameGoneAt !== null && splitsGoneAt !== null && closeGoneAt !== null, `fix 840: the walk saw the state, then the name, then the splits, then hide and close go, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
-    expect(stateGoneAt.width >= nameGoneAt.width && nameGoneAt.width >= splitsGoneAt.width && splitsGoneAt.width >= closeGoneAt.width && stateGoneAt.level < nameGoneAt.level && nameGoneAt.level < splitsGoneAt.level && splitsGoneAt.level < closeGoneAt.level, `fix 840: the state goes before the name, the name before the splits and the splits before hide and close, got ${JSON.stringify({ stateGoneAt, nameGoneAt, splitsGoneAt, closeGoneAt })}`);
+    expect(stateGoneAt !== null && nameGoneAt !== null && faceGoneAt !== null && splitsGoneAt !== null && closeGoneAt !== null, `fix 860: the walk saw the state, then the name, then the chat button, then hide and close, then the splits go, got ${JSON.stringify(floorReadings.map((x) => [x.width, x.level]))}`);
+    expect(stateGoneAt.width >= nameGoneAt.width && nameGoneAt.width >= faceGoneAt.width && faceGoneAt.width >= closeGoneAt.width && closeGoneAt.width >= splitsGoneAt.width && stateGoneAt.level < nameGoneAt.level && nameGoneAt.level < faceGoneAt.level && faceGoneAt.level < closeGoneAt.level && closeGoneAt.level < splitsGoneAt.level, `fix 860: the state goes before the name, the name before the chat button, the chat button before hide and close and hide and close before the splits, got ${JSON.stringify({ stateGoneAt, nameGoneAt, faceGoneAt, closeGoneAt, splitsGoneAt })}`);
     const narrowestFloor = floorReadings[floorReadings.length - 1];
-    expect(narrowestFloor.level === 9 && narrowestFloor.width <= 84, `fix 237: at the narrowest the title is at its last level, got ${JSON.stringify(narrowestFloor)}`);
+    expect(narrowestFloor.level === 10 && narrowestFloor.width <= 84, `fix 237: at the narrowest the title is at its last level, got ${JSON.stringify(narrowestFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-zoom')}).click()`);
     await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the zoom button zoomed the sliver');
     const zoomedFloor = await floorRead();
@@ -1706,11 +1723,11 @@ try {
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-zoom')}).click()`);
     await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'the zoom button unzoomed');
     const unzoomedFloor = await floorRead();
-    expect(unzoomedFloor.level === 9 && unzoomedFloor.width === narrowestFloor.width, `fix 237: unzoomed, the sliver is back at its last level, got ${JSON.stringify(unzoomedFloor)}`);
+    expect(unzoomedFloor.level === 10 && unzoomedFloor.width === narrowestFloor.width, `fix 237: unzoomed, the sliver is back at its last level, got ${JSON.stringify(unzoomedFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-shade-toggle')}).click()`);
     await s.waitFor(`!!document.querySelector(${JSON.stringify(floorSel + ' .pane-shade')})`, 'the shade button shaded the sliver');
     const shadedFloor = await floorRead();
-    expect(shadedFloor.level === 9 && shadedFloor.zoom && shadedFloor.shade, `fix 237: the shaded sliver's title keeps the zoom and the shade at its last level, got ${JSON.stringify(shadedFloor)}`);
+    expect(shadedFloor.level === 10 && shadedFloor.zoom && shadedFloor.shade, `fix 237: the shaded sliver's title keeps the zoom and the shade at its last level, got ${JSON.stringify(shadedFloor)}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(floorSel + ' .pane-shade-toggle')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(floorSel + ' .pane-shade')})`, 'the shade button lifted it');
     await s.screenshot('m9-fix237-floor.png');
@@ -1719,7 +1736,7 @@ try {
     await s.waitFor(`Math.abs(document.querySelector(${JSON.stringify(sqTitleSel)}).getBoundingClientRect().width - ${initialTitle.width}) < 4`, 'the left pane back at its width after the floor walk');
     const backFloor = await titleRead();
     expect(backFloor.level === initialTitle.level, `back at ${Math.round(backFloor.width)}px the title is at level ${initialTitle.level} again, got ${JSON.stringify(backFloor)}`);
-    step(`M9 fix 237 and 840: the state gone from ${stateGoneAt.width}px (level ${stateGoneAt.level}), the name from ${nameGoneAt.width}px (level ${nameGoneAt.level}), the chat button and the splits from ${splitsGoneAt.width}px (level ${splitsGoneAt.level}), hide and close from ${closeGoneAt.width}px (level ${closeGoneAt.level}); at ${narrowestFloor.width}px the mark, the zoom and the shade stay, the zoom gives the pane the tab and back, the shade pulls and lifts`);
+    step(`M9 fix 237, 840 and 860: the state gone from ${stateGoneAt.width}px (level ${stateGoneAt.level}), the name from ${nameGoneAt.width}px (level ${nameGoneAt.level}), the chat button from ${faceGoneAt.width}px (level ${faceGoneAt.level}), hide and close from ${closeGoneAt.width}px (level ${closeGoneAt.level}), the splits from ${splitsGoneAt.width}px (level ${splitsGoneAt.level}); at ${narrowestFloor.width}px the mark, the zoom and the shade stay, the zoom gives the pane the tab and back, the shade pulls and lifts`);
     layout = await getLayout(s);
     await zreq(s, 'layout.set', { layout: { ...layout, root: withSession(layout.root, dropPane, parkedInDrop) } });
     await zreq(s, 'session.kill', { sessionId: squeezed.id, remove: true });
@@ -3130,7 +3147,7 @@ try {
       contextMin: getComputedStyle(context).minWidth,
     };
   })()`);
-    expect(thinTitle.level !== null && Number(thinTitle.level) <= 9, `the thin title has a level with a tokens span, got ${JSON.stringify(thinTitle)}`);
+    expect(thinTitle.level !== null && Number(thinTitle.level) <= 10, `the thin title has a level with a tokens span, got ${JSON.stringify(thinTitle)}`);
     expect(thinTitle.tokens === (Number(thinTitle.level) < 2) && (Number(thinTitle.level) >= 2 || thinTitle.tokensWhole) && thinTitle.stateShown === (Number(thinTitle.level) < 5) && (!thinTitle.stateShown || thinTitle.stateWhole), `at ${thinTitle.width}px level ${thinTitle.level} the title's tokens are ${Number(thinTitle.level) < 2 ? 'whole' : 'gone'} and the state word ${Number(thinTitle.level) < 5 ? 'whole' : 'gone'} (fix 237), got ${JSON.stringify(thinTitle)}`);
     // Fix 146's 11px floor is levels 2 to 5; from the sixth the reading is hidden with the name (fix 237), which the held buttons (fix 840) can bring a thin pane to.
     expect((Number(thinTitle.level) < 2 || Number(thinTitle.level) >= 6) === (thinTitle.contextMin !== '11px'), `the reading's box holds its content only while the tokens show, got ${JSON.stringify(thinTitle)}`);
@@ -3358,7 +3375,10 @@ try {
     // opens nothing, and a Ctrl+click sends the URL to openExternal, which
     // the harness reads off EMERALD_OPEN_LOG. The events are the DOM's own on
     // the screen element, where xterm's linkifier listens, since a CDP
-    // mouseMoved takes seconds to land in this build.
+    // mouseMoved takes seconds to land in this build. The daemon here is at
+    // level 1, below a browser pane's level, so the Ctrl+click takes the old
+    // route to the system browser (M9 fix 863); the route into a pane beside
+    // is verify:view's.
     // A live shell already shown in a pane (the kept-marker step's approach:
     // a session swapped into a pane over the pipe never has its terminal
     // fed, so a shell that has been on screen from the start is used). The
@@ -3410,7 +3430,7 @@ try {
     expect(fs.existsSync(openedLinks) && fs.readFileSync(openedLinks, 'utf8').trim() === linkUrl, `the Ctrl+click sent the URL to openExternal: ${fs.existsSync(openedLinks) ? fs.readFileSync(openedLinks, 'utf8').trim() : '(nothing)'}`);
     await s.evalJs(`document.querySelector(${JSON.stringify(linkHost + ' .xterm-screen')}).dispatchEvent(new MouseEvent('mousemove', { clientX: ${cell204.x}, clientY: ${cell204.y + 200}, bubbles: true }))`);
     await s.waitFor(`document.querySelector(${JSON.stringify(linkHost)})?.dataset.link === undefined`, 'the pointer off the link clears the host', 5000);
-    step('M9 fix 204: a URL in a pane is a link with a tooltip on hover, a plain click opens nothing and a Ctrl+click sends it to the browser');
+    step('M9 fix 204: a URL in a pane is a link with a tooltip on hover, a plain click opens nothing and a Ctrl+click sends it to the browser on a daemon too old for a browser pane (fix 863)');
 
     // M9 fix 355: EMERALD_INSPECT_PORT was set on this window's launch, and
     // the harness's own --remote-debugging-port on the command line wins,
@@ -3777,13 +3797,13 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       }
     };
     let offset = sizeOf();
-    const usageSwitch = () => s.evalJs(`document.querySelector('.attention-sound')?.dataset.usage ?? null`);
-    const pickAttention = async (label) => {
-      const c = await centerOf(s, '.attention-sound');
-      await s.rightClick(c.x, c.y);
-      await s.waitFor(`!!document.querySelector('.attention-menu')`, 'the speaker menu open');
-      await s.evalJs(`[...document.querySelectorAll('.attention-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
-      await s.waitFor(`!document.querySelector('.attention-menu')`, 'the speaker menu closed');
+    const usageSwitch = () => s.evalJs(`document.querySelector('.title-bar-mark')?.dataset.usage ?? null`);
+    const pickUsage = async (label) => {
+      const c = await centerOf(s, '.title-bar-mark');
+      await s.click(c.x, c.y);
+      await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu open');
+      await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+      await s.waitFor(`!document.querySelector('.app-menu')`, 'the app menu closed');
     };
     const leafCount = async () => leaves(await getLayout(s)).length;
     const splitByChord676 = async () => {
@@ -3800,8 +3820,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       if (Date.now() > end) throw new Error('timed out waiting for the tab cut down to one pane');
     }
     if ((await usageSwitch()) === 'on') {
-      await pickAttention('Usage record: on');
-      await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off on a rerun');
+      await pickUsage('Usage record: on');
+      await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'off'`, 'the switch off on a rerun');
     }
     expect((await usageSwitch()) === 'off', 'the usage record starts off');
     // A rerun's turn-off above wrote a switch line (M9 fix 699); read past it.
@@ -3809,8 +3829,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     await splitByChord676();
     await sleep(500);
     expect(sizeOf() === offset, `with the switch off a split writes nothing (${sizeOf()} bytes against ${offset})`);
-    await pickAttention('Usage record: off');
-    await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'on'`, 'the switch on');
+    await pickUsage('Usage record: off');
+    await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the switch on');
     expect((await s.evalJs(`JSON.parse(localStorage.getItem('emerald.attention')).usage`)) === true, 'the switch is kept in emerald.attention');
     await splitByChord676();
     const mark = await centerOf(s, '.title-bar-mark');
@@ -3846,8 +3866,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     expect(Number.isInteger(got[4]?.ms), `the close carries its ms, got ${JSON.stringify(got[4])}`);
     const allowed = new Set(['at', 'ev', 'name', 'from', 'view', 'ms', 'on']);
     expect(got.every((l) => Object.keys(l).every((k) => allowed.has(k))), `every line carries only the known fields, got ${JSON.stringify(got)}`);
-    await pickAttention('Usage record: on');
-    await s.waitFor(`document.querySelector('.attention-sound')?.dataset.usage === 'off'`, 'the switch off again');
+    await pickUsage('Usage record: on');
+    await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'off'`, 'the switch off again');
     got = readLines();
     for (const end = Date.now() + 3000; got.length < 6 && Date.now() < end; await sleep(100)) got = readLines();
     expect(got.length === 6 && JSON.stringify(pick(got[5])) === JSON.stringify({ ev: 'switch', on: false }), `the switch off writes its own line last, got ${JSON.stringify(got.slice(5))}`);

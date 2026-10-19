@@ -12,7 +12,10 @@
 // every live Claude session in the repository is a row of its own (M68),
 // a brand new one a straight dashed lane to its own dot on the tip it
 // opened on, its subagents' forks bending into that dot, and its first
-// commit turning the row into a commit row with a fresh row above.
+// commit turning the row into a commit row with a fresh row above, and
+// Replay from here replays a batch from a commit, the rows dimming and
+// coming back in order and the forks' marks on only inside their
+// recorded spans (fix 869).
 // Uses a private home and pipe unless the environment already
 // names them.
 // Run: npm run verify:graph -w @emerald/app
@@ -22,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { COLOR_FLOOR, SESSION_COLORS, formatUsd, hueOf, oklabOf, sliceUsage, tokensRowText } from '@emerald/shared';
+import { COLOR_FLOOR, SESSION_COLORS, clockTime, dayKey, formatUsd, hueOf, oklabOf, sliceUsage, tokensRowText } from '@emerald/shared';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm51-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m51';
@@ -56,6 +59,7 @@ const BLOCKS = [
   { name: 'fix-320', fixes: ['fix-320'], needs: [] },
   { name: 'fix-352', fixes: ['fix-352', 'fix-354'], needs: ['fix-325'] },
   { name: 'fix-353', fixes: ['fix-353'], needs: [] },
+  { name: 'fix-869', fixes: ['fix-869', 'fix-868'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -150,6 +154,16 @@ const agentGit = (...args) => {
 
 const s = await launch(freshPort(), { freshState: true });
 app = s;
+
+// The root ratio that gives a commits pane split off the tab on show the
+// 475 px that 0.7 of the old 678 px split gave it, its rows over the
+// cost cell's 360 px query: a fixed 0.3 left them at 335 once M9 fix 885
+// widened the rail's default and the split lost 70 px.
+const commitsPaneRatio = async () => {
+  const { layout } = await zreq(s, 'layout.get', {});
+  const w = await s.evalJs(`document.querySelector('.splitview[data-tab-id=' + ${JSON.stringify(JSON.stringify(layout.currentTabId))} + ']').getBoundingClientRect().width`);
+  return Math.min(0.3, Math.max(0.05, 1 - 475 / w));
+};
 
 // The gutter's geometry, as CommitGraph.tsx has it: the first lane's
 // offset, the gap between lanes and between blocks (12px since M68, so
@@ -1147,9 +1161,9 @@ try {
   git('checkout', '-q', '-b', longBranch, B);
   commit('L1-a-subject-long-enough-to-be-squeezed-by-the-pill');
   git('checkout', '-q', 'main');
-  await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 260 }))`);
+  await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 261 }))`);
   await s.send('Page.reload');
-  await s.waitFor(`Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 260) < 3 && !!document.querySelector('.commits-pill[data-branch=${JSON.stringify(longBranch)}]')`, 'the rail at 260px with the long branch on a pill', 15000);
+  await s.waitFor(`Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 261) < 3 && !!document.querySelector('.commits-pill[data-branch=${JSON.stringify(longBranch)}]')`, 'the rail at 261px with the long branch on a pill', 15000);
   // The floor is min(10ch, max-content) since M9 fix 119, which the
   // computed style cannot resolve to a length, so ten characters are
   // measured with a probe span in the row.
@@ -1431,7 +1445,7 @@ try {
   await s.waitFor(`document.querySelector('.commits-panel')?.dataset.view === 'graph'`, 'graph again');
   step("M71: a history block is one line until its card's Graph opens it up, Line folds it, and the switch clears the choice");
 
-  // The floor: the rail at 260px with the columns so far, and twelve
+  // The floor: the rail at 261px with the columns so far, and twelve
   // more sessions each committing on top of the last (each one's start
   // dot on the previous commit's row, so neighbours never pack), put
   // the gutter past the rail; the rows keep their hashes on screen and
@@ -1443,9 +1457,9 @@ try {
     stack.push({ id: sess.id, hash: await commitVia(sess.id, git, `S${k}`, repo) });
   }
   await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(stack[11].hash))})?.dataset.session === ${JSON.stringify(stack[11].id)}`, 'the last stacked commit is on its session lane', 8000);
-  await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 260 }))`);
+  await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 261 }))`);
   await s.send('Page.reload');
-  await s.waitFor(`Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 260) < 3 && !!document.querySelector(${JSON.stringify(nodeSel(stack[11].hash))})`, 'the rail at 260px with the stack drawn', 15000);
+  await s.waitFor(`Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 261) < 3 && !!document.querySelector(${JSON.stringify(nodeSel(stack[11].hash))})`, 'the rail at 261px with the stack drawn', 15000);
   const floor = await s.evalJs(`(() => { const v = document.querySelector('.commits-graph-view[data-orientation="vertical"]'); const g = v.querySelector('.commits-gutter'); const rows = v.querySelector('.commits-graph-rows'); const rail = document.querySelector('.files-rail').getBoundingClientRect(); const hashes = [...rows.querySelectorAll('.commits-hash')].map(h => h.getBoundingClientRect()); return { scrolls: v.dataset.gutter ?? null, gutterWidth: g.clientWidth, gutterScroll: g.scrollWidth, rowsWidth: rows.getBoundingClientRect().width, columns: +document.querySelector('.commits-panel').dataset.columns, hashesOn: hashes.filter(r => r.right <= rail.right + 1 && r.left >= rail.left - 1 && r.width > 0).length, hashes: hashes.length, scrollLeft: g.scrollLeft }; })()`);
   // The stack packs into a few columns (each block spans its own row,
   // its commit and its start dot, and every third is clear of the
@@ -3055,7 +3069,9 @@ try {
     expect(railCell.cell === 0 && railCell.text === costText(expectedP2), `the rail draws no dollars cell at ${railCell.rowsWidth}px (${JSON.stringify(railCell)})`);
     const priceTab = await getLayout(s);
     const paneId = 'm252-pane';
-    await zreq(s, 'layout.set', { layout: { ...priceTab, root: { kind: 'split', id: 'm252-split', direction: 'row', ratio: 0.3, first: priceTab.root, second: { kind: 'pane', id: paneId, sessionId: null, view: { kind: 'commits', folder: priceRepo, rows: true, graph: { orientation: 'vertical' } } } } } });
+    const ratio252 = await commitsPaneRatio();
+    console.log(`[252] the commits pane at ratio ${ratio252.toFixed(3)}`);
+    await zreq(s, 'layout.set', { layout: { ...priceTab, root: { kind: 'split', id: 'm252-split', direction: 'row', ratio: ratio252, first: priceTab.root, second: { kind: 'pane', id: paneId, sessionId: null, view: { kind: 'commits', folder: priceRepo, rows: true, graph: { orientation: 'vertical' } } } } } });
     const paneRow = `.pane[data-pane-id=${JSON.stringify(paneId)}] .commits-graph-rows .commits-row[data-hash=${JSON.stringify(Q2)}]`;
     await s.waitFor(`!!document.querySelector(${JSON.stringify(paneRow)} + ' .commits-cost')`, 'the pane draws the rows with a cell', 15000);
     const paneCell = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(paneRow)}); const c = r.querySelector('.commits-cost'); const age = r.querySelector('.commits-age'); const kids = [...r.children].map((k) => k.className); return { rowsWidth: Math.round(r.parentElement.getBoundingClientRect().width), shown: c.getClientRects().length, text: c.textContent, color: getComputedStyle(c).color, before: kids.indexOf('commits-cost') < kids.indexOf('commits-age') && kids.indexOf('commits-cost') > kids.indexOf('commits-subject'), font: getComputedStyle(c).fontFamily, p0: document.querySelector(${JSON.stringify(paneRow.replace(Q2, Q0))})?.querySelector('.commits-cost') ?? null }; })()`);
@@ -3151,7 +3167,7 @@ try {
     await awayCard();
     const groupPane = 'm276-pane';
     const groupTab = await getLayout(s);
-    await zreq(s, 'layout.set', { layout: { ...groupTab, root: { kind: 'split', id: 'm276-split', direction: 'row', ratio: 0.3, first: groupTab.root, second: { kind: 'pane', id: groupPane, sessionId: null, view: { kind: 'commits', folder: priceRepo, rows: true, graph: { orientation: 'vertical' } } } } } });
+    await zreq(s, 'layout.set', { layout: { ...groupTab, root: { kind: 'split', id: 'm276-split', direction: 'row', ratio: await commitsPaneRatio(), first: groupTab.root, second: { kind: 'pane', id: groupPane, sessionId: null, view: { kind: 'commits', folder: priceRepo, rows: true, graph: { orientation: 'vertical' } } } } } });
     const groupRow = (hash) => `.pane[data-pane-id=${JSON.stringify(groupPane)}] .commits-graph-rows .commits-row[data-hash=${JSON.stringify(hash)}]`;
     await s.waitFor(`!!document.querySelector(${JSON.stringify(groupRow(QG1))} + ' .commits-cost') && !!document.querySelector(${JSON.stringify(groupRow(QG2))} + ' .commits-cost')`, 'the pane draws both rows with a cell', 15000);
     const groupCells = await s.evalJs(`(() => { const read = (sel) => { const c = document.querySelector(sel).querySelector('.commits-cost'); return { text: c.textContent.trim(), title: c.getAttribute('title'), group: c.dataset.group !== undefined, color: getComputedStyle(c).color }; }; return { g1: read(${JSON.stringify(groupRow(QG1))}), g2: read(${JSON.stringify(groupRow(QG2))}) }; })()`);
@@ -4256,6 +4272,191 @@ try {
       expect(share < bar, `the renderer's busy share with the rail on the timeline is under ${Math.round(bar * 100)}% (${pct}% at ${Math.round(elapsed)} s, ${live} live sessions)`);
     }
     step(`M9 fix 353: the commit rows remember their price; the renderer's busy share with the rail on the timeline reads ${pct}%`);
+  });
+
+  await block('fix-869', async () => {
+    // M9 fixes 868 and 869: Replay from here on a commit row's menu. A
+    // repository of the block's own: R00 committed in 2001, R0 now; a
+    // session in it sends two forks out at once, each commits in a
+    // worktree of its own, the session commits R1 between their returns,
+    // and the next prompt drops both members, so the live graph has
+    // their lanes and no rows. The replay gives the rows back and times
+    // them off the hook log. The fixture's replay plays in tens of
+    // milliseconds, so every read goes through the script's seek, sent
+    // from a MutationObserver the moment the panel turns on.
+    const railPanel = await s.evalJs(`(() => { const p = document.querySelector('.files-rail .commits-panel'); return { orientation: p?.dataset.orientation ?? null, rows: p?.dataset.rows ?? null }; })()`);
+    expect(railPanel.orientation === 'vertical' && railPanel.rows === 'on', `the rail's graph is upright with its rows on for the replay (${JSON.stringify(railPanel)})`);
+    const rpShort = path.join(os.tmpdir(), 'emerald-verify', `m51-replay-${process.pid}`);
+    fs.rmSync(rpShort, { recursive: true, force: true });
+    fs.mkdirSync(rpShort, { recursive: true });
+    const rpRepo = fs.realpathSync.native(rpShort);
+    fixDirs.push(rpRepo);
+    // Only a commit takes a date, and from the fix 470 clock: a call that
+    // only reads or configures leaves the clock alone, so the commits do
+    // not run ahead of the hooks around them.
+    const gitAt = (cwd) => (...args) => {
+      const date = args[0] === 'commit' ? stamp() : null;
+      return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: date === null ? process.env : { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } }).toString();
+    };
+    const gitRp = gitAt(rpRepo);
+    gitRp('init', '-q', '-b', 'main');
+    gitRp('config', 'user.name', 'verify');
+    gitRp('config', 'user.email', 'verify@example.invalid');
+    gitRp('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(rpRepo, 'R00.txt'), 'R00');
+    gitRp('add', 'R00.txt');
+    execFileSync('git', ['commit', '-q', '-m', 'R00'], { cwd: rpRepo, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: '978307200 +0000', GIT_COMMITTER_DATE: '978307200 +0000' } });
+    const R00 = gitRp('rev-parse', 'HEAD').trim();
+    // The prelude's git calls can leave the clock a few seconds ahead of
+    // the wall: R0 must not be dated after the hooks that follow it.
+    while (clock + 1 > Math.floor(Date.now() / 1000)) await sleep(250);
+    fs.writeFileSync(path.join(rpRepo, 'R0.txt'), 'R0');
+    gitRp('add', 'R0.txt');
+    gitRp('commit', '-q', '-m', 'R0');
+    const R0 = gitRp('rev-parse', 'HEAD').trim();
+    await sleep(1100);
+    const rpLayout = await getLayout(s);
+    const rpLeaf = leaves(rpLayout).find((leaf) => leaf.sessionId !== null && (leaf.view === undefined || leaf.view === null));
+    expect(rpLeaf !== undefined, 'a terminal pane to put the replay session on');
+    const rpSwapIn = (node, sessionId) => (node.kind === 'pane' ? (node.id === rpLeaf.id ? { ...node, sessionId } : node) : { ...node, first: rpSwapIn(node.first, sessionId), second: rpSwapIn(node.second, sessionId) });
+    const rpSess = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: rpRepo, cols: 80, rows: 24 })).session;
+    await zreq(s, 'layout.set', { layout: { ...rpLayout, root: rpSwapIn(rpLayout.root, rpSess.id), focusedPaneId: rpLeaf.id } });
+    const rpPost = (payload) => post(rpSess.id, { cwd: rpRepo, ...payload });
+    await rpPost({ hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.folder === ${JSON.stringify(rpRepo)}`, 'the rail follows the replay session to its own repository', 10000);
+    await rpPost({ hook_event_name: 'UserPromptSubmit', prompt: 'replay the batch' });
+    const rpWts = {};
+    for (const id of ['rp1', 'rp2']) {
+      const short = path.join(os.tmpdir(), 'emerald-verify', `m51-replay-${id}-${process.pid}`);
+      fs.rmSync(short, { recursive: true, force: true });
+      gitRp('worktree', 'add', '-q', '-b', id, short, R0);
+      rpWts[id] = fs.realpathSync.native(short);
+      fixDirs.push(rpWts[id]);
+    }
+    for (const id of ['rp1', 'rp2']) {
+      await rpPost({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: 'fork' });
+      await rpPost({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: `agent ${id}`, subagent_type: 'fork' }, tool_response: { agentId: id, description: `agent ${id}`, status: 'async_launched' } });
+      await sleep(1500);
+    }
+    // Fix 145's memberCommit, per member.
+    const rpMemberCommit = async (id, name) => {
+      const dir = rpWts[id];
+      const cmd = `git commit -q -m ${name}`;
+      await rpPost({ cwd: dir, agent_id: id, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd } });
+      await sleep(300);
+      fs.writeFileSync(path.join(dir, `${name}.txt`), name);
+      const g = gitAt(dir);
+      g('add', `${name}.txt`);
+      g('commit', '-q', '-m', name);
+      const hash = g('rev-parse', 'HEAD').trim();
+      await rpPost({ cwd: dir, agent_id: id, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: cmd } });
+      await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return r.sessions.find(x => x.id === ${JSON.stringify(rpSess.id)})?.team.find(m => m.id === ${JSON.stringify(id)})?.commits.some(c => c.hash === ${JSON.stringify(hash)}); })()`, `${id} owns ${hash.slice(0, 7)}`, 8000);
+      return hash;
+    };
+    const RP1 = await rpMemberCommit('rp1', 'RP1');
+    const RP2 = await rpMemberCommit('rp2', 'RP2');
+    await rpPost({ hook_event_name: 'SubagentStop', agent_id: 'rp1', agent_type: 'fork' });
+    await sleep(1500);
+    const R1 = await commitVia(rpSess.id, gitRp, 'R1', rpRepo);
+    await rpPost({ hook_event_name: 'SubagentStop', agent_id: 'rp2', agent_type: 'fork' });
+    await sleep(1500);
+    await rpPost({ hook_event_name: 'Stop' });
+    await rpPost({ hook_event_name: 'UserPromptSubmit', prompt: 'and now the next thing' });
+    await rpPost({ hook_event_name: 'Stop' });
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find((x) => x.id === ${JSON.stringify(rpSess.id)}); if (!x || (x.team ?? []).some((m) => m.kind === 'agent')) return false; const by = (h) => x.commits.find((c) => c.hash === h)?.agent?.id; return by(${JSON.stringify(RP1)}) === 'rp1' && by(${JSON.stringify(RP2)}) === 'rp2' && x.commits.some((c) => c.hash === ${JSON.stringify(R1)}); })()`, 'the next prompt dropped both members, their commits folded into the record with the agent on them', 8000);
+    // (a) The live graph: the lane stays and the row is gone.
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(R1)}`)}) && document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(RP1)}`)})?.dataset.member === 'rp1'`, "RP1's node is on rp1's lane", 10000);
+    expect(!(await s.evalJs(`!!document.querySelector('.files-rail .commits-agent-row[data-member="rp1"]')`)), 'the next prompt dropped rp1: its lane stays and its row is gone (the case the replay builds rows for)');
+    const rpRowSel = (hash) => `.files-rail .commits-graph-rows .commits-row[data-hash=${JSON.stringify(hash)}]`;
+    // The script's seek (fix 869's event): armed before the click, sent
+    // the moment the panel turns on, then read back off the panel.
+    const armSeek = (at) => s.evalJs(`(() => { const p = document.querySelector('.files-rail .commits-panel'); const mo = new MutationObserver(() => { if (p.dataset.replay === 'on') { mo.disconnect(); window.dispatchEvent(new CustomEvent('emerald:graph-replay-seek', { detail: { at: ${JSON.stringify(at)} } })); } }); mo.observe(p, { attributes: true, attributeFilter: ['data-replay'] }); return true; })()`);
+    const held = (at) => `(() => { const p = document.querySelector('.files-rail .commits-panel'); return p?.dataset.replay === 'on' && p.dataset.replayPaused !== undefined && p.dataset.replayAt === ${JSON.stringify(String(at))}; })()`;
+    const seek = async (at) => {
+      await s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:graph-replay-seek', { detail: { at: ${JSON.stringify(at)} } }))`);
+      await s.waitFor(held(at), `the replay holds at ${at}`, 5000);
+    };
+    const replayFrom = async (hash) => {
+      await inView(rpRowSel(hash));
+      await settled(rpRowSel(hash));
+      const at = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rpRowSel(hash))}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      await s.rightClick(at.x, at.y);
+      await s.waitFor(`!!document.querySelector('.commits-menu')`, `the row menu on ${hash.slice(0, 7)}`);
+      const labels = await s.evalJs(`[...document.querySelectorAll('.commits-menu .menu-label')].map((l) => l.textContent.trim())`);
+      const i = labels.indexOf('Replay from here');
+      expect(i !== -1 && labels[i + 1]?.endsWith('Newest first') && labels.at(-2)?.endsWith('Oldest first') && labels.at(-1)?.endsWith('Centre the graph'), `the row menu offers Replay from here above the direction items (${labels.join('|')})`);
+      await armSeek(0);
+      await clickText('.commits-menu .menu-label', 'Replay from here');
+      await s.waitFor(held(0), 'the replay is on and held at its start', 5000);
+    };
+    // One read of the rows and nodes the steps look at.
+    const rpRead = () =>
+      s.evalJs(`(() => {
+        const rail = document.querySelector('.files-rail');
+        const q = (sel) => rail.querySelector(sel);
+        const commit = (h) => { const r = q('.commits-graph-rows .commits-row[data-hash=' + JSON.stringify(h) + ']'); return { row: r?.dataset.replay ?? null, lands: r?.dataset.replayLands === undefined ? null : Number(r.dataset.replayLands), node: !!q('.commits-node[data-hash=' + JSON.stringify(h) + ']') }; };
+        const member = (id) => { const r = q('.commits-agent-row[data-member=' + JSON.stringify(id) + ']'); const n = q('.commits-agent-node[data-member=' + JSON.stringify(id) + ']'); return { row: r === null ? null : (r.dataset.replay ?? 'live'), rowWorking: r?.dataset.working !== undefined && r !== null, spans: r?.dataset.replaySpans ?? null, node: n !== null, working: n?.dataset.working !== undefined && n !== null }; };
+        const own = q('.commits-agent-node[data-session=' + JSON.stringify(${JSON.stringify(rpSess.id)}) + ']:not([data-member])');
+        return {
+          ...Object.fromEntries([['R00', ${JSON.stringify(R00)}], ['R0', ${JSON.stringify(R0)}], ['RP1', ${JSON.stringify(RP1)}], ['RP2', ${JSON.stringify(RP2)}], ['R1', ${JSON.stringify(R1)}]].map(([k, h]) => [k, commit(h)])),
+          rp1: member('rp1'), rp2: member('rp2'),
+          ownWorking: own !== null && own.dataset.working !== undefined,
+          text: q('.commits-replay-text')?.textContent ?? null,
+          note: q('.commits-replay-note')?.textContent ?? null,
+          noteFrom: q('.commits-replay-note')?.dataset.from ?? null,
+          replayRows: rail.querySelectorAll('.commits-row[data-replay]').length,
+        };
+      })()`);
+    // (b) and (c): from R0, at its start.
+    await replayFrom(R0);
+    const at0 = await rpRead();
+    expect(['RP1', 'RP2', 'R1'].every((k) => at0[k].row === 'dim' && !at0[k].node), `at the start the later rows are dim and their nodes gone (${JSON.stringify([at0.RP1, at0.RP2, at0.R1])})`);
+    expect(at0.R0.node && at0.R00.node, `the start and the commit below it keep their nodes (${JSON.stringify([at0.R0, at0.R00])})`);
+    expect(at0.rp1.row === 'dim' && at0.rp2.row === 'dim' && !at0.rp1.node && !at0.rp2.node, `the forks the next prompt dropped have their rows back, dim and with no marker until they go out (${JSON.stringify([at0.rp1, at0.rp2])})`);
+    expect(at0.text === `Replaying from ${R0.slice(0, 7)} · Escape stops` && at0.note === null, `the strip names the start and no note, the record covering it (${JSON.stringify([at0.text, at0.note])})`);
+    // (d) Each commit lands in order at its replay time.
+    const lands = [at0.RP1.lands, at0.RP2.lands, at0.R1.lands];
+    expect(lands.every((x) => typeof x === 'number') && lands[0] < lands[1] && lands[1] < lands[2], `the commits land in order, RP1 then RP2 then R1 (${JSON.stringify(lands)})`);
+    const order = ['RP1', 'RP2', 'R1'];
+    for (let i = 0; i < order.length; i++) {
+      await seek(lands[i]);
+      const r = await rpRead();
+      const here = r[order[i]];
+      const next = order[i + 1] === undefined ? null : r[order[i + 1]];
+      expect(here.node && here.row === 'shown' && (next === null || !next.node), `${order[i]} lands at ${lands[i]} with its node and its row shown, ${order[i + 1] ?? 'nothing'} not yet (${JSON.stringify([here, next])})`);
+    }
+    // (e) The forks work at once inside their overlap, and the first is
+    // idle at its own end.
+    const spanOf = (text) => {
+      const parts = (text ?? '').split(' ').filter((x) => x !== '');
+      expect(parts.length === 1, `one recorded span (${text})`);
+      const [f, t] = parts[0].split('-').map(Number);
+      return { f, t };
+    };
+    const s1 = spanOf(at0.rp1.spans);
+    const s2 = spanOf(at0.rp2.spans);
+    expect(Math.max(s1.f, s2.f) < Math.min(s1.t, s2.t), `rp2 went out before rp1 came back (${JSON.stringify([s1, s2])})`);
+    await seek((Math.max(s1.f, s2.f) + Math.min(s1.t, s2.t)) / 2);
+    const mid = await rpRead();
+    expect(mid.rp1.working && mid.rp2.working && mid.rp1.rowWorking && mid.rp2.rowWorking && mid.ownWorking, `two forks working at once replay at once, the session's own mark on with them (${JSON.stringify([mid.rp1, mid.rp2, mid.ownWorking])})`);
+    await seek(s1.t);
+    const atEnd = await rpRead();
+    expect(!atEnd.rp1.working && atEnd.rp2.working, `at rp1's end its mark is off and rp2's still on (${JSON.stringify([atEnd.rp1, atEnd.rp2])})`);
+    // (f) Escape puts the live graph back.
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Escape ends the replay', 5000);
+    const live = await rpRead();
+    expect(['R00', 'R0', 'RP1', 'RP2', 'R1'].every((k) => live[k].node) && live.replayRows === 0 && live.rp1.row === null, `the live graph is back, every node drawn, no row in replay and rp1's row gone again (${JSON.stringify(live)})`);
+    // (g) A start older than the record: the 25 years before R0 play as
+    // one beat, and the strip says where the record starts.
+    await replayFrom(R00);
+    const h = await s.evalJs(`window.emerald.request('activity.spans', { from: Date.now() - 1000, to: Date.now() }).then((r) => r.historyFrom)`);
+    const old = await rpRead();
+    expect(typeof h === 'number' && old.note === `The working record starts ${dayKey(h)} ${clockTime(h)}; the commits before it replay without marks` && old.noteFrom === String(h), `a start before the record says where it starts (${JSON.stringify([h, old.note, old.noteFrom])})`);
+    expect(old.R0.lands !== null && Math.abs(old.R0.lands - 1000) < 0.001, `R0 lands one beat after R00, the years between played as one (${old.R0.lands})`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Escape ends the second replay', 5000);
+    step("M9 fixes 868 and 869: Replay from here dims the later rows, lands each commit in order at its replay time, gives a finished batch's forks their rows back with their marks on only inside their recorded spans, overlapping where they overlapped, puts the live graph back on Escape, and says where the record starts for a start before it");
   });
 
   step(blocksRun());

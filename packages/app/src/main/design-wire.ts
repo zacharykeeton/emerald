@@ -17,10 +17,12 @@ export interface DesignOptions {
   log: (msg: string) => void;
   // The emerald home; crops go under its design folder.
   home: string;
-  mainContents: () => WebContents | null;
+  // Whether the contents is one of the app's windows (M9 fix 866).
+  isWindow: (contents: WebContents) => boolean;
   // The pane's guest, as emmer browser's driver registered it.
   guestFor: (paneId: string) => WebContents | null;
-  note: (text: string) => void;
+  // A line for the window hosting the guest.
+  note: (text: string, guest: WebContents) => void;
   writeText: (text: string) => void;
   writePng: (png: Buffer) => Promise<void>;
 }
@@ -68,15 +70,15 @@ export function wireDesignMode(opts: DesignOptions): { guestRule: (contents: Web
     }
   };
 
-  const guestOf = (paneId: string): WebContents | null => {
+  // The pane's guest, when the window asking hosts it.
+  const guestOf = (paneId: string, sender: WebContents): WebContents | null => {
     const guest = opts.guestFor(paneId);
-    const main = opts.mainContents();
-    if (guest === null || main === null || guest.getType() !== 'webview' || guest.hostWebContents !== main) return null;
+    if (guest === null || !opts.isWindow(sender) || guest.getType() !== 'webview' || guest.hostWebContents !== sender) return null;
     return guest;
   };
 
   ipcMain.handle('emerald:design-start', async (event, paneId: string): Promise<DesignResult> => {
-    const guest = event.sender === opts.mainContents() ? guestOf(paneId) : null;
+    const guest = guestOf(paneId, event.sender);
     if (guest === null) {
       opts.log(`design: pane ${String(paneId)} refused`);
       return { kind: 'cancel' };
@@ -133,18 +135,17 @@ export function wireDesignMode(opts: DesignOptions): { guestRule: (contents: Web
     });
   });
   ipcMain.on('emerald:design-cancel', (event, paneId: string) => {
-    if (event.sender !== opts.mainContents()) return;
-    const guest = guestOf(paneId);
+    const guest = guestOf(paneId, event.sender);
     if (guest !== null) grabs.get(guest.id)?.finish({ kind: 'cancel' });
   });
 
   const act = async (guest: WebContents, key: 'copy' | 'shot'): Promise<void> => {
     const pick = readPick(await call(guest, DESIGN_CALL.hovered));
-    if (pick === null) return opts.note('Hover an element first');
+    if (pick === null) return opts.note('Hover an element first', guest);
     if (key === 'copy') {
       const shot = await shotOf(guest, pick, true);
       opts.writeText(formatDesignBlock([{ id: '', pick, shot, comment: '' }], false));
-      return opts.note('Copied the element as markdown');
+      return opts.note('Copied the element as markdown', guest);
     }
     let png: Buffer | null = null;
     try {
@@ -152,9 +153,9 @@ export function wireDesignMode(opts: DesignOptions): { guestRule: (contents: Web
     } catch (err) {
       opts.log(`design: capture failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (png === null) return opts.note('Hover an element first');
+    if (png === null) return opts.note('Hover an element first', guest);
     await opts.writePng(png);
-    opts.note("Copied the element's screenshot");
+    opts.note("Copied the element's screenshot", guest);
   };
 
   // Ahead of the chords: during a grab, C, S and Escape are Design

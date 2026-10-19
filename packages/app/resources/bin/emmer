@@ -1,0 +1,15 @@
+#!/bin/sh
+# emmer CLI shim for Git Bash beside emmer.cmd in <install>/resources/bin
+# (M9 fix 884): Git Bash does not run a .cmd by its bare name. Runs the CLI
+# under the app's own Emerald.exe as Node, else node, as emmer.cmd does, but
+# directly, so a newline, a % or a double quote in an argument reaches the CLI
+# as typed. Git Bash still turns an argument that looks like a POSIX path
+# (/clear) into a Windows one, as for every Windows program; MSYS_NO_PATHCONV=1
+# on the call stops that, and pwd -W gives main.js in Windows form so the shim
+# works either way.
+res=$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })
+if [ -f "$res/../Emerald.exe" ]; then
+  export ELECTRON_RUN_AS_NODE=1
+  exec "$res/../Emerald.exe" "$res/cli/dist/main.js" "$@"
+fi
+exec node "$res/cli/dist/main.js" "$@"

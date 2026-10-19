@@ -45,6 +45,11 @@
 // M9 fix 702: zoomed on pane 1, a question in hidden pane 2 pulses the tab
 // on show, and a click on the tab undoes the zoom with the focus kept;
 // zoomed on pane 2 itself, the tab does not pulse and a click leaves it.
+// M9 fix 870: the taskbar's progress bar and tooltip, held to the log
+// under the private home, fill to the share working, clear at done with the
+// tooltip naming the one wanting, and read Nothing running once acked.
+// M9 fix 873: Ctrl+Shift+K, Ctrl+Shift+U and Ctrl+B k shade and lift the
+// panes with the focused pane's done session still pulsing and still done.
 // Uses a private home and pipe unless the environment already names them,
 // so it can run beside a live emerald. Starts from an empty layout.
 // Run: npm run verify:attention -w @emerald/app
@@ -431,6 +436,46 @@ try {
   await waitClear('a click on its pane acknowledges');
   step('off: pulse without a chime; the button cycles back to repeat; a key acks the focused pane alone and hushes the rest');
 
+  // M9 fix 870: the taskbar's progress bar and tooltip, held to the log
+  // under this private home with the badge's lines but under a prefix of
+  // their own, so the reads above never see them. A turn on the fake
+  // Claude fills the bar to the share working; its Stop clears the bar and
+  // the tooltip names the one wanting; the ack leaves Nothing running.
+  const progressLines = () =>
+    s.logs
+      .join('')
+      .split('\n')
+      .filter((l) => l.includes('taskbar progress held under a private EMERALD_HOME: '))
+      .map((l) => l.slice(l.indexOf('EMERALD_HOME: ') + 'EMERALD_HOME: '.length).trimEnd());
+  const waitProgress = async (want, what) => {
+    for (let i = 0; i < 30 && progressLines().at(-1) !== want; i += 1) await sleep(100);
+    expect(progressLines().at(-1) === want, `fix 870: ${what}, got ${JSON.stringify(progressLines().at(-1))}, wanted ${JSON.stringify(want)}`);
+  };
+  const counts870 = async () => {
+    const list = (await zreq(s, 'session.list', {})).sessions;
+    return { working: list.filter((x) => x.state === 'working' && x.stale !== true).length, live: list.filter((x) => x.state !== 'exited').length };
+  };
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'busy for the taskbar' });
+  await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(target)}]')?.dataset.state === 'working'`, 'working for the taskbar');
+  const c870 = await counts870();
+  expect(c870.working >= 1, `fix 870: at least the fake Claude is working, got ${JSON.stringify(c870)}`);
+  // The line the policy writes for a count, so the read holds whatever
+  // else is working in the window (only the fake Claude, as the steps
+  // above leave it).
+  const line870 = (working, wanting) => {
+    const parts = [...(working > 0 ? [`${working} working`] : []), ...(wanting > 0 ? [`${wanting} ${wanting === 1 ? 'wants' : 'want'} you`] : [])];
+    const bar = working === 0 ? 'cleared' : `${Math.round((100 * working) / c870.live)}%`;
+    return `${working} of ${c870.live} working, bar ${bar}, tooltip ${JSON.stringify(parts.length === 0 ? 'Nothing running' : parts.join(', '))}`;
+  };
+  await waitProgress(line870(c870.working, 0), 'the bar at the share working and the tooltip naming it');
+  await post({ hook_event_name: 'Stop', last_assistant_message: 'For the taskbar.' });
+  await waitAttention('done', 'done for the taskbar');
+  await waitProgress(line870(c870.working - 1, 1), 'the bar cleared at done and the tooltip naming the one wanting');
+  await acknowledge();
+  await waitClear('acknowledged for the taskbar');
+  await waitProgress(line870(c870.working - 1, 0), 'Nothing running once acknowledged');
+  step('M9 fix 870: the taskbar progress line held to the log at the share working, cleared at done, and the tooltip from the counts');
+
   // Task 3. One notification per session per five seconds: a turn ending
   // writes a line, another ending within five seconds writes none.
   await sleep(5200);
@@ -632,6 +677,36 @@ try {
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p1)}] .pane-title`)})?.dataset.attention ?? null`)) === 'done', 'the focused pane title pulses too');
   expect((await chimes()) === chimes2 + 1, `one chime for the reply into the focused pane, got ${(await chimes()) - chimes2}`);
   await s.screenshot('m14-attention-front.png');
+  // M9 fix 873: the shade chords, plain or after the prefix, acknowledge
+  // nothing, so the focused pane's done session keeps pulsing through them.
+  const paneShaded = (id) => `!!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(id)}] .pane-shade`)})`;
+  const still873 = async (what) => {
+    await sleep(300);
+    const a = await frontAttention();
+    const st = await frontState();
+    expect(a === 'done' && st === 'done', `fix 873: ${what} left the focused pane's done badge, got ${a} and ${st}`);
+  };
+  await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+  await s.waitFor(paneShaded(p1), 'Ctrl+Shift+K shaded pane 1');
+  await still873('Ctrl+Shift+K');
+  await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+Shift+K again lifted it');
+  await still873('Ctrl+Shift+K again');
+  await s.key('U', 'KeyU', 85, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 2`, "Ctrl+Shift+U shaded the tab's two panes");
+  await still873('Ctrl+Shift+U');
+  await s.key('U', 'KeyU', 85, CTRL | SHIFT);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+Shift+U again lifted them');
+  await still873('Ctrl+Shift+U again');
+  await s.key('b', 'KeyB', 66, CTRL);
+  await s.key('k', 'KeyK', 75);
+  await s.waitFor(paneShaded(p1), 'Ctrl+B then k shaded pane 1');
+  await still873('Ctrl+B then k');
+  await s.key('b', 'KeyB', 66, CTRL);
+  await s.key('k', 'KeyK', 75);
+  await s.waitFor(`document.querySelectorAll('.pane-shade').length === 0`, 'Ctrl+B then k again lifted it');
+  await still873('Ctrl+B then k again');
+  step("M9 fix 873: Ctrl+Shift+K, Ctrl+Shift+U and Ctrl+B k shade and lift with the focused pane's done session still pulsing and still done");
   await acknowledge();
   await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === undefined`, 'the click clears the pulse', 5000);
   await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.state === 'idle'`, 'and acks done to idle', 5000);

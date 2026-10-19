@@ -13,7 +13,12 @@
 // (fixes 797 and 798, needs stub) reads a turn of progress lines and
 // calls as update, fold, update, fold, reply under Claude Code's own
 // sentences, the shell rows' descriptions over their commands, and the
-// command notes. Block `real`
+// command notes. Block `beside` (fixes 863 and 864, needs paths)
+// Ctrl+clicks a reply's web link and two pictures outside the folder, one
+// in a code span and one bare in the text, each into a pane beside the
+// chat's, and reads a plain click and a middle-click on the link still
+// going to the browser.
+// Block `real`
 // (fix 690) starts a real Claude Code from the empty pane on the chat
 // face and sends it one short turn, so this script costs one short real
 // Claude turn and runs one at a time like verify:claude-resume; it needs
@@ -63,7 +68,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm9-chat-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m9-chat';
-const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort, getLayout, killTree, launch, leaves, railAtOldWidth, repoRoot, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 const { block, blocksRun, partial } = blockRunner([
   { name: 'stub', fixes: ['689', '830'], needs: [] },
@@ -73,6 +78,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'story', fixes: ['797', '798'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
+  { name: 'beside', fixes: ['863', '864'], needs: ['paths'] },
   { name: 'thumbs', fixes: ['717', '718'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
   { name: 'real', fixes: ['690', '778', '799', '809'], needs: [] },
@@ -84,16 +90,16 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
   { name: 'mod-feed', fixes: ['769'], needs: [] },
   { name: 'tail', fixes: ['770'], needs: [] },
-  { name: 'question', fixes: ['777', '801', '802', '803', '845'], needs: ['stub'] },
-  { name: 'ask-once', fixes: ['801'], needs: ['stub'] },
+  { name: 'question', fixes: ['777', '801', '802', '803', '845', '879'], needs: ['stub'] },
+  { name: 'ask-once', fixes: ['801', '880'], needs: ['stub'] },
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
   { name: 'notes', fixes: ['805'], needs: [] },
-  { name: 'copy', fixes: ['806', '849'], needs: ['notes'] },
-  { name: 'trust', fixes: ['808', '847'], needs: [] },
+  { name: 'copy', fixes: ['806', '849', '882'], needs: ['notes'] },
+  { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
 ]);
@@ -111,6 +117,10 @@ const home = os.homedir();
 const attachPng = path.join(emeraldHome, 'chat-721', 'attach.png');
 const s = await launch(freshPort(), { freshState: true, env: { EMERALD_PICK_FILE: attachPng } });
 app = s;
+// M9 fix 885 widened the rail's default to 330 px, which takes 70 px of
+// columns off every stub's terminal (fix 803's typed answer wrapped across
+// two rows); the blocks are about the panes and the chat face, not the rail.
+await railAtOldWidth(s);
 
 const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
 const paneSel = (id) => `.pane[data-pane-id=${JSON.stringify(id)}]`;
@@ -552,6 +562,15 @@ try {
     const backOnChat = async () => {
       await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the command ended at the prompt', 10000);
       await sleep(300);
+      // A command typed into the stub that ended with the conversation's
+      // hooks landed is the leaving (M9 fix 360), which drops the bound id;
+      // since M9 fix 871 a later status line of that conversation is the
+      // departed Claude's and ignored-foreign, so the stub comes back as a
+      // real Claude does, through a resume's SessionStart.
+      if ((await record(stubId))?.claudeSessionId === null) {
+        await post({ hook_event_name: 'SessionStart', source: 'resume' });
+        await waitRecord(stubId, (r) => r.claudeSessionId !== null, 'the stub bound again after the command', 5000);
+      }
       if ((await s.evalJs(`${q(paneSel(stubPane))}.dataset.face ?? null`)) !== 'chat') {
         await post({ hook_event_name: 'Stop', stop_hook_active: false });
         await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the face button again');
@@ -1088,6 +1107,94 @@ try {
     await pick('Copy path');
     await s.waitFor(`window.emerald.clipboard.read().then((r) => r.text === ${JSON.stringify(notes)})`, 'Copy path puts the path on the clipboard', 3000);
     step('fix 717: a path in a reply opens in a tab, and its menu offers the rail\'s items, mentions it and copies it');
+  });
+
+  await block('beside', async () => {
+    // M9 fixes 863 and 864: a reply's web link and two pictures outside the
+    // session's folder, one in a code span and one bare in the text, each
+    // Ctrl+clicked into a pane beside the chat's pane; the link's plain
+    // click and middle-click still go to the browser, which under this
+    // private home is a held line in main.log, and the bare picture's plain
+    // click is a tab. The discard port refuses at once, so the guest reaches
+    // no network. The block ends as it started, one pane on the chat face.
+    await toChat(stubPane);
+    const url863 = 'http://127.0.0.1:9/863';
+    const mainLog = path.join(emeraldHome, 'logs', 'main.log');
+    const heldCount = () => {
+      try {
+        return fs.readFileSync(mainLog, 'utf8').split('\n').filter((l) => l.includes(`link held under a private EMERALD_HOME: ${url863}`)).length;
+      } catch {
+        return 0;
+      }
+    };
+    // A sibling of the stub's folder (chat-689), so outside it.
+    const outside = path.join(fs.realpathSync.native(emeraldHome), 'chat-864');
+    fs.mkdirSync(outside, { recursive: true });
+    const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const frame = path.join(outside, 'frame-864.png');
+    const coded = path.join(outside, 'code-864.png');
+    fs.writeFileSync(frame, pixel);
+    fs.writeFileSync(coded, pixel);
+    fs.appendFileSync(fixture, [userLine('open the page and the frames', 250), asstLine([{ type: 'text', text: `The page is [here](${url863}); the frame is ${frame}, and the other is \`${coded}\`.` }], 251)].join('\n') + '\n');
+    const lastReply = `[...${q(paneSel(stubPane))}.querySelectorAll('.chat-reply')].at(-1)`;
+    const link = `${lastReply}?.querySelector(${JSON.stringify(`a[href="${url863}"]`)})`;
+    const bare = `[...(${lastReply}?.querySelectorAll('span.chat-path') ?? [])].find((e) => e.dataset.path === ${JSON.stringify(frame)})`;
+    const code = `[...(${lastReply}?.querySelectorAll('code.chat-path') ?? [])].find((e) => e.dataset.path === ${JSON.stringify(coded)})`;
+    await s.waitFor(`!!${link} && !!${bare} && !!${code}`, 'the reply with its web link and both pictures live', 5000);
+    const clickOn = (el, extra) => s.evalJs(`${el}.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0${extra} }))`);
+    const splitHolding = (node, id) => (node.kind !== 'split' ? null : node.first.id === id || node.second.id === id ? node : (splitHolding(node.first, id) ?? splitHolding(node.second, id)));
+    const leafWith = async (view) => leaves(await getLayout(s)).find((p) => JSON.stringify(p.view) === JSON.stringify(view)) ?? null;
+    const waitLeaf = async (view, what) => {
+      const until = Date.now() + 5000;
+      while ((await leafWith(view)) === null && Date.now() < until) await sleep(150);
+      const leaf = await leafWith(view);
+      expect(leaf !== null, `${what}, got ${JSON.stringify(leaves(await getLayout(s)).map((p) => p.view))}`);
+      return leaf;
+    };
+    const besideStub = async (leaf, what) => {
+      const split = splitHolding((await getLayout(s)).root, leaf.id);
+      expect(split !== null && split.direction === 'row' && split.first.id === stubPane && split.second.id === leaf.id, `${what} beside the chat's pane, got ${JSON.stringify(split && { direction: split.direction, first: split.first.id, second: split.second.id })}`);
+    };
+    const closePane = async (id) => {
+      await s.evalJs(`${q(`[data-pane-id=${JSON.stringify(id)}] .pane-hide`)}.click()`);
+      await s.waitFor(`!${q(`[data-pane-id=${JSON.stringify(id)}]`)}`, 'the pane beside closed', 5000);
+    };
+    const fileTabs = () => s.evalJs(`document.querySelectorAll('.tab-file').length`);
+    const tabsBefore = await fileTabs();
+    // (a) The picture in a code span, Ctrl+clicked.
+    await clickOn(code, ', ctrlKey: true');
+    const picture = await waitLeaf({ kind: 'file', path: coded }, 'the Ctrl+click opened a file pane on the picture');
+    await besideStub(picture, 'the picture pane');
+    expect((await fileTabs()) === tabsBefore, 'the Ctrl+click opened no tab');
+    expect(await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`), 'the panes still in front');
+    expect((await getLayout(s)).focusedPaneId === picture.id, 'the picture pane focused');
+    // (b) The web link, Ctrl+clicked with the picture pane focused: beside
+    // the pane clicked in, never the focused one.
+    await clickOn(link, ', ctrlKey: true');
+    const page = await waitLeaf({ kind: 'browser', url: url863 }, 'the Ctrl+click opened a browser pane on the link');
+    await besideStub(page, 'the browser pane');
+    expect(heldCount() === 0, `the Ctrl+click sent nothing to the browser, got ${heldCount()} held lines`);
+    await s.screenshot('m9-chat-fix864-beside.png');
+    // (c) Both closed.
+    await closePane(page.id);
+    await closePane(picture.id);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'one pane again', 5000);
+    // (d) The link's plain click and middle-click go to the browser.
+    await clickOn(link, '');
+    await s.evalJs(`${link}.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))`);
+    {
+      const until = Date.now() + 3000;
+      while (heldCount() < 2 && Date.now() < until) await sleep(100);
+    }
+    expect(heldCount() === 2, `a plain click and a middle-click each went to the browser, got ${heldCount()} held lines`);
+    step('fix 863: a reply\'s web link Ctrl+clicked opens a browser pane beside the chat\'s pane, and a plain click and a middle-click still go to the browser');
+    // (e) The bare picture's plain click is a tab.
+    await clickOn(bare, '');
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === ${JSON.stringify(frame)}`, 'the plain click opened the picture in a tab', 5000);
+    await s.evalJs(`${q(`.tab-file[data-tab=${JSON.stringify(frame)}] .tab-close`)}.click()`);
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab', 5000);
+    step('fix 864: a picture outside the folder is a link in a code span and bare in the text; a Ctrl+click opens it in a file pane beside the chat\'s pane, a plain click in a tab, and a web link Ctrl+clicked goes beside the pane clicked in, not the focused one');
   });
 
   await block('thumbs', async () => {
@@ -2604,7 +2711,13 @@ try {
     const rowsM2 = rowsM1.map((r) => (r === '> 3. [ ] Tests' ? '  3. [ ] Tests' : r === '  4. [ ] Type something' ? '> 4. [ ] Type something' : r));
     const rowsM3 = rowsM2.map((r) => (r === '> 4. [ ] Type something' ? '  4. [ ] Type something' : r === '     Submit' ? '>    Submit' : r));
     const drawM = (list) => `cls; Write-Host ''; Write-Host ${tabRowM}; ${list.map((r) => `Write-Host ('${tick(r)}')`).join('; ')}; Write-Host -NoNewline ${footer}`;
-    await typeRaw(stubId, `${drawM(rowsM)}; $a = [Console]::ReadKey($true); ${drawM(rowsM1)}; $b = [Console]::ReadKey($true); ${drawM(rowsM2)}; $c = [Console]::ReadKey($true); ${drawM(rowsM3)}; $d = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.KeyChar + ' ' + $b.Key + ' ' + $c.Key + ' ' + $d.Key); Read-Host | Out-Null\r`);
+    // M9 fix 879: the Submit row's Enter goes to the Review your answers
+    // tab as the capture of 2.1.302 draws it, with no footer.
+    const tabRowR = `('' + ${c('2190')} + '  ' + ${c('2612')} + ' Checks  ' + ${c('2714')} + ' Submit  ' + ${c('2192')})`;
+    const rowsR = ['', 'Review your answers', '', ' (dot) Which checks should the sample run?', '   (to) Types', '', 'Ready to submit your answers?', '', '> 1. Submit answers', '  2. Cancel'];
+    const glyphR = (row) => row.replace('(dot)', `' + ${c('25CF')} + '`).replace('(to)', `' + ${c('2192')} + '`);
+    const drawR = `cls; Write-Host ''; Write-Host ${tabRowR}; ${rowsR.map((r) => `Write-Host ('${glyphR(r)}')`).join('; ')}`;
+    await typeRaw(stubId, `${drawM(rowsM)}; $a = [Console]::ReadKey($true); ${drawM(rowsM1)}; $b = [Console]::ReadKey($true); ${drawM(rowsM2)}; $c = [Console]::ReadKey($true); ${drawM(rowsM3)}; $d = [Console]::ReadKey($true); ${drawR}; $e = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.KeyChar + ' ' + $b.Key + ' ' + $c.Key + ' ' + $d.Key + ' ' + $e.KeyChar); Read-Host | Out-Null\r`);
     await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 845: the multi-select drawn, the cursor on its footer');
     await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
     await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
@@ -2618,8 +2731,21 @@ try {
     await s.waitFor(`${q(cardSel + ' .chat-ask-option[data-key="2"] .chat-ask-label')}?.textContent === '[✔] Types' && !${q(cardSel + ' button.chat-ask-option[data-sent]')}`, 'fix 845: option 2 ticked and the card taking a press again', 5000);
     await s.screenshot('m9-chat-multi-select.png');
     await s.evalJs(`${q(cardSel + ' [data-key="submit"]')}.click()`);
-    await waitCursorRow(stubId, (row) => row.trim().endsWith('got 2 DownArrow DownArrow Enter'), 'fix 845: the toggle, the two Downs and the Enter reached the session');
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-review')} && !${q(cardSel + ' button.chat-ask-option[data-sent]')}`, 'fix 845: the toggle, the Downs and the Enter reached the session, its review drawn', 10000);
     step('fix 845: a multi-select ask card ticks by click and submits with its Submit button, the Downs to the Submit row and Enter');
+    const cardR = await s.evalJs(`(() => { const c = ${q(cardSel)}; return { question: c.querySelector('.chat-ask-question')?.textContent ?? null, items: [...c.querySelectorAll('.chat-ask-review-item')].map((i) => [i.querySelector('.chat-ask-review-q')?.textContent ?? null, i.querySelector('.chat-ask-review-a')?.textContent ?? null]), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), labels: [...c.querySelectorAll('.chat-ask-option .chat-ask-label')].map((l) => l.textContent), screen: !!c.querySelector('.chat-ask-screen'), input: !!c.querySelector('.chat-ask-input') }; })()`);
+    console.log(`[verify] fix 879: the review card reads ${JSON.stringify(cardR)}`);
+    expect(cardR.question === 'Review your answers', `fix 879: the review's title, got ${JSON.stringify(cardR)}`);
+    expect(JSON.stringify(cardR.items) === JSON.stringify([['Which checks should the sample run?', 'Types']]), `fix 879: the question with its answer, got ${JSON.stringify(cardR)}`);
+    expect(cardR.labels.slice(0, 2).join(',') === 'Submit answers,Cancel', `fix 879: Submit answers and Cancel as the options, got ${JSON.stringify(cardR)}`);
+    // Escape on the review cancels the ask (the capture of 2.1.302), so the
+    // dialog's Cancel is the one Cancel; Left goes back to the questions.
+    expect(cardR.keys.join(',') === '1,2,back', `fix 879: the two options and Back, no second Cancel, got ${JSON.stringify(cardR)}`);
+    expect(!cardR.screen && !cardR.input, `fix 879: no excerpt and no box, got ${JSON.stringify(cardR)}`);
+    await s.screenshot('m9-chat-review.png');
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="1"]')}.click()`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('got 2 DownArrow DownArrow Enter 1'), 'fix 879: Submit answers sent its digit');
+    step('fix 879: the ask card draws Claude Code\'s Review your answers tab, the question with its answer, Submit answers and Cancel as digits and one Cancel');
     await typeRaw(stubId, '\r');
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 845: the Read-Host ended at the prompt', 10000);
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
@@ -2663,6 +2789,29 @@ try {
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the Read-Host ended at the prompt', 10000);
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
+    // M9 fix 880: the same permission answered in the terminal, never the
+    // card: the card dims on what was asked and opens no box.
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the second probe' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ask-880' } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'fix 880: the stub working', 5000);
+    await typeRaw(stubId, "cls; Write-Host ''; Write-Host ' Bash command'; Write-Host '  echo ask-880'; Write-Host ' Do you want to proceed?'; Write-Host ' > 1. Yes'; Write-Host '   2. No'; Write-Host -NoNewline ' Esc to cancel'; $null = [Console]::ReadKey($true); cls; Write-Host -NoNewline 'ran ask-880'; Read-Host | Out-Null\r");
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 880: the permission drawn, the cursor on its footer');
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'echo ask-880' } });
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-option[data-key="2"]')}`, 'fix 880: the ask card with its two options', 10000);
+    await typeRaw(stubId, '1');
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('ran ask-880'), 'fix 880: the terminal took the key and cleared its dialog');
+    await sleep(2500);
+    const card880 = await s.evalJs(`(() => { const c = ${q(cardSel)}; if (!c) return null; return { keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), sent: [...c.querySelectorAll('button.chat-ask-option')].map((b) => b.dataset.sent ?? null), input: !!c.querySelector('.chat-ask-input'), excerpt: c.querySelector('.chat-ask-screen')?.textContent ?? null }; })()`);
+    console.log(`[verify] fix 880: the card after the terminal's answer reads ${JSON.stringify(card880)}`);
+    expect(card880 !== null, 'fix 880: the card stays while the row is needs-input');
+    expect(card880.keys.join(',') === '1,2,esc', `fix 880: the card keeps what was asked, got ${JSON.stringify(card880)}`);
+    expect(card880.sent.length > 0 && card880.sent.every((v) => v === 'true'), `fix 880: every option is marked sent, got ${JSON.stringify(card880)}`);
+    expect(!card880.input, `fix 880: no answer box, got ${JSON.stringify(card880)}`);
+    step('fix 880: a permission answered in the terminal leaves the chat card dimmed on what was asked, with no box');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 880: the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 880: the card gone and the box back');
   });
 
   await block('box', async () => {
@@ -3659,6 +3808,44 @@ try {
     expect(ctrlC849.copy?.handled === true && ctrlC849.clip === 'Notes answered.' && ctrlC849.note === 'Copied 15 characters', `fix 849: Ctrl+C on the selection copied through the window's clipboard with the note in the pane, got ${JSON.stringify(ctrlC849)}`);
     await s.evalJs('window.getSelection().removeAllRanges()');
     step('fix 849: Ctrl+C on a selection in the chat view copies through the window\'s clipboard with its note in the pane');
+
+    // M9 fix 882: a click on the conversation's text keeps the keyboard in
+    // the view, the timeline taking it, so Ctrl+O cycles the mode from there.
+    // The notes pane is the focused one first, so nothing moves the focus
+    // during the click.
+    const lay882 = await getLayout(s);
+    if (lay882.focusedPaneId !== notesPane) {
+      await zreq(s, 'layout.set', { layout: { ...lay882, focusedPaneId: notesPane } });
+      const by882 = Date.now() + 5000;
+      while (Date.now() < by882 && (await getLayout(s)).focusedPaneId !== notesPane) await sleep(100);
+    }
+    await sleep(300);
+    const mode882 = await s.evalJs(`${q(CP + ' .chat-view')}.dataset.chatView`);
+    await s.evalJs('document.activeElement?.blur()');
+    const at882 = await s.evalJs(`(() => {
+      const el = [...document.querySelectorAll(${JSON.stringify(CP + ' .chat-reply')})].find((e) => e.textContent.trim() === 'Notes answered.');
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    expect(at882 !== null, 'fix 882: the reply to click on');
+    await s.click(at882.x, at882.y);
+    await sleep(300);
+    const focus882 = await s.evalJs(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: a?.className ?? null, timeline: a === ${q(CP + ' .chat-timeline')} }; })()`);
+    console.log(`[verify] fix 882: a click on the reply leaves focus on ${JSON.stringify(focus882)}`);
+    expect(focus882.timeline, `fix 882: the click on the reply puts the keyboard on the timeline, got ${JSON.stringify(focus882)}`);
+    const modes882 = ['normal', 'thinking', 'verbose'];
+    const from882 = modes882.indexOf(mode882);
+    expect(from882 >= 0, `fix 882: the view's mode, got ${JSON.stringify(mode882)}`);
+    await s.key('o', 'KeyO', 79, CTRL);
+    await waitView(notesPane, modes882[(from882 + 1) % 3]);
+    await s.key('o', 'KeyO', 79, CTRL);
+    await waitView(notesPane, modes882[(from882 + 2) % 3]);
+    await s.key('o', 'KeyO', 79, CTRL);
+    await waitView(notesPane, mode882);
+    await s.evalJs('window.getSelection().removeAllRanges()');
+    step('fix 882: a click on the conversation\'s text keeps the keyboard in the chat view, Ctrl+O cycling its mode from there');
   });
 
   // The daemon restarts in here, so this block stays the file's last.
@@ -3755,6 +3942,12 @@ try {
     const after847 = await record(trustId);
     expect(after847.state === 'needs-input' && after847.needsInputReason === 'trust', `fix 847: the view's Escape left the trust dialog up, got ${JSON.stringify({ state: after847.state, reason: after847.needsInputReason })}`);
     step('fix 847: the trust card\'s box reads Answer the trust question above, its folder sits on one line cut from the left with the whole path in its title, and the view\'s Escape leaves the dialog up');
+    // M9 fix 881: the dialog's text as paragraphs, the safety check one
+    // line from Quick safety check: to first., however the TUI wrapped it.
+    const c881 = await card808();
+    const para881 = (c881.screen ?? '').split('\n').find((l) => l.startsWith('Quick safety check:')) ?? null;
+    expect(para881 !== null && para881.trimEnd().endsWith('first.'), `fix 881: the safety check is one paragraph from Quick safety check: to first., got ${JSON.stringify((c881.screen ?? '').split('\n'))}`);
+    step('fix 881: the trust card draws the dialog\'s text as paragraphs, Quick safety check: to first. on one line');
 
     // (c) The card follows the dialog's pointer, moved in the terminal
     // after the dialog's refuse window.
@@ -3860,8 +4053,8 @@ try {
           dock: !!p.querySelector('.chat-dock'),
           box: !!p.querySelector('.chat-box'),
           notice: p.querySelector('[data-exited-notice] .pane-exited-notice-body')?.textContent ?? null,
-          // M9 fix 841: the notice's parts on one opaque card inside the pane.
-          card: (() => { const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') }; })(),
+          // M9 fix 841: the notice's parts on one opaque card inside the pane; Close beside Resume since fix 861.
+          card: (() => { const c = p.querySelector('.pane-exited-notice-card'); if (c === null) return null; const cr = c.getBoundingClientRect(); const pr = p.getBoundingClientRect(); return { bg: getComputedStyle(c).backgroundColor, inside: cr.left >= pr.left - 0.5 && cr.right <= pr.right + 0.5 && cr.top >= pr.top - 0.5 && cr.bottom <= pr.bottom + 0.5, parts: !!c.querySelector('.pane-exited-notice-body') && !!c.querySelector('.pane-exited-notice-resume') && !!c.querySelector('.pane-exited-notice-close') }; })(),
         };
       })()`);
     const keptRead = (r) =>
@@ -3940,6 +4133,26 @@ try {
     expect(r846 !== null && r846.first === line846, `fix 846: after the kill and the Resume the box names the session again, want ${JSON.stringify(line846)}, got ${JSON.stringify(r846)}`);
     expect(r846.scrollHeight <= r846.clientHeight, `fix 846: the box shows no scrollbar after the Resume, got ${JSON.stringify(r846)}`);
     step('fix 846: after the kill and the Resume the box names the session again, and shows no scrollbar');
+
+    // (e) M9 fix 861: killed again, the card's Close, titled as the title
+    // bar's ×, forgets the stub and closes its pane. A real press, which
+    // also proves the button takes the pointer through the card's none.
+    await zreq(s, 'session.kill', { sessionId: exitedId });
+    await waitRecord(exitedId, (r) => r.state === 'exited', 'the stub exited again for Close', 10000);
+    await s.waitFor(`!!${q(EP + ' .pane-exited-notice-close')}`, 'fix 861: Close on the exited card', 10000);
+    const close861 = await s.evalJs(`(() => { const b = ${q(EP + ' .pane-exited-notice-close')}; const r = b.getBoundingClientRect(); return { text: b.textContent, title: b.title, x: r.x + r.width / 2, y: r.y + r.height / 2, xTitle: ${q(EP + ' .pane-close')}?.title ?? null }; })()`);
+    const name861 = (await record(exitedId)).name;
+    expect(close861.text === 'Close' && close861.title === close861.xTitle && close861.title.startsWith(`Close: forget ${name861} and `), `fix 861: the card's Close is titled as the title bar's ×, got ${JSON.stringify(close861)}`);
+    await s.click(close861.x, close861.y);
+    const closedBy = Date.now() + 5000;
+    let closed861 = false;
+    while (Date.now() < closedBy && !closed861) {
+      closed861 = (await zreq(s, 'session.list', {})).sessions.every((x) => x.id !== exitedId) && leaves(await getLayout(s)).every((l) => l.sessionId !== exitedId);
+      if (!closed861) await sleep(200);
+    }
+    expect(closed861, 'fix 861: Close forgot the stub and closed its pane');
+    exitedId = null;
+    step("fix 861 (e): the exited card's Close, titled as the title bar's ×, forgot the stub and closed its pane");
   });
 
   step(`PASS (${blocksRun()})`);

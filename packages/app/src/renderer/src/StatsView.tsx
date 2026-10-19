@@ -1,86 +1,138 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { dayBounds, dayKey, formatSpanLength } from '@emerald/shared';
 import type { ActivityTotals } from '@emerald/shared';
-import type { GitProjectCounts } from '../../preload/api.ts';
 import { statsSupported } from './daemon-model.ts';
 import { folderName } from './files-model.ts';
 import { PLAN_KINDS, PLAN_PRICES, PLAN_PRICES_READ, paidOver, paidShare, paidText, paidTitle, planEntryText, withPlanEntry, withoutPlanEntry } from './plan-model.ts';
 import type { PlanKind } from './plan-model.ts';
-import { STATS_REFRESH_MS, countText, historyText, monthName, releasesOf, spanDays, spanStart, spanText, spanTitle, startsBeforeHistory, statsFigures, tokensText, usdText, yieldText } from './stats-model.ts';
+import { askDue, countAsk, keepAnswer, keptAnswer, statsCounts, statsSheet } from './stats-answer.ts';
+import type { StatsAnswer, StatsSheet } from './stats-answer.ts';
+import { STATS_OLD_TEXT, STATS_REFRESH_MS, countText, historyDay, monthName, spanDays, startsBeforeHistory, tokensText, usdText } from './stats-model.ts';
 import { useStore } from './store.ts';
 import { statsFolder } from './tabs-model.ts';
-import { setPlan, useUi } from './ui.ts';
+import { setPlan, usePlan } from './ui.ts';
 
-// A folder's statistics as a tab (M9 fix 837): the commits and releases
-// off the repository, and the requests, tokens, API price and agent time
-// of the sessions started in the folder or under it off the daemon's fold
-// of its whole log (activity.totals), a row per month under them. Asked
-// on mount and every minute while shown; nothing is kept on the tab.
+// A folder's statistics as a tab (M9 fix 837), and as the rail's Stats tab
+// (fix 885): the commits and releases off the repository, and the requests,
+// tokens, API price and agent time of the sessions started in the folder or
+// under it off the daemon's fold of its whole log (activity.totals), a row
+// per month under them. Asked when shown and once a minute while shown, the
+// answer kept per folder for a minute outside the component
+// (stats-answer.ts, M9 fix 885), so a remount or the rail's tab asks
+// nothing new inside the minute.
 export function StatsView({ path }: { path: string }) {
   const folder = statsFolder(path);
-  const { daemon, connected } = useStore('daemon', 'connected');
-  const supported = statsSupported(daemon);
-  const [totals, setTotals] = useState<ActivityTotals | null>(null);
-  const [counts, setCounts] = useState<GitProjectCounts | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  if (folder === null) return null;
+  return <StatsPanel folder={folder} place="tab" />;
+}
 
+// The answer to a folder and the ask for it: it starts on the kept answer,
+// so one draws at once however old, and the first ask waits until that
+// answer is a minute old.
+function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | null; failed: string | null } {
+  const [answer, setAnswer] = useState<StatsAnswer | null>(() => keptAnswer(folder));
+  const [failed, setFailed] = useState<string | null>(null);
   useEffect(() => {
-    if (folder === null || !supported || !connected) return;
+    if (!live) return;
     let gone = false;
-    const ask = () => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
       const asked = Date.now();
-      void Promise.all([window.emerald.request('activity.totals', { folder }), window.emerald.files.gitProjectCounts(folder)])
+      countAsk(folder);
+      // Serial: the git read takes the log's first day, which the fold
+      // answers (M9 fix 885), so a span before the log is priced on its tail.
+      void window.emerald
+        .request('activity.totals', { folder })
+        .then(async (t) => [t, await window.emerald.files.gitProjectCounts(folder, historyDay(t.historyFrom))] as const)
         .then(([t, c]) => {
+          const a: StatsAnswer = { totals: t, counts: c, now: t.to > 0 ? t.to : asked, at: asked };
+          keepAnswer(folder, a);
           if (gone) return;
-          setTotals(t);
-          setCounts(c);
+          setAnswer(a);
           setFailed(null);
-          setNow(t.to > 0 ? t.to : asked);
         })
         .catch((err: unknown) => {
           if (!gone) setFailed(err instanceof Error ? err.message : String(err));
         });
+      timer = setTimeout(tick, STATS_REFRESH_MS);
     };
-    ask();
-    const timer = setInterval(ask, STATS_REFRESH_MS);
+    timer = setTimeout(tick, askDue(folder, Date.now()));
     return () => {
       gone = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [folder, supported, connected]);
+  }, [folder, live]);
+  return { answer, failed };
+}
 
-  const state = daemon !== null && !supported ? 'old' : failed !== null ? 'failed' : totals !== null && counts !== null ? 'ready' : 'loading';
-  const name = folder === null ? path : folderName(folder) || folder;
+export const StatsPanel = memo(function StatsPanel({ folder, place }: { folder: string; place: 'tab' | 'rail' }) {
+  const { daemon, connected } = useStore('daemon', 'connected');
+  const supported = statsSupported(daemon);
+  const { answer, failed } = useStatsAnswer(folder, supported && connected);
+  // Before the counters are read, so the attributes count this render's sheet.
+  const sheet = useMemo(() => (answer === null ? null : statsSheet(folder, answer)), [folder, answer]);
+  const counts = statsCounts(folder);
+  const state = daemon !== null && !supported ? 'old' : failed !== null ? 'failed' : answer !== null ? 'ready' : 'loading';
+  const name = folderName(folder) || folder;
   return (
-    <div className="file-view stats-view" data-path={path} data-folder={folder ?? undefined} data-state={state} data-now={state === 'ready' ? now : undefined}>
-      <div className="file-header">
-        <span className="file-path stats-view-title" title={`The statistics of ${folder ?? path}`}>
-          Statistics · {name}
-        </span>
-      </div>
+    <div
+      className={place === 'tab' ? 'file-view stats-view' : 'stats-view'}
+      data-place={place}
+      data-folder={folder}
+      data-state={state}
+      data-now={state === 'ready' && answer !== null ? answer.now : undefined}
+      data-asks={counts.asks}
+      data-sheets={counts.sheets}
+    >
+      {place === 'tab' && (
+        <div className="file-header">
+          <span className="file-path stats-view-title" title={`The statistics of ${folder}`}>
+            Statistics · {name}
+          </span>
+        </div>
+      )}
       <div className="stats-view-body">
-        {state === 'old' && <div className="stats-message">Statistics need emmerd at level 70 or later; restart it from the banner.</div>}
+        {state === 'old' && <div className="stats-message">{STATS_OLD_TEXT}</div>}
         {state === 'failed' && <div className="stats-message">The daemon did not answer the totals: {failed}</div>}
         {state === 'loading' && <div className="stats-message">Reading the totals…</div>}
-        {state === 'ready' && totals !== null && counts !== null && <StatsBody totals={totals} counts={counts} now={now} />}
+        {state === 'ready' && sheet !== null && answer !== null && <StatsBody sheet={sheet} answer={answer} />}
       </div>
     </div>
   );
-}
+});
 
-function StatsBody({ totals, counts, now }: { totals: ActivityTotals; counts: GitProjectCounts; now: number }) {
-  const start = spanStart(counts.firstCommitAt, totals.firstAt);
-  const figures = statsFigures(totals, counts);
-  const releases = releasesOf(counts).count;
-  const months = [...totals.months].reverse();
+// The rail's Stats tab: the level message first, so it shows with no
+// folder too, then the empty word, then the panel keyed on the folder so a
+// cd remounts it on that folder's own kept answer.
+export const RailStats = memo(function RailStats({ folder }: { folder: string | null }) {
+  const { daemon } = useStore('daemon');
+  if (daemon !== null && !statsSupported(daemon)) {
+    return (
+      <div className="stats-view" data-place="rail" data-state="old">
+        <div className="stats-view-body">
+          <div className="stats-message">{STATS_OLD_TEXT}</div>
+        </div>
+      </div>
+    );
+  }
+  if (folder === null) return <div className="files-empty">No session in this pane</div>;
+  return <StatsPanel key={folder} folder={folder} place="rail" />;
+});
+
+function StatsBody({ sheet, answer }: { sheet: StatsSheet; answer: StatsAnswer }) {
+  const { totals, now } = answer;
   return (
     <>
-      <div className="stats-span" data-from={start ?? undefined} title={spanTitle(counts.firstCommitAt, totals.firstAt, counts.root !== null, now)}>
-        {spanText(counts.firstCommitAt, totals.firstAt, now)}
+      <div className="stats-span-row">
+        <div className="stats-span" data-from={sheet.start ?? undefined} title={sheet.spanTitle}>
+          {sheet.span}
+        </div>
+        <span className="stats-asof" title="When these figures were read; read again once they are a minute old, while shown">
+          {sheet.asOf}
+        </span>
       </div>
       <div className="stats-figures">
-        {figures.map((f) => (
+        {sheet.figures.map((f) => (
           <div key={f.key} className="stats-figure" data-figure={f.key} title={f.title}>
             <span className="stats-figure-label">{f.label}</span>
             <span className="stats-figure-value">{f.value}</span>
@@ -88,35 +140,37 @@ function StatsBody({ totals, counts, now }: { totals: ActivityTotals; counts: Gi
           </div>
         ))}
       </div>
-      <div className="stats-yield">{yieldText(totals.total.usd, totals.total.estimated, releases, counts.commits)}</div>
-      <StatsPaid totals={totals} start={start} now={now} />
-      <table className="stats-months">
-        <thead>
-          <tr>
-            <th>Month</th>
-            <th>Requests</th>
-            <th>Tokens in</th>
-            <th>Tokens out</th>
-            <th>At API prices</th>
-            <th>Agent time</th>
-            <th>Commits credited</th>
-          </tr>
-        </thead>
-        <tbody>
-          {months.map((m) => (
-            <tr key={m.month} className="stats-month" data-month={m.month ?? undefined}>
-              <td>{monthName(m.month ?? '')}</td>
-              <td>{countText(m.requests)}</td>
-              <td>{tokensText(m.up)}</td>
-              <td>{tokensText(m.down)}</td>
-              <td>{usdText(m.usd, m.estimated)}</td>
-              <td>{formatSpanLength(m.agentMs)}</td>
-              <td>{countText(m.commits)}</td>
+      <div className="stats-yield">{sheet.yieldLine}</div>
+      <StatsPaid totals={totals} start={sheet.start} now={now} />
+      <div className="stats-months-box">
+        <table className="stats-months">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Requests</th>
+              <th>Tokens in</th>
+              <th>Tokens out</th>
+              <th>At API prices</th>
+              <th>Agent time</th>
+              <th title="The commits made by the sessions in this folder (a Claude-Session trailer naming one, or what one of their git commands added to HEAD); the Commits figure above counts every commit on HEAD">By sessions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="stats-history">{historyText(totals.historyFrom, start, now)}</div>
+          </thead>
+          <tbody>
+            {sheet.months.map((m) => (
+              <tr key={m.month} className="stats-month" data-month={m.month ?? undefined}>
+                <td>{monthName(m.month ?? '')}</td>
+                <td>{countText(m.requests)}</td>
+                <td>{tokensText(m.up)}</td>
+                <td>{tokensText(m.down)}</td>
+                <td>{usdText(m.usd, m.estimated)}</td>
+                <td>{formatSpanLength(m.agentMs)}</td>
+                <td>{countText(m.commits)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="stats-history">{sheet.history}</div>
       <StatsPlan now={now} />
     </>
   );
@@ -125,7 +179,7 @@ function StatsBody({ totals, counts, now }: { totals: ActivityTotals; counts: Gi
 // What the plan cost over the span against the API price (M9 fix 838),
 // the folder's share by spend in its title.
 function StatsPaid({ totals, start, now }: { totals: ActivityTotals; start: number | null; now: number }) {
-  const { plan } = useUi();
+  const plan = usePlan();
   const from = start ?? now;
   const days = spanDays(from, now);
   const t = totals.total;
@@ -143,7 +197,7 @@ function StatsPaid({ totals, start, now }: { totals: ActivityTotals; start: numb
 // The plan list and its add row (M9 fix 838): the window's, so every
 // folder's tab shows the same list.
 function StatsPlan({ now }: { now: number }) {
-  const { plan } = useUi();
+  const plan = usePlan();
   const [kind, setKind] = useState<PlanKind>('Max 20x');
   const [price, setPrice] = useState(() => String(PLAN_PRICES['Max 20x']));
   const [from, setFrom] = useState(() => dayKey(now));

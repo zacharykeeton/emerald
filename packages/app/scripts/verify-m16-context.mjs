@@ -25,7 +25,7 @@ import { processIdentity } from '@emerald/shared/process-identity';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm16-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m16';
-const { CTRL, SHIFT, daemonPid, expect, freshPort, getLayout, killTree, launch, leaves, sleep, startSession, step, stopDaemon, zreq } =
+const { CTRL, SHIFT, daemonPid, expect, freshPort, getLayout, killTree, launch, leaves, railAtOldWidth, shotsDir, sleep, startSession, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
 // M9 fix 586: the Claude shell runs in a fixture repository of the script's
@@ -97,6 +97,11 @@ const waitRowContext = (s, id, text, what) =>
 const s = await launch(freshPort(), { freshState: true });
 app = s;
 try {
+  // M9 fix 885 widened the rail's default to 330 px; the title walks below
+  // were written against the old pane area (pane 1 wide past 450 px beside a
+  // 160 px pane 2, the 330 px default split), and they are about the panes,
+  // not the rail.
+  await railAtOldWidth(s);
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
   // Pane 1 plays Claude, pane 2 is a plain shell that never reports.
   await startSession(s, { kind: 'shell', cwd: fixture });
@@ -396,13 +401,14 @@ try {
   const paneWidth = () => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width`);
   const titleProbe = () =>
     s.evalJs(
-      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left - box.left), right: Math.round(b.right - box.left), width: Math.round(b.width) }; }; const name = t.querySelector('.pane-name'); const nameFloor = parseFloat(getComputedStyle(name).minWidth); const text = t.querySelector('.pane-context-model'); const state = t.querySelector('.pane-state'); const stateShown = getComputedStyle(state).display !== 'none'; const cwd = t.querySelector('.pane-cwd'); return { box: Math.round(box.width), name: { ...r(name), scroll: name.scrollWidth, client: name.clientWidth }, nameFloor, state: { ...r(state), scroll: state.scrollWidth, client: state.clientWidth, shown: stateShown }, cwd: cwd === null ? { width: 0, absent: true } : r(cwd), context: r(t.querySelector('.pane-context')), dial: r(t.querySelector('.context-dial')), text: { ...r(text), scroll: text.scrollWidth, client: text.clientWidth }, resume: r(t.querySelector('.pane-resume')), buttons: [...t.querySelectorAll('.pane-title-actions button')].map(r) }; })()`,
+      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left - box.left), right: Math.round(b.right - box.left), width: Math.round(b.width) }; }; const name = t.querySelector('.pane-name'); const nameFloor = parseFloat(getComputedStyle(name).minWidth); const text = t.querySelector('.pane-context-model'); const state = t.querySelector('.pane-state'); const stateShown = getComputedStyle(state).display !== 'none'; const cwd = t.querySelector('.pane-cwd'); return { box: Math.round(box.width), name: { ...r(name), scroll: name.scrollWidth, client: name.clientWidth }, nameFloor, state: { ...r(state), scroll: state.scrollWidth, client: state.clientWidth, shown: stateShown }, cwd: cwd === null ? { width: 0, absent: true } : r(cwd), context: r(t.querySelector('.pane-context')), dial: r(t.querySelector('.context-dial')), text: { ...r(text), scroll: text.scrollWidth, client: text.clientWidth, shown: text.getClientRects().length > 0 }, resume: r(t.querySelector('.pane-resume')), buttons: [...t.querySelectorAll('.pane-title-actions button')].map(r) }; })()`,
     );
   // Seven buttons since M9 fix 689 (the face button first on a Claude
   // pane; six since M9 fix 181), held while any word or figure is on the
-  // line (M9 fix 840): the face button and the two splits give at the
-  // eighth squeeze level, hide and close at the ninth, after the state
-  // word and the name; the zoom and the shade never. Whatever level the
+  // line (M9 fix 840): the face button gives at the eighth squeeze
+  // level, hide and close at the ninth, the two splits at the tenth (M9
+  // fix 860), after the state word and the name; the zoom and the shade
+  // never. Whatever level the
   // title lands on, the buttons shown are that level's and every one
   // ends inside the box. With the seven held and Resume beside them an
   // exited title at 330px can be past its sixth level, where the name,
@@ -413,7 +419,7 @@ try {
     s.evalJs(
       `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title'); const box = t.getBoundingClientRect(); const pct = t.querySelector('.pane-context-percent'); const ctx = t.querySelector('.pane-context'); const percent = pct === null ? null : (() => { const pr = pct.getBoundingClientRect(); const cr = ctx.getBoundingClientRect(); return { shown: getComputedStyle(pct).display !== 'none' && pr.width > 0, whole: pr.left >= cr.left - 0.5 && pr.right <= cr.right + 0.5 && pct.scrollWidth <= pct.clientWidth + 1, text: pct.textContent }; })(); return { level: Number(t.dataset.squeeze ?? 0), box: Math.round(box.width), percent, buttons: [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const r = b.getBoundingClientRect(); return { cls: b.className, shown: getComputedStyle(b).display !== 'none', right: Math.round(r.right - box.left) }; }) }; })()`,
     );
-  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 8 && (c.startsWith('pane-split') || c === 'pane-face-toggle')) && !(level >= 9 && (c === 'pane-hide' || c === 'pane-close')));
+  const expectedShown = (level) => ['pane-face-toggle', 'pane-split-right', 'pane-split-down', 'pane-zoom', 'pane-shade-toggle', 'pane-hide', 'pane-close'].filter((c) => !(level >= 8 && c === 'pane-face-toggle') && !(level >= 9 && (c === 'pane-hide' || c === 'pane-close')) && !(level >= 10 && c.startsWith('pane-split')));
   const buttonsAt = (read, where) => {
     const shown = read.buttons.filter((b) => b.shown).map((b) => b.cls.split(' ')[0]);
     expect(read.buttons.length === 7 && JSON.stringify(shown) === JSON.stringify(expectedShown(read.level)), `fix 208: the buttons shown ${where} are level ${read.level}'s, got ${JSON.stringify(read.buttons)}`);
@@ -441,7 +447,7 @@ try {
   expect(narrowTitle.resume.right <= narrowTitle.box && narrowTitle.resume.left < shownButtons[0].left, `Resume is inside the title before the buttons, got ${JSON.stringify(narrowTitle.resume)}`);
   expect(narrowTitle.name.width >= narrowTitle.nameFloor - 0.5 && narrowTitle.nameFloor > 40, `the name keeps its floor, got ${JSON.stringify({ name: narrowTitle.name, floor: narrowTitle.nameFloor })}`);
   expect(narrowTitle.dial.width === 11 && narrowTitle.dial.right <= narrowTitle.box, `the dial stays whole, got ${JSON.stringify(narrowTitle.dial)}`);
-  expect(narrowTitle.text.scroll > narrowTitle.text.client + 1, `the context's words are what gave, got ${JSON.stringify(narrowTitle.text)}`);
+  expect(!narrowTitle.text.shown || narrowTitle.text.scroll > narrowTitle.text.client + 1, `the context's words are what gave (cut, or gone whole from level 3, fix 859), got ${JSON.stringify(narrowTitle.text)}`);
   // Cut, or gone whole at fix 237's fifth level.
   const stateGave = narrowTitle.state.scroll > narrowTitle.state.client + 1 || !narrowTitle.state.shown;
   expect(!stateGave || narrowTitle.cwd.width === 0, `fix 56: the state gives only once the cwd is gone, got ${JSON.stringify({ state: narrowTitle.state, cwd: narrowTitle.cwd })}`);
@@ -450,10 +456,11 @@ try {
   step(`fix 50: at ${Math.round(await paneWidth())}px the exited title keeps Resume and its buttons in the box (${JSON.stringify({ name: narrowTitle.name.width, state: narrowTitle.state.width, cwd: narrowTitle.cwd.width, context: narrowTitle.context.width })}); fix 208: level ${narrowButtons.level} shows ${shownAt330.length} of seven`);
 
   // M9 fix 208, moved by fix 840: narrower still, until the eighth level
-  // (about 240px for an exited title with Resume), the chat button and
-  // the splits have given and the zoom and the shade are still there
-  // (fix 237 keeps the shade to the end; hide and close go at the ninth;
-  // verify:m9's fix 237 step walks those); a click on the zoom from there
+  // (about 240px for an exited title with Resume), the chat button has
+  // given and the splits, the zoom and the shade are still there (M9 fix
+  // 860; fix 237 keeps the shade to the end; hide and close go at the
+  // ninth and the splits at the tenth; verify:m9's fix 237 step walks
+  // those); a click on the zoom from there
   // zooms the pane, which brings every button back, and a second click
   // unzooms.
   let narrowest = narrowButtons;
@@ -468,7 +475,7 @@ try {
   }
   expect(narrowest.level >= 8, `fix 840: the title reaches its eighth level once narrow enough, got level ${narrowest.level} at ${narrowest.box}px`);
   const shownNarrowest = buttonsAt(narrowest, `at ${narrowest.box}px`);
-  expect(shownNarrowest.includes('pane-zoom') && shownNarrowest.includes('pane-shade-toggle') && !shownNarrowest.includes('pane-face-toggle') && !shownNarrowest.includes('pane-split-right') && !shownNarrowest.includes('pane-split-down'), `fix 840: the chat button and the splits have given at ${narrowest.box}px, the zoom and the shade stayed (fix 237), got ${JSON.stringify(shownNarrowest)}`);
+  expect(!shownNarrowest.includes('pane-face-toggle') && shownNarrowest.includes('pane-split-right') && shownNarrowest.includes('pane-split-down') && shownNarrowest.includes('pane-zoom') && shownNarrowest.includes('pane-shade-toggle'), `fix 860: the chat button has given at ${narrowest.box}px, the splits, the zoom and the shade stayed, got ${JSON.stringify(shownNarrowest)}`);
   await s.screenshot('m16-context-fix208-narrowest.png');
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-zoom').click()`);
   await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the zoom button zoomed pane 1 from the narrowest title');
@@ -481,7 +488,7 @@ try {
   await sleep(300);
   const unzoomedButtons = await buttonsProbe();
   expect(unzoomedButtons.level === narrowest.level && unzoomedButtons.box === narrowest.box, `fix 208: unzoomed, the title is back at its level and width, got level ${unzoomedButtons.level} at ${unzoomedButtons.box}px`);
-  step(`fix 840: at ${narrowest.box}px (level ${narrowest.level}, the eighth or past) the chat button and the splits have given and the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its seven buttons, and back`);
+  step(`fix 840 and 860: at ${narrowest.box}px (level ${narrowest.level}, the eighth or past and short of the tenth) the chat button has given and the splits, the zoom and the shade stay (fix 237); the zoom from there gives the pane the tab with its seven buttons, and back`);
 
   // A wider pane (the default split is the 330px case itself, since the
   // sidebar and the rail leave the two panes about that) gives the words
@@ -666,11 +673,15 @@ try {
   await post(plain, { ...statusLine('Opus 5 (1M context)', 14, { session_id: 'sim-m16-live' }), cost: { total_cost_usd: 1.4029585 } });
   await s.waitFor(`${p2Sel('.pane-context-percent')}?.textContent === '14%' && ${p2Sel('.pane-cost')}?.textContent === '$1.40'`, 'pane 2 shows 14% and $1.40');
   expect(!(await s.evalJs(`!!${p2Sel('.pane-resume')}`)), 'fix 795: the live title carries no Resume');
+  // M9 fix 859: idle is narrower than the state word's 4ch floor and can
+  // never cut, so the walk runs on working.
+  await post(plain, { hook_event_name: 'UserPromptSubmit', session_id: 'sim-m16-live', prompt: 'walk the title' });
+  await s.waitFor(`${p2Sel('.pane-state')}?.textContent === 'working'`, 'pane 2 is working');
   const paneW = (id) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(id)}]').getBoundingClientRect().width`);
   const gutter = splitWidth - (await paneW(p1)) - (await paneW(p2));
   const cutRead = () =>
     s.evalJs(
-      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; const tb = t.getBoundingClientRect(); const st = t.querySelector('.pane-state'); const state = st === null || getComputedStyle(st).display === 'none' ? 'hidden' : st.scrollWidth > st.clientWidth + 1 ? 'cut' : 'whole'; const buttons = [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const e = b.getBoundingClientRect(); return { cls: b.className.split(' ')[0], shown: getComputedStyle(b).display !== 'none', inside: e.right <= tb.right + 0.5 && e.left >= tb.left - 0.5 }; }); return { width: Math.round(tb.width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost'), state, buttons }; })()`,
+      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; const tb = t.getBoundingClientRect(); const st = t.querySelector('.pane-state'); const state = st === null || getComputedStyle(st).display === 'none' ? 'hidden' : (() => { const twin = st.cloneNode(true); twin.style.cssText = 'position:absolute;visibility:hidden;flex:none;min-width:0;max-width:none;width:auto'; t.appendChild(twin); const over = twin.getBoundingClientRect().width - st.getBoundingClientRect().width; twin.remove(); return over > 1 ? 'cut ' + over.toFixed(2) : over > 0.02 ? 'whole, over ' + over.toFixed(2) : 'whole'; })(); const m = t.querySelector('.pane-context-model'); const model = m === null ? 'absent' : m.getClientRects().length === 0 ? 'hidden' : (() => { const e = m.getBoundingClientRect(); return e.width >= 18 && e.right <= cr.right + 0.5 ? 'shown' : 'SLIVER'; })(); const buttons = [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const e = b.getBoundingClientRect(); return { cls: b.className.split(' ')[0], shown: getComputedStyle(b).display !== 'none', inside: e.right <= tb.right + 0.5 && e.left >= tb.left - 0.5 }; }); return { width: Math.round(tb.width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost'), state, model, buttons }; })()`,
     );
   const walk795 = [];
   for (const width of [480, 450, 420, 380, 340, 310, 280, 250, 220, 200, 180, 160]) {
@@ -692,17 +703,34 @@ try {
       if (same) break;
     }
     walk795.push(r);
+    // M9 fix 859: a frame of the title at every width, the state word and
+    // the buttons, for the install's look (859-title-<width>.png).
+    const titleBox = await s.evalJs(`(() => { const b = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title').getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; })()`);
+    const titleShot = Buffer.from((await s.send('Page.captureScreenshot', { format: 'png', clip: { ...titleBox, scale: 2 }, fromSurface: true })).data, 'base64');
+    try {
+      fs.writeFileSync(path.join(shotsDir, `859-title-${r.width}.png`), titleShot);
+    } catch {
+      fs.writeFileSync(path.join(shotsDir, `859-title-${r.width}-${Date.now()}.png`), titleShot);
+    }
     const shownButtons = r.buttons.filter((b) => b.shown);
-    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}, state ${r.state}, buttons ${shownButtons.length}/${r.buttons.length}`);
+    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}, state ${r.state}, model ${r.model}, buttons ${shownButtons.length}/${r.buttons.length}`);
     // M9 fix 840: no button gives while a word is on the line; the chat
-    // button and the splits go at the eighth level, hide and close at the
-    // ninth, the zoom and the shade never, and every shown button ends
-    // inside the title.
-    const wantShown = r.buttons.map((b) => b.cls).filter((c) => !(r.level >= 8 && (c === 'pane-face-toggle' || c.startsWith('pane-split'))) && !(r.level >= 9 && (c === 'pane-hide' || c === 'pane-close')));
-    expect(JSON.stringify(shownButtons.map((b) => b.cls)) === JSON.stringify(wantShown) && wantShown.includes('pane-zoom') && wantShown.includes('pane-shade-toggle') && shownButtons.every((b) => b.inside), `fix 840: at ${r.width}px level ${r.level} the buttons shown are the level's, the zoom and the shade among them, each inside the title, got ${JSON.stringify(r.buttons)}`);
+    // button goes at the eighth level, hide and close at the ninth, the
+    // splits at the tenth (M9 fix 860), the zoom and the shade never, and
+    // every shown button ends inside the title.
+    const wantShown = r.buttons.map((b) => b.cls).filter((c) => !(r.level >= 8 && c === 'pane-face-toggle') && !(r.level >= 9 && (c === 'pane-hide' || c === 'pane-close')) && !(r.level >= 10 && c.startsWith('pane-split')));
+    expect(JSON.stringify(shownButtons.map((b) => b.cls)) === JSON.stringify(wantShown) && wantShown.includes('pane-zoom') && wantShown.includes('pane-shade-toggle') && shownButtons.every((b) => b.inside), `fix 840 and 860: at ${r.width}px level ${r.level} the buttons shown are the level's, the zoom and the shade among them, each inside the title, got ${JSON.stringify(r.buttons)}`);
     expect(!/(percent|cost) [^,]*(CUT|OUT)/.test(r.cut), `fix 817: at ${r.width}px level ${r.level} the percent and the cost are whole inside the reading's box or hidden, got ${r.cut}`);
+    // M9 fix 859: the state word clips and is measured exactly, so it is
+    // whole (a cut under a pixel shaves a side bearing, no letter) or gone;
+    // the model's words are three characters or more until level 3, where
+    // they go whole with the percent.
+    expect(!r.state.startsWith('cut'), `fix 859: at ${r.width}px level ${r.level} the state word is whole or hidden, got ${r.state}`);
+    expect(r.model === (r.level >= 3 ? 'hidden' : 'shown'), `fix 859: at ${r.width}px level ${r.level} the model's words are ${r.level >= 3 ? 'hidden' : 'shown, three characters or more'}, got ${r.model}`);
   }
-  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden and every button held to its level (fix 840) at every width: ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden and every button held to its level (fixes 840 and 860) at every width, the state word whole or hidden and the model's words shown or gone whole (fix 859): ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+  await post(plain, { hook_event_name: 'Stop', session_id: 'sim-m16-live', stop_hook_active: false });
+  await s.waitFor(`${p2Sel('.pane-state')}?.textContent !== 'working'`, 'pane 2 is back at rest');
 
   // M9 fix 772: the idle countdown. A real claude (it sits at the trust
   // dialog of the fresh fixture folder and makes no request) on pane 1,

@@ -11,12 +11,13 @@ import type { Skin } from './skin.ts';
 // updater's own state, so a person can see where an update stands without
 // waiting for the four-hourly check or the badge.
 export interface AppMenuItem {
-  action: Action | 'check-updates' | 'toggle-skin';
+  action: Action | 'check-updates' | 'toggle-skin' | 'new-window' | 'toggle-usage-record';
   label: string;
   hint: string;
   // The updater is off in this build (a dev build or EMERALD_NO_UPDATE), so
   // the item says so and a click does nothing.
   disabled?: boolean;
+  title?: string;
 }
 
 // What the check item says beside its label for each phase of the updater.
@@ -44,18 +45,30 @@ export function updateHint(update: UpdateState | null): string {
   }
 }
 
-export function appMenuItems(version: string | null, update: UpdateState | null = null, skin: Skin = 'classic'): AppMenuItem[] {
+// windows: the daemon holds windows on the layout (M9 fix 866, level 73),
+// so New window goes second; an older daemon offers none.
+export function appMenuItems(version: string | null, update: UpdateState | null = null, skin: Skin = 'classic', usageRecord: boolean = false, windows = false): AppMenuItem[] {
   return [
     // The file chooser (M9 fix 341), above the notes: the one item that
     // opens something of the person's own. Its chord is prefix-only, so
     // the hint is empty as a layout tab action's would be.
     { action: 'open-file', label: 'Open a file…', hint: plainKeyFor('open-file') },
+    ...(windows ? [{ action: 'new-window' as const, label: 'New window', hint: '' }] : []),
     { action: 'whats-new', label: "What's new", hint: version ?? '' },
     { action: 'cheat-sheet', label: 'Key cheat sheet', hint: plainKeyFor('cheat-sheet') },
     { action: 'open-actions', label: 'Run an action…', hint: plainKeyFor('open-actions') },
     // The skin (M9 fix 569): the label names the skin on show, and a click
     // flips to the other, stored, with no restart.
     { action: 'toggle-skin', label: skin === 'emerald' ? 'Skin: Emerald' : 'Skin: Classic', hint: '' },
+    // The usage record's switch (M9 fix 887), moved here from the speaker button's menu: the label names its state and a click flips it, as the skin's does.
+    {
+      action: 'toggle-usage-record',
+      label: usageRecord ? 'Usage record: on' : 'Usage record: off',
+      hint: '',
+      title:
+        'A local record of which emerald actions and views you use, for emmer usage report; kept in logs/usage.jsonl under your emerald home and never sent anywhere. Click to turn it ' +
+        (usageRecord ? 'off' : 'on'),
+    },
     { action: 'check-updates', label: 'Check for updates', hint: updateHint(update), disabled: update === null || update.phase === 'off' },
   ];
 }

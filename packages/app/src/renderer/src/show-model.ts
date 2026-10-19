@@ -59,3 +59,11 @@ export function newTabNameFor(session: Pick<SessionInfo, 'groupCwd' | 'name'>, l
   const title = labels.get(session.groupCwd) ?? folderTitle(session.groupCwd);
   return title.trim() === '' ? session.name : title;
 }
+
+// The name of the tab a folder from outside opens (M9 fix 886): the
+// folder's sidebar label when it has one, else its own name, fix 578's
+// rule for a folder with no session yet.
+export function folderTabName(folder: string, labels: ReadonlyMap<string, string>): string {
+  const title = labels.get(folder) ?? folderTitle(folder);
+  return title.trim() === '' ? folder : title;
+}

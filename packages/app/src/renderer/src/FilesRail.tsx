@@ -21,6 +21,8 @@ import { RenameBox } from './RenameBox.tsx';
 import { HistoryPanel } from './HistoryPanel.tsx';
 import { ClaudeStar } from './skin-star.tsx';
 import { CommitsPanel } from './CommitsPanel.tsx';
+import { StatsIcon } from './icons.tsx';
+import { RailStats } from './StatsView.tsx';
 import { BranchIcon } from './Sidebar.tsx';
 import { ActivitySection, useRailScope, useRailUnit } from './ActivitySection.tsx';
 import { openViewBeside, typeInto } from './actions.ts';
@@ -639,8 +641,9 @@ export function FilesRail() {
   return (
     <div className="files-rail" style={{ width: filesWidth }} data-root={model.root ?? undefined} data-tab={railTab} data-changed={filesChanged || undefined}>
       <FilesResizer width={filesWidth} />
-      <RailTabs active={railTab} changed={git.files.filter((f) => f.status !== 'ignored').length} dragFolder={viewsSupported(daemon) ? root : null} />
+      <RailTabs active={railTab} changed={git.files.filter((f) => f.status !== 'ignored').length} dragFolder={viewsSupported(daemon) ? root : null} folder={root} />
       {railTab === 'history' && <HistoryPanel />}
+      {railTab === 'stats' && <RailStats folder={root} />}
       {railTab === 'timeline' && <ActivitySection folder={root} scope={activityScope} onScope={setActivityScope} unit={activityUnit} onUnit={setActivityUnit} place="rail" />}
       {railTab === 'timeline' && (
         <CommitsPanel
@@ -889,7 +892,7 @@ export function FilesRail() {
 // folder, null when the rail is on nothing or the daemon is too old to
 // keep a view. Nothing shows until the mouse has moved, so a click still
 // switches tabs.
-function RailTabs({ active, changed, dragFolder }: { active: RailTab; changed: number; dragFolder: string | null }) {
+function RailTabs({ active, changed, dragFolder, folder }: { active: RailTab; changed: number; dragFolder: string | null; folder: string | null }) {
   const tab = (key: RailTab, label: string, title: string, icon: React.ReactNode, count?: number, onPress?: (ev: React.MouseEvent) => void) => (
     <button
       className="rail-tab"
@@ -914,6 +917,7 @@ function RailTabs({ active, changed, dragFolder }: { active: RailTab; changed: n
       {tab('files', 'Files', changed > 0 ? `Files, ${changed} changed in the repository` : 'Files', <FolderIcon />, changed)}
       {tab('timeline', 'Activity', dragFolder === null ? 'What the sessions did: the day\'s time above, the repository\'s commits below' : 'What the sessions did: the day\'s time above, the repository\'s commits below; drag onto a pane to keep this folder\'s there', <TimelineIcon />, undefined, pressCommits)}
       {tab('history', 'Sessions', 'Sessions of Claude Code on this machine', <ClaudeStar size={14} className="files-icon" />)}
+      {tab('stats', 'Stats', folder === null ? 'Statistics' : `Statistics of ${pathLabel(folder)}`, <StatsIcon className="files-icon" />)}
       <span className="rail-tabs-spacer" />
       <button className="files-button files-collapse" title="Hide the rail (Ctrl+Shift+F)" onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
         »
@@ -1374,7 +1378,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDi
                 title: `Search the lines of the files under ${atRoot ? pathLabel(menu.path) : rel || folderName(menu.path)}`,
                 onClick: done(() => onFindInFolder(atRoot ? null : menu.path)),
               },
-              ...(atRoot && statsOffered === true ? [{ label: 'Statistics in a tab', title: `The totals, the yield and the API price of ${menu.path} as a tab in the strip`, onClick: done(() => openFileTab(statsPath(menu.path))) }] : []),
+              ...(statsOffered === true ? [{ label: 'Statistics in a tab', title: `The totals, the yield and the API price of ${menu.path} as a tab in the strip`, onClick: done(() => openFileTab(statsPath(menu.path))) }] : []),
             ]),
         {
           label: menu.kind === 'dir' ? 'Open in Explorer' : 'Open with Windows',

@@ -535,6 +535,8 @@ try {
   const folderLabels = await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-label')].map(b => b.textContent)`);
   // M9 fix 309 puts New file and New folder above Find in folder; M9 fix 574 puts Rename above them.
   expect(folderLabels.slice(0, 4).join(',') === 'Rename,New file,New folder,Find in folder', `Rename, New file, New folder and Find in folder lead the folder menu: ${folderLabels.join(',')}`);
+  // M9 fix 885: Statistics is offered on every folder row, not the root's alone.
+  expect(folderLabels[folderLabels.indexOf('Find in folder') + 1] === 'Statistics in a tab', `a folder row offers Statistics in a tab after Find in folder (fix 885): ${folderLabels.join(',')}`);
   await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Find in folder').click()`);
   await s.waitFor(`!document.querySelector('.files-menu') && document.activeElement?.classList.contains('files-filter-input')`, 'the box is focused');
   expect((await s.evalJs(`document.querySelector('.files-scope-name')?.textContent`)) === 'in data', 'the scope shows the folder');
@@ -602,7 +604,7 @@ try {
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edge.x - 80, y: edge.y, button: 'left', buttons: 1 });
   await s.mouse('mouseReleased', edge.x - 80, edge.y);
   const width = await s.evalJs(`document.querySelector('.files-rail').getBoundingClientRect().width`);
-  expect(Math.abs(width - 340) <= 2, `dragging the edge 80 px left widens the rail to 340 (${width})`);
+  expect(Math.abs(width - 410) <= 2, `dragging the edge 80 px left widens the rail from its 330 default (fix 885) to 410 (${width})`);
   // M27: Contents and a scope set through Find in folder are still set
   // after the reload, since the root comes back the same.
   const dataRow = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data')))}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -614,7 +616,7 @@ try {
   await sleep(1500);
   await s.waitFor(`document.querySelectorAll('.files-row').length > 0`, 'the tree is back after a reload');
   const after = await s.evalJs(`document.querySelector('.files-rail').getBoundingClientRect().width`);
-  expect(Math.abs(after - 340) <= 2, `the width survives a reload (${after})`);
+  expect(Math.abs(after - 410) <= 2, `the width survives a reload (${after})`);
   expect((await s.evalJs(`document.querySelector('.files-mode[data-mode="contents"]').dataset.active`)) === 'true', 'Contents survives the reload');
   expect((await s.evalJs(`document.querySelector('.files-scope-name')?.textContent`)) === 'in data', 'and so does the scope');
   await s.evalJs(`document.querySelector('.files-scope-clear').click()`);
@@ -701,7 +703,7 @@ try {
   // and the Changed toggle lists the four flat, by path from the root,
   // where a click opens the file; the toggle survives a reload.
   expect((await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent`)) === '4', 'the Files tab counts the four changed files');
-  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 3, 'three rail tabs');
+  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 4, 'four rail tabs');
   const countsOf = (n) => `(document.querySelector('.files-row[data-path=' + JSON.stringify(${JSON.stringify(repo + '\\')} + ${JSON.stringify(n)}) + ']')?.querySelector('.changes-counts')?.textContent ?? null)`;
   await s.waitFor(`${countsOf('added.txt')} === '+1 −0' && ${countsOf('staged.txt')} === '+1 −1' && ${countsOf('tracked.txt')} === '+1 −1'`, 'the counts on the changed rows', 8000);
   expect((await s.evalJs(countsOf('new.txt'))) === null, 'the untracked row has no counts');
@@ -1179,27 +1181,28 @@ try {
   step('M9 fix 590: a shell spawned in a folder with no repository, back home from a repository, shows its own folder on the graph as the strip does, Not a git repository with it, while fix 114 keeps the repository for a bound session that steps out');
 
   // The strip at a narrow rail (three tabs since fix 70, every one with
-  // an icon since M49, the third word Sessions since fix 83): the three
-  // words at 340px and at the 260px break,
-  // every tab an icon under it, the strip still fitting at 160px.
+  // an icon since M49, the third word Sessions since fix 83, a fourth,
+  // Stats, since fix 885): the four words at 390px and at the 310px
+  // break (a two-digit count needs 308), every tab an icon under it,
+  // the strip still fitting at 160px.
   const stripAt = async (w) => {
     await s.evalJs(`document.querySelector('.files-rail').style.width = '${w}px'`);
     await sleep(120);
     return s.evalJs(`[...document.querySelectorAll('.rail-tab')].map(t => { const label = t.querySelector('.rail-tab-label'); const icon = t.querySelector('.files-icon'); return t.dataset.tab + '=' + (getComputedStyle(label).display !== 'none' ? 'w' : '') + (getComputedStyle(icon).display !== 'none' ? 'i' : ''); }).join(',') + ' ' + (document.querySelector('.rail-tabs').scrollWidth <= document.querySelector('.rail-tabs').clientWidth ? 'fits' : 'overflows')`);
   };
-  const wide = await stripAt(340);
-  expect(wide === 'files=wi,timeline=wi,history=wi fits', `at 340px the three words show with their icons (${wide})`);
-  const wideEdge = await stripAt(260);
-  expect(wideEdge === 'files=wi,timeline=wi,history=wi fits', `and still at 260px (${wideEdge})`);
-  const narrow = await stripAt(250);
-  expect(narrow === 'files=i,timeline=i,history=i fits', `at 250px every tab is an icon (${narrow})`);
+  const wide = await stripAt(390);
+  expect(wide === 'files=wi,timeline=wi,history=wi,stats=wi fits', `at 390px the four words show with their icons (${wide})`);
+  const wideEdge = await stripAt(310);
+  expect(wideEdge === 'files=wi,timeline=wi,history=wi,stats=wi fits', `and still at 310px, the break (${wideEdge})`);
+  const narrow = await stripAt(300);
+  expect(narrow === 'files=i,timeline=i,history=i,stats=i fits', `at 300px every tab is an icon (${narrow})`);
   const least = await stripAt(160);
-  expect(least === 'files=i,timeline=i,history=i fits', `and the strip still fits at 160px (${least})`);
+  expect(least === 'files=i,timeline=i,history=i,stats=i fits', `and the strip still fits at 160px (${least})`);
   await s.evalJs(`document.querySelector('.files-rail').style.width = ''`);
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'files'`, 'back on Files');
   await s.screenshot('m45-rail.png');
-  step('the tab strip keeps its words at 340px and 260px and drops all three to icons under 260');
+  step('the tab strip keeps its four words at 390px and 310px and drops all four to icons under 310 (fix 885)');
 
   // M9 fix 248: the file tab is an editor. A file with CRLF line ends
   // and a BOM is written into the repo and opened from the rail; typing

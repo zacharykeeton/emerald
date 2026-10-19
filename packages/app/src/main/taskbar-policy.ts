@@ -9,7 +9,11 @@ import type { AttentionRequest, Skin } from '../preload/api.ts';
 // between a bright and a dim frame at the sidebar's needs-pulse rate
 // while anything is wanting. Both go when the count is zero. Under a
 // private EMERALD_HOME both are held to the main log and nothing touches the
-// taskbar (fix 47, fix 49's shape).
+// taskbar (fix 47, fix 49's shape). M9 fix 870: and two more, on every
+// change: the button's progress bar filled to the share of sessions working
+// (cleared at none), and the thumbnail's tooltip naming the working and
+// wanting counts; the badge keeps the corner. Both are held to the log under
+// a private home with the rest.
 
 export type TaskbarLog = (msg: string) => void;
 
@@ -21,7 +25,26 @@ export const PULSE_MS = 1600;
 export interface TaskbarWindow {
   flashFrame(on: boolean): void;
   setOverlay(count: number | null, bright: boolean): void;
+  setProgress(fraction: number | null): void;
+  setTooltip(text: string): void;
 }
+
+// The bar's fill (M9 fix 870): the share of live sessions working, none
+// at no working session.
+export function taskbarProgress(working: number, live: number): number | null {
+  return working === 0 || live === 0 ? null : working / live;
+}
+
+// The thumbnail's tooltip (M9 fix 870): both counts, the parts that are
+// there, or that nothing is.
+export function taskbarTooltip(working: number, wanting: number): string {
+  const parts: string[] = [];
+  if (working > 0) parts.push(`${working} working`);
+  if (wanting > 0) parts.push(`${wanting} ${wanting === 1 ? 'wants' : 'want'} you`);
+  return parts.length === 0 ? 'Nothing running' : parts.join(', ');
+}
+
+const countOf = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
 
 export function createTaskbarPolicy(
   getWindow: () => TaskbarWindow | null,
@@ -30,6 +53,11 @@ export function createTaskbarPolicy(
   let wanting = 0;
   let bright = true;
   let stopPulse: (() => void) | null = null;
+  // What the bar and the tooltip last showed (M9 fix 870); undefined is
+  // never set, so the first request sets the tooltip.
+  let lastBar: number | null = null;
+  let lastTooltip: string | undefined;
+  let lastProgressLine: string | undefined;
 
   const paint = () => {
     const win = getWindow();
@@ -48,7 +76,18 @@ export function createTaskbarPolicy(
       const flash = req.flash === true && count > 0;
       const changed = count !== wanting;
       wanting = count;
+      const live = countOf(req.live);
+      const working = Math.min(countOf(req.working), live);
+      const bar = taskbarProgress(working, live);
+      const tooltip = taskbarTooltip(working, count);
       if (opts.held) {
+        // The prefix is not the badge's, so a read of the badge's lines
+        // never matches a progress line (M9 fix 870).
+        const line = `taskbar progress held under a private EMERALD_HOME: ${working} of ${live} working, bar ${bar === null ? 'cleared' : `${Math.round(bar * 100)}%`}, tooltip ${JSON.stringify(tooltip)}`;
+        if (line !== lastProgressLine) {
+          lastProgressLine = line;
+          opts.log(line);
+        }
         // One line per change, so a script reads the rise, the count and
         // the clear, and a repeated push says nothing.
         if (count === 0 && changed) opts.log('taskbar held under a private EMERALD_HOME: cleared');
@@ -57,6 +96,16 @@ export function createTaskbarPolicy(
       }
       const win = getWindow();
       if (win === null) return;
+      if (opts.windows) {
+        if (bar !== lastBar) {
+          lastBar = bar;
+          win.setProgress(bar);
+        }
+        if (tooltip !== lastTooltip) {
+          lastTooltip = tooltip;
+          win.setTooltip(tooltip);
+        }
+      }
       if (count === 0) {
         if (!changed) return;
         stop();
@@ -77,6 +126,9 @@ export function createTaskbarPolicy(
     dispose() {
       stop();
       wanting = 0;
+      lastBar = null;
+      lastTooltip = undefined;
+      lastProgressLine = undefined;
     },
     pulsing: () => stopPulse !== null,
   };

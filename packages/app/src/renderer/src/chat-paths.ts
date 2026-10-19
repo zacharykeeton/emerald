@@ -5,7 +5,8 @@ import { normalizePath } from './files-model.ts';
 // it reads like one (a separator or a file extension, no spaces, no
 // glob or shell characters), with an optional :line or :line:column
 // tail; it is linked only when it resolves inside the session's folder
-// and a stat says it is a file there.
+// and a stat says it is a file there. A picture's path is linked wherever
+// it resolves, in a code span or bare in the text (M9 fix 864).
 
 // The stat answers are kept for the window's life, so a reply re-read on
 // every transcript change never stats the same path twice; the map is

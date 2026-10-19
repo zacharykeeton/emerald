@@ -824,7 +824,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
             <button onClick={() => void window.emerald.files.open(path).catch(warn('open'))}>Open with Windows</button>
           </div>
         )}
-        {hasText && !image && view === 'rendered' && <MarkdownView path={path} text={isMermaidFile(path) ? mermaidDocument(shownText) : shownText} diagramTheme={mermaidThemeFor(fileScheme?.background ?? null)} />}
+        {hasText && !image && view === 'rendered' && <MarkdownView path={path} text={isMermaidFile(path) ? mermaidDocument(shownText) : shownText} diagramTheme={mermaidThemeFor(fileScheme?.background ?? null)} paneId={paneId} />}
         {hasText && view === 'turns' && <TranscriptView path={path} text={result.text} />}
         {findSeq !== null && hasText && findView !== null && (
           <ViewFindBar body={bodyRef} viewSelector={findView} text={view === 'rendered' ? shownText : result.text} focusSeq={findSeq} onClose={closeFind} />

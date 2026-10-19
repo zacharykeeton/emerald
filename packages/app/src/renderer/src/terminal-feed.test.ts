@@ -240,3 +240,36 @@ test('an exited session moved inside the detach delay keeps its ring (M9 fix 842
   assert.deepEqual(t2.writes, ['kept']);
   assert.equal(pipe.attaches(), 1);
 });
+
+test('a replay the feed did not ask for (another window\'s attach on the same connection) starts its terminals over before it is written (M9 fix 867)', () => {
+  const { pipe, feed } = setup();
+  const t1 = new FakeTerm();
+  feed.open('s1', t1, { paneId: () => 'p1', fit: { cols: 100, rows: 30 } });
+  pipe.push(output('s1', 'one', true));
+  pipe.push(output('s1', 'two'));
+  assert.deepEqual(t1.writes, ['one', 'two']);
+  pipe.push(output('s1', 'three', true));
+  assert.equal(t1.resets, 1, 'reset once for the replay it did not ask for');
+  assert.deepEqual(t1.writes, ['three'], 'its writes after the reset are the new replay alone');
+  const t2 = new FakeTerm();
+  feed.open('s1', t2, { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  assert.deepEqual(t2.writes, ['three'], 'a second handle is written the ring, which starts at the new replay');
+  assert.equal(pipe.attaches(), 1);
+});
+
+test('an output for an attachment that has not attached is dropped (M9 fix 867)', () => {
+  const { pipe, feed } = setup();
+  const t1 = new FakeTerm();
+  // No size yet, so no attach goes out.
+  feed.open('s1', t1, { paneId: () => 'p1', fit: null });
+  assert.equal(pipe.attaches(), 0);
+  pipe.push(output('s1', "another window's", true));
+  pipe.push(output('s1', 'live'));
+  assert.deepEqual(t1.writes, []);
+  const h = feed.open('s1', new FakeTerm(), { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  assert.equal(pipe.attaches(), 1);
+  pipe.push(output('s1', 'mine', true));
+  assert.deepEqual(t1.writes, ['mine'], 'its own replay is written, with no reset');
+  assert.equal(t1.resets, 0);
+  h.close();
+});

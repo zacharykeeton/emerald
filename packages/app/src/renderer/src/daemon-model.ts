@@ -270,6 +270,13 @@ export function browserToolbarSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= BROWSER_TOOLBAR_LEVEL;
 }
 
+// The level at which the daemon holds windows on the layout and answers window.open, window.close and window.front (M9 fix 865); an older one offers no New window and no Move to new window.
+export const WINDOWS_LEVEL = 73;
+
+export function windowsSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= WINDOWS_LEVEL;
+}
+
 // The level at which the daemon keeps folder labels (M9 fix 194); an
 // older daemon answers folders.list with bad-request, so the heading
 // offers no rename and the store keeps an empty map.

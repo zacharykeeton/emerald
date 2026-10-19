@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { answerOptions, askQuestion, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
+import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
 
@@ -428,6 +428,100 @@ test('submitMoves, freeAnswerKeys and optionKeys on a multi-select (fix 845)', (
   assert.equal(optionKeys(askQuestion(MULTI_TYPED), '2'), '\x1b[A2');
   assert.equal(optionKeys(askQuestion(ASK_ONE), '2'), '2');
   assert.equal(optionKeys(null, '2'), '2');
+});
+
+// M9 fix 879: the Review your answers tab, captured from a real Claude Code
+// 2.1.302 in a harness session on 2026-10-18, rows verbatim with trailing
+// spaces trimmed, from the dialog's rule down. Lint ticked and Submit
+// pressed (REVIEW_ONE, review-0); fix 845's two-question capture
+// (REVIEW_TWO, multi2-2), its items with no blank between; two
+// single-select questions with Colour answered and Right pressed past Size
+// (REVIEW_WARN, review-single). Escape on the review cancelled the ask as
+// its Cancel does, and Left went back to the question tab.
+const REVIEW_ONE = [
+  RULE,
+  '←  ☒ Checks  ✔ Submit  →',
+  '',
+  'Review your answers',
+  '',
+  ' ● Which checks should the sample run?',
+  '   → Lint',
+  '',
+  'Ready to submit your answers?',
+  '',
+  '❯ 1. Submit answers',
+  '  2. Cancel',
+];
+const REVIEW_TWO = [
+  RULE,
+  '←  ☒ Checks  ☒ Targets  ✔ Submit  →',
+  '',
+  'Review your answers',
+  '',
+  ' ● Which checks should the sample run?',
+  '   → Lint',
+  ' ● Which targets should the sample run them on?',
+  '   → Shared',
+  '',
+  'Ready to submit your answers?',
+  '',
+  '❯ 1. Submit answers',
+  '  2. Cancel',
+];
+const REVIEW_WARN = [
+  RULE,
+  '←  ☒ Colour  ☐ Size  ✔ Submit  →',
+  '',
+  'Review your answers',
+  '',
+  '⚠ You have not answered all questions',
+  '',
+  ' ● Which colour should it be?',
+  '   → Red',
+  '',
+  'Ready to submit your answers?',
+  '',
+  '❯ 1. Submit answers',
+  '  2. Cancel',
+];
+
+test('askReview: the Review your answers tab, each question with its answer, Submit answers and Cancel (fix 879)', () => {
+  const one = askReview(REVIEW_ONE);
+  assert.ok(one !== null);
+  assert.deepEqual(one.tabs, []);
+  assert.equal(one.warning, null);
+  assert.deepEqual(one.items, [{ question: 'Which checks should the sample run?', answer: 'Lint' }]);
+  assert.deepEqual(one.options, [
+    { key: '1', label: 'Submit answers', description: '', pointer: true },
+    { key: '2', label: 'Cancel', description: '', pointer: false },
+  ]);
+  const two = askReview(REVIEW_TWO);
+  assert.ok(two !== null);
+  assert.deepEqual(two.tabs.map((t) => `${t.name}:${t.state}${t.current ? ':current' : ''}`), ['Checks:answered', 'Targets:answered', 'Submit:submit:current']);
+  assert.deepEqual(two.items, [
+    { question: 'Which checks should the sample run?', answer: 'Lint' },
+    { question: 'Which targets should the sample run them on?', answer: 'Shared' },
+  ]);
+  const warn = askReview(REVIEW_WARN);
+  assert.ok(warn !== null);
+  assert.equal(warn.warning, 'You have not answered all questions');
+  assert.deepEqual(warn.items, [{ question: 'Which colour should it be?', answer: 'Red' }]);
+  // The review is the Submit tab, though Size is still open.
+  assert.deepEqual(warn.tabs.filter((t) => t.current).map((t) => t.name), ['Submit']);
+  // A question wrapped onto two rows reads whole.
+  const wrapped = REVIEW_ONE.flatMap((r) => (r === ' ● Which checks should the sample run?' ? [' ● Which checks should the', '   sample run?'] : [r]));
+  assert.equal(askReview(wrapped)?.items[0]?.question, 'Which checks should the sample run?');
+  for (const [name, rows] of [['REVIEW_ONE', REVIEW_ONE], ['REVIEW_TWO', REVIEW_TWO], ['REVIEW_WARN', REVIEW_WARN]] as const) {
+    assert.equal(askQuestion(rows), null, name);
+    assert.equal(isQuestionDialog(rows), true, name);
+  }
+  const all = ['←  ☒ answered Colour  ☒ Size  ✓ Submit  →', '', 'Ready?', '', '❯ 1. Submit answers', '  2. Cancel', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'];
+  for (const [name, rows] of [['ASK_ONE', ASK_ONE], ['ASK_TABS', ASK_TABS], ['MULTI_ONE', MULTI_ONE], ['MULTI_SUBMIT', MULTI_SUBMIT], ['all', all], ['BASH_PERMISSION', BASH_PERMISSION], ['PERMISSION', PERMISSION]] as const) {
+    assert.equal(askReview(rows), null, name);
+  }
+  // The review keys as a dialog of its own, apart from the question before it.
+  assert.notEqual(dialogKey(REVIEW_ONE, { x: 0, y: 11 }), null);
+  assert.notEqual(dialogKey(REVIEW_ONE, { x: 0, y: 11 }), dialogKey(MULTI_SUBMIT, { x: 0, y: 16 }));
 });
 
 // M9 fix 801: one press per dialog, told by the dialog's key.

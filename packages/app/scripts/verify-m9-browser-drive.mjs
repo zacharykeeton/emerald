@@ -59,12 +59,45 @@ server = http.createServer((req, res) => {
         '<p id="gatelog"></p>',
         `<div id="menuwrap" onpointerleave="document.getElementById('item').style.visibility = 'hidden'"><button id="menu" onpointerenter="document.getElementById('item').style.visibility = 'visible'">Menu</button> <button id="item" style="visibility: hidden" onclick="document.getElementById('menulog').textContent = 'item clicked'">Item</button></div>`,
         '<p id="menulog"></p>',
+        '<button id="bmenu" onclick="document.getElementById(\'bitems\').hidden = false">Blur menu</button><div id="bitems" hidden><button id="bitem">Blur item</button></div>',
+        `<script>window.__focusLog = []; const note = (kind) => window.__focusLog.push({ kind, at: Date.now(), has: document.hasFocus() }); addEventListener('blur', () => { note('blur'); document.getElementById('bitems').hidden = true; }); addEventListener('focus', () => note('focus')); document.addEventListener('focusin', (e) => note('focusin ' + (e.target.id || e.target.tagName))); document.addEventListener('focusout', (e) => note('focusout ' + (e.target.id || e.target.tagName)));</script>`,
+        `<select id="car" aria-label="Car" onchange="this.dataset.changes = String(Number(this.dataset.changes || 0) + 1)"><option value="v">Volvo</option><option value="s">Saab</option></select>`,
+        '<select id="cars" aria-label="Cars" multiple><option>Volvo</option><option>Saab</option></select>',
+        '<input id="ok" type="checkbox" aria-label="Agree">',
+        '<input id="picky" aria-label="Picky">',
+        `<script>{ const el = document.getElementById('picky'); Object.setPrototypeOf(el, Object.create(HTMLInputElement.prototype, { value: { get() { return ''; }, set() { throw new Error('picky refuses'); }, configurable: true } })); }</script>`,
+        '<div id="rich" contenteditable="true" role="textbox" aria-label="Rich"></div>',
+        '<a id="two" href="/two">Two</a>',
       ].join('\n'),
     );
   } else if (pathname === '/two') page('Drive fixture two', '<p>two</p>');
   else if (pathname === '/export.json') {
     res.writeHead(200, { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="drive-export.json"' });
     res.end('{"ok":true}');
+  } else if (pathname === '/drag') {
+    // M9 fixes 874 and 875: a list reordered in dnd-kit's activation shape
+    // (a press, a move past 5 px, a release; the row lands before the first
+    // other row whose middle is below the pointer), a button outside a
+    // dialog and three inside it.
+    page(
+      'Drive fixture drag',
+      [
+        '<h1>Drag</h1>',
+        '<style>#steps { list-style: none; margin: 0; padding: 0; width: 240px } #steps li { box-sizing: border-box; height: 40px; border: 1px solid #888; user-select: none; touch-action: none }</style>',
+        '<ul id="steps" aria-label="Steps"><li role="button" tabindex="0">Step A</li><li role="button" tabindex="0">Step B</li><li role="button" tabindex="0">Step C</li></ul>',
+        '<p id="draglog"></p>',
+        '<button id="draft">Save draft</button>',
+        `<div role="dialog" aria-label="Edit step"><input aria-label="Step name"> <button id="save" onclick="document.getElementById('dlglog').textContent = 'saved'">Save</button> <button>Cancel</button></div>`,
+        '<p id="dlglog"></p>',
+        `<script>
+let drag = null;
+const steps = document.getElementById('steps');
+steps.addEventListener('pointerdown', (e) => { const row = e.target.closest('li'); if (row !== null) drag = { row, x: e.clientX, y: e.clientY, moves: 0, active: false, first: 0, last: 0 }; });
+document.addEventListener('pointermove', (e) => { if (drag === null || (e.buttons & 1) === 0) return; drag.moves += 1; if (drag.moves === 1) drag.first = e.timeStamp; drag.last = e.timeStamp; if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 5) drag.active = true; });
+document.addEventListener('pointerup', (e) => { if (drag === null) return; const d = drag; drag = null; const log = document.getElementById('draglog'); if (!d.active) { log.textContent = 'not activated after ' + d.moves + ' moves'; return; } const before = [...steps.children].filter((r) => r !== d.row).find((r) => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; }); steps.insertBefore(d.row, before ?? null); log.textContent = 'dropped ' + d.row.textContent + ' after ' + d.moves + ' moves over ' + Math.round(d.last - d.first) + ' ms'; });
+</script>`,
+      ].join('\n'),
+    );
   } else page('Drive fixture other', '<p>other</p>');
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -96,6 +129,8 @@ let ownId = '';
 const cli = (...args) =>
   new Promise((resolve) => {
     const child = spawn(process.execPath, [cliMain, 'browser', ...args], { env: { ...process.env, EMERALD_SESSION_ID: ownId }, windowsHide: true });
+    // No input: a --stdin read through cli() meets the end at once rather than hanging to the watchdog.
+    child.stdin.end();
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => (out += d));
@@ -115,7 +150,7 @@ const cliIn = (input, ...args) =>
   });
 const said = (r) => `${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`;
 
-const s = await launch(freshPort(), { freshState: true });
+const s = await launch(freshPort(), { freshState: true, env: { EMERALD_BROWSER_HOLD_MS: '4000' } });
 app = s;
 const guests = [];
 try {
@@ -385,6 +420,77 @@ try {
   expect(r.code === 1 && r.err === `emmer: ${go} is not a file input`, `upload on a button (${said(r)})`);
   step('M9 fix 673: upload sets a file input and refuses a button');
 
+  // (k2) M9 fix 874: drag on the /drag page's list, onto a row's ref and
+  // then by dx,dy; the move count and span are logged, not expected, since
+  // a coalesced move still reorders the rows.
+  r = await cli('navigate', origin + '/drag');
+  expect(r.code === 0 && r.out === `on ${origin}/drag, titled "Drive fixture drag"`, `navigate to /drag (${said(r)})`);
+  r = await cli('snapshot');
+  expect(r.code === 0, `the snapshot of /drag (${said(r)})`);
+  console.log(`[874] the snapshot of /drag:\n${r.out}`);
+  const dragLines = r.out.split(/\r?\n/);
+  const dragRefOf = (re) => {
+    const line = dragLines.find((l) => re.test(l));
+    expect(line !== undefined, `a row matching ${re} on /drag (${r.out})`);
+    return line.split(' ')[0];
+  };
+  const rowA = dragRefOf(/^@e\d+ button "Step A"$/);
+  const rowC = dragRefOf(/^@e\d+ button "Step C"$/);
+  const order = () => inGuest(g1, "[...document.querySelectorAll('#steps li')].map((li) => li.textContent).join(',')");
+  const dragLog = () => inGuest(g1, "document.getElementById('draglog').textContent");
+  r = await cli('drag', rowA, rowC);
+  expect(r.code === 0 && r.out === `dragged ${rowA} button "Step A" onto ${rowC} button "Step C"`, `drag onto a ref (${said(r)})`);
+  console.log(`[874] onto a ref: ${await dragLog()}`);
+  let rows = await order();
+  expect(rows === 'Step B,Step C,Step A', `Step A dropped after Step C (${rows})`);
+  r = await cli('drag', rowA, '0,-60');
+  expect(r.code === 0 && r.out === `dragged ${rowA} button "Step A" by 0,-60`, `drag by 0,-60 (${said(r)})`);
+  console.log(`[874] by 0,-60: ${await dragLog()}`);
+  rows = await order();
+  expect(rows === 'Step B,Step A,Step C', `Step A dropped back between B and C (${rows})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the drags');
+  step('(k2) M9 fix 874: drag moves a row onto another row and by dx,dy, a press, ten moves and a release, with the window focus left on the shell');
+
+  // (k3) M9 fix 875: snapshot --name and --within on the same /drag page,
+  // the printed lines read against the whole snapshot's, then back to /.
+  r = await cli('snapshot');
+  expect(r.code === 0, `the whole snapshot of /drag (${said(r)})`);
+  console.log(`[875] the whole snapshot:\n${r.out}`);
+  const whole = r.out.split(/\r?\n/);
+  const wholeLine = (re) => {
+    const line = whole.find((l) => re.test(l));
+    expect(line !== undefined, `a row matching ${re} in the whole snapshot (${r.out})`);
+    return line;
+  };
+  const dialogLine = wholeLine(/^@r\d+ dialog "Edit step"$/);
+  const dialogRef = dialogLine.split(' ')[0];
+  const saveDraftLine = wholeLine(/^@e\d+ button "Save draft"$/);
+  const stepNameLine = wholeLine(/^@e\d+ textbox "Step name"$/);
+  const saveLine = wholeLine(/^@e\d+ button "Save"$/);
+  const cancelLine = wholeLine(/^@e\d+ button "Cancel"$/);
+  const regions = whole.filter((l) => /^@r\d+ /.test(l)).length;
+  console.log(`[875] ${regions} region rows: ${whole.filter((l) => /^@r\d+ /.test(l)).join('; ')}`);
+  expect(regions >= 1, `at least the dialog is a region (${regions})`);
+  r = await cli('snapshot', '--name', 'save');
+  expect(r.code === 0 && r.out === [whole[0], saveDraftLine, saveLine].join('\n'), `snapshot --name save (${said(r)})`);
+  r = await cli('snapshot', '--within', dialogRef);
+  expect(r.code === 0 && r.out === [whole[0], dialogLine, stepNameLine, saveLine, cancelLine].join('\n'), `snapshot --within ${dialogRef} (${said(r)})`);
+  r = await cli('snapshot', '--within', dialogRef, '--name', 'SAVE');
+  expect(r.code === 0 && r.out === [whole[0], saveLine].join('\n'), `snapshot --within ${dialogRef} --name SAVE (${said(r)})`);
+  const saveRef = saveLine.split(' ')[0];
+  r = await cli('click', saveRef);
+  expect(r.code === 0 && r.out === `clicked ${saveRef} button "Save"`, `click the ref from the filtered rows (${said(r)})`);
+  const dlgLog = await inGuest(g1, "document.getElementById('dlglog').textContent");
+  expect(dlgLog === 'saved', `the dialog's Save took the click (${JSON.stringify(dlgLog)})`);
+  r = await cli('snapshot', '--name', 'nothing here');
+  expect(r.code === 0 && r.out === [whole[0], 'no row matches "nothing here"'].join('\n'), `snapshot --name with no match (${said(r)})`);
+  r = await cli('snapshot', '--within', '@r99');
+  expect(r.code === 1 && r.err === `emmer: no @r99 in the last snapshot (it had @r1 to @r${regions})`, `snapshot --within an unknown region (${said(r)})`);
+  r = await cli('navigate', origin + '/');
+  expect(r.code === 0, `navigate back to / (${said(r)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the filtered snapshots');
+  step("(k3) M9 fix 875: snapshot --name and --within print the rows asked for under the whole page's refs, a ref from the filtered rows clicks, and an unknown region is refused");
+
   // (l) A pane under profile b.
   r = await cli('eval', "document.cookie = 'who=one; path=/'");
   expect(r.code === 0, `the cookie set (${said(r)})`);
@@ -468,6 +574,143 @@ try {
   const notAt = (from) => logText().split(/\r?\n/).filter((l) => l.includes(`browser guest not registered at ${from}`)).length;
   console.log(`[693] note: ${notAt('attach')} browser guest not registered at attach lines, ${notAt('dom-ready')} at dom-ready`);
   step('M9 fix 693: five fresh pages each answer a snapshot without a wait for the page');
+
+  // (o) M9 fix 876: the page stays focused from one command to the next,
+  // read through the script's own CDP client on the guest. The Blur menu
+  // closes on the window's blur, as Radix's menu does, so it is open for
+  // the eval and the snapshot after the click only while the driver holds
+  // the page; the launch's EMERALD_BROWSER_HOLD_MS lets go 4 s after the
+  // last command, and the menu closes then.
+  r = await cli('--pane', driven.id, 'navigate', origin + '/');
+  expect(r.code === 0, `navigate back for the blur menu (${said(r)})`);
+  r = await cli('--pane', driven.id, 'snapshot');
+  expect(r.code === 0, `the snapshot for the blur menu (${said(r)})`);
+  const blurLines = r.out.split(/\r?\n/);
+  const blurRefOf = (re, from = blurLines) => {
+    const line = from.find((l) => re.test(l));
+    expect(line !== undefined, `a row matching ${re} (${from.join('\n')})`);
+    return line.split(' ')[0];
+  };
+  const bmenuRef = blurRefOf(/^@e\d+ button "Blur menu"$/);
+  const heldNameRef = blurRefOf(/^@e\d+ textbox "Name"$/);
+  const shellBoxO = await s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(shellPane.id)}] .term-host').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.click(shellBoxO.x, shellBoxO.y);
+  await s.waitFor(`document.activeElement?.classList.contains('xterm-helper-textarea') && !!document.activeElement.closest('[data-pane-id=${JSON.stringify(shellPane.id)}]')`, 'the shell holds the keyboard again');
+  await s.evalJs(`window.__driveShellInput = document.activeElement`);
+  await inGuest(g1, 'window.__focusLog.length = 0');
+  const focusRead = async () => {
+    await sleep(200);
+    return JSON.parse(await inGuest(g1, "JSON.stringify({ events: window.__focusLog.splice(0).map((e) => e.kind), open: !document.getElementById('bitems').hidden, has: document.hasFocus() })"));
+  };
+  const focusLine = (verbName, f) => console.log(`[876] after ${verbName}: open ${f.open}, has ${f.has}, events ${f.events.join(', ')}`);
+  r = await cli('--pane', driven.id, 'click', bmenuRef);
+  expect(r.code === 0, `click Blur menu (${said(r)})`);
+  const afterClick = await focusRead();
+  focusLine('click', afterClick);
+  expect(afterClick.open === true && afterClick.has === true, `the menu is open and the page focused after the click (${JSON.stringify(afterClick)})`);
+  r = await cli('--pane', driven.id, 'eval', 'document.hasFocus()');
+  expect(r.code === 0 && r.out === 'true', `eval document.hasFocus() (${said(r)})`);
+  const afterEval = await focusRead();
+  focusLine('eval', afterEval);
+  expect(afterEval.open === true && afterEval.has === true, `the menu is open and the page focused after the eval (${JSON.stringify(afterEval)})`);
+  r = await cli('--pane', driven.id, 'snapshot');
+  expect(r.code === 0 && /^@e\d+ button "Blur item"$/m.test(r.out), `the snapshot lists the open menu's item (${said(r)})`);
+  const afterSnap = await focusRead();
+  focusLine('snapshot', afterSnap);
+  expect(afterSnap.open === true && afterSnap.has === true, `the menu is open and the page focused after the snapshot (${JSON.stringify(afterSnap)})`);
+  const blurred = [...afterClick.events, ...afterEval.events, ...afterSnap.events].filter((e) => e === 'blur');
+  expect(blurred.length === 0, `no blur across the three commands (${blurred.length})`);
+  r = await cli('--pane', driven.id, 'fill', heldNameRef, 'held');
+  expect(r.code === 0, `fill the held page's Name (${said(r)})`);
+  // The visible cost of a held page, for the seat to compare by eye: the
+  // Name field's caret and ring while held, and after the release. Taken
+  // from the guest's own target, since the off-screen window's capture
+  // showed the guest's area stale (the menu still open after it closed).
+  const guestShot = async (name) => {
+    const file = path.join(os.tmpdir(), 'emerald-verify', name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, Buffer.from((await g1.cdp.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    return file;
+  };
+  const shotA = await guestShot('browser-drive-876-held-a.png');
+  await sleep(600);
+  const shotB = await guestShot('browser-drive-876-held-b.png');
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused while the page is held');
+  await sleep(5500);
+  const afterHold = await focusRead();
+  focusLine('the hold', afterHold);
+  expect(afterHold.open === false && afterHold.has === false && afterHold.events.includes('blur'), `the page let go: the menu closed on its blur (${JSON.stringify(afterHold)})`);
+  await waitLog(`browser: pane ${driven.id.slice(0, 8)} released (idle 4 s)`, 'the page let go after the hold');
+  const shotC = await guestShot('browser-drive-876-released.png');
+  console.log(`[876] screenshots: ${shotA}, ${shotB}, ${shotC}`);
+  step('M9 fix 876: a menu a click opened stays open for the next eval and snapshot, the page held focused until 4 s after the last command');
+
+  // (p) M9 fix 877: fill picks a select's option by its value or its text,
+  // refuses a missing option, a multiple select, a checkbox and a file
+  // input, says when the page's own setter refuses the text, and leaves a
+  // contenteditable's typed text with no "(set directly)".
+  r = await cli('--pane', driven.id, 'navigate', origin + '/');
+  expect(r.code === 0, `navigate back for the fill targets (${said(r)})`);
+  r = await cli('--pane', driven.id, 'snapshot');
+  expect(r.code === 0, `the snapshot for the fill targets (${said(r)})`);
+  const fillLines = r.out.split(/\r?\n/);
+  const rowOf = (re) => {
+    const line = fillLines.find((l) => re.test(l));
+    expect(line !== undefined, `a row matching ${re} (${r.out})`);
+    return { ref: line.split(' ')[0], role: line.split(' ')[1] };
+  };
+  const car = rowOf(/^@e\d+ \S+ "Car"( |$)/);
+  const cars = rowOf(/^@e\d+ \S+ "Cars"( |$)/);
+  const ok = rowOf(/^@e\d+ checkbox "Agree"( |$)/).ref;
+  const up = rowOf(/^@e\d+ button "Import"( value=".*")?$/).ref;
+  const picky = rowOf(/^@e\d+ textbox "Picky"( |$)/).ref;
+  const rich = rowOf(/^@e\d+ textbox "Rich"( |$)/).ref;
+  if (car.role !== 'combobox') console.log(`[877] the select's role is ${car.role}`);
+  const onFill = (...args) => cli('--pane', driven.id, 'fill', ...args);
+  const carRead = async () => JSON.parse(await inGuest(g1, "JSON.stringify({ value: document.getElementById('car').value, changes: document.getElementById('car').dataset.changes ?? '' })"));
+  r = await onFill(car.ref, 'Saab');
+  let carNow = await carRead();
+  expect(r.code === 0 && r.out === `selected ${car.ref} ${car.role} "Car" option "Saab"` && carNow.value === 's' && carNow.changes === '1', `fill a select by its option's text (${said(r)}, ${JSON.stringify(carNow)})`);
+  r = await onFill(car.ref, 'v');
+  carNow = await carRead();
+  expect(r.code === 0 && r.out === `selected ${car.ref} ${car.role} "Car" option "Volvo"` && carNow.value === 'v' && carNow.changes === '2', `fill a select by its option's value (${said(r)}, ${JSON.stringify(carNow)})`);
+  r = await onFill(car.ref, 'Audi');
+  carNow = await carRead();
+  expect(r.code === 1 && r.err === `emmer: no option "Audi" in ${car.ref} ${car.role} "Car"; its options are Volvo, Saab` && carNow.value === 'v', `a missing option is refused, listing them (${said(r)}, ${JSON.stringify(carNow)})`);
+  r = await onFill(cars.ref, 'Saab');
+  expect(r.code === 1 && r.err === 'emmer: fill takes a single select; a multiple select is not driven', `a multiple select is refused (${said(r)})`);
+  r = await onFill(ok, 'yes');
+  const okNow = JSON.parse(await inGuest(g1, "JSON.stringify({ checked: document.getElementById('ok').checked, value: document.getElementById('ok').getAttribute('value') })"));
+  expect(r.code === 1 && r.err === `emmer: ${ok} is a checkbox; click it to tick it` && okNow.checked === false && okNow.value === null, `a checkbox is refused and left alone (${said(r)}, ${JSON.stringify(okNow)})`);
+  r = await onFill(up, 'x');
+  expect(r.code === 1 && r.err === `emmer: ${up} is a file input; emmer browser upload ${up} <path> sets its file`, `a file input is refused, naming upload (${said(r)})`);
+  r = await onFill(picky, 'z');
+  expect(r.code === 1 && r.err === `emmer: the page refused the text for ${picky} textbox "Picky": Error: picky refuses`, `a field whose setter throws says so (${said(r)})`);
+  r = await onFill(rich, 'hi');
+  expect(r.code === 0 && r.out === `filled ${rich} textbox "Rich" with 2 characters`, `a contenteditable keeps its typed text with no "(set directly)" (${said(r)})`);
+  const richText = await inGuest(g1, "document.getElementById('rich').textContent");
+  if (richText === 'hi') expect(true, 'the contenteditable reads hi');
+  else console.log(`[877] rich reads ${JSON.stringify(richText)}`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the fills');
+  step('M9 fix 877: fill picks a select\'s option by value or text and refuses a missing one, a multiple select, a checkbox and a file input, and says when the page refuses the text');
+
+  // (q) M9 fix 878: the --profile b pane of (l), driven by nothing since,
+  // follows a link and its record keeps profile b (fix 839's withPageUrl).
+  r = await cli('--pane', second.id, 'snapshot');
+  expect(r.code === 0, `the profile b pane's snapshot (${said(r)})`);
+  const twoLine = r.out.split(/\r?\n/).find((l) => /^@e\d+ link "Two"$/.test(l));
+  expect(twoLine !== undefined, `the Two link on the profile b page (${r.out})`);
+  const twoRef = twoLine.split(' ')[0];
+  r = await cli('--pane', second.id, 'click', twoRef);
+  expect(r.code === 0 && r.out === `clicked ${twoRef} link "Two"`, `click Two on the profile b pane (${said(r)})`);
+  const secondView = async () => (await browserPanes()).find((p) => p.id === second.id)?.view;
+  const deadlineQ = Date.now() + 5000;
+  while ((await secondView())?.url !== origin + '/two' && Date.now() < deadlineQ) await sleep(100);
+  const afterLink = await secondView();
+  expect(afterLink?.url === origin + '/two', `the profile b pane's record follows the link (${JSON.stringify(afterLink)})`);
+  expect(afterLink?.profile === 'b', `the record keeps profile b across the link (${JSON.stringify(afterLink)})`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(second.id)}] .browser-profile`)})?.textContent === 'profile b'`, 'the profile mark after the link');
+  step('M9 fix 878: a --profile b pane keeps profile b across a link it follows (fix 839)');
 
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[672] window console: ${line}`);
   step('PASS');

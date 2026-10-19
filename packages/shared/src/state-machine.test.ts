@@ -1050,7 +1050,7 @@ test('a shell keeps its own folder apart from the hook cwd, and SessionEnd puts 
   assert.equal(claude.groupCwd, 'C:\\repo');
 });
 
-test('SessionEnd takes the model and the context percent off a shell and leaves them on a Claude session (M9 fix 39)', () => {
+test('SessionEnd takes the model and the context percent off a shell and leaves them on a Claude session (M9 fix 39), and a late status line or measure from the Claude that left touches neither (M9 fix 871)', () => {
   const status = hook('StatusLine', { model: { id: 'claude-opus-5', display_name: 'Opus 5' }, context_window: { used_percentage: 21 } });
   const shell = reduce(reduce(session({ kind: 'shell', claudeSessionId: null }), hook('SessionStart', { source: 'startup' })), status);
   assert.equal(shell.model, 'Opus 5');
@@ -1065,6 +1065,19 @@ test('SessionEnd takes the model and the context percent off a shell and leaves 
   assert.equal(claude.contextPercent, 21);
   // A foreign SessionEnd touches neither.
   assert.equal(reduce(shell, hook('SessionEnd', { session_id: 'nested' })), shell);
+  // M9 fix 871: a status line or a measure from the Claude that just left
+  // lands after its SessionEnd and is that Claude's, so it is foreign and
+  // the shell stays as leave made it.
+  assert.equal(reduce(left, status), left, 'a late status line from the Claude that left is dropped whole');
+  assert.equal(left.model, null);
+  assert.equal(classifyHook(left, { hook_event_name: 'StatusLine', session_id: BOUND }), 'ignored-foreign');
+  assert.equal(reduce(left, hook('Measure', { measure: { context: { percent: 10 }, cost: { usd: 0.27 } } })), left, 'so is a late measure');
+  // A new claude's line, before its start, carries its own id and applies.
+  const fresh = hook('StatusLine', { session_id: 'claude-session-2', model: { display_name: 'Opus 5' } });
+  assert.equal(reduce(left, fresh).model, 'Opus 5');
+  assert.equal(classifyHook(left, { hook_event_name: 'StatusLine', session_id: 'claude-session-2' }), 'applied');
+  // A resume of the same conversation binds the id again, and its line applies.
+  assert.equal(reduce(reduce(left, hook('SessionStart', { source: 'resume' })), status).model, 'Opus 5');
 });
 
 test('the transcript path binds from the first hook that carries one and a resume names it again (M47)', () => {

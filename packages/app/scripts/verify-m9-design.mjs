@@ -22,7 +22,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'design-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-design';
-const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, sleep, startFromEmpty, step, stopDaemon } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, railAtOldWidth, sleep, startFromEmpty, step, stopDaemon } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
@@ -71,6 +71,10 @@ const s = await launch(freshPort(), { freshState: true });
 app = s;
 let guest = null;
 try {
+  // M9 fix 885 widened the rail's default to 330 px, which left the narrow
+  // pane of (g) at 303 px where its reads were written against about 373;
+  // the steps are about the browser pane, not the rail.
+  await railAtOldWidth(s);
   const browserPane = `.pane[data-view="browser"]`;
   const inPane = (sel) => `${browserPane} ${sel}`;
   const q = (sel) => JSON.stringify(sel);

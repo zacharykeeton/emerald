@@ -13,6 +13,7 @@ test('appMenuItems: Open a file (M9 fix 341, its chord since fix 364), then What
       ['cheat-sheet', 'Key cheat sheet', 'Ctrl+Shift+?'],
       ['open-actions', 'Run an action…', 'Ctrl+Shift+P'],
       ['toggle-skin', 'Skin: Classic', ''],
+      ['toggle-usage-record', 'Usage record: off', ''],
       ['check-updates', 'Check for updates', ''],
     ],
   );
@@ -24,7 +25,7 @@ test('appMenuItems: Open a file (M9 fix 341, its chord since fix 364), then What
 // is disabled until the updater has answered and while it is off.
 test('appMenuItems: Check for updates reads the updater and is off in a build with no updater (M9 fix 239)', () => {
   const state = (phase: UpdateState['phase'], latest: string | null = null, percent: number | null = null, message: string | null = null): UpdateState => ({ phase, current: '0.1.228', latest, percent, message });
-  const check = (update: UpdateState | null) => appMenuItems('0.1.228', update)[5]!;
+  const check = (update: UpdateState | null) => appMenuItems('0.1.228', update).at(-1)!;
   assert.deepEqual([check(null).hint, check(null).disabled], ['', true]);
   assert.deepEqual([check(state('off')).hint, check(state('off')).disabled], ['off in this build', true]);
   assert.deepEqual([check(state('idle')).hint, check(state('idle')).disabled], ['', false]);
@@ -46,4 +47,15 @@ test('appMenuItems: the skin item names the skin on show, before Check for updat
   assert.equal(appMenuItems('0.1.228', null, 'classic')[4]!.label, 'Skin: Classic');
   assert.equal(emerald.at(-1)!.action, 'check-updates');
   assert.equal(appMenuItems('0.1.228').at(-1)!.action, 'check-updates');
+});
+
+test('appMenuItems: the usage record item names its state, after the skin and before Check for updates (M9 fix 887)', () => {
+  const off = appMenuItems('0.1.228');
+  assert.deepEqual([off[5]!.action, off[5]!.label, off[5]!.hint], ['toggle-usage-record', 'Usage record: off', '']);
+  assert.ok(off[5]!.title!.endsWith('Click to turn it on'));
+  const on = appMenuItems('0.1.228', null, 'classic', true);
+  assert.equal(on[5]!.label, 'Usage record: on');
+  assert.ok(on[5]!.title!.endsWith('Click to turn it off'));
+  assert.equal(off.at(-1)!.action, 'check-updates');
+  assert.equal(on.at(-1)!.action, 'check-updates');
 });

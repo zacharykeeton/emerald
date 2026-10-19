@@ -4,7 +4,7 @@ import { cycleLayoutTab, cycleStripTabs, newTab, openFileByDialog, rememberSplit
 import { waitingOrder } from './attention-model.ts';
 import { toggleDesignMode } from './design.ts';
 import { stepHistory } from './focus-history.ts';
-import { BINDINGS, DEFAULT_PREFIX, chordMatches, formatChord, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
+import { BINDINGS, DEFAULT_PREFIX, LOOK_FIRST_ACTIONS, chordMatches, formatChord, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
 import type { Action, Chord, KeyLike } from './keys-model.ts';
 import { hasModel, saveFile } from './monaco.ts';
 import { editTab, getState } from './store.ts';
@@ -100,14 +100,9 @@ export function terminalMayHandle(ev: KeyboardEvent): boolean {
   return !getUiState().prefixArmed;
 }
 
-// M9 fix 189: the keys that switch tabs are a look-first move, not a look
-// at the focused pane, so the attention listener (which runs after this
-// one on the same keydown) must not acknowledge the focused session for
-// them. The handler marks the event and attention.ts asks. The jump to
-// the session waiting longest (fix 201) is the same kind of move: a
-// press that acknowledged the pane it left would take the next waiting
-// session out of the list it is walking.
-const LOOK_FIRST: ReadonlySet<Action> = new Set(['next-tab', 'prev-tab', 'next-layout-tab', 'prev-layout-tab', 'jump-waiting']);
+// The look-first actions are LOOK_FIRST_ACTIONS in keys-model.ts (M9 fixes
+// 189, 201 and 873); the keydown that ran one is marked here and
+// attention.ts asks.
 const lookFirstKeys = new WeakSet<Event>();
 
 export function isLookFirstKey(ev: Event): boolean {
@@ -325,7 +320,7 @@ function withFocusedPane(act: (paneId: string) => void): Promise<void> {
 // listener never hears for it anyway.
 export function installKeybindings(): () => void {
   const run = (action: Action, mark: Event | null) => {
-    if (mark !== null && LOOK_FIRST.has(action)) lookFirstKeys.add(mark);
+    if (mark !== null && LOOK_FIRST_ACTIONS.has(action)) lookFirstKeys.add(mark);
     void runAction(action).catch((err: unknown) => console.warn(`[emerald] ${action} failed`, err));
   };
   const handleKey = (ev: KeyLike, target: EventTarget | null, consume: () => void, mark: KeyboardEvent | null) => {
@@ -351,6 +346,11 @@ export function installKeybindings(): () => void {
       return;
     }
     if (chordMatches(prefix, ev)) {
+      // The prefix says nothing about the focused pane; the key after it
+      // decides (M9 fix 873), so a prefixed look-first key acknowledges
+      // nothing and any other acks the focused pane on its own keydown, as
+      // a plain key does.
+      if (mark !== null) lookFirstKeys.add(mark);
       consume();
       setPrefixArmed(true);
       return;

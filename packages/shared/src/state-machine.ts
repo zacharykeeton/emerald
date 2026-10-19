@@ -243,9 +243,11 @@ export function initialState(kind: SessionKind): SessionState {
 // daemon can log the reason without re-deriving it.
 // A nested `claude -p` inherits our env and reports a different session_id.
 // Until the first SessionStart binds an id we accept whatever arrives, since
-// the outer session always starts before anything it could spawn.
+// the outer session always starts before anything it could spawn. And a
+// shell's late status line or measure from the Claude that just left it
+// (M9 fix 871).
 export function isForeignHook(session: SessionInfo, payload: HookPayload): boolean {
-  return session.claudeSessionId !== null && payload.session_id !== session.claudeSessionId && !startsAfterEnd(session, payload);
+  return (session.claudeSessionId !== null && payload.session_id !== session.claudeSessionId && !startsAfterEnd(session, payload)) || lateFromLeft(session, payload);
 }
 
 export function classifyHook(session: SessionInfo, payload: HookPayload): HookOutcome {
@@ -270,6 +272,18 @@ function startsAfterEnd(session: SessionInfo, payload: HookPayload): boolean {
   if (payload.hook_event_name !== 'SessionStart') return false;
   const last = spansOf(session).at(-1);
   return last !== undefined && last.endedAt !== null;
+}
+
+// M9 fix 871: a status line or a measure posted after its Claude left (35
+// ms after the SessionEnd, at the install of fixes 825 to 858) is the
+// departed Claude's, not the shell's, and would put back the figures leave
+// just cleared. A new claude's line carries its own id and still applies,
+// and one after a resume's SessionStart finds the id bound again.
+function lateFromLeft(session: SessionInfo, payload: HookPayload): boolean {
+  if (payload.hook_event_name !== 'StatusLine' && payload.hook_event_name !== 'Measure') return false;
+  if (session.claudeSessionId !== null) return false;
+  const last = spansOf(session).at(-1);
+  return last !== undefined && last.endedAt !== null && last.conversation === payload.session_id;
 }
 
 // The record's spans, with a record from before the field (M9 fix 185)

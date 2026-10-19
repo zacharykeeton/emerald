@@ -472,6 +472,22 @@ test('stepFold: a text holding all three notifications folds at every line bound
   assert.deepEqual(parseFolded(text)[0]!.steps.map((s) => (s.kind === 'notification' ? s.source : s.kind)), ['task', 'agent', 'peer', 'text']);
 });
 
+test("parseTurns: a task notification opens no turn, and Claude's answer to it is the open turn's reply (M9 fix 883)", () => {
+  const text = [userAt('start the check', 0), replyAt('Started it.', 1), taskLine('completed', 'Background command "Fast gate" completed (exit code 0)', 'C:\\t\\b0.output', 30), replyAt('Answered.', 31)].join('\n');
+  const turns = parseTurns(text);
+  assert.equal(turns.length, 1, 'the notification opens no turn');
+  assert.equal(turns[0]!.prompt, 'start the check');
+  assert.equal(turns[0]!.reply, 'Answered.');
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:31.000Z'));
+  assert.deepEqual(turns.map((t) => [t.prompt, t.at]), parseFolded(text).map((t) => [t.prompt, t.at]));
+  // A notification before any prompt is dropped.
+  assert.deepEqual(parseTurns([taskLine('completed', 'early', null, 0), userAt('go', 1)].join('\n')).map((t) => t.prompt), ['go']);
+  // A human line that starts with the tag is still a prompt.
+  const typed = parseTurns(userAt(taskText('completed', 'pasted', null), 0, { origin: { kind: 'human' } }));
+  assert.equal(typed.length, 1);
+  assert.ok(typed[0]!.prompt.startsWith('<task-notification>'));
+});
+
 // M9 fix 769: the step parse as a fold, and the mod's rows folded onto a
 // fork of the file's state.
 test('stepFork: a live tool_result folded onto a fork fills the call there and leaves the file state pending', () => {

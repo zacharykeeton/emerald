@@ -47,10 +47,17 @@ test('gitProjectCounts reads the commits, the first commit, the tags and the ver
     commit(dir, 'sub');
     fs.writeFileSync(path.join(dir, 'sub', 'package.json'), pkg('1.1.0'));
     commit(dir, 'sub bump');
-    const counts = await gitProjectCounts(dir, realGit);
-    assert.deepEqual(counts, { root: dir, branch: 'main', commits: 5, firstCommitAt: new Date(FIRST).getTime(), tags: 0, bumps: 2, bumpsFile: 'package.json' });
+    const counts = await gitProjectCounts(dir, null, realGit);
+    const base = { root: dir, branch: 'main', commits: 5, firstCommitAt: new Date(FIRST).getTime(), tags: 0, bumps: 2, bumpsFile: 'package.json' };
+    assert.deepEqual(counts, base);
+    // M9 fix 885: from the day after the first commit on, the four commits
+    // dated now, and package.json's 0.2.0 and 0.3.0.
+    const from = new Date('2026-09-11T00:00:00').getTime();
+    assert.deepEqual(await gitProjectCounts(dir, from, realGit), { ...base, since: { from, commits: 4, tags: 0, bumps: 2 } });
     execFileSync('git', ['tag', 'v1'], { cwd: dir, stdio: 'ignore' });
-    assert.equal((await gitProjectCounts(path.join(dir, 'sub'), realGit)).tags, 1, 'a folder inside the repo reads the repo');
+    assert.equal((await gitProjectCounts(path.join(dir, 'sub'), null, realGit)).tags, 1, 'a folder inside the repo reads the repo');
+    assert.equal((await gitProjectCounts(dir, from, realGit)).since?.tags, 1, 'a tag made now is after the day');
+    assert.equal((await gitProjectCounts(dir, Date.now() + 86_400_000, realGit)).since?.tags, 0, 'and none after tomorrow');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -68,9 +75,9 @@ test('gitProjectCounts outside any repo, or on a relative path, answers zeros an
     // The temp folder sits under no repo on this box; findRepoRoot says so
     // first, so the case reads the answer rather than the box.
     assert.equal(findRepoRoot(dir), null);
-    assert.deepEqual(await gitProjectCounts(dir, run), none);
+    assert.deepEqual(await gitProjectCounts(dir, null, run), none);
     assert.deepEqual(runs, [] as string[][]);
-    assert.deepEqual(await gitProjectCounts('relative/path', run), none);
+    assert.deepEqual(await gitProjectCounts('relative/path', null, run), none);
     assert.deepEqual(runs, [] as string[][]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -89,4 +96,17 @@ test('versionBumps counts each file\'s distinct values less one, ties to the sho
   const deleted = `\x1eh\n\ndiff --git a/package.json b/package.json\n--- a/package.json\n+++ /dev/null\n@@ -3 +0,0 @@\n-  "version": "9.0.0"\n` + chunk('a', 'package.json', ['+  "version": "1.0.0"']);
   assert.deepEqual(versionBumps(deleted), { bumps: 0, file: null });
   assert.deepEqual(versionBumps(''), { bumps: 0, file: null });
+});
+
+test('versionBumps with since counts the picked file\'s bumps from that time on, the first value never one (M9 fix 885)', () => {
+  const chunk = (hash: string, seconds: number, lines: string[]) => `\x1e${hash} ${seconds}\n\ndiff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -3 +3 @@\n${lines.join('\n')}\n`;
+  const v = (n: string) => `+  "version": "${n}"`;
+  // Newest first, as git log writes it.
+  const log = chunk('c', 300, [v('0.3.0')]) + chunk('b', 200, [v('0.2.0')]) + chunk('a', 100, [v('0.1.0')]);
+  assert.deepEqual(versionBumps(log, 250_000), { bumps: 2, file: 'package.json', bumpsSince: 1 });
+  assert.deepEqual(versionBumps(log, 150_000), { bumps: 2, file: 'package.json', bumpsSince: 2 });
+  assert.deepEqual(versionBumps(log, 50_000), { bumps: 2, file: 'package.json', bumpsSince: 2 }, 'the first value is where the file started');
+  const back = chunk('c', 300, [v('0.1.0')]) + chunk('b', 200, [v('0.2.0')]) + chunk('a', 100, [v('0.1.0')]);
+  assert.deepEqual(versionBumps(back, 250_000), { bumps: 1, file: 'package.json', bumpsSince: 0 }, 'back to an earlier value is no bump');
+  assert.deepEqual(versionBumps('', 250_000), { bumps: 0, file: null, bumpsSince: 0 });
 });

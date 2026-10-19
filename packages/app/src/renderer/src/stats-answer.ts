@@ -1,0 +1,105 @@
+import type { ActivityTotals } from '@emerald/shared';
+import type { GitProjectCounts } from '../../preload/api.ts';
+import { normalizePath } from './files-model.ts';
+import { STATS_REFRESH_MS, asOfText, historyText, releasesOf, releasesSince, spanStart, spanText, spanTitle, startsBeforeHistory, statsFigures, yieldText } from './stats-model.ts';
+import type { StatsFigure } from './stats-model.ts';
+
+// The answer to one folder's statistics, kept outside the component (M9
+// fix 885) so the rail's tab and the document tab share it, a remount
+// draws it at once and nothing is asked again inside the minute. Pure, no
+// React and no window, so a test can import it.
+
+export interface StatsAnswer {
+  totals: ActivityTotals;
+  counts: GitProjectCounts;
+  // The clock the figures are read against: the fold's own `to`, else the
+  // time the ask started.
+  now: number;
+  // When the ask started.
+  at: number;
+}
+
+// Everything the body draws from an answer, computed once per answer.
+export interface StatsSheet {
+  start: number | null;
+  span: string;
+  spanTitle: string;
+  figures: StatsFigure[];
+  releases: number;
+  yieldLine: string;
+  months: ActivityTotals['months'];
+  history: string;
+  asOf: string;
+}
+
+const kept = new Map<string, StatsAnswer>();
+const asks = new Map<string, number>();
+const sheets = new Map<string, number>();
+const sheetOf = new WeakMap<StatsAnswer, StatsSheet>();
+
+function keyOf(folder: string): string {
+  return normalizePath(folder).toLowerCase();
+}
+
+export function keptAnswer(folder: string): StatsAnswer | null {
+  return kept.get(keyOf(folder)) ?? null;
+}
+
+export function keepAnswer(folder: string, answer: StatsAnswer): void {
+  kept.set(keyOf(folder), answer);
+}
+
+// The milliseconds until the next ask is due: none kept, now.
+export function askDue(folder: string, now: number): number {
+  const a = keptAnswer(folder);
+  if (a === null) return 0;
+  return Math.max(0, a.at + STATS_REFRESH_MS - now);
+}
+
+export function countAsk(folder: string): void {
+  const k = keyOf(folder);
+  asks.set(k, (asks.get(k) ?? 0) + 1);
+}
+
+export function statsCounts(folder: string): { asks: number; sheets: number } {
+  const k = keyOf(folder);
+  return { asks: asks.get(k) ?? 0, sheets: sheets.get(k) ?? 0 };
+}
+
+// Memoised on the answer object, so a remount on a kept answer computes
+// nothing; a sheet is counted only when one is computed.
+export function statsSheet(folder: string, answer: StatsAnswer): StatsSheet {
+  const had = sheetOf.get(answer);
+  if (had !== undefined) return had;
+  const { totals, counts, now } = answer;
+  const start = spanStart(counts.firstCommitAt, totals.firstAt);
+  const sheet: StatsSheet = {
+    start,
+    span: spanText(counts.firstCommitAt, totals.firstAt, now),
+    spanTitle: spanTitle(counts.firstCommitAt, totals.firstAt, counts.root !== null, now),
+    figures: statsFigures(totals, counts),
+    releases: releasesOf(counts).count,
+    yieldLine: '',
+    months: [...totals.months].reverse(),
+    history: historyText(totals.historyFrom, start, now),
+    asOf: asOfText(answer.at),
+  };
+  // A span that starts before the log's first day is priced against the
+  // log's own days: the releases and commits from that day on, when the ask
+  // carried them (M9 fix 885).
+  const from = counts.since === undefined ? null : releasesSince(counts);
+  sheet.yieldLine =
+    start !== null && startsBeforeHistory(start, totals.historyFrom) && counts.since !== undefined && from !== null
+      ? yieldText(totals.total.usd, totals.total.estimated, from, counts.since.commits, counts.since.from, now)
+      : yieldText(totals.total.usd, totals.total.estimated, sheet.releases, counts.commits);
+  sheetOf.set(answer, sheet);
+  const k = keyOf(folder);
+  sheets.set(k, (sheets.get(k) ?? 0) + 1);
+  return sheet;
+}
+
+export function resetStatsAnswers(): void {
+  kept.clear();
+  asks.clear();
+  sheets.clear();
+}

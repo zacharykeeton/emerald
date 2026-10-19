@@ -1,9 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_VERBS, browserPartition, isBrowserAnswer, isBrowserPartition } from './browser-drive.ts';
+import { BROWSER_FILTER_REF, BROWSER_VERBS, browserPartition, dragOffset, isBrowserAnswer, isBrowserPartition } from './browser-drive.ts';
 
 test('the verbs are listed in the order the usage names them (M9 fixes 672 and 673)', () => {
-  assert.deepEqual([...BROWSER_VERBS], ['snapshot', 'click', 'hover', 'fill', 'key', 'eval', 'screenshot', 'wait', 'navigate', 'upload', 'events', 'resume']);
+  assert.deepEqual([...BROWSER_VERBS], ['snapshot', 'click', 'hover', 'drag', 'fill', 'key', 'eval', 'screenshot', 'wait', 'navigate', 'upload', 'events', 'resume']);
+});
+
+test('dragOffset takes dx,dy with a sign and a decimal point, nothing else (M9 fix 874)', () => {
+  assert.deepEqual(dragOffset('0,-60'), { dx: 0, dy: -60 });
+  assert.deepEqual(dragOffset('-20.5,3'), { dx: -20.5, dy: 3 });
+  for (const s of ['', '1,2,3', 'a,b', ' 1,2', '1;2', '1,', '@e3']) assert.equal(dragOffset(s), null, JSON.stringify(s));
+});
+
+test('a snapshot filter\'s within is a region\'s or a control\'s ref (M9 fix 875)', () => {
+  for (const s of ['@r1', 'r12', '@e3']) assert.equal(BROWSER_FILTER_REF.test(s), true, s);
+  for (const s of ['@x1', '@r', '@r1234567890']) assert.equal(BROWSER_FILTER_REF.test(s), false, s);
 });
 
 test('a profile is a partition of its own beside the shared one (M9 fix 673)', () => {
