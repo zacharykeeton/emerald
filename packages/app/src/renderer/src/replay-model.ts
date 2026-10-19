@@ -36,18 +36,23 @@ export function replayKey(sessionId: string, memberId: string | null): string {
 export interface ReplayInput {
   sessions: GraphSession[];
   marks: ReadonlyMap<string, readonly ActivitySpan[]>;
+  // The members sessionGraph puts on their session's line (M9 fix 907): those with a working span and no commit shown, by replayKey.
+  membersOnLine: ReadonlySet<string>;
 }
 
-// The records as the replay draws them, and the working spans of every
-// row under its replayKey. `shown` is the hashes of the graph's commits:
-// a member gets a stand-in row only when a commit of its own is there to
-// put it on, since a member with none would fork a lane of its own out of
-// the session's line and a batch's dozens of readers would widen the
-// graph past reading.
+// The records as the replay draws them, the working spans of every row
+// under its replayKey, and the members to put on their session's line.
+// `shown` is the hashes of the graph's commits: a member with a commit
+// there gets a stand-in row on that commit's lane, and one with none but a
+// working span a stand-in on its session's line with no lane of its own
+// (M9 fix 907, reversing fix 868's none), so a batch's dozens of readers
+// stack above the session's row at the width of one lane and light up as
+// their spans run.
 export function replayInput(records: readonly GraphSession[], rows: readonly ActivitySession[], shown: ReadonlySet<string>): ReplayInput {
   const live = rows.filter((r) => !r.lifetime);
   const sessions: GraphSession[] = [];
   const marks = new Map<string, readonly ActivitySpan[]>();
+  const membersOnLine = new Set<string>();
   for (const record of records) {
     const spans = record.spans ?? [];
     const split = spans.length >= 2;
@@ -90,18 +95,24 @@ export function replayInput(records: readonly GraphSession[], rows: readonly Act
       }
       const part = parts[at]!;
       marks.set(replayKey(part.id, agentId), r.spans);
-      if (commit === undefined || part.team.some((m) => m.id === agentId)) continue;
+      if (commit === undefined) {
+        // A member that never worked in the window gets no row.
+        if (r.spans.length === 0) continue;
+        membersOnLine.add(replayKey(part.id, agentId));
+      }
+      // A live team's member with no commit is put on the line too, so the replay has one rule.
+      if (part.team.some((m) => m.id === agentId)) continue;
       const standIn: TeamMember = {
         id: agentId,
         kind: 'agent',
         type: r.agentType,
         description: r.name,
         command: null,
-        startedAt: r.spans[0]?.from ?? commit.at,
-        endedAt: r.spans[r.spans.length - 1]?.to ?? commit.at,
+        startedAt: r.spans[0]?.from ?? commit!.at,
+        endedAt: r.spans[r.spans.length - 1]?.to ?? commit!.at,
         outcome: 'returned',
         cwd: null,
-        branch: commit.agent?.branch ?? null,
+        branch: commit?.agent?.branch ?? null,
         commits: [],
         activity: null,
       };
@@ -109,7 +120,7 @@ export function replayInput(records: readonly GraphSession[], rows: readonly Act
     }
     sessions.push(...parts);
   }
-  return { sessions, marks };
+  return { sessions, marks, membersOnLine };
 }
 
 // An agent row's marks on the replay clock, in replay ms.
@@ -213,6 +224,13 @@ export function replayAt(replay: Replay, record: number): number {
 
 export function recordAt(replay: Replay, at: number): number {
   return along(replay.clock, at, 'replay', 'record');
+}
+
+// Pause or play a replay (M9 fix 905): playing, it holds at the position now; paused, it plays on from where it holds, and from the start when it holds at the end.
+export function togglePlay(clock: { startedAt: number; pausedAt: number | null }, length: number, now: number): { startedAt: number; pausedAt: number | null } {
+  if (clock.pausedAt === null) return { startedAt: clock.startedAt, pausedAt: Math.min(length, Math.max(0, now - clock.startedAt)) };
+  const from = clock.pausedAt >= length ? 0 : clock.pausedAt;
+  return { startedAt: now - from, pausedAt: null };
 }
 
 export interface ReplayFrame {

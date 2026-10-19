@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
-import { applyListing, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
@@ -25,8 +25,9 @@ import { StatsIcon } from './icons.tsx';
 import { RailStats } from './StatsView.tsx';
 import { BranchIcon } from './Sidebar.tsx';
 import { ActivitySection, useRailScope, useRailUnit } from './ActivitySection.tsx';
-import { openViewBeside, typeInto } from './actions.ts';
-import { fileViewSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { openLocalPage, openViewBeside, typeInto } from './actions.ts';
+import { fileViewSupported, localPageSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { isHtmlFile, localPageRoot, noteRailRoot } from './local-page-model.ts';
 import { startDrag } from './pane-drag.ts';
 import { useFocusedSession, useFocusedView } from './shown-sessions.ts';
 import { graphFolder } from './graph-folder.ts';
@@ -206,7 +207,9 @@ export function FilesRail() {
   const paneFolders = layoutForFocus === null ? [] : filePaneFolders(layoutForFocus);
   // M9 fix 689: a chat view's transcript folder, so the view hears it grow.
   const chatFolders = layoutForFocus === null ? [] : chatPaneFolders(layoutForFocus, chatPanes, sessions);
-  const tabFolders = [...new Set([...tabs.files.filter((f) => !isDocument(f)).map(parentPath), ...paneFolders, ...chatFolders])];
+  // M9 fix 898: a page from the disk's folders, so its pane reloads.
+  const pageFolders = layoutForFocus === null ? [] : browserPaneFolders(layoutForFocus);
+  const tabFolders = [...new Set([...tabs.files.filter((f) => !isDocument(f)).map(parentPath), ...paneFolders, ...chatFolders, ...pageFolders])];
   const tabKey = tabFolders.join('\n');
   const tabFoldersRef = useRef(tabFolders);
   tabFoldersRef.current = tabFolders;
@@ -223,6 +226,8 @@ export function FilesRail() {
     setPending(null);
     setRenaming(null);
   }, [shown]);
+  // M9 fix 897: the root the file tab's Browser button serves a page from.
+  useEffect(() => noteRailRoot(model.root), [model.root]);
 
   // M9 fix 574: Escape on the tree hands the keyboard back to the
   // terminal, as the filter box does, except the Escape that closes a
@@ -434,14 +439,14 @@ export function FilesRail() {
   // folder toggles it, so the two clicks of a double click cancel out and
   // one more puts it where a double click on a folder is expected to
   // leave it.
-  // A contents hit brings its line (M27), and the tab opens there.
+  // A contents hit brings its line (M27), and the tab opens there, on Raw for a file with a view of its own, markdown included: a search is about the matched line (M9 fix 892).
   // M9 fix 203: the single click opens into the preview tab, which the
   // next single click reuses; the double click on a file pins it (the
   // two clicks before it previewed the same file, so the pin lands on
   // the tab that is open). Open in a tab from the row's menu pins.
   const onOpen = (path: string, kind: FileEntry['kind'], line?: number, column?: number) => {
     setModel((m) => (kind === 'dir' ? toggleFolder(m, path) : select(m, path)));
-    if (kind === 'file') openPreviewTab(path, line, column);
+    if (kind === 'file') openPreviewTab(path, line, column, true);
   };
   const onDoubleClick = (path: string, kind: FileEntry['kind']) => {
     if (kind === 'dir') setModel((m) => toggleFolder(m, path));
@@ -864,6 +869,7 @@ export function FilesRail() {
             filterInput.current?.focus();
           }}
           onOpenInPane={filesDrag ? (path) => void openViewBeside({ kind: 'file', path: normalizePath(path) }).catch((err: unknown) => console.warn('[emerald] file in a pane failed', err)) : undefined}
+          onOpenInBrowser={localPageSupported(daemon) ? (path) => void openLocalPage(normalizePath(path), localPageRoot(normalizePath(path), model.root)).catch((err: unknown) => console.warn('[emerald] page in a browser pane failed', err)) : undefined}
           onShowDiff={menu.kind === 'file' ? diffOf(menu.path) : undefined}
           statsOffered={statsSupported(daemon)}
           revert={menu.kind === 'file' ? revertOf(menu.path) : undefined}
@@ -1279,6 +1285,8 @@ interface EntryMenuProps {
   // Open in a pane (M9 fix 180): the file as a view beside the focused
   // pane; absent under a daemon that does not keep the kind.
   onOpenInPane?: ((path: string) => void) | undefined;
+  // Open in browser (M9 fix 897): an .html or .htm file rendered in a browser pane; absent under a daemon below level 74.
+  onOpenInBrowser?: ((path: string) => void) | undefined;
   // Show diff (M9 fix 199), heading the menu of a changed file; absent
   // on a clean one.
   onShowDiff?: (() => void) | undefined;
@@ -1311,7 +1319,7 @@ interface RevertItem {
   revert: (() => void) | null;
 }
 
-function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDiff, onNew, onRename, revert, trash, statsOffered }: EntryMenuProps) {
+function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenInBrowser, onShowDiff, onNew, onRename, revert, trash, statsOffered }: EntryMenuProps) {
   // Revert changes asks twice (M9 fix 310): the first click turns the
   // label into the question and keeps the menu open, the second reverts.
   const [revertArmed, setRevertArmed] = useState(false);
@@ -1369,6 +1377,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onShowDi
               { label: 'Open in a tab', title: 'A tab of its own, kept when the next file is clicked', onClick: done(() => openFileTab(menu.path)) },
               ...renameItems,
               ...(onOpenInPane === undefined ? [] : [{ label: 'Open in a pane', title: 'The file beside the focused pane, in the layout with the shells', onClick: done(() => onOpenInPane(menu.path)) }]),
+              ...(onOpenInBrowser === undefined || !isHtmlFile(menu.path) ? [] : [{ label: 'Open in browser', title: 'The page rendered in a browser pane beside the focused pane, its links and styles from the folder the rail shows', onClick: done(() => onOpenInBrowser(menu.path)) }]),
             ]
           : [
               ...renameItems,

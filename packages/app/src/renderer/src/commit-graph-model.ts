@@ -133,6 +133,12 @@ export interface GraphOptions {
   // The repository's own author (M9 fix 286): a commit by anyone else
   // is a person's. Absent or null, nobody's is.
   author?: string | null | undefined;
+  // The members placed on their session's line (M9 fix 907), by "<session
+  // id> <member id>" (the string replayKey gives): no lane of their own and
+  // no fork, as in a block drawn as one line, while the block's other
+  // members keep theirs. The replay's readers and drafters, which made no
+  // commit.
+  membersOnLine?: ReadonlySet<string> | undefined;
 }
 
 // The transcript id behind a history block's session id, or null for a
@@ -608,6 +614,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     if (over !== undefined) return over === 'line';
     return historyIdOf(sessionId) !== null || mode === 'list';
   };
+  const onLine = (sessionId: string | null, memberId: string): boolean => options.membersOnLine?.has(`${sessionId ?? ''} ${memberId}`) ?? false;
   const owners = commitOwners(commits, records, remoteIdsByRecord(records, history));
   // The conversations left over (M70): a stand-in session per
   // transcript an unowned trailer names, owning those commits.
@@ -755,7 +762,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // has not run a command yet) from the commit the session sits on,
     // which is the session's start commit when it has none of its own.
     const placedMembers = new Set(mine.map((i) => commitMember[i]).filter((m): m is string => m !== null));
-    const fresh = b.session === null ? [] : agentsOf(b.session).filter((m) => !placedMembers.has(m.id)).sort((x, y) => x.startedAt - y.startedAt);
+    const fresh = b.session === null ? [] : agentsOf(b.session).filter((m) => !placedMembers.has(m.id) && !onLine(b.sessionId, m.id)).sort((x, y) => x.startedAt - y.startedAt);
     // Whether lane 0 has anything to land on (M9 fix 145): the grey
     // trunk, a session's own commits, or the start bar a session with
     // a row of its own gets; a member's lane under a session with none
@@ -885,7 +892,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
         continue;
       }
       const fork = (m.branch === null ? undefined : refRow.get(m.branch)) ?? anchor.above ?? undefined;
-      if (fork !== undefined && !lineOnly(sessionId)) {
+      if (fork !== undefined && !lineOnly(sessionId) && !onLine(sessionId, m.id)) {
         placed.push({ sessionId, session: s, member: m, above: fork, kind: 'fork' });
         continue;
       }

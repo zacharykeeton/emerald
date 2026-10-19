@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { movesHead } from '@emerald/shared';
 import { findGitDir } from './git-branch.ts';
-import { gitText } from './git-runner.ts';
+import { forgetInFlight, gitText } from './git-runner.ts';
 
 // The rule for which Bash commands can move HEAD (M49) lives in shared
 // since M53, where the transcript view counts a turn's commits by it;
@@ -62,7 +62,11 @@ export function readsOnly(command: string): boolean {
 // Run on the git worker thread (git-runner.ts, M9 fix 226), as every
 // git here is, so the spawn never holds the daemon's loop.
 export async function readHead(cwd: string): Promise<string | null> {
-  const stdout = await gitText(['--no-optional-locks', 'rev-parse', 'HEAD'], cwd, TIMEOUT_MS);
+  // The runner shares an identical read in flight (M9 fix 916); a `rev-parse
+  // HEAD` begun before the commit or the checkout that brought this call
+  // would be credited as the new HEAD, so this read starts its own.
+  forgetInFlight(cwd);
+  const stdout = await gitText(['--no-optional-locks', 'rev-parse', 'HEAD'], cwd, { timeoutMs: TIMEOUT_MS });
   if (stdout === null) return null;
   const hash = stdout.trim();
   return /^[0-9a-f]{40}$/.test(hash) ? hash : null;
@@ -122,7 +126,7 @@ function readText(file: string): string | undefined {
 export async function revListFirstParent(cwd: string, before: string | null, after: string, since: number | null = null): Promise<string[]> {
   if (before === null) return [after];
   const format = since === null ? [] : ['--format=%H%x20%ct'];
-  const stdout = await gitText(['--no-optional-locks', 'rev-list', '--first-parent', ...format, `${before}..${after}`], cwd, TIMEOUT_MS);
+  const stdout = await gitText(['--no-optional-locks', 'rev-list', '--first-parent', ...format, `${before}..${after}`], cwd, { timeoutMs: TIMEOUT_MS });
   if (stdout === null) return [];
   const lines = stdout.split('\n').map((l) => l.trim());
   if (since === null) return lines.filter((h) => /^[0-9a-f]{40}$/.test(h)).reverse();
@@ -148,7 +152,7 @@ const COMMIT_SLACK_MS = 2000;
 export async function readMerges(cwd: string, hashes: string[]): Promise<Set<string>> {
   const merges = new Set<string>();
   if (hashes.length === 0) return merges;
-  const stdout = await gitText(['--no-optional-locks', 'rev-list', '--parents', '--no-walk', '--stdin'], cwd, TIMEOUT_MS, undefined, `${hashes.join('\n')}\n`);
+  const stdout = await gitText(['--no-optional-locks', 'rev-list', '--parents', '--no-walk', '--stdin'], cwd, { timeoutMs: TIMEOUT_MS, stdin: `${hashes.join('\n')}\n` });
   if (stdout === null) return merges;
   for (const line of stdout.split('\n')) {
     const parts = line.trim().split(/\s+/).filter((h) => /^[0-9a-f]{40}$/.test(h));

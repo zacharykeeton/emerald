@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { allPanes, browserPartition, browserUrl, findPane, focusPane, guestNavigationAllowed, setPaneView } from '@emerald/shared';
-import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, paneOfWebContents, patchPageState, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
+import { allPanes, browserPartition, findPane, focusPane, guestNavigationAllowed, isLocalPageUrl, paneUrl, setPaneView } from '@emerald/shared';
+import type { BrowserPaneView } from '@emerald/shared';
+import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
 import type { WebviewLike } from './browser-layer.ts';
+import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
 import { editTab, useStore } from './store.ts';
 import { useUi } from './ui.ts';
@@ -13,6 +15,8 @@ type ConsoleEvent = Event & { level: number | string; message: string };
 
 const LOCAL_RESOURCE = 'Not allowed to load local resource: ';
 const refusedLink = (url: string) => `This page tried to open ${url}; a browser pane opens only http and https pages`;
+// M9 fix 896: a link into the disk from a page not of the same folder.
+const refusedLocal = (url: string) => `This page tried to open ${url}; a web page cannot open a page from the disk`;
 
 const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
 
@@ -37,7 +41,10 @@ export function BrowserLayer() {
   const panes =
     layout === null
       ? []
-      : allPanes(layout).flatMap((p) => (p.view?.kind === 'browser' && p.view.url !== '' ? [{ id: p.id, url: p.view.url, profile: p.view.profile }] : []));
+      : allPanes(layout).flatMap((p) => (p.view?.kind === 'browser' && p.view.url !== '' ? [{ id: p.id, url: p.view.url, profile: p.view.profile, root: p.view.root }] : []));
+  // M9 fix 896: each page from the disk's folder, for Back onto it once
+  // its record has linked out to the web and dropped the root.
+  if (layout !== null) for (const p of allPanes(layout)) if (p.view?.kind === 'browser') rememberLocalRoot(p.view);
   // Computed in render and kept in refs: adoptFrames on its own result
   // with the same panes changes nothing, so a second render is a no-op.
   const frames = adoptFrames(framesRef.current, panes, urlsRef.current, () => `f${++counterRef.current}`);
@@ -54,6 +61,7 @@ export function BrowserLayer() {
   const paneOf = new Map([...frames].map(([paneId, frameId]) => [frameId, paneId]));
   const urlOf = new Map(panes.map((p) => [p.id, p.url]));
   const profileOf = new Map(panes.map((p) => [p.id, p.profile]));
+  const rootOf = new Map(panes.map((p) => [p.id, p.root]));
   const frameKey = [...frames].map(([p, f]) => `${p}=${f}`).join(',');
 
   useLayoutEffect(() => {
@@ -124,7 +132,7 @@ export function BrowserLayer() {
       {orderRef.current.map((frameId) => {
         const paneId = paneOf.get(frameId)!;
         const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
-        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} profile={profileOf.get(paneId)} dropZone={dropZone} />;
+        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} dropZone={dropZone} />;
       })}
     </div>
   );
@@ -135,6 +143,9 @@ interface FrameProps {
   paneId: string;
   // The pane's record URL.
   url: string;
+  // M9 fix 898: the folder a page from the disk is served from, for its
+  // live reload.
+  root: string | undefined;
   // M9 fix 673: the page's own cookies and storage, read once at the
   // element's making, since a partition is fixed at the first attach.
   profile: string | undefined;
@@ -146,7 +157,7 @@ interface FrameProps {
 // never reloads it, as a React-managed src would. The main process holds
 // the element to its partition and strips node and a preload from it
 // (browser-guard.ts); a page's new window goes to the system browser.
-function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
+function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<WebviewLike | null>(null);
   const profileRef = useRef(profile);
@@ -156,6 +167,8 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
   paneRef.current = paneId;
   const urlRef = useRef(url);
   urlRef.current = url;
+  const rootRef = useRef(root);
+  rootRef.current = root;
   const { error } = useFramePage(frameId);
 
   useEffect(() => {
@@ -179,7 +192,9 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
       if (e.isMainFrame === false) return;
       patchPageState(frameId, { error: null, url: e.url });
       nav();
-      if (e.url !== urlRef.current && browserUrl(e.url) === e.url) {
+      // M9 fix 896: a link inside a page from the disk moves the record
+      // too, the root kept by withPageUrl.
+      if (e.url !== urlRef.current && paneUrl(e.url) === e.url) {
         const target = paneRef.current;
         void editTab((t) => setPaneView(t, target, withPageUrl(findPane(t, target)?.view, e.url)), target).catch(warn('browser url'));
       }
@@ -212,7 +227,14 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
         'will-navigate',
         (ev) => {
           const url = (ev as NavigateEvent).url;
-          if (!guestNavigationAllowed(url)) patchPageState(frameId, { error: refusedLink(url) });
+          // getURL throws before the first dom-ready; '' is then a web origin.
+          let from = '';
+          try {
+            from = page.getURL();
+          } catch {
+            from = '';
+          }
+          if (!guestNavigationAllowed(url, from)) patchPageState(frameId, { error: isLocalPageUrl(url) ? refusedLocal(url) : refusedLink(url) });
         },
       ],
       ['did-navigate', navigated],
@@ -260,6 +282,37 @@ function Frame({ frameId, paneId, url, profile, dropZone }: FrameProps) {
       // Not attached yet.
     }
   }, [paneId]);
+
+  // M9 fix 898: a page from the disk reloads when the Files rail's
+  // watcher pushes one of its folders (FilesRail adds them to the watch
+  // set). The renderer's call on its own webview, since only it knows
+  // which pane shows which page; a page on a hidden layout tab reloads
+  // too, so it is current when shown. A push with no info is the git
+  // log's and changes no file of the page.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const off = window.emerald.files.onChanged((dir, info) => {
+      if (info === undefined) return;
+      const view: BrowserPaneView = { kind: 'browser', url: urlRef.current, ...(rootRef.current === undefined ? {} : { root: rootRef.current }) };
+      const changed = normalizePath(dir).toLowerCase();
+      if (!localPageFolders(view).some((f) => f.toLowerCase() === changed)) return;
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const page = pageRef.current;
+        if (page === null || !framePageState(frameId).ready) return;
+        try {
+          if (isLocalPageUrl(page.getURL())) page.reload();
+        } catch {
+          // Not attached yet.
+        }
+      }, LIVE_RELOAD_MS);
+    });
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      off();
+    };
+  }, [frameId]);
 
   return (
     <div className="browser-frame" data-browser-pane={paneId} data-frame-id={frameId}>

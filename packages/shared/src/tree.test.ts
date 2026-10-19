@@ -703,6 +703,18 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   for (const profile of ['B', '', 3]) {
     assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', profile }))), /profile must be/);
   }
+  // M9 fix 896: a page from the disk is kept whole with its root, refused
+  // without an absolute one, and a root beside a web url is dropped.
+  const localUrl = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html';
+  const local = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: localUrl, root: 'C:\\pages', profile: 'b' })));
+  assert.deepEqual((local.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: localUrl, root: 'C:\\pages', profile: 'b' });
+  const unc = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: localUrl, root: '\\\\server\\share' })));
+  assert.deepEqual((unc.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: localUrl, root: '\\\\server\\share' });
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: localUrl }))), /root must be the absolute folder/);
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: localUrl, root: 'pages\\site' }))), /root must be the absolute folder/);
+  const webRoot = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', root: 'C:\\pages' })));
+  assert.equal('root' in ((webRoot.tabs[0]!.root as { first: { view: object } }).first.view), false);
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'emerald-file://notauuid/x', root: 'C:\\pages' }))), /url must be an http or https URL/);
 });
 
 test('dropAtRight fills an empty single pane in place, for a session and for a view (M9 fix 651)', () => {

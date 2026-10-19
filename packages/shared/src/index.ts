@@ -30,3 +30,4 @@ export * from './conflicts.ts';
 export * from './use-record.ts';
 export * from './mod-route.ts';
 export * from './trust-dialog.ts';
+export * from './zoom.ts';

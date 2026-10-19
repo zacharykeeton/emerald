@@ -2,6 +2,7 @@ import { summarize } from './state-machine.ts';
 import { HEAD_TOOLS } from './command-dir.ts';
 import { formatDuration } from './session-order.ts';
 import type { ModRow } from './protocol.ts';
+import { Limits } from './limits.ts';
 
 // One line of a Claude Code transcript (the JSONL at transcript_path) read
 // for what the sidebar's agent line wants (M47): the text Claude wrote in
@@ -166,8 +167,8 @@ export type Step =
   | { kind: 'text'; text: string; at: number | null }
   // M9 fix 797: a progress line Claude Code shows as ● prose: a non-empty thinking part on a line written with thinkingDisplay "updates", where the model's own thinking is stored empty.
   | { kind: 'update'; text: string; at: number | null }
-  // M9 fix 798: what a Claude Code command printed (its local-command stdout or stderr), drawn as a divider in the turn it lands in.
-  | { kind: 'command'; text: string; at: number | null }
+  // M9 fix 798: what a Claude Code command printed (its local-command stdout or stderr), drawn as a divider in the turn it lands in. M9 fix 889: remote control's connect line carries its URL, drawn as a link.
+  | { kind: 'command'; text: string; at: number | null; url?: string }
   | { kind: 'note'; text: 'Interrupted'; at: number | null }
   // M9 fix 754: a message the person sent while the turn ran, which
   // Claude read mid-turn; `at` is its send time.
@@ -404,7 +405,7 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
   if (said !== null) {
     // The note does not move the turn's endAt, so a rename ten minutes
     // after a reply does not stretch the turn's length on its prompt row.
-    const note: Step = { kind: 'command', text: said.text, at };
+    const note: Step = { kind: 'command', text: said.text, at, ...(said.url === undefined ? {} : { url: said.url }) };
     if (turn === null) {
       // A command before the first prompt opens a bare turn of its own.
       turn = { prompt: '', at, endAt: null, steps: [note], images: [] };
@@ -624,6 +625,38 @@ export function usageList(state: UsageState): UsageMessage[] {
   return [...state.byId.values(), ...state.loose].sort((a, b) => a.at - b.at);
 }
 
+// M9 fix 903: the latest words of a transcript (an agent's own file, for its card's now line): the last non-blank text block of the last assistant line that has one, its whitespace runs made one space and cut at Limits.memberSaidChars with an ellipsis, and that line's time. A line of tool calls or thinking alone keeps what was held; side-chain lines count, since every line of an agent's file is one. Split as usageFold is, so a reader of a growing file folds only what was appended.
+export interface SaidState {
+  text: string | null;
+  at: number | null;
+}
+
+export function saidState(): SaidState {
+  return { text: null, at: null };
+}
+
+export function saidFold(state: SaidState, text: string): void {
+  for (const raw of text.split('\n')) {
+    const o = parseObject(raw);
+    if (o === null || o['type'] !== 'assistant') continue;
+    const message = o['message'];
+    if (!isObject(message)) continue;
+    const content = message['content'];
+    if (!Array.isArray(content)) continue;
+    const at = lineTime(o);
+    if (at === null) continue;
+    let said: string | null = null;
+    for (const part of content) {
+      if (!isObject(part) || part['type'] !== 'text' || typeof part['text'] !== 'string') continue;
+      const t = part['text'].replace(/\s+/g, ' ').trim();
+      if (t !== '') said = t;
+    }
+    if (said === null) continue;
+    state.text = said.length > Limits.memberSaidChars ? `${said.slice(0, Limits.memberSaidChars - 1)}…` : said;
+    state.at = at;
+  }
+}
+
 // M9 fix 754: Claude Code's queue of messages sent while a turn runs, off
 // its `queue-operation` lines, in usageFold's shape so a reader of a
 // growing transcript can fold only what was appended. The state holds the
@@ -722,7 +755,17 @@ export const COMMAND_LEFTOVER = /^(?:.+ dialog dismissed|.+ cancell?ed\.?|Cancel
 // 'drop' a line that says nothing worth drawing: an empty output, a
 // dialog's leftover, and a system line naming the command itself, which
 // is dropped rather than left to move the open turn's endAt.
-function commandNoteOf(o: Record<string, unknown>): { text: string } | 'drop' | null {
+function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string } | 'drop' | null {
+  // M9 fix 889: remote control's connect line (bridge_status) and an error's disconnect line (informational), each a note; any other informational line stays as it was.
+  if (o['type'] === 'system' && o['subtype'] === 'bridge_status') {
+    const text = typeof o['content'] === 'string' ? o['content'].trim() : '';
+    if (text === '') return 'drop';
+    const url = o['url'];
+    return typeof url === 'string' && url !== '' ? { text, url } : { text };
+  }
+  if (o['type'] === 'system' && o['subtype'] === 'informational' && typeof o['content'] === 'string' && o['content'].startsWith('Remote Control disconnected')) {
+    return { text: o['content'].trim() };
+  }
   let source: string | null = null;
   const system = o['type'] === 'system' && o['subtype'] === 'local_command';
   if (system) {

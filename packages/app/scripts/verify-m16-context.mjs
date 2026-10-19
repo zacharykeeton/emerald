@@ -667,6 +667,10 @@ try {
   if ((await s.evalJs(`${plainRow}?.dataset.state ?? null`)) === 'exited') {
     await s.evalJs(`${p2Sel('.pane-resume')}.click()`);
     await s.waitFor(`${plainRow}?.dataset.state !== 'exited' && !${p2Sel('.pane-resume')}`, 'pane 2 resumed');
+    // M9 fix 908: a resume sets shellCwd null and the first prompt sets it;
+    // wait for that prompt so it cannot move the cwd back during the walk.
+    for (const end = Date.now() + 15000; Date.now() < end && ((await zreq(s, 'session.list', {})).sessions.find((x) => x.id === plain)?.shellCwd ?? null) === null; ) await sleep(200);
+    expect(((await zreq(s, 'session.list', {})).sessions.find((x) => x.id === plain)?.shellCwd ?? null) !== null, 'fix 908: the resumed shell reached its prompt before the walk names its folder');
   }
   await post(plain, { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sim-m16-live' });
   await s.waitFor(`${plainRow}?.dataset.state === 'idle'`, 'pane 2 reports in as Claude');
@@ -675,13 +679,18 @@ try {
   expect(!(await s.evalJs(`!!${p2Sel('.pane-resume')}`)), 'fix 795: the live title carries no Resume');
   // M9 fix 859: idle is narrower than the state word's 4ch floor and can
   // never cut, so the walk runs on working.
-  await post(plain, { hook_event_name: 'UserPromptSubmit', session_id: 'sim-m16-live', prompt: 'walk the title' });
+  // M9 fix 908: a Claude that cd'd into a subfolder of the folder it started
+  // in, so the title carries a name and a folder that differ.
+  const walkCwd = path.join(fixture, 'title-walk-name');
+  fs.mkdirSync(walkCwd, { recursive: true });
+  await post(plain, { hook_event_name: 'UserPromptSubmit', session_id: 'sim-m16-live', prompt: 'walk the title', cwd: walkCwd });
   await s.waitFor(`${p2Sel('.pane-state')}?.textContent === 'working'`, 'pane 2 is working');
+  await s.waitFor(`${p2Sel('.pane-cwd')}?.textContent === ${JSON.stringify(walkCwd)} && ${p2Sel('.pane-name')}?.textContent === 'title-walk-name'`, 'fix 908: pane 2 names the subfolder and shows its path beside the name');
   const paneW = (id) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(id)}]').getBoundingClientRect().width`);
   const gutter = splitWidth - (await paneW(p1)) - (await paneW(p2));
   const cutRead = () =>
     s.evalJs(
-      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; const tb = t.getBoundingClientRect(); const st = t.querySelector('.pane-state'); const state = st === null || getComputedStyle(st).display === 'none' ? 'hidden' : (() => { const twin = st.cloneNode(true); twin.style.cssText = 'position:absolute;visibility:hidden;flex:none;min-width:0;max-width:none;width:auto'; t.appendChild(twin); const over = twin.getBoundingClientRect().width - st.getBoundingClientRect().width; twin.remove(); return over > 1 ? 'cut ' + over.toFixed(2) : over > 0.02 ? 'whole, over ' + over.toFixed(2) : 'whole'; })(); const m = t.querySelector('.pane-context-model'); const model = m === null ? 'absent' : m.getClientRects().length === 0 ? 'hidden' : (() => { const e = m.getBoundingClientRect(); return e.width >= 18 && e.right <= cr.right + 0.5 ? 'shown' : 'SLIVER'; })(); const buttons = [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const e = b.getBoundingClientRect(); return { cls: b.className.split(' ')[0], shown: getComputedStyle(b).display !== 'none', inside: e.right <= tb.right + 0.5 && e.left >= tb.left - 0.5 }; }); return { width: Math.round(tb.width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost'), state, model, buttons }; })()`,
+      `(() => { const t = document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title'); const ctx = t.querySelector('.pane-context'); const cr = ctx.getBoundingClientRect(); const at = (sel) => { const el = ctx.querySelector(sel); if (el === null || getComputedStyle(el).display === 'none') return 'hidden'; const e = el.getBoundingClientRect(); const mark = e.left >= cr.right - 0.5 ? ' OUT' : e.right > cr.right + 0.5 ? ' CUT' : ''; return Math.round(e.left) + '..' + Math.round(e.right) + mark; }; const tb = t.getBoundingClientRect(); const st = t.querySelector('.pane-state'); const state = st === null || getComputedStyle(st).display === 'none' ? 'hidden' : (() => { const twin = st.cloneNode(true); twin.style.cssText = 'position:absolute;visibility:hidden;flex:none;min-width:0;max-width:none;width:auto'; t.appendChild(twin); const over = twin.getBoundingClientRect().width - st.getBoundingClientRect().width; twin.remove(); return over > 1 ? 'cut ' + over.toFixed(2) : over > 0.02 ? 'whole, over ' + over.toFixed(2) : 'whole'; })(); const m = t.querySelector('.pane-context-model'); const model = m === null ? 'absent' : m.getClientRects().length === 0 ? 'hidden' : (() => { const e = m.getBoundingClientRect(); return e.width >= 18 && e.right <= cr.right + 0.5 ? 'shown' : 'SLIVER'; })(); const nm = t.querySelector('.pane-name'); const name = nm === null || nm.getClientRects().length === 0 ? 'hidden' : (() => { const twin = nm.cloneNode(true); twin.style.cssText = 'position:absolute;visibility:hidden;flex:none;min-width:0;max-width:none;width:auto'; t.appendChild(twin); const over = twin.getBoundingClientRect().width - nm.getBoundingClientRect().width; twin.remove(); return over > 0.02 ? 'cut ' + over.toFixed(2) : 'whole'; })(); const cw = t.querySelector('.pane-cwd'); const cwd = cw === null ? 'absent' : cw.getClientRects().length === 0 ? 'hidden' : 'shown ' + cw.getBoundingClientRect().width.toFixed(1); const buttons = [...t.querySelectorAll('.pane-title-actions button')].map((b) => { const e = b.getBoundingClientRect(); return { cls: b.className.split(' ')[0], shown: getComputedStyle(b).display !== 'none', inside: e.right <= tb.right + 0.5 && e.left >= tb.left - 0.5 }; }); return { width: Math.round(tb.width), level: Number(t.dataset.squeeze ?? 0), cut: 'box ' + Math.round(cr.left) + '..' + Math.round(cr.right) + ', percent ' + at('.pane-context-percent') + ', cost ' + at('.pane-cost'), state, model, name, cwd, over: t.scrollWidth - t.clientWidth, buttons }; })()`,
     );
   const walk795 = [];
   for (const width of [480, 450, 420, 380, 340, 310, 280, 250, 220, 200, 180, 160]) {
@@ -713,7 +722,7 @@ try {
       fs.writeFileSync(path.join(shotsDir, `859-title-${r.width}-${Date.now()}.png`), titleShot);
     }
     const shownButtons = r.buttons.filter((b) => b.shown);
-    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}, state ${r.state}, model ${r.model}, buttons ${shownButtons.length}/${r.buttons.length}`);
+    console.log(`[760] live ${r.width}px L${r.level}: ${r.cut}, state ${r.state}, model ${r.model}, buttons ${shownButtons.length}/${r.buttons.length}, name ${r.name}, cwd ${r.cwd}, over ${r.over}`);
     // M9 fix 840: no button gives while a word is on the line; the chat
     // button goes at the eighth level, hide and close at the ninth, the
     // splits at the tenth (M9 fix 860), the zoom and the shade never, and
@@ -727,8 +736,13 @@ try {
     // they go whole with the percent.
     expect(!r.state.startsWith('cut'), `fix 859: at ${r.width}px level ${r.level} the state word is whole or hidden, got ${r.state}`);
     expect(r.model === (r.level >= 3 ? 'hidden' : 'shown'), `fix 859: at ${r.width}px level ${r.level} the model's words are ${r.level >= 3 ? 'hidden' : 'shown, three characters or more'}, got ${r.model}`);
+    // M9 fix 908: the name is whole while the rest of the line gives, the folder goes with the state word.
+    expect(r.level >= 6 ? r.name === 'hidden' : r.level === 5 ? r.name !== 'hidden' : r.name === 'whole', `fix 908: at ${r.width}px level ${r.level} the name is ${r.level >= 6 ? 'hidden' : r.level === 5 ? 'shown, giving alone' : 'whole while the rest of the line gives'}, got ${r.name}`);
+    expect(r.level < 5 || r.cwd === 'hidden', `fix 908: at ${r.width}px level ${r.level} the folder is gone with the state word, got ${r.cwd}`);
+    expect(r.over <= 1, `fix 908: at ${r.width}px level ${r.level} the title does not overflow, so a rigid name stepped the level rather than pushing the buttons out, got ${r.over}`);
   }
-  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden and every button held to its level (fixes 840 and 860) at every width, the state word whole or hidden and the model's words shown or gone whole (fix 859): ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
+  expect(walk795.some((r) => r.level <= 4 && r.cwd.startsWith('shown ') && Number(r.cwd.slice(6)) >= 1), `fix 908: the walk met the folder giving beside the whole name below the fifth level, got ${JSON.stringify(walk795.map((r) => [r.width, r.level, r.name, r.cwd]))}`);
+  step(`M9 fix 795 and 817: fix 760's read on pane 2's live Claude title, no Resume, the percent and the cost whole or hidden and every button held to its level (fixes 840 and 860) at every width, the state word whole or hidden and the model's words shown or gone whole (fix 859), the name whole below the fifth level beside the folder giving and the folder gone with the state word (fix 908): ${walk795.map((r) => `${r.width}px L${r.level}`).join(', ')}`);
   await post(plain, { hook_event_name: 'Stop', session_id: 'sim-m16-live', stop_hook_active: false });
   await s.waitFor(`${p2Sel('.pane-state')}?.textContent !== 'working'`, 'pane 2 is back at rest');
 

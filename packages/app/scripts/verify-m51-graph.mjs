@@ -15,7 +15,8 @@
 // commit turning the row into a commit row with a fresh row above, and
 // Replay from here replays a batch from a commit, the rows dimming and
 // coming back in order and the forks' marks on only inside their
-// recorded spans (fix 869).
+// recorded spans, paused, scrubbed and played on from its strip and
+// Space (fix 905) (fix 869).
 // Uses a private home and pipe unless the environment already
 // names them.
 // Run: npm run verify:graph -w @emerald/app
@@ -59,7 +60,7 @@ const BLOCKS = [
   { name: 'fix-320', fixes: ['fix-320'], needs: [] },
   { name: 'fix-352', fixes: ['fix-352', 'fix-354'], needs: ['fix-325'] },
   { name: 'fix-353', fixes: ['fix-353'], needs: [] },
-  { name: 'fix-869', fixes: ['fix-869', 'fix-868'], needs: [] },
+  { name: 'fix-869', fixes: ['fix-869', 'fix-868', 'fix-905', 'fix-906', 'fix-907'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -98,11 +99,20 @@ const repo = fs.realpathSync.native(repoShort);
 // The clock steps a second a git call, and never runs behind the wall
 // clock (M9 fix 470): the daemon credits a Bash call only the commits
 // whose committer date is at or after its PreToolUse, and a fixed 2023
-// start credited nothing. It used to start at 1700000000.
+// start credited nothing. It used to start at 1700000000. The prelude's
+// stamped calls can leave it a few seconds ahead of the wall, which a whole
+// run's later blocks never meet but a block run under --only right after
+// the prelude does: a block that commits and then judges spans against
+// commit times calls clockBehindWall() before its first such commit (fix
+// 912).
 let clock = Math.floor(Date.now() / 1000);
 const stamp = () => {
   clock = Math.max(clock + 1, Math.floor(Date.now() / 1000));
   return `${clock} +0000`;
+};
+// Waits until the clock is behind the wall again, so the next stamped commit is not dated after the hooks that follow it (fix 912, lifted from fix 869's block).
+const clockBehindWall = async () => {
+  while (clock + 1 > Math.floor(Date.now() / 1000)) await sleep(250);
 };
 const git = (...args) => {
   const date = stamp();
@@ -4307,9 +4317,8 @@ try {
     gitRp('add', 'R00.txt');
     execFileSync('git', ['commit', '-q', '-m', 'R00'], { cwd: rpRepo, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_DATE: '978307200 +0000', GIT_COMMITTER_DATE: '978307200 +0000' } });
     const R00 = gitRp('rev-parse', 'HEAD').trim();
-    // The prelude's git calls can leave the clock a few seconds ahead of
-    // the wall: R0 must not be dated after the hooks that follow it.
-    while (clock + 1 > Math.floor(Date.now() / 1000)) await sleep(250);
+    // R0 must not be dated after the hooks that follow it.
+    await clockBehindWall();
     fs.writeFileSync(path.join(rpRepo, 'R0.txt'), 'R0');
     gitRp('add', 'R0.txt');
     gitRp('commit', '-q', '-m', 'R0');
@@ -4338,6 +4347,13 @@ try {
       await rpPost({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: `agent ${id}`, subagent_type: 'fork' }, tool_response: { agentId: id, description: `agent ${id}`, status: 'async_launched' } });
       await sleep(1500);
     }
+    // Fix 907: a reader that made no commit, out and back inside both
+    // forks' spans and the session's own prompt.
+    await rpPost({ hook_event_name: 'SubagentStart', agent_id: 'rp3', agent_type: 'Explore' });
+    await rpPost({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: 'agent rp3', subagent_type: 'Explore' }, tool_response: { agentId: 'rp3', description: 'agent rp3', status: 'async_launched' } });
+    await sleep(1500);
+    await rpPost({ hook_event_name: 'SubagentStop', agent_id: 'rp3', agent_type: 'Explore' });
+    await sleep(1500);
     // Fix 145's memberCommit, per member.
     const rpMemberCommit = async (id, name) => {
       const dir = rpWts[id];
@@ -4367,6 +4383,7 @@ try {
     // (a) The live graph: the lane stays and the row is gone.
     await s.waitFor(`!!document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(R1)}`)}) && document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(RP1)}`)})?.dataset.member === 'rp1'`, "RP1's node is on rp1's lane", 10000);
     expect(!(await s.evalJs(`!!document.querySelector('.files-rail .commits-agent-row[data-member="rp1"]')`)), 'the next prompt dropped rp1: its lane stays and its row is gone (the case the replay builds rows for)');
+    const liveLanes = Number(await s.evalJs(`document.querySelector('.files-rail .commits-graph').dataset.lanes`));
     const rpRowSel = (hash) => `.files-rail .commits-graph-rows .commits-row[data-hash=${JSON.stringify(hash)}]`;
     // The script's seek (fix 869's event): armed before the click, sent
     // the moment the panel turns on, then read back off the panel.
@@ -4395,11 +4412,14 @@ try {
         const rail = document.querySelector('.files-rail');
         const q = (sel) => rail.querySelector(sel);
         const commit = (h) => { const r = q('.commits-graph-rows .commits-row[data-hash=' + JSON.stringify(h) + ']'); return { row: r?.dataset.replay ?? null, lands: r?.dataset.replayLands === undefined ? null : Number(r.dataset.replayLands), node: !!q('.commits-node[data-hash=' + JSON.stringify(h) + ']') }; };
-        const member = (id) => { const r = q('.commits-agent-row[data-member=' + JSON.stringify(id) + ']'); const n = q('.commits-agent-node[data-member=' + JSON.stringify(id) + ']'); return { row: r === null ? null : (r.dataset.replay ?? 'live'), rowWorking: r?.dataset.working !== undefined && r !== null, spans: r?.dataset.replaySpans ?? null, node: n !== null, working: n?.dataset.working !== undefined && n !== null }; };
+        const member = (id) => { const r = q('.commits-agent-row[data-member=' + JSON.stringify(id) + ']'); const n = q('.commits-agent-node[data-member=' + JSON.stringify(id) + ']'); return { row: r === null ? null : (r.dataset.replay ?? 'live'), rowWorking: r?.dataset.working !== undefined && r !== null, spans: r?.dataset.replaySpans ?? null, node: n !== null, working: n?.dataset.working !== undefined && n !== null, lane: n?.dataset.lane ?? null }; };
         const own = q('.commits-agent-node[data-session=' + JSON.stringify(${JSON.stringify(rpSess.id)}) + ']:not([data-member])');
         return {
           ...Object.fromEntries([['R00', ${JSON.stringify(R00)}], ['R0', ${JSON.stringify(R0)}], ['RP1', ${JSON.stringify(RP1)}], ['RP2', ${JSON.stringify(RP2)}], ['R1', ${JSON.stringify(R1)}]].map(([k, h]) => [k, commit(h)])),
-          rp1: member('rp1'), rp2: member('rp2'),
+          rp1: member('rp1'), rp2: member('rp2'), rp3: member('rp3'),
+          ownLane: own?.dataset.lane ?? null,
+          lanes: rail.querySelector('.commits-graph')?.dataset.lanes ?? null,
+          rp3AboveOwn: (() => { const rows = [...rail.querySelectorAll('.commits-graph-rows .commits-row')]; const a = rail.querySelector('.commits-agent-row[data-member="rp3"]'); const o = rail.querySelector('.commits-agent-row[data-session=' + JSON.stringify(${JSON.stringify(rpSess.id)}) + ']:not([data-member])'); return a !== null && o !== null && rows.indexOf(a) !== -1 && rows.indexOf(a) < rows.indexOf(o); })(),
           ownWorking: own !== null && own.dataset.working !== undefined,
           text: q('.commits-replay-text')?.textContent ?? null,
           note: q('.commits-replay-note')?.textContent ?? null,
@@ -4413,7 +4433,8 @@ try {
     expect(['RP1', 'RP2', 'R1'].every((k) => at0[k].row === 'dim' && !at0[k].node), `at the start the later rows are dim and their nodes gone (${JSON.stringify([at0.RP1, at0.RP2, at0.R1])})`);
     expect(at0.R0.node && at0.R00.node, `the start and the commit below it keep their nodes (${JSON.stringify([at0.R0, at0.R00])})`);
     expect(at0.rp1.row === 'dim' && at0.rp2.row === 'dim' && !at0.rp1.node && !at0.rp2.node, `the forks the next prompt dropped have their rows back, dim and with no marker until they go out (${JSON.stringify([at0.rp1, at0.rp2])})`);
-    expect(at0.text === `Replaying from ${R0.slice(0, 7)} · Escape stops` && at0.note === null, `the strip names the start and no note, the record covering it (${JSON.stringify([at0.text, at0.note])})`);
+    expect(at0.text === `Replaying from ${R0.slice(0, 7)} · Space pauses · Escape stops` && at0.note === null, `the strip names the start and no note, the record covering it (${JSON.stringify([at0.text, at0.note])})`);
+    expect(at0.rp3.row === 'dim' && !at0.rp3.node && Number(at0.lanes) === liveLanes, `the reader that made no commit has its row back, dim, and the replay draws no lane for it (${JSON.stringify([at0.rp3, at0.lanes, liveLanes])})`);
     // (d) Each commit lands in order at its replay time.
     const lands = [at0.RP1.lands, at0.RP2.lands, at0.R1.lands];
     expect(lands.every((x) => typeof x === 'number') && lands[0] < lands[1] && lands[1] < lands[2], `the commits land in order, RP1 then RP2 then R1 (${JSON.stringify(lands)})`);
@@ -4442,11 +4463,36 @@ try {
     await seek(s1.t);
     const atEnd = await rpRead();
     expect(!atEnd.rp1.working && atEnd.rp2.working, `at rp1's end its mark is off and rp2's still on (${JSON.stringify([atEnd.rp1, atEnd.rp2])})`);
+    // (e3) Fix 907: the reader works inside its span, on the session's
+    // line above the session's own row, with no lane of its own.
+    const s3 = spanOf(at0.rp3.spans);
+    await seek((s3.f + s3.t) / 2);
+    const e3 = await rpRead();
+    expect(e3.rp3.node && e3.rp3.working && e3.rp3.rowWorking && e3.rp3.lane === e3.ownLane && e3.rp3AboveOwn && Number(e3.lanes) === liveLanes, `the reader works on its session's line, above the session's row, with no lane of its own (${JSON.stringify([e3.rp3, e3.ownLane, e3.rp3AboveOwn, e3.lanes, liveLanes])})`);
+    await seek(s1.t);
+    step('M9 fix 907: a reader that made no commit replays as a row on its session\'s line, dim until it goes out, working inside its recorded span, with no lane of its own');
+    // (e2) Fix 906: the replay is held at rp1's end, RP1 and RP2 landed and
+    // R1 not; the pointer rests on R0's row and no card opens.
+    await inView(rpRowSel(R0));
+    await settled(rpRowSel(R0));
+    const e2at = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rpRowSel(R0))}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: e2at.x, y: e2at.y });
+    await sleep(1000);
+    const e2 = await s.evalJs(`({ hover: document.querySelector(${JSON.stringify(rpRowSel(R0))})?.dataset.hover !== undefined, card: !!document.querySelector('.commit-popover') })`);
+    expect(e2.hover && !e2.card, `the pointer rests on R0's row and no card opens during the replay, against the 400 ms hover delay (${JSON.stringify(e2)})`);
     // (f) Escape puts the live graph back.
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Escape ends the replay', 5000);
     const live = await rpRead();
-    expect(['R00', 'R0', 'RP1', 'RP2', 'R1'].every((k) => live[k].node) && live.replayRows === 0 && live.rp1.row === null, `the live graph is back, every node drawn, no row in replay and rp1's row gone again (${JSON.stringify(live)})`);
+    expect(['R00', 'R0', 'RP1', 'RP2', 'R1'].every((k) => live[k].node) && live.replayRows === 0 && live.rp1.row === null && live.rp3.row === null, `the live graph is back, every node drawn, no row in replay and rp1's row gone again (${JSON.stringify(live)})`);
+    // (f2) The row was entered during the replay, and a pointer that never
+    // leaves it fires no new enter: move away, then the card opens again.
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
+    await sleep(500);
+    await hoverForCard(s, rpRowSel(R0), `.commit-popover[data-hash=${JSON.stringify(R0)}]`, "R0's card opens again on the live graph");
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
+    await s.waitFor(`!document.querySelector('.commit-popover')`, 'the card goes with the pointer', 2000);
+    step('M9 fix 906: no row card opens while a replay runs, and the row opens it again once Escape puts the live graph back');
     // (g) A start older than the record: the 25 years before R0 play as
     // one beat, and the strip says where the record starts.
     await replayFrom(R00);
@@ -4454,8 +4500,38 @@ try {
     const old = await rpRead();
     expect(typeof h === 'number' && old.note === `The working record starts ${dayKey(h)} ${clockTime(h)}; the commits before it replay without marks` && old.noteFrom === String(h), `a start before the record says where it starts (${JSON.stringify([h, old.note, old.noteFrom])})`);
     expect(old.R0.lands !== null && Math.abs(old.R0.lands - 1000) < 0.001, `R0 lands one beat after R00, the years between played as one (${old.R0.lands})`);
-    await s.key('Escape', 'Escape', 27);
-    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Escape ends the second replay', 5000);
+    // (h) Fix 905: the strip's button, Space and the slider, on the replay
+    // from R00 held at 0 by the seek.
+    const strip0 = await s.evalJs(`(() => { const p = document.querySelector('.files-rail .commits-panel'); const b = document.querySelector('.files-rail .commits-replay-play'); const r = document.querySelector('.files-rail .commits-replay-range'); return { state: b?.dataset.state ?? null, max: r?.max ?? null, value: r?.value ?? null, length: p?.dataset.replayLength ?? null }; })()`);
+    expect(strip0.state === 'paused' && strip0.max === strip0.length && Number(strip0.value) === 0, `the strip offers play while the seek holds the replay (${JSON.stringify(strip0)})`);
+    const played = await s.evalJs(`(async () => {
+      const p = document.querySelector('.files-rail .commits-panel');
+      const b = document.querySelector('.files-rail .commits-replay-play');
+      b.click();
+      await new Promise((r) => setTimeout(r, 100));
+      const playing = p.dataset.replayPaused === undefined;
+      const ev = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
+      (document.activeElement ?? document.body).dispatchEvent(ev);
+      await new Promise((r) => setTimeout(r, 50));
+      return { playing, prevented: ev.defaultPrevented, paused: p.dataset.replayPaused !== undefined, at: Number(p.dataset.replayAt), state: document.querySelector('.files-rail .commits-replay-play')?.dataset.state ?? null };
+    })()`);
+    await sleep(300);
+    const stillAt = await s.evalJs(`Number(document.querySelector('.files-rail .commits-panel')?.dataset.replayAt)`);
+    expect(played.playing && played.prevented && played.paused && played.state === 'paused' && played.at > 0 && stillAt === played.at, `the button plays the replay and Space pauses it where it is, the key taken before any terminal hears it, the position holding still (${JSON.stringify([played, stillAt])})`);
+    const lp = (await rpRead()).RP1.lands;
+    // The slider's value goes through a string and back, so a landing such
+    // as 1013.3333333333334 can come back a float step below it and leave
+    // RP1 unlanded (failed at the close-out of fixes 888 to 917, passing
+    // only where the landing was a round number). It is set a hundredth of
+    // a millisecond past the landing, far short of R1's.
+    const lpAt = lp + 0.01;
+    await s.evalJs(`(() => { const r = document.querySelector('.files-rail .commits-replay-range'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(r, ${JSON.stringify(String(lpAt))}); r.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await s.waitFor(`(() => { const p = document.querySelector('.files-rail .commits-panel'); return p?.dataset.replay === 'on' && p.dataset.replayPaused !== undefined && Math.abs(Number(p.dataset.replayAt) - ${JSON.stringify(lpAt)}) < 0.01; })()`, `the slider holds the replay just past RP1's landing ${lp}`, 5000);
+    const dragged = await rpRead();
+    expect(dragged.RP1.node && dragged.RP1.row === 'shown' && !dragged.R1.node && dragged.R1.row === 'dim', `a drag on the slider holds the replay at RP1's landing (${JSON.stringify([dragged.RP1, dragged.R1])})`);
+    await s.key(' ', 'Space', 32);
+    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Space plays the replay on to its end and the end puts the live graph back', 5000);
+    step("M9 fix 905: the strip's button plays a held replay, Space pauses it and plays it on, kept from a terminal, and a drag on its slider holds it at a commit's landing");
     step("M9 fixes 868 and 869: Replay from here dims the later rows, lands each commit in order at its replay time, gives a finished batch's forks their rows back with their marks on only inside their recorded spans, overlapping where they overlapped, puts the live graph back on Escape, and says where the record starts for a start before it");
   });
 

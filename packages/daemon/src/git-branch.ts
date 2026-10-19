@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { gitText } from './git-runner.ts';
+import { forgetInFlight, gitText } from './git-runner.ts';
 import { realFolder } from './real-folder.ts';
 
 // The branch a folder is on, read straight from .git/HEAD so no git process
@@ -80,10 +80,15 @@ function reftableBranch(gitDir: string, dir: string): string | null {
 }
 
 async function askBranch(cwd: string): Promise<string | null> {
-  const name = await gitText(['--no-optional-locks', 'symbolic-ref', '--short', '-q', 'HEAD'], cwd, 5000, [1]);
+  // The runner shares an identical read in flight (M9 fix 916); this answer
+  // is kept against the tables.list stamp taken before the call, so one
+  // begun before the checkout would be kept as the new branch. This read
+  // starts its own.
+  forgetInFlight(cwd);
+  const name = await gitText(['--no-optional-locks', 'symbolic-ref', '--short', '-q', 'HEAD'], cwd, { timeoutMs: 5000, okExits: [1] });
   if (name === null) return null;
   if (name.trim() !== '') return name.trim();
-  const hash = await gitText(['--no-optional-locks', 'rev-parse', 'HEAD'], cwd, 5000);
+  const hash = await gitText(['--no-optional-locks', 'rev-parse', 'HEAD'], cwd, { timeoutMs: 5000 });
   const h = hash?.trim() ?? '';
   return /^[0-9a-f]{40}$/i.test(h) ? h.slice(0, 7).toLowerCase() : null;
 }

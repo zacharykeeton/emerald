@@ -78,7 +78,6 @@ export function TrustCard({ session, screen, rootRef }: { session: SessionInfo; 
         ev.stopPropagation();
       }}
     >
-      <span className="chat-dot" data-tone="blocked" />
       <div className="chat-ask">
         <div className="chat-ask-heading">{askHeading('trust')}</div>
         <pre className="chat-ask-screen" data-rows={dialog?.lines.length ?? 0}>

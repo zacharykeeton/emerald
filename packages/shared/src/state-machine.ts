@@ -367,14 +367,14 @@ export function reduce(session: SessionInfo, event: SessionEvent): SessionInfo {
     case 'pty.exit':
       // Always wins, even over needs-input: a dead process needs nothing.
       // The open conversation span ends with the process (M9 fix 185).
-      return {
+      return withoutTeamSeq({
         ...transition(closeSpan(session, event.at), 'exited', event.at),
         exitCode: event.exitCode,
         pid: null,
         stale: false,
         needsInputReason: null,
         team: [],
-      };
+      });
     case 'cwd': {
       // Not a hook, so lastEventAt stays: a prompt says nothing about Claude.
       // The shell's own report is remembered apart from the hook cwd (M9
@@ -1052,7 +1052,10 @@ function reduceAgentTool(session: SessionInfo, payload: HookPayload, at: number)
 function upsertMember(session: SessionInfo, id: string, kind: TeamMember['kind'], fill: Partial<Pick<TeamMember, 'type' | 'description' | 'command' | 'prompt' | 'model'>>, at: number): SessionInfo {
   const member = session.team.find((m) => m.id === id);
   if (member === undefined) {
-    return capTeam(session, [...session.team, { id, kind, type: fill.type ?? null, description: fill.description ?? null, command: fill.command ?? null, startedAt: at, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null, ...(fill.prompt === undefined ? {} : { prompt: fill.prompt }), ...(fill.model === undefined ? {} : { model: fill.model }) }]);
+    // M9 fix 904: an agent takes the next handle number; the filled branch
+    // below never touches it, so whichever hook makes the member fixes it.
+    const seq = kind === 'agent' ? (session.teamSeq ?? 0) + 1 : null;
+    return capTeam(seq === null ? session : { ...session, teamSeq: seq }, [...session.team, { id, kind, type: fill.type ?? null, description: fill.description ?? null, command: fill.command ?? null, startedAt: at, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null, ...(fill.prompt === undefined ? {} : { prompt: fill.prompt }), ...(fill.model === undefined ? {} : { model: fill.model }), ...(seq === null ? {} : { seq }) }]);
   }
   const prompt = member.prompt ?? fill.prompt;
   const model = member.model ?? fill.model;
@@ -1085,7 +1088,8 @@ function dropReturned(session: SessionInfo): SessionInfo {
 }
 
 function clearTeam(session: SessionInfo): SessionInfo {
-  return session.team.length === 0 ? session : withTeam(foldCommits(session, session.team), []);
+  if (session.team.length === 0 && session.teamSeq === undefined) return session;
+  return withoutTeamSeq(withTeam(foldCommits(session, session.team), []));
 }
 
 // A member's own commits are the session's too (M61), and the record
@@ -1127,6 +1131,14 @@ function capTeam(session: SessionInfo, team: TeamMember[]): SessionInfo {
 
 function withTeam(session: SessionInfo, team: TeamMember[]): SessionInfo {
   return { ...session, team };
+}
+
+// M9 fix 904: the team starting over takes the handle count with it; the
+// key is dropped, never set to undefined.
+function withoutTeamSeq(session: SessionInfo): SessionInfo {
+  if (session.teamSeq === undefined) return session;
+  const { teamSeq: _teamSeq, ...rest } = session;
+  return rest;
 }
 
 // The same conversation said twice (a resume's SessionStart carries the

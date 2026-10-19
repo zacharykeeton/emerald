@@ -39,7 +39,7 @@ import { Menu } from './Menu.tsx';
 import type { MenuItem } from './Menu.tsx';
 import { useStore } from './store.ts';
 import { activitySupported } from './daemon-model.ts';
-import { buildReplay, frameAt, nextChange, replayGraph, replayInput, replayNote } from './replay-model.ts';
+import { buildReplay, frameAt, nextChange, replayGraph, replayInput, replayNote, togglePlay } from './replay-model.ts';
 import type { Replay, ReplayFrame } from './replay-model.ts';
 import { GRAPH_KEY, VIEW_KEY, cleanGraph } from './view-state.ts';
 import type { CommitsSnapshot } from './view-state.ts';
@@ -121,6 +121,51 @@ interface ReplayRun {
   historyFrom: number | null;
   startedAt: number;
   pausedAt: number | null;
+}
+
+// How often the replay's slider moves while it plays (M9 fix 905): the panel sleeps between changes, so without it the thumb would jump from one change to the next.
+const REPLAY_TICK_MS = 250;
+
+// The replay's strip: a play and pause button, the slider, the text and the note. It ticks on its own so the graph still renders only at a change.
+function ReplayStrip({ run, replay, onToggle, onScrub }: { run: ReplayRun; replay: Replay; onToggle: () => void; onScrub: (at: number) => void }): React.JSX.Element {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (run.pausedAt !== null) return;
+    const id = setInterval(() => setTick((n) => n + 1), REPLAY_TICK_MS);
+    return () => clearInterval(id);
+  }, [run.pausedAt, run.startedAt]);
+  const at = run.pausedAt ?? Math.min(replay.length, Date.now() - run.startedAt);
+  const paused = run.pausedAt !== null;
+  const text = `Replaying from ${run.hash.slice(0, 7)} · Space pauses · Escape stops`;
+  return (
+    <div className="commits-replay" data-hash={run.hash}>
+      <button className="files-button commits-replay-play" data-state={paused ? 'paused' : 'playing'} title={paused ? 'Play the replay on from here (Space)' : 'Pause the replay (Space)'} onMouseDown={(ev) => ev.preventDefault()} onClick={onToggle}>
+        {paused ? '▶' : '❚❚'}
+      </button>
+      <input
+        type="range"
+        className="commits-replay-range"
+        aria-label="Replay position"
+        title="Drag to move through the replay; it holds where you let go"
+        min={0}
+        max={replay.length}
+        step="any"
+        value={at}
+        onChange={(ev) => {
+          const v = Number(ev.currentTarget.value);
+          onScrub(v);
+        }}
+      />
+      <span className="commits-replay-text" title={text}>
+        {text}
+      </span>
+      {run.note !== null && (
+        <span className="commits-replay-note" data-from={run.historyFrom === null ? undefined : String(run.historyFrom)} title={run.note}>
+          {run.note}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // How long a commit the watch just brought in stays marked on the graph.
@@ -281,7 +326,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
         : Promise.resolve({ rows: [], historyFrom: null, answered: false });
     void ask.then(({ rows: activity, historyFrom, answered }) => {
       const input = replayInput(records, activity, new Set(commits.map((c) => c.hash)));
-      const m = sessionGraph(commits, input.sessions, asked.view, roots, defaultBranch, history, options);
+      const m = sessionGraph(commits, input.sessions, asked.view, roots, defaultBranch, history, { ...options, membersOnLine: input.membersOnLine });
       const r = buildReplay(m, input.marks, hash, Date.now());
       setRun((cur) => {
         if (cur === null || cur.folder !== asked.folder || cur.hash !== asked.hash || cur.view !== asked.view || cur.replay !== null) return cur;
@@ -325,7 +370,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
     return () => window.removeEventListener('keydown', onKey, { capture: true });
   }, [replaying]);
   // A seek, for the script alone: no product control sends it. It holds
-  // the replay at the time asked until Escape. A layout effect, so the
+  // the replay at the time asked until Escape or a play. A layout effect, so the
   // listener is there by the time the replay's first frame is in the DOM:
   // a fixture's replay plays in tens of milliseconds, and the script's
   // seek goes out the moment it sees the panel on.
@@ -341,6 +386,30 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
     return () => window.removeEventListener('emerald:graph-replay-seek', onSeek);
   }, [runReplay]);
   const stopReplay = run === null ? null : () => setRun(null);
+  const toggleReplay = () => setRun((cur) => (cur === null || cur.replay === null ? cur : { ...cur, ...togglePlay(cur, cur.replay.length, Date.now()) }));
+  const scrubReplay = (at: number) => setRun((cur) => (cur === null || cur.replay === null ? cur : { ...cur, pausedAt: Math.max(0, Math.min(cur.replay.length, at)) }));
+  // Space pauses and plays the replay (M9 fix 905), armed once the record
+  // is in so Space passes through while it loads. It is taken in the
+  // capture phase and never reaches a focused terminal, as Escape never
+  // does (fix 848's shape), but a text field outside a terminal keeps its
+  // space; Ctrl+Space is the prefix key and passes.
+  const replayArmed = runReplay !== null;
+  useEffect(() => {
+    if (!replayArmed) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== ' ' || ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+      const el = ev.target instanceof HTMLElement ? ev.target : null;
+      const typing = el !== null && el.closest('.xterm') === null && (el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el as HTMLInputElement).type !== 'range'));
+      if (typing) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleReplay();
+    };
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true });
+    // toggleReplay only calls setRun, which is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayArmed]);
   const replayShown: { replay: Replay; frame: ReplayFrame } | null = runReplay === null ? null : { replay: runReplay, frame: frameAt(runReplay, replayAtNow) };
   const blockKeys = model.blocks.map((b) => blockKey(b.sessionId));
   const draw = drawState(prefs, blockKeys);
@@ -612,14 +681,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
         </div>
       )}
       {run !== null && runReplay !== null && (
-        <div className="commits-replay" data-hash={run.hash}>
-          <span className="commits-replay-text">{`Replaying from ${run.hash.slice(0, 7)} · Escape stops`}</span>
-          {run.note !== null && (
-            <span className="commits-replay-note" data-from={run.historyFrom === null ? undefined : String(run.historyFrom)} title={run.note}>
-              {run.note}
-            </span>
-          )}
-        </div>
+        <ReplayStrip run={run} replay={runReplay} onToggle={toggleReplay} onScrub={scrubReplay} />
       )}
       <div className="files-list">
         {folder === null && <div className="files-empty">No session in this pane</div>}
@@ -1060,7 +1122,7 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
           ) : (
             <CommitRow key={it.commit.hash} item={it} write={writes.get(it.commit.hash) ?? null} ownerName={it.sessionId === null ? null : (nameOf.get(it.sessionId) ?? null)} color={colorOf(it.sessionId)} branch={branches.get(it.commit.hash) ?? null} defaultBranch={graph.defaultBranch} now={rowNow} recent={start !== null && it.commit.at >= start} lines={linesOf(it.sessionId)} record={recordOf(it.sessionId)} pricing={pricing} twins={twinInfo(it.commit, graph.commits, branchOfHash)} lit={raised !== null && (it.commit.twins?.includes(raised) ?? false)} onMenu={onMenu === null ? undefined : (x, y) => onMenu(x, y, blockKey(it.sessionId), it.commit.hash)} onRaise={onRaise} replay={replay === null ? undefined : { dim: replay.frame.hidden.has(it.row), lands: replay.replay.lands.get(it.row) ?? null }}>
               {it.commit.refs.map((b) => (
-                <Pill key={b} branch={b} color={colorOf(it.sessionId)} merged={merged.has(b)} agent={agents.get(b) ?? null} card={pillCards.get(b) ?? null} />
+                <Pill key={b} branch={b} color={colorOf(it.sessionId)} merged={merged.has(b)} agent={agents.get(b) ?? null} card={replay === null ? (pillCards.get(b) ?? null) : null} />
               ))}
               {(it.commit.remoteRefs ?? []).map((b) => (
                 <Pill key={`remote:${b}`} branch={b} color={colorOf(it.sessionId)} merged={merged.has(b)} agent={null} card={null} remote />
@@ -1160,7 +1222,7 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
   const { member } = item;
   const style = color === null ? undefined : ({ '--lane': color } as React.CSSProperties);
   const ref = useRef<HTMLDivElement>(null);
-  const state = usePopoverAnchor(card !== null);
+  const state = usePopoverAnchor(card !== null && replay === undefined);
   const handlers = card === null ? {} : state.handlers;
   const popoverData = { 'data-popover-for': card?.id, 'data-popover-open': state.open };
   if (member === null) {
@@ -1188,7 +1250,7 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
             </span>
           )}
         </div>
-        {card !== null && state.card(ref.current, card.card)}
+        {card !== null && replay === undefined && state.card(ref.current, card.card)}
       </>
     );
   }
@@ -1217,7 +1279,7 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
           </span>
         )}
       </div>
-      {card !== null && state.card(ref.current, card.card)}
+      {card !== null && replay === undefined && state.card(ref.current, card.card)}
     </>
   );
 }
@@ -1661,7 +1723,10 @@ interface Pricing {
 // copy's row is hovered or its card open, off the same raised hash the
 // graph's leaders read.
 // replay (M9 fix 869): during a replay, whether the row is dimmed until
-// its commit lands and the replay ms it lands at, for the script.
+// its commit lands and the replay ms it lands at, for the script, and no
+// card opens while a replay runs (M9 fix 906): the replay is a thing to
+// watch, and a card left open by a resting pointer covered the rows
+// landing under it.
 function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, recent, lines, record, pricing, twins, lit, onMenu, onRaise, replay, children }: { item: CommitItem; write: GraphWrite | null; ownerName: string | null; color: string | null; branch: CommitBranch | null; defaultBranch: string | null; now: number; recent: boolean; lines: CardLines | null; record: SessionInfo | null; pricing: Pricing; twins: TwinInfo | null; lit: boolean; onMenu: ((x: number, y: number) => void) | undefined; onRaise: (hash: string, on: boolean) => void; replay?: { dim: boolean; lands: number | null } | undefined; children?: React.ReactNode }) {
   const { commit } = item;
   const depth = branch?.depth ?? 0;
@@ -1699,7 +1764,7 @@ function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, 
   // the row no walk over the conversation's requests.
   const cost = useMemo(() => (slice === null ? null : rowCost(slice, pricing.lists)), [slice, pricing.lists]);
   const hidden = item.lane === null;
-  const card = usePopoverAnchor();
+  const card = usePopoverAnchor(replay === undefined);
   const rowRef = useRef<HTMLDivElement>(null);
   // Hovered, for the node's leader (M9 fix 254): the graph raises it
   // while the pointer is on the row or the card is open, and the row
@@ -1781,7 +1846,7 @@ function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, 
         </span>
       ))}
       {replay?.dim !== true && <span className="commits-age">{formatDuration(commit.at, now)}</span>}
-      {card.card(rowRef.current, (props) => (write === null ? <CommitCard commit={commit} by={by} hidden={hidden} price={price} agent={agentName !== null} color={color} branch={branch} twins={twins} {...props} /> : <WriteCard write={write} now={now} hidden={hidden} {...props} />))}
+      {replay === undefined && card.card(rowRef.current, (props) => (write === null ? <CommitCard commit={commit} by={by} hidden={hidden} price={price} agent={agentName !== null} color={color} branch={branch} twins={twins} {...props} /> : <WriteCard write={write} now={now} hidden={hidden} {...props} />))}
     </div>
   );
 }

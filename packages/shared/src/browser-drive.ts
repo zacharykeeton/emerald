@@ -62,6 +62,12 @@ export function dragOffset(s: string): { dx: number; dy: number } | null {
   return m === null ? null : { dx: Number(m[1]), dy: Number(m[2]) };
 }
 
+// M9 fix 915: drag's start as x,y, CSS pixels from the viewport's top left, a decimal point allowed and no sign; null for anything else.
+export function dragPoint(s: string): { x: number; y: number } | null {
+  const m = /^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$/.exec(s);
+  return m === null ? null : { x: Number(m[1]), y: Number(m[2]) };
+}
+
 // M9 fix 875: what a snapshot prints: rows whose name or value holds name, any case, and rows inside within, a region's ref (@r1) or a control's (@e3); the refs stay the whole page's.
 export interface BrowserFilter {
   name?: string;

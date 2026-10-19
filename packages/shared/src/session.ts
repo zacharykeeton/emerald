@@ -332,6 +332,8 @@ export interface TeamMember {
   prompt?: string;
   recent?: string[];
   model?: string;
+  // M9 fix 904: the agent's handle number (A3 on its box, its card and emmer ls --team): 1 for the first agent since the team last started over (a new conversation, a SessionEnd, the process's exit), the next for each agent after, never given twice while the team lives, so the number stays when the members before it are dropped. Absent for a shell member and on a team from an older daemon.
+  seq?: number;
 }
 
 // The context window's token counts from Claude Code's status line (M42):
@@ -562,6 +564,8 @@ export interface SessionInfo {
   // re-ask and the shell's leave read as the session's own. Not
   // persisted; optional so an older daemon's record reads the same.
   teamEventAt?: number | null;
+  // M9 fix 904: the last handle number given (TeamMember.seq); absent before the first and after the team starts over. Not persisted, as the team is not.
+  teamSeq?: number;
   stale: boolean;             // working with no hook event past the stall threshold
   // The threshold the stale flag tripped (M9 fix 232), ms: three times
   // the turn's median tool gap, floored at Limits.staleAfterMs, so the

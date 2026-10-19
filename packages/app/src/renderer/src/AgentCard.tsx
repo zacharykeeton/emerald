@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type React from 'react';
-import { agentLineText, describeState, formatDuration, formatTokens, formatUsd, markKind, memberParts, modelName, sliceUsage, tasksOfAgent, tokensUp, workingMotion } from '@emerald/shared';
+import { agentLineText, describeState, formatDuration, formatTokens, formatUsd, markKind, memberHandle, memberParts, modelName, sliceUsage, tasksOfAgent, tokensUp, workingMotion } from '@emerald/shared';
 import type { SessionInfo, TeamMember } from '@emerald/shared';
-import { commitsLine } from './agent-card-model.ts';
+import { commitsLine, nowLine } from './agent-card-model.ts';
 import { agentLabel, agentRole } from './commit-graph-model.ts';
 import { askAgentsRunning, useAgentsRunning } from './agents-running.ts';
 import { askUsageLive, useConversationUsage } from './commit-usage.ts';
@@ -46,6 +46,10 @@ import { SessionMark } from './session-mark.tsx';
 // M9 fix 835: a subagent's card also says the first lines it was asked,
 // its calls before the latest above the activity line, and the model its
 // Agent call resolved until its own transcript names one.
+//
+// M9 fix 903: a working subagent's card ends on its latest words, the now line, off its own transcript through the agents-running store, with their age once it is a minute or more; it updates in place as the store does.
+//
+// M9 fix 904: a subagent's card leads its chips with its handle (A3), the number its box and emmer ls --team show.
 
 interface Props extends CardProps {
   member: TeamMember | null;
@@ -101,6 +105,7 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
   // Agent call resolved (M9 fix 835), so a member names its model from
   // its launch.
   const word = modelName(answer?.models[member.id] ?? member.model ?? null);
+  const said = nowLine(answer?.said[member.id], now);
   const usd = answer?.spend?.[member.id] ?? null;
   const messages = conversationId === null ? null : (lists.get(conversationId) ?? null);
   const slice = messages === null ? null : sliceUsage(messages, member.startedAt, member.endedAt ?? now);
@@ -124,6 +129,7 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
     );
   }
   const commits = commitsLine(member.commits);
+  const handle = memberHandle(member);
   const tasks = tasksOfAgent(session, member.id);
   return (
     <PopoverCard id={anchorId} className="agent-popover" data={{ 'data-member': member.id, 'data-working': working ? '' : 'no' }} anchor={anchor} onClose={onClose} onEnter={onEnter} onLeave={onLeave}>
@@ -131,6 +137,7 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
         <SessionMark kind="claude" working={working} size="unit" className="agent-card-mark" />
         <span className="agent-card-name">{agentLabel(member)}</span>
         <span className="agent-card-chips">
+          {handle !== null && <span className="agent-card-handle">{handle}</span>}
           <span className="agent-card-role" data-type={member.type ?? undefined}>{agentRole(member)}</span>
           {word !== null && <span className="agent-card-model">{word}</span>}
           <span className="agent-card-state">{working ? 'working' : 'idle'}</span>
@@ -156,6 +163,12 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
               {t.subject}
             </div>
           ))}
+        </div>
+      )}
+      {working && said !== null && (
+        <div className="agent-card-now">
+          <span className="agent-card-now-text">{said.text}</span>
+          {said.age !== null && <span className="agent-card-now-age">{said.age}</span>}
         </div>
       )}
       {usage !== null && (

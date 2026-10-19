@@ -1,6 +1,67 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addressShown, addressUrl, BROWSER_PARTITION, browserUrl, guestNavigationAllowed, looksLikeUrl, SEARCH_URL } from './browser-url.ts';
+import { addressShown, addressUrl, BROWSER_PARTITION, browserUrl, guestNavigationAllowed, isLocalPageUrl, localPageOf, localPageUrl, looksLikeUrl, pageLabel, paneUrl, SEARCH_URL } from './browser-url.ts';
+
+test("a page from the disk shows as its path in the bar and its file's name as its label; a web page its host (M9 fix 897)", () => {
+  const local = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/my%20page.html';
+  assert.equal(addressShown(local), 'site/my page.html');
+  assert.equal(pageLabel(local), 'my page.html');
+  assert.equal(pageLabel('http://localhost:3000/x'), 'localhost:3000');
+});
+
+const ID_A = '0f1e2d3c-4b5a-4968-8776-655443322110';
+const ID_B = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+test('localPageUrl and localPageOf round trip a path with a space, a hash, a percent and a non-ASCII name, and refuse a bad host, a dot segment, a backslash, a colon, an empty segment and no path (M9 fix 896)', () => {
+  for (const rel of ['page.html', 'site/my page.html', 'a#b/c%d.html', 'café/naïve.html', '']) {
+    const url = localPageUrl(ID_A, rel);
+    assert.deepEqual(localPageOf(url), { rootId: ID_A, rel }, url);
+    assert.equal(isLocalPageUrl(url), true, url);
+  }
+  // Backslashes in the path given are separators, as on Windows.
+  assert.equal(localPageUrl(ID_A, 'site\\page.html'), `emerald-file://${ID_A}/site/page.html`);
+  assert.equal(localPageOf(`emerald-file://${ID_A.toUpperCase()}/x.html`), null);
+  assert.equal(localPageOf('emerald-file://notauuid/x.html'), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a/%2e%2e/b`)?.rel.split('/').includes('..') ?? false, false);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a/..%5Cb`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a%5Cb`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/C%3A/x`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a//b`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a%00b`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}/a%E0%A4%A`), null);
+  assert.equal(localPageOf(`emerald-file://${ID_A}`), null);
+  assert.equal(localPageOf(`https://example.com/x`), null);
+  assert.equal(localPageOf('not a url'), null);
+  assert.deepEqual(localPageOf(`emerald-file://${ID_A}/site/`), { rootId: ID_A, rel: 'site' });
+});
+
+test('paneUrl takes what browserUrl takes and a local page whole, and every answer gives itself back (M9 fix 896)', () => {
+  for (const text of ['https://example.com/', 'localhost:3000', localPageUrl(ID_A, 'site/my page.html'), localPageUrl(ID_A, '')]) {
+    const once = paneUrl(text);
+    assert.notEqual(once, null, text);
+    assert.equal(paneUrl(once!), once, text);
+  }
+  assert.equal(paneUrl(localPageUrl(ID_A, 'p.html')), localPageUrl(ID_A, 'p.html'));
+  assert.equal(paneUrl(`emerald-file://${ID_A}`), null);
+  assert.equal(paneUrl('file:///C:/x'), null);
+  assert.equal(paneUrl('emerald-file://notauuid/x'), null);
+  assert.equal(paneUrl(''), null);
+  assert.equal(paneUrl('localhost:3000'), 'http://localhost:3000/');
+  assert.equal(browserUrl(localPageUrl(ID_A, 'p.html')), null);
+});
+
+test('a page from the disk is reached only from a page of the same folder; any page links out to the web (M9 fix 896)', () => {
+  const localA1 = localPageUrl(ID_A, 'one.html');
+  const localA2 = localPageUrl(ID_A, 'sub/two.html');
+  const localB = localPageUrl(ID_B, 'one.html');
+  assert.equal(guestNavigationAllowed(localA1, 'http://x/'), false);
+  assert.equal(guestNavigationAllowed(localA1, ''), false);
+  assert.equal(guestNavigationAllowed(localA1), false);
+  assert.equal(guestNavigationAllowed(localA2, localA1), true);
+  assert.equal(guestNavigationAllowed(localB, localA1), false);
+  assert.equal(guestNavigationAllowed('https://example.com/', localA1), true);
+  assert.equal(guestNavigationAllowed('file:///C:/x', localA1), false);
+});
 
 test('browserUrl takes an http or https URL whole and host:port with http put before it (M9 fix 659)', () => {
   assert.equal(BROWSER_PARTITION, 'persist:emerald-browser');

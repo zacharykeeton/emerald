@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DIRTY_MARK, PANES, WHATS_NEW_PATH, activate, activityWindow, activityPath, closeAll, commitsFolder, commitsPath, closeFile, closeOthers, defaultView, deletedFilePanes, dirtyMark, emptyTabs, isDocument, isAnimatedKind, isFileTab, isImage, isJson, isMarkdown, isMermaidFile, isPreview, isTranscript, isWhatsNew, openFile, pinTab, quickSuggestionsFor, renameFilePanes, renameTabs, setTabQuery, setView, tabName, tabQuery, tabsFromJson, viewFor } from './tabs-model.ts';
-import { fileViewAt, statsFolder, statsPath } from './tabs-model.ts';
+import { fileViewAt, rawAtLine, statsFolder, statsPath } from './tabs-model.ts';
 import type { Layout, LayoutNode } from '@emerald/shared';
 
 const a = 'C:\\repo\\a.ts';
@@ -88,9 +88,15 @@ test('a mermaid file starts rendered and a markdown file is not one (fix 658)', 
   assert.equal(isMermaidFile('C:/x/flow.mmd'), true);
 });
 
-test('fileViewAt: Raw for a file with a view of its own at a line, the bare view otherwise (M9 fix 864)', () => {
+test('fileViewAt: markdown keeps Rendered at a line (M9 fix 892), another file with a view of its own opens Raw, the bare view otherwise (M9 fix 864)', () => {
   assert.deepEqual(fileViewAt('C:\\r\\a.ts', 3), { kind: 'file', path: 'C:\\r\\a.ts' });
-  assert.deepEqual(fileViewAt('C:\\r\\README.md', 3), { kind: 'file', path: 'C:\\r\\README.md', view: 'raw' });
+  assert.deepEqual(fileViewAt('C:\\r\\README.md', 3), { kind: 'file', path: 'C:\\r\\README.md' });
+  for (const name of ['logo.svg', 'flow.mmd', 'a.json']) {
+    assert.deepEqual(fileViewAt('C:\\r\\' + name, 3), { kind: 'file', path: 'C:\\r\\' + name, view: 'raw' });
+    assert.equal(rawAtLine('C:\\r\\' + name), true);
+  }
+  assert.equal(rawAtLine('C:\\r\\README.md'), false);
+  assert.equal(rawAtLine('C:\\r\\a.ts'), false);
   assert.deepEqual(fileViewAt('C:\\r\\README.md', undefined), { kind: 'file', path: 'C:\\r\\README.md' });
 });
 

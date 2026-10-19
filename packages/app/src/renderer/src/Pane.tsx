@@ -52,10 +52,12 @@ import { resolveScheme, themeOf } from './scheme-model.ts';
 import type { XtermTheme } from './scheme-model.ts';
 import { liveSamples, rateText, shellMarkTitle, shellRunning } from './session-mark-model.ts';
 import { useSqueeze } from './squeeze.ts';
+import { paneTextVars } from './pane-text.ts';
+import { usePaneWheel } from './pane-wheel.ts';
 import { dialStyle } from './usage-model.ts';
 import { folderName } from './files-model.ts';
 import { lastFolder } from './recent-folders.ts';
-import { ackable, compactPercent, contextPercentText, contextText, describeState, hasState, idleClock, idleClockTitle, markKind, memberParts, modelEffortWords, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
+import { ackable, compactPercent, contextPercentText, contextText, describeState, hasState, idleClock, idleClockTitle, markKind, memberHandle, memberParts, modelEffortWords, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
 import { editTab, getState, useStore } from './store.ts';
 import { browserViewSupported, fileViewSupported, otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
@@ -68,7 +70,7 @@ import { feed } from './terminal-feed.ts';
 import type { Fit } from './mirror-model.ts';
 import { PaneNote } from './CheatSheet.tsx';
 import { fileViewAt } from './tabs-model.ts';
-import { adjustFontSize, closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, revealInPane, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
+import { closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, revealInPane, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
   paneId: string;
@@ -150,7 +152,8 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
     nameWidth.current = nameRef.current?.offsetWidth ?? 0;
     setRenaming(true);
   };
-  const onMouseDown = (ev: React.MouseEvent) => {
+  // M9 fix 902: on pointerdown, which a scrollbar's preventDefault does not stop, where it cancels the mousedown that would follow.
+  const onPressDown = (ev: React.PointerEvent) => {
     // A press anywhere in the pane counts as a touch for the idle shade.
     touchPane(paneId);
     if (focused) return;
@@ -333,6 +336,13 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // dollars are flex: none and run past its width unseen, so a level at
   // which the box overflows does not fit; hidden, it measures 0 against 0.
   const titleRef = useRef<HTMLDivElement>(null);
+  // M9 fix 899: the pane's root takes Ctrl+wheel over any face, and carries
+  // the text size's variables for the faces that are not a terminal.
+  const rootRef = useRef<HTMLDivElement>(null);
+  usePaneWheel(rootRef, paneId, true);
+  const textVars = paneTextVars(fontSizes.get(paneId) ?? FONT_SIZE_DEFAULT);
+  const sessionStyle = session === undefined ? undefined : colorStyle(session);
+  const rootStyle = textVars === null ? sessionStyle : ({ ...sessionStyle, ...textVars } as CSSProperties);
   const team = session === undefined ? null : teamCounts(session);
   useSqueeze(titleRef, 11, '.pane-state, .pane-context', [layout?.revision ?? 0, zoomedPaneId, session?.name, label?.text, team?.out, team?.returned, team?.shells, session?.cwd, session === undefined ? null : contextText(session), session === undefined ? null : tokensText(session), session?.costUsd ?? null, figure?.row ?? null, session === undefined ? null : tasksText(session), clock?.words ?? null, renaming], renaming);
   // The session's colour on the pane as well as its title (M9 fix 43): the
@@ -340,14 +350,15 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // An empty pane and a session with no colour keep the amber.
   return (
     <div
+      ref={rootRef}
       className={focused ? 'pane focused' : 'pane'}
       data-pane-id={paneId}
       data-color={session?.color ?? undefined}
       data-flash={flashing || undefined}
       data-shaded={shaded || undefined}
       data-face={face === 'chat' ? 'chat' : undefined}
-      style={session === undefined ? undefined : colorStyle(session)}
-      onMouseDownCapture={onMouseDown}
+      style={rootStyle}
+      onPointerDownCapture={onPressDown}
       onContextMenu={onContextMenu}
     >
       {sessionId !== null && (
@@ -941,8 +952,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
   const [search, setSearch] = useState<SearchAddon | null>(null);
   const findSeq = findOpen.get(paneId);
   // The terminal is built once per session; it reads the size current at
-  // that moment and follows later changes through the effect below. The
-  // pane id is read the same way by the wheel listener.
+  // that moment and follows later changes through the effect below.
   const fontSizeRef = useRef(fontSize);
   fontSizeRef.current = fontSize;
   const paneIdRef = useRef(paneId);
@@ -1415,6 +1425,7 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
         const { kind, working, task, activity } = memberParts(m, now);
         const state = kind === 'agent' ? (working ? 'working' : 'returned') : working ? 'running' : 'finished';
         const word = modelWord(answer?.models?.[m.id] ?? null);
+        const handle = memberHandle(m);
         const usd = answer?.spend?.[m.id] ?? null;
         const name = task ?? m.type ?? kind;
         // The kind word is an agent's (fix 373): a shell's mark says what
@@ -1430,6 +1441,7 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
                 <span className="pane-shade-member-name">{name}</span>
               </span>
               <span className="pane-shade-member-line">
+                {handle !== null && <span className="pane-shade-member-handle">{handle}</span>}
                 <span className="pane-shade-member-state">{state}</span>
                 {(word !== null || kindWord !== null) && (
                   <span className="pane-shade-member-words">
@@ -1889,16 +1901,6 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   });
   observer.observe(host);
 
-  // Ctrl+wheel changes the text size of this pane only. Capture phase and
-  // not passive so xterm never scrolls on it, and the page never zooms.
-  const onWheel = (ev: WheelEvent) => {
-    if (!ev.ctrlKey) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    adjustFontSize(paneIdRef.current, ev.deltaY < 0 ? 1 : -1);
-  };
-  host.addEventListener('wheel', onWheel, { capture: true, passive: false });
-
   // The right button never reaches the program (M9 fix 538). xterm's own
   // mousedown on term.element reports a press to a program that takes the
   // mouse, Claude Code among them, and Claude Code pastes on a right-click
@@ -1915,7 +1917,6 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   host.addEventListener('mouseup', onRightButton, { capture: true });
 
   const adopt = (next: HTMLDivElement, nextKindRef: KindRef, nextPaneIdRef: PaneIdRef, nextBlockedRef: BlockedRef) => {
-    host.removeEventListener('wheel', onWheel, { capture: true });
     host.removeEventListener('mousedown', onRightButton, { capture: true });
     host.removeEventListener('mouseup', onRightButton, { capture: true });
     observer.unobserve(host);
@@ -1930,14 +1931,12 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     tag(host);
     host.dataset['renderer'] = renderer;
     observer.observe(host);
-    host.addEventListener('wheel', onWheel, { capture: true, passive: false });
     host.addEventListener('mousedown', onRightButton, { capture: true });
     host.addEventListener('mouseup', onRightButton, { capture: true });
     refit();
   };
 
   const dispose = () => {
-    host.removeEventListener('wheel', onWheel, { capture: true });
     host.removeEventListener('mousedown', onRightButton, { capture: true });
     host.removeEventListener('mouseup', onRightButton, { capture: true });
     observer.disconnect();

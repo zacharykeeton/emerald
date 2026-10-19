@@ -79,5 +79,9 @@ export function sameAgentsRunning(a: AgentsRunning | null | undefined, b: Agents
   if (!keys.every((k) => a.models[k] === b.models[k])) return false;
   const spent = Object.keys(a.spend);
   if (spent.length !== Object.keys(b.spend).length) return false;
-  return spent.every((k) => a.spend[k] === b.spend[k]);
+  if (!spent.every((k) => a.spend[k] === b.spend[k])) return false;
+  // M9 fix 903: a changed now line with the same figures is news too.
+  const heard = Object.keys(a.said);
+  if (heard.length !== Object.keys(b.said).length) return false;
+  return heard.every((k) => a.said[k]?.text === b.said[k]?.text && a.said[k]?.at === b.said[k]?.at);
 }

@@ -277,7 +277,7 @@ try {
   // later read of the layout moves.
   expect(/^  browser +drive the page in a browser pane: a snapshot of its controls, a click, a fill, a key, a screenshot \(emmer help browser lists the verbs\)$/m.test(r.out), 'help lists browser with its summary');
   r = emerald('browser');
-  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot \[--name <text>\] \[--within <ref>\]  the page's controls, each with a ref \(@e1\), its role, name, value and state, and its regions \(@r1\); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control$/m.test(r.err) && /^  drag <ref> <ref>\|<dx>,<dy> {2,}a press on the control, a move in steps and a release on the second control, or dx,dy CSS pixels from its centre \(a negative dx after --\)$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot \[--name <text>\] \[--within <ref>\]  the page's controls, each with a ref \(@e1\), its role, name, value and state, and its regions \(@r1\); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control$/m.test(r.err) && /^  drag <ref>\|<x>,<y> <ref>\|<dx>,<dy>  a press on the control or at x,y in the page's CSS pixels, a move in steps and a release on the second control, or dx,dy CSS pixels from the start \(a negative dx after --\)$/m.test(r.err) && /^  screenshot {2,}a PNG of the page under the emerald home; prints its path, the page's size in CSS pixels and the device pixels in one CSS pixel$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'frob');
   expect(r.code === 64 && r.err.split('\n')[0] === 'emmer: unknown verb "frob"; emmer help browser lists them', `browser frob: unknown verb, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'snapshot');
@@ -679,6 +679,41 @@ try {
   expect(/^  [0-9a-f]{8}  waiting \(1\) +\d+s  claude  claudish  ❯1$/m.test(r.out), `ls prints the one shell still running and not the two that finished (fix 101), got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.includes('claudish')))}`);
   const finishedLines = r.out.split(/\r?\n/).filter((l) => /^            shell · finished after \d+s · (Build the app|Run the unit tests)$/.test(l));
   expect(finishedLines.length === 2 && /^            shell · running \d+s · Wait for the verify run to finish$/m.test(r.out), `ls --team lists the finished shells under the row beside the running one, got ${JSON.stringify(r.out.split(/\r?\n/).filter((l) => l.startsWith('            ')))}`);
+  // M9 fix 904: a subagent's --team line leads with its handle and its
+  // agent id. A second fake Claude of its own, so claudish's hook count
+  // does not move, in the home rather than cliDir, so the folder heading
+  // read above is not near it.
+  j = emeraldJson('shell', home, '--name', 'teamish', '--json');
+  const teamish = j.json?.session;
+  expect(j.code === 0 && teamish?.kind === 'shell', 'a shell for the second fake Claude (fix 904)');
+  emerald('send', 'teamish', 'node', path.join(cliDir, 'scripts', 'fake-claude.mjs'), '--enter');
+  await until('fake-claude ready in teamish', () => (emerald('read', 'teamish', '--lines', '3').out.includes('fake-claude ready') ? true : null));
+  const teamLines904 = (out) => JSON.stringify(out.split(/\r?\n/).filter((l) => l.startsWith('            ')));
+  emerald('send', 'teamish', 'team', '--enter');
+  r = emerald('wait', 'teamish', '--for', 'waiting', '--timeout', '5000');
+  expect(r.code === 0, 'teamish waits on its Explore (fix 904)');
+  r = emerald('ls', '--team');
+  expect(/^            A1  a1f0c2d3e4b5a6978  agent fork · returned after \d+s · Fix the lanes\n            A2  a2e1d0c9b8a7f6e5d  agent Explore · out \d+s · Find the roster reads$/m.test(r.out), `fix 904: ls --team leads each subagent's line with its handle and agent id, got ${teamLines904(r.out)}`);
+  r = emerald('prompt', 'teamish', 'next');
+  expect(r.code === 0 && r.out.trim() === 'echo: next', `teamish answers its next prompt, got ${JSON.stringify(r)}`);
+  r = emerald('ls', '--team');
+  expect(/^            A2  a2e1d0c9b8a7f6e5d  agent Explore · returned after \d+s · Find the roster reads$/m.test(r.out) && !r.out.includes('a1f0c2d3e4b5a6978'), `fix 904: A2 keeps its number once A1 is dropped, got ${teamLines904(r.out)}`);
+  emerald('send', 'teamish', 'team', '--enter');
+  r = emerald('wait', 'teamish', '--for', 'waiting', '--timeout', '5000');
+  expect(r.code === 0, 'teamish waits on its Explore again (fix 904)');
+  r = emerald('ls', '--team');
+  expect(/^            A3  a1f0c2d3e4b5a6978  agent fork · returned after \d+s · Fix the lanes\n            A4  a2e1d0c9b8a7f6e5d  agent Explore · out \d+s · Find the roster reads$/m.test(r.out), `fix 904: the numbers are not given twice, got ${teamLines904(r.out)}`);
+  j = emeraldJson('ls', '--json');
+  const teamishRow = (j.json?.sessions ?? []).find((s) => s.id === teamish.id);
+  expect(JSON.stringify((teamishRow?.team ?? []).map((m) => m.seq)) === JSON.stringify([3, 4]) && teamishRow?.teamSeq === 4, `fix 904: ls --json carries seq and teamSeq, got ${JSON.stringify({ team: teamishRow?.team?.map((m) => [m.id, m.seq]), teamSeq: teamishRow?.teamSeq })}`);
+  emerald('send', 'teamish', 'quit', '--enter');
+  await until('fake-claude bye in teamish', () => (emerald('read', 'teamish', '--lines', '3').out.includes('fake-claude bye') ? true : null));
+  emerald('kill', 'teamish');
+  r = emerald('wait', 'teamish', '--for', 'exited', '--timeout', '5000');
+  expect(r.code === 0, 'teamish exited after kill');
+  r = emerald('rm', 'teamish');
+  expect(r.code === 0 && r.out.trim() === `removed ${teamish.id.slice(0, 8)} teamish`, `rm teamish, got ${JSON.stringify(r)}`);
+  log("M9 fix 904: ls --team prints each subagent's handle and agent id, the handle kept when the returned before it are dropped and never given twice");
   r = emerald('explain', 'claudish');
   expect(/^[0-9a-f]{8} claudish  shell  waiting \(1\) for \d+s/m.test(r.out) && /^1 shell still running\. Claude carries on when one finishes\.$/m.test(r.out) && /^Wait for the verify run to finish$/m.test(r.out), 'explain prints the count and the task on its own line');
   r = emerald('prompt', 'claudish', 'ask', 'me');

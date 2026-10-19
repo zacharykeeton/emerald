@@ -10,7 +10,9 @@
 // (M9 fix 153), three TaskCreates and two TaskUpdates, before its Stop;
 // one starting with "quiet" posts a PreToolUse and then nothing (M9 fix
 // 232, a tool call that hangs), until the next line, which posts the
-// PostToolUse and a Stop. "quit" ends it.
+// PostToolUse and a Stop; one starting with "team" starts two subagents, a
+// fork that returns and an Explore still out, before a Stop that lists the
+// Explore (M9 fix 904). "quit" ends it.
 // With --resume <id> it plays that conversation: the same session id, and
 // a SessionStart with source resume, as claude --resume reports (M48).
 import readline from 'node:readline';
@@ -91,6 +93,18 @@ for await (const line of rl) {
     await post({ hook_event_name: 'PostToolUse', tool_name: 'TaskUpdate', tool_input: { taskId: '2', status: 'in_progress' }, tool_response: { success: true, taskId: '2' } });
     await post({ hook_event_name: 'Stop', last_assistant_message: `planned: ${text}` });
     console.log(`fake-claude planned: ${text}`);
+  } else if (text.startsWith('team')) {
+    const agents = [
+      ['a1f0c2d3e4b5a6978', 'fork', 'Fix the lanes'],
+      ['a2e1d0c9b8a7f6e5d', 'Explore', 'Find the roster reads'],
+    ];
+    for (const [id, type, description] of agents) {
+      await post({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: type });
+      await post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description, subagent_type: type }, tool_response: { agentId: id, description, status: 'async_launched' } });
+    }
+    await post({ hook_event_name: 'SubagentStop', agent_id: 'a1f0c2d3e4b5a6978', agent_type: 'fork' });
+    await post({ hook_event_name: 'Stop', last_assistant_message: `teamed: ${text}`, background_tasks: [{ id: 'a2e1d0c9b8a7f6e5d', type: 'subagent', status: 'running', description: 'Find the roster reads' }] });
+    console.log(`fake-claude teamed: ${text}`);
   } else {
     await post({ hook_event_name: 'Stop', last_assistant_message: `echo: ${text}\nsecond line` });
     console.log(`fake-claude replied: ${text}`);

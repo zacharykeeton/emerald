@@ -1,4 +1,4 @@
-import { currentTab, findPane, folderTitle, paneShowingIn, unitBounds, windowName } from '@emerald/shared';
+import { currentTab, findPane, folderTitle, pageLabel, paneShowingIn, unitBounds, windowName } from '@emerald/shared';
 import type { Layout, PaneView, SessionInfo } from '@emerald/shared';
 import { tabName } from './tabs-model.ts';
 
@@ -18,7 +18,8 @@ export const SHOW_OFFSCREEN: readonly ShowOffscreen[] = ['ask', 'replace', 'besi
 export function viewName(view: PaneView): string {
   if (view.kind === 'commits') return `Commits · ${folderTitle(view.folder)}`;
   if (view.kind === 'file') return tabName(view.path);
-  if (view.kind === 'browser') return view.url === '' ? 'Browser' : `Browser · ${new URL(view.url).host}`;
+  // M9 fix 897: a page from the disk is its file's name (pageLabel).
+  if (view.kind === 'browser') return view.url === '' ? 'Browser' : `Browser · ${pageLabel(view.url)}`;
   const window = unitBounds(view.window);
   return `Activity · ${window === null ? view.window : windowName(window)}`;
 }

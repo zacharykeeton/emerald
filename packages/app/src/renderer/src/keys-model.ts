@@ -29,6 +29,9 @@ export type Action =
   | 'text-bigger'
   | 'text-smaller'
   | 'text-reset'
+  | 'window-zoom-in'
+  | 'window-zoom-out'
+  | 'window-zoom-reset'
   | 'find'
   | 'review'
   | 'history-back'
@@ -69,6 +72,8 @@ export interface Binding {
   plain: Chord | null;
   // The key pressed after the prefix; null when there is none.
   prefixed: Chord | null;
+  // A second plain chord for the same action, matched and forwarded from a browser guest like plain but never printed (M9 fix 900: Ctrl+Shift+= and Ctrl+Shift+-, the Ctrl++ and Ctrl+_ a US keyboard sends, zoom the window as VS Code's do).
+  alias?: Chord | undefined;
 }
 
 export const DEFAULT_PREFIX = 'Ctrl+B';
@@ -138,11 +143,19 @@ export const BINDINGS: readonly Binding[] = [
   { action: 'next-layout-tab', label: 'Next layout tab', plain: null, prefixed: chord('KeyN') },
   { action: 'prev-layout-tab', label: 'Previous layout tab', plain: null, prefixed: chord('KeyP') },
   { action: 'cheat-sheet', label: 'Key cheat sheet', plain: cs('Slash'), prefixed: chord('Slash', { shift: true }) },
-  // Text size (Ctrl+wheel does the same). Electron's default menu would
-  // take the plain chords for page zoom; main/index.ts drops that menu.
-  { action: 'text-bigger', label: 'Bigger text', plain: chord('Equal', { ctrl: true }), prefixed: chord('Equal') },
-  { action: 'text-smaller', label: 'Smaller text', plain: chord('Minus', { ctrl: true }), prefixed: chord('Minus') },
-  { action: 'text-reset', label: 'Reset text size', plain: chord('Digit0', { ctrl: true }), prefixed: chord('Digit0') },
+  // Text size of the focused pane or the file tab on show (M9 fix 899;
+  // Ctrl+wheel and the pane menu's Reset text size do the same). Its plain
+  // chords went to the window's zoom in M9 fix 900, so it has the prefix's
+  // keys alone.
+  { action: 'text-bigger', label: 'Bigger text', plain: null, prefixed: chord('Equal') },
+  { action: 'text-smaller', label: 'Smaller text', plain: null, prefixed: chord('Minus') },
+  { action: 'text-reset', label: 'Reset text size', plain: null, prefixed: chord('Digit0') },
+  // The whole window's zoom, VS Code's Ctrl+= and Ctrl+- (M9 fix 900), with
+  // Ctrl++ and Ctrl+_ (Shift on a US keyboard) as the same keys. Electron's
+  // menu roles would take these in main; index.ts drops them.
+  { action: 'window-zoom-in', label: 'Zoom in', plain: chord('Equal', { ctrl: true }), alias: cs('Equal'), prefixed: chord('Equal', { shift: true }) },
+  { action: 'window-zoom-out', label: 'Zoom out', plain: chord('Minus', { ctrl: true }), alias: cs('Minus'), prefixed: chord('Minus', { shift: true }) },
+  { action: 'window-zoom-reset', label: 'Reset zoom', plain: chord('Digit0', { ctrl: true }), prefixed: chord('Digit0', { shift: true }) },
   // Find in the scrollback (M26). Ctrl+F is the shell's history search and
   // Ctrl+Shift+F the rail toggle, so H, and / after the prefix (? is the
   // cheat sheet).
@@ -190,6 +203,7 @@ export function chordMatches(c: Chord, ev: KeyLike): boolean {
 export function matchPlain(ev: KeyLike): Action | null {
   for (const b of BINDINGS) {
     if (b.plain !== null && chordMatches(b.plain, ev)) return b.action;
+    if (b.alias !== undefined && chordMatches(b.alias, ev)) return b.action;
   }
   return null;
 }

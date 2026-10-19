@@ -25,8 +25,8 @@ const eventsFor = (sessionId) =>
     .filter(Boolean)
     .map((l) => JSON.parse(l))
     .filter((l) => l.sessionId === sessionId);
-// The badge's own text: while Claude works its spinner glyph sits in a span
-// before it (M33), and this reads the state word alone.
+// The badge's own text, the state word; the filter to text nodes keeps the
+// read to the word if a child is ever put beside it.
 const titleOf = (s, paneId) =>
   s.evalJs(`(() => { const el = document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .pane-state'); return el ? [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('') : null; })()`);
 const waitTitle = async (s, paneId, text, what, timeoutMs) => {

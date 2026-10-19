@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { ConflictPair, ConflictReport, BranchBase, SessionInfo } from '@emerald/shared';
 import { repoKey } from './git-branch.ts';
 import { readHead, readHeadFile } from './git-head.ts';
-import { gitText } from './git-runner.ts';
+import { gitText, type GitOptions } from './git-runner.ts';
 
 // The conflict forecast (M9 fix 320, docs/design/conflict-forecast.md
 // section 5): for every unordered pair of live sessions whose records
@@ -39,7 +39,7 @@ export interface ConflictWatchOptions {
   debounceMs?: number;
   log?: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void };
   // Test knobs: the git runner and the head reader.
-  git?: (args: string[], cwd: string, timeoutMs: number, okExits?: number[]) => Promise<string | null>;
+  git?: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null>;
   head?: (cwd: string) => Promise<string | null>;
 }
 
@@ -142,7 +142,7 @@ export class ConflictWatch extends EventEmitter {
   }
 
   private git(args: string[], cwd: string): Promise<string | null> {
-    return (this.opts.git ?? gitText)(['--no-optional-locks', ...args], cwd, TIMEOUT_MS);
+    return (this.opts.git ?? gitText)(['--no-optional-locks', ...args], cwd, { timeoutMs: TIMEOUT_MS });
   }
 
   // On a git older than 2.38 every `merge-tree --write-tree` fails, so
@@ -262,7 +262,7 @@ export class ConflictWatch extends EventEmitter {
   // 475) keeps a path as written: without it git quotes any name
   // core.quotePath would, and `ü f.txt` came back as `"\303\274 f.txt"`.
   private async mergeTree(a: Lane, b: Lane): Promise<string[] | null> {
-    const out = await (this.opts.git ?? gitText)(['--no-optional-locks', 'merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', a.head, b.head], a.cwd, TIMEOUT_MS, [1]);
+    const out = await (this.opts.git ?? gitText)(['--no-optional-locks', 'merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', a.head, b.head], a.cwd, { timeoutMs: TIMEOUT_MS, okExits: [1] });
     return out === null ? null : parseMergeTree(out);
   }
 }

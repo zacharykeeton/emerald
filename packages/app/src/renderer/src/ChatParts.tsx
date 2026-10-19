@@ -26,6 +26,13 @@ import { openFileTab, openReviewTab, revealInPane } from './ui.ts';
 const known = new Map<string, 'file' | 'other'>();
 const knownPath = (abs: string) => known.get(abs);
 
+// M9 fix 889: a web link opened as the timeline's are, in the browser or, beside, in a browser pane beside the pane; the footer's rc chip opens its link through this too.
+export function openWebLink(href: string, paneId: string, beside: boolean): void {
+  const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
+  if (beside && browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: href }, paneId).catch(warn('open link beside'));
+  else void window.emerald.files.openExternal(href).catch(warn('open link'));
+}
+
 // M9 fix 717: every path the view draws carries data-path (and a reply's
 // data-line), and one pair of handlers on the element around them serves
 // them all: a left click opens the file in a tab, a right click opens
@@ -63,8 +70,7 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
     }
     const href = a?.getAttribute('href') ?? null;
     if (href === null || !/^https?:/i.test(href)) return;
-    if (beside && browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: href }, paneId).catch(warn('open link beside'));
-    else void window.emerald.files.openExternal(href).catch(warn('open link'));
+    openWebLink(href, paneId, beside);
   };
   const handlers = {
     onClick: (ev: MouseEvent<HTMLElement>) => open(ev, ev.ctrlKey),
@@ -107,7 +113,7 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
 
 // M9 fix 797: an update (Claude Code's ● progress line) is drawn as a
 // reply in every mode, its kind on data-kind.
-export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo }) {
+export function ChatReply({ step, session, continued }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo; continued?: boolean }) {
   // Bumped when a stat lands, so the paths it settled are drawn as links.
   const [version, setVersion] = useState(0);
   const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
@@ -134,9 +140,7 @@ export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text
   }, [ask]);
   // The clicks are the turn's (usePathLinks), which this sits inside.
   return (
-    <div className="chat-step chat-reply" data-kind={step.kind}>
-      {/* The tick is the cell's ::before, so the reply's text is the rendered Markdown's alone. */}
-      <span className="chat-tick-cell" aria-hidden="true" />
+    <div className="chat-step chat-reply" data-kind={step.kind} data-continued={continued ? '' : undefined}>
       <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );

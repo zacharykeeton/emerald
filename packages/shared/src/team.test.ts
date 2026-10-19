@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, TeamMember } from './session.ts';
-import { agentsOut, folderRollup, markKind, memberLine, memberParts, rollupLines, rollupText, rollupWords, rosterLines, teamCounts, teamSummary, teamText, teamTitle } from './team.ts';
+import { agentsOut, folderRollup, markKind, memberHandle, memberLine, memberListLine, memberParts, rollupLines, rollupText, rollupWords, rosterLines, teamCounts, teamSummary, teamText, teamTitle } from './team.ts';
 
 const T0 = 1_000_000;
 
@@ -162,4 +162,13 @@ test('teamTitle lists the members in spawn order with the kind, the type, the ti
   ];
   assert.equal(teamTitle(members, T0 + 6000), 'agent Explore · out 6s · Find the render sites\nagent · returned after 40s\nshell · running 1s · npm run verify:m9');
   assert.equal(teamTitle([], T0), '');
+});
+
+test("memberHandle and memberListLine (M9 fix 904): an agent's A and its number, then its id, the line SendMessage's caller reads; none for a shell or a member with no number", () => {
+  assert.equal(memberHandle(member({ seq: 3 })), 'A3');
+  assert.equal(memberHandle(member({ kind: 'shell', command: 'npm test' })), null);
+  assert.equal(memberHandle(member({})), null, 'a member from an older daemon');
+  assert.equal(memberListLine(member({ id: 'a9cfbefd6006b58f1', type: 'fork', description: 'the lanes', seq: 3, startedAt: T0 }), T0 + 1000), 'A3  a9cfbefd6006b58f1  agent fork · out 1s · the lanes');
+  assert.equal(memberListLine(member({ id: 'a9cfbefd6006b58f1', type: 'fork', description: 'the lanes', startedAt: T0 }), T0 + 1000), 'a9cfbefd6006b58f1  agent fork · out 1s · the lanes');
+  assert.equal(memberListLine(member({ id: 's1', kind: 'shell', command: 'npm run build', startedAt: T0 }), T0 + 1000), 'shell · running 1s · npm run build');
 });

@@ -1,6 +1,6 @@
 {
   "name": "@emerald/shared",
-  "version": "0.1.859",
+  "version": "0.1.888",
   "private": true,
   "description": "Protocol, session, layout types and limits shared by the emmer daemon, app and CLI",
   "license": "MIT",
@@ -45,6 +45,14 @@
     "./pipe-client": {
       "types": "./dist/pipe-client.d.ts",
       "default": "./dist/pipe-client.js"
+    },
+    "./git-runner": {
+      "types": "./dist/git-runner.d.ts",
+      "default": "./dist/git-runner.js"
+    },
+    "./git-worker": {
+      "types": "./dist/git-worker.d.ts",
+      "default": "./dist/git-worker.js"
     }
   },
   "files": [

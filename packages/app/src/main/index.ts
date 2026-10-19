@@ -1,10 +1,12 @@
-import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, powerMonitor, screen, session, shell } from 'electron';
+import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, powerMonitor, protocol, screen, session, shell } from 'electron';
 import type { WebContents } from 'electron';
-import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, paneShowingIn, windowHolding, windowsOf } from '@emerald/shared';
+import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, isLocalPageUrl, LOCAL_PAGE_SCHEME, paneShowingIn, windowHolding, windowsOf } from '@emerald/shared';
+import { Readable } from 'node:stream';
+import { answerLocalPage, LOCAL_PAGE_HEADERS, localRequestAllowed, localRootIn } from './local-page.ts';
 import type { Layout } from '@emerald/shared';
 import { PtyBroker } from './pty-broker.ts';
 import { WindowSets, backgroundSpot, cascadeBounds, planWindows } from './window-plan.ts';
-import { attachRefusal, forceGuestPreferences, guestNavigationAllowed } from './browser-guard.ts';
+import { attachRefusal, chromeUserAgent, forceGuestPreferences, guestNavigationAllowed, signInBounds, signInPopup } from './browser-guard.ts';
 import { GuestKeys } from './guest-keys.ts';
 import type { GuestChord, GuestVerdict } from './guest-keys.ts';
 import fs from 'node:fs';
@@ -1243,12 +1245,57 @@ if (handedOver) {
 // anything else is refused, and no window opens either way.
 // M9 fix 673: onAttempt hears every URL handed over, sent or refused, so
 // emmer browser events can say a page tried to open a window.
-function denyWindows(contents: WebContents, onAttempt?: (url: string) => void): void {
+// M9 fix 894: with signInParent, a popup to a sign-in host (browser-guard.ts) opens as a child of the window holding the page, in the page's session, with window.opener kept, so the host's hand-back reaches the page.
+function denyWindows(contents: WebContents, onAttempt?: (url: string) => void, signInParent?: () => BrowserWindow | null): void {
   contents.setWindowOpenHandler(({ url }) => {
     onAttempt?.(url);
+    if (signInParent !== undefined && signInPopup(url, signInTestPrefix)) {
+      const parent = signInParent();
+      if (live(parent) && allWindows().includes(parent)) {
+        const prefs: Record<string, unknown> = {};
+        forceGuestPreferences(prefs);
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            parent,
+            ...signInBounds(parent.getBounds()),
+            show: process.env['EMERALD_WINDOW'] !== 'background',
+            autoHideMenuBar: true,
+            minimizable: false,
+            maximizable: false,
+            fullscreenable: false,
+            webPreferences: { ...prefs, session: contents.session },
+          },
+        };
+      }
+    }
     if (/^https?:/i.test(url)) void openExternal(url, log).catch((err: unknown) => log(`open ${url} failed: ${err instanceof Error ? err.message : String(err)}`));
     else log(`window.open refused: ${url}`);
     return { action: 'deny' };
+  });
+}
+
+// M9 fix 894: a harness flag, as EMERALD_OPEN_LOG is: verify:browser's fixture is not a sign-in host, so under a private EMERALD_HOME this URL prefix counts as one.
+const signInTestPrefix = process.env['EMERALD_HOME'] !== undefined ? (process.env['EMERALD_SIGNIN_TEST_PREFIX'] ?? null) : null;
+// The sign-in windows' web contents (M9 fix 894), which web-contents-created lets follow links on the web as a guest does.
+const signInWindows = new WeakSet<WebContents>();
+
+// A sign-in window just opened from a page (M9 fix 894): a dialog with no
+// menu and no key rules (the chords act on the window hosting a pane, and
+// a window has no hostWebContents, so under them a key typed into the
+// form would be swallowed); its own popups go to the system browser, and
+// it closes with the page that opened it.
+function wireSignInWindow(win: BrowserWindow, opener: WebContents, url: string): void {
+  signInWindows.add(win.webContents);
+  win.removeMenu();
+  denyWindows(win.webContents);
+  // It opened hidden, centred on a parent that is itself off screen, so a
+  // harness run never puts it in front of the person.
+  if (process.env['EMERALD_WINDOW'] === 'background') win.showInactive();
+  log(`browser: sign-in window opened: ${win.webContents.getURL() || url}`);
+  win.on('closed', () => log('browser: sign-in window closed'));
+  opener.once('destroyed', () => {
+    if (!win.isDestroyed()) win.close();
   });
 }
 
@@ -1316,11 +1363,30 @@ function onGuestInput(contents: WebContents, e: Electron.Event, input: Electron.
 // javascript: URL, and opens no window.
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() === 'webview') {
-    denyWindows(contents, (url) => browserDriver.record(contents, { at: Date.now(), kind: 'window', url }));
+    denyWindows(
+      contents,
+      (url) => browserDriver.record(contents, { at: Date.now(), kind: 'window', url }),
+      () => {
+        const host = contents.hostWebContents;
+        return host === null || host === undefined || host.isDestroyed() ? null : BrowserWindow.fromWebContents(host);
+      },
+    );
+    // It fires only for an allowed popup, so only for a sign-in window.
+    contents.on('did-create-window', (win, details) => wireSignInWindow(win, contents, details.url));
     contents.on('will-navigate', (e, url) => {
-      if (guestNavigationAllowed(url)) return;
+      if (guestNavigationAllowed(url, contents.getURL())) return;
+      // M9 fix 896: a page's own history.back() raises will-navigate too, from the web page it leaves, so a page from the disk already in this guest's history (exactly that URL) is let back in.
+      if (isLocalPageUrl(url) && contents.navigationHistory.getAllEntries().some((entry) => entry.url === url)) return;
       e.preventDefault();
       log(`browser: navigation refused: ${url}`);
+    });
+    // M9 fix 896: a frame inside a page is held to the same rule for a page from the disk, so a web page cannot frame one into itself (the handler's frame-ancestors says the same). A subframe's web navigation stays the page's own business, as it was.
+    contents.on('will-frame-navigate', (e) => {
+      if (e.isMainFrame) return;
+      const from = e.initiator?.url ?? contents.getURL();
+      if (guestNavigationAllowed(e.url, from) || !isLocalPageUrl(e.url)) return;
+      e.preventDefault();
+      log(`browser: navigation refused: ${e.url}`);
     });
     contents.on('before-input-event', (e, input) => onGuestInput(contents, e, input));
     // A press or a key in the page, for presence (the window's own
@@ -1337,7 +1403,13 @@ app.on('web-contents-created', (_event, contents) => {
     });
     return;
   }
-  contents.on('will-navigate', (e) => e.preventDefault());
+  // A sign-in window (M9 fix 894) follows links on the web as a guest does; it is added to the set at did-create-window, before any navigation its page makes, and the set is read at each navigation.
+  contents.on('will-navigate', (e, url) => {
+    // M9 fix 896: from the page navigating, since the sign-in window shares the pane's session and so reaches the emerald-file: handler.
+    if (signInWindows.has(contents) && guestNavigationAllowed(url, contents.getURL())) return;
+    e.preventDefault();
+    if (signInWindows.has(contents)) log(`browser: navigation refused: ${url}`);
+  });
   contents.on('will-attach-webview', (e, webPreferences, params) => {
     const refusal = attachRefusal({ partition: params['partition'], src: params['src'], fromMain: isWindowContents(contents) });
     if (refusal !== null) {
@@ -1356,11 +1428,15 @@ app.on('web-contents-created', (_event, contents) => {
 // notifications from a page beside the shells. M9 fix 673: each
 // profile's partition the same, once each, and a download from any of
 // them saved to the home's downloads folder with no dialog.
+// M9 fix 895: and each sends Chrome's own user agent (browser-guard.ts).
 const browserSessions = new Set<string>();
 function ensureBrowserSession(partition: string): void {
   if (browserSessions.has(partition)) return;
   browserSessions.add(partition);
   const browserSession = session.fromPartition(partition);
+  const agent = chromeUserAgent(browserSession.getUserAgent());
+  browserSession.setUserAgent(agent);
+  log(`browser: ${partition} sends ${agent}`);
   browserSession.setPermissionRequestHandler((_wc, permission, done) => {
     const ok = permission === 'clipboard-sanitized-write';
     if (!ok) log(`browser: permission ${permission} refused`);
@@ -1368,6 +1444,45 @@ function ensureBrowserSession(partition: string): void {
   });
   browserSession.setPermissionCheckHandler((_wc, permission) => permission === 'clipboard-sanitized-write');
   browserSession.on('will-download', (_e, item, wc) => browserDriver.download(item, wc));
+  // M9 fix 896: every browser partition serves a page from the disk; the
+  // app's own windows' default session never does.
+  browserSession.protocol.handle(LOCAL_PAGE_SCHEME, (request) => serveLocalPage(request));
+  // Chromium applies no Cross-Origin-Resource-Policy to a scheme handler's
+  // answer and sends it no Sec-Fetch-Site (both read in fix 896's probe:
+  // a web page's <img> of a local file loaded), so a subresource of a page
+  // from the disk is held here to a frame of the same root id. A frame's
+  // own navigation is the will-navigate and will-frame-navigate guards'.
+  browserSession.webRequest.onBeforeRequest({ urls: [`${LOCAL_PAGE_SCHEME}://*/*`] }, (details, done) => {
+    const allowed = localRequestAllowed(details.url, details.resourceType, details.frame?.url ?? '');
+    if (!allowed) log(`browser: local page refused (another origin's ${details.resourceType}): ${details.url} from ${details.frame?.url ?? '(no frame)'}`);
+    done({ cancel: !allowed });
+  });
+}
+
+// M9 fix 896: the scheme a page from the disk is served on (local-page.ts). Standard, so a page's relative links and its own origin work and each root id is an origin of its own; secure, so it is a secure context as https is; fetch, so the page can read its own files; stream, for its video and audio. Not corsEnabled: a page of another origin cannot read it.
+protocol.registerSchemesAsPrivileged([{ scheme: LOCAL_PAGE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
+
+// Each root id main has served (M9 fix 896), so a page that linked out to the web comes Back to its folder after its record dropped the root; for the process's life.
+const localRoots = new Map<string, string>();
+function localRootOf(rootId: string): string | null {
+  const root = localRootIn(lastLayout, rootId) ?? localRoots.get(rootId) ?? null;
+  if (root !== null) localRoots.set(rootId, root);
+  return root;
+}
+
+async function serveLocalPage(request: GlobalRequest): Promise<Response> {
+  try {
+    const a = await answerLocalPage(request.url, request.method, localRootOf);
+    if (a.status === 200) {
+      const body = request.method === 'HEAD' ? null : (Readable.toWeb(fs.createReadStream(a.file)) as ReadableStream);
+      return new Response(body, { status: 200, headers: { ...LOCAL_PAGE_HEADERS, 'Content-Type': a.type } });
+    }
+    if (a.log) log(`browser: local page refused (${a.status} ${a.reason}): ${request.url}`);
+    return new Response(a.body, { status: a.status, headers: { ...LOCAL_PAGE_HEADERS, 'Content-Type': a.type } });
+  } catch (err) {
+    log(`browser: local page failed: ${request.url}: ${err instanceof Error ? err.message : String(err)}`);
+    return new Response('refused: could not read', { status: 500, headers: { ...LOCAL_PAGE_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' } });
+  }
 }
 
 app.whenReady().then(() => {

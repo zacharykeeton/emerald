@@ -240,6 +240,27 @@ test('drag sends a ref and a ref or dx,dy at level 72, and refuses a target of n
   assert.equal(err.message, 'the window is older than emmer browser drag (it needs level 72); quit Emerald and open it again');
 });
 
+test('drag starts at a ref or at x,y, a point needing level 74, and refuses a start of neither form (M9 fix 915)', async () => {
+  level = 74;
+  await capture(() => runBrowser(['drag', '120,300', '0,-60']));
+  assert.deepEqual(runs.at(-1)!['args'], ['120,300', '0,-60']);
+  await capture(() => runBrowser(['drag', '120.5,300', 'e2']));
+  assert.deepEqual(runs.at(-1)!['args'], ['120.5,300', 'e2']);
+  const sent = runs.length;
+  let err = await failure(runBrowser(['drag', 'nowhere', 'e2']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'drag starts at a ref or at x,y in the page\'s CSS pixels, such as @e7 or 120,300; got "nowhere"');
+  assert.equal(runs.length, sent);
+  level = 73;
+  err = await failure(runBrowser(['drag', '120,300', '0,-60']));
+  assert.match(err.message, /^emmerd fake is older than emmer browser drag from a point \(level 73, needs 74\); restart it from the app's banner$/);
+  assert.equal((await capture(() => runBrowser(['drag', 'e1', 'e2']))).code, EXIT.ok);
+  level = 74;
+  runReply = { apps: 1, drivers: 0 };
+  err = await failure(runBrowser(['drag', '120,300', '0,-60']));
+  assert.equal(err.message, 'the window is older than emmer browser drag from a point (it needs level 74); quit Emerald and open it again');
+});
+
 test('snapshot --name and --within send a filter at level 72, and a bare snapshot none (M9 fix 875)', async () => {
   level = 72;
   await capture(() => runBrowser(['snapshot', '--name', 'Save', '--within', '@r2']));

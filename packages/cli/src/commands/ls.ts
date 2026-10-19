@@ -1,4 +1,4 @@
-import { EXITED_GROUP, describeState, folderRollup, formatDuration, groupSessions, listPanes, memberLine, rollup, rollupLabel, rollupText, runningKind, shellCommand, tasksText, teamCounts, teamText, waitingOnText } from '@emerald/shared';
+import { EXITED_GROUP, describeState, folderRollup, formatDuration, groupSessions, listPanes, memberListLine, rollup, rollupLabel, rollupText, runningKind, shellCommand, tasksText, teamCounts, teamText, waitingOnText } from '@emerald/shared';
 import type { FolderLabel, Layout, SessionInfo, SidebarOrder } from '@emerald/shared';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { parse, positionals } from '../args.ts';
@@ -123,8 +123,9 @@ const command: Command = {
         println(`  ${shortId(s.id)}  ${label}${progress}${phase}  ${age}  ${runningKind(s).padEnd(6)}  ${s.name}${team === '' ? '' : `  ${team}`}${tab}${waiting === null ? '' : `  ${waiting}`}`);
         if (s.comment !== null) println(`            ${s.comment}`);
         // The team's members under the row (M9 fix 90), as the sidebar
-        // lists them when the row is unfolded.
-        if (parsed.values.team) for (const m of s.team) println(`            ${memberLine(m, now)}`);
+        // lists them when the row is unfolded; a subagent's line leads with
+        // its handle and agent id (M9 fix 904).
+        if (parsed.values.team) for (const m of s.team) println(`            ${memberListLine(m, now)}`);
       }
     }
   },

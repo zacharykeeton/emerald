@@ -72,6 +72,8 @@ export const Limits = {
   // What an agent card says beyond its latest phrase (M9 fix 835): the first lines of what the Agent call asked the member, counting only lines that say something, and the member's last tool phrases, oldest first, the latest its activity line.
   memberPromptLines: 3,
   memberPhrases: 3,
+  // M9 fix 903: the most an agent card's now line keeps of the member's latest text, in characters, its whitespace runs already made one space; the card's CSS clamps it to three drawn lines.
+  memberSaidChars: 300,
   // A shell command that ran at least this long marks its row as wanting
   // when it ends (M9 fix 196), ok or failed, the way a Claude turn's done
   // does; a shorter one never does, since a two-second ls pulsing is

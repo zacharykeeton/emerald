@@ -87,4 +87,6 @@ test('folderTabName names a tab from outside by the sidebar label, else the fold
 test('a browser view is named Browser, with its host once it has a page (M9 fix 659)', () => {
   assert.equal(viewName({ kind: 'browser', url: '' }), 'Browser');
   assert.equal(viewName({ kind: 'browser', url: 'http://localhost:3000/x' }), 'Browser · localhost:3000');
+  // M9 fix 897: a page from the disk is named by its file.
+  assert.equal(viewName({ kind: 'browser', url: 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html', root: 'C:\\w' }), 'Browser · page.html');
 });

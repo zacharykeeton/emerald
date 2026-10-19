@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { findPane, focusPane, folderTitle, setPaneView } from '@emerald/shared';
+import { findPane, focusPane, folderTitle, pageLabel, setPaneView } from '@emerald/shared';
+import { pageWhere } from './local-page-model.ts';
 import type { PaneView } from '@emerald/shared';
 import { hidePaneHere, splitHere } from './actions.ts';
 import { readScope } from './activity-scope.ts';
@@ -27,7 +28,9 @@ import { editTab, useStore } from './store.ts';
 import { browserToolbarSupported, graphRemotesSupported, graphScaleSupported, hereScopeSupported, panesScopeSupported, rowsFlagSupported, usageFlagSupported, viewStateSupported } from './daemon-model.ts';
 import { activityView } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
-import { closePicker, openFileTab, openPicker, toggleZoom, useUi } from './ui.ts';
+import { closePicker, FONT_SIZE_DEFAULT, openFileTab, openPicker, resetFontSize, toggleZoom, useUi } from './ui.ts';
+import { paneTextVars } from './pane-text.ts';
+import { usePaneWheel } from './pane-wheel.ts';
 import { defaultView } from './tabs-model.ts';
 
 interface Props {
@@ -83,7 +86,12 @@ function withoutGraph(view: PaneView): PaneView {
 // its host) and the URL. The title is the page's and is kept by the
 // browser layer (fix 669), not on the record.
 export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
-  const { pickerPaneId, zoomedPaneId, sessionDrag, splitKind, designPaneId } = useUi();
+  const { pickerPaneId, zoomedPaneId, sessionDrag, splitKind, designPaneId, fontSizes } = useUi();
+  // M9 fix 899: a file pane takes Ctrl+wheel over its face as the pane's
+  // text size; the commits, activity and browser panes keep their own.
+  const rootRef = useRef<HTMLDivElement>(null);
+  usePaneWheel(rootRef, paneId, view.kind === 'file');
+  const textPx = fontSizes.get(paneId) ?? FONT_SIZE_DEFAULT;
   // The layout and the sessions for Design Mode's target (fix 674).
   const { daemon, sessions, layout } = useStore('daemon', 'sessions', 'layout');
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -110,7 +118,8 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   const pickerOpen = pickerPaneId === paneId;
   const zoomed = zoomedPaneId === paneId;
   const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
-  const onMouseDown = () => {
+  // M9 fix 902: on pointerdown, which a scrollbar's preventDefault does not stop, where it cancels the mousedown that would follow.
+  const onPressDown = () => {
     if (focused) return;
     void editTab((t) => focusPane(t, paneId), paneId).catch(warn('focus'));
   };
@@ -187,11 +196,13 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         return openPicker(paneId);
       case 'hide':
         return hidePaneHere(paneId);
+      case 'text-reset':
+        return resetFontSize(paneId);
       default:
         return;
     }
   };
-  const menuItems = viewPaneMenu({ kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar, toolbarKept });
+  const menuItems = viewPaneMenu({ kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar, toolbarKept, atDefaultFontSize: textPx === FONT_SIZE_DEFAULT });
   const menuHandle = useRef({ menuItems, runMenuItem, name: viewName(view) });
   menuHandle.current = { menuItems, runMenuItem, name: viewName(view) };
   useEffect(
@@ -205,15 +216,17 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   );
   return (
     <div
+      ref={rootRef}
       className={focused ? 'pane focused' : 'pane'}
       data-pane-id={paneId}
       data-view={view.kind}
+      style={view.kind === 'file' ? (paneTextVars(textPx) ?? undefined) : undefined}
       data-folder={folder ?? undefined}
       data-window={view.kind === 'activity' ? view.window : undefined}
       data-chrome={chrome ? 'shown' : 'hidden'}
       data-path={file?.path}
       data-url={page?.url}
-      onMouseDownCapture={onMouseDown}
+      onPointerDownCapture={onPressDown}
       onContextMenu={(ev) => {
         ev.preventDefault();
         setMenu({ x: ev.clientX, y: ev.clientY });
@@ -261,15 +274,15 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
           </>
         ) : page !== null ? (
           <>
-            <span className="pane-name" title={page.url === '' ? 'An empty browser pane' : page.url}>
-              {pageTitle !== '' ? pageTitle : page.url !== '' ? new URL(page.url).host : 'Browser'}
+            <span className="pane-name" title={page.url === '' ? 'An empty browser pane' : pageWhere(page)}>
+              {pageTitle !== '' ? pageTitle : page.url !== '' ? pageLabel(page.url) : 'Browser'}
             </span>
             {designOn && (
               <span className="design-target" title={designChip}>
                 {designChip}
               </span>
             )}
-            <span className="pane-cwd">{page.url}</span>
+            <span className="pane-cwd">{pageWhere(page)}</span>
             {page.profile !== undefined && (
               <span className="browser-profile" title="Its own cookies and storage, apart from the other browser panes">
                 profile {page.profile}

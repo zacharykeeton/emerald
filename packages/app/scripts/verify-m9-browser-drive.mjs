@@ -98,6 +98,16 @@ document.addEventListener('pointerup', (e) => { if (drag === null) return; const
 </script>`,
       ].join('\n'),
     );
+  } else if (pathname === '/canvas') {
+    // M9 fix 915: a canvas at the page's top left that keeps where a press and a release landed and how many held moves came between, for a drag from a point.
+    page(
+      'Drive fixture canvas',
+      [
+        '<style>body { margin: 0 } #pad { display: block; width: 300px; height: 200px; touch-action: none }</style>',
+        '<canvas id="pad" width="300" height="200"></canvas>',
+        `<script>window.__pad = { down: null, moves: 0, up: null }; const pad = document.getElementById('pad'); pad.addEventListener('pointerdown', (e) => { window.__pad.down = [e.clientX, e.clientY]; }); pad.addEventListener('pointermove', (e) => { if ((e.buttons & 1) !== 0) window.__pad.moves += 1; }); pad.addEventListener('pointerup', (e) => { window.__pad.up = [e.clientX, e.clientY]; });</script>`,
+      ].join('\n'),
+    );
   } else page('Drive fixture other', '<p>other</p>');
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -286,10 +296,13 @@ try {
   // (f) A screenshot.
   r = await cli('screenshot');
   const shotDir = path.join(homeDir, 'screenshots') + path.sep;
-  expect(r.code === 0 && r.out.startsWith(shotDir), `screenshot under the home (${said(r)})`);
-  const png = fs.readFileSync(r.out);
+  const shot = /^saved (.+\.png) \((\d+)x(\d+) CSS pixels, (\d+(?:\.\d+)?) device pixels? each\)$/.exec(r.out);
+  console.log(`[915] screenshot: ${r.out}`);
+  expect(r.code === 0 && shot !== null && shot[1].startsWith(shotDir), `screenshot under the home, its CSS size and scale (${said(r)})`);
+  const png = fs.readFileSync(shot[1]);
   expect(png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), 'the file is a PNG');
-  step('M9 fix 672: a screenshot is a PNG under the home');
+  expect(Math.abs(png.readUInt32BE(16) / Number(shot[2]) - Number(shot[4])) <= 0.006, "the PNG's width over the CSS width is the printed scale");
+  step('M9 fixes 672 and 915: a screenshot is a PNG under the home, its answer the page\'s CSS size and the device pixels in each');
 
   // (g) wait.
   r = await cli('wait', 'Clicked');
@@ -451,6 +464,25 @@ try {
   expect(await activeIsShell(), 'the window keeps the shell textarea focused after the drags');
   step('(k2) M9 fix 874: drag moves a row onto another row and by dx,dy, a press, ten moves and a release, with the window focus left on the shell');
 
+  // (k2b) M9 fix 915: drag from a point x,y on a canvas, then back to /drag for (k3).
+  r = await cli('navigate', origin + '/canvas');
+  expect(r.code === 0 && r.out === `on ${origin}/canvas, titled "Drive fixture canvas"`, `navigate to /canvas (${said(r)})`);
+  // A press sent the moment the load resolves can reach the page before it
+  // has painted, and Chromium drops it while the moves still land, so the
+  // pad read down null on every run at the close-out of fixes 888 to 917
+  // (the ref drags above have a snapshot between their load and their press).
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  r = await cli('drag', '50,40', '100,60');
+  expect(r.code === 0 && r.out === 'dragged from 50,40 by 100,60', `drag from a point (${said(r)})`);
+  const pad = await inGuest(g1, 'window.__pad');
+  console.log(`[915] the pad: ${JSON.stringify(pad)}`);
+  const within1 = (got, want) => Array.isArray(got) && Math.abs(got[0] - want[0]) <= 1 && Math.abs(got[1] - want[1]) <= 1;
+  expect(within1(pad.down, [50, 40]) && within1(pad.up, [150, 100]), `the press at the point and the release dx,dy from it (${JSON.stringify(pad)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the drag from a point');
+  r = await cli('navigate', origin + '/drag');
+  expect(r.code === 0, `navigate back to /drag (${said(r)})`);
+  step('(k2b) M9 fix 915: drag from a point x,y on a canvas, the press at the point and the release dx,dy from it, with the window focus left on the shell');
+
   // (k3) M9 fix 875: snapshot --name and --within on the same /drag page,
   // the printed lines read against the whole snapshot's, then back to /.
   r = await cli('snapshot');
@@ -462,7 +494,7 @@ try {
     expect(line !== undefined, `a row matching ${re} in the whole snapshot (${r.out})`);
     return line;
   };
-  const dialogLine = wholeLine(/^@r\d+ dialog "Edit step"$/);
+  const dialogLine = wholeLine(/^@r\d+ dialog "Edit step" \(3 rows\)$/);
   const dialogRef = dialogLine.split(' ')[0];
   const saveDraftLine = wholeLine(/^@e\d+ button "Save draft"$/);
   const stepNameLine = wholeLine(/^@e\d+ textbox "Step name"$/);

@@ -1,6 +1,6 @@
 import { unitBounds } from './activity-model.ts';
 import { isGraphScale } from './layout.ts';
-import { browserUrl } from './browser-url.ts';
+import { isLocalPageUrl, paneUrl } from './browser-url.ts';
 import { BROWSER_PROFILE } from './browser-drive.ts';
 import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, LayoutWindow, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
 
@@ -463,6 +463,9 @@ function validateNode(value: unknown, ids: Set<string>, where: string): LayoutNo
   throw new LayoutError(`${where}.kind must be pane or split`);
 }
 
+// A drive path or a UNC share (M9 fix 896, a browser view's root).
+const ABSOLUTE_WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/])/;
+
 function validateView(value: unknown, where: string): PaneView | null {
   if (value === undefined || value === null) return null;
   if (!isRecord(value)) throw new LayoutError(`${where} must be an object or null`);
@@ -509,14 +512,21 @@ function validateView(value: unknown, where: string): PaneView | null {
     // M9 fix 659: a page's address held as browserUrl writes it, or ''
     // for a pane whose address bar is still empty; profile (fix 673) and toolbar (fix 839) are kept, nothing else.
     const url = value['url'];
-    if (typeof url !== 'string' || (url !== '' && browserUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, or empty`);
+    // M9 fix 896: or an emerald-file: page (paneUrl), with its root.
+    if (typeof url !== 'string' || (url !== '' && paneUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, an emerald-file page, or empty`);
     // M9 fix 673: a profile's name, kept when BROWSER_PROFILE takes it.
     const profile = value['profile'];
     if (profile !== undefined && (typeof profile !== 'string' || !BROWSER_PROFILE.test(profile))) throw new LayoutError(`${where}.profile must be lowercase letters, digits and hyphens, up to 32`);
     // M9 fix 839: the toolbar flag, kept only when false, as chrome is.
     const toolbar = value['toolbar'];
     if (toolbar !== undefined && toolbar !== null && typeof toolbar !== 'boolean') throw new LayoutError(`${where}.toolbar must be a boolean`);
-    return { kind: 'browser', url, ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}) };
+    // M9 fix 896: the folder a page from the disk is served from, an
+    // absolute Windows path, required beside such a url and dropped (never
+    // refused) beside any other.
+    const root = value['root'];
+    const local = isLocalPageUrl(url);
+    if (local && (typeof root !== 'string' || !ABSOLUTE_WINDOWS_PATH.test(root))) throw new LayoutError(`${where}.root must be the absolute folder of its emerald-file page`);
+    return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}) };
   }
   if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
   const folder = value['folder'];

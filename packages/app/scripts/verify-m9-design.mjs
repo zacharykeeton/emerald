@@ -228,9 +228,9 @@ try {
   step('(d) a click pastes one block into the stub with its crop on disk, the page sees no click, and the mode ends');
 
   // (e) The chord from the window, Escape, the button and Cancel.
-  // A press on the title row focuses the pane (its onMouseDown) and
-  // takes the keyboard off the page.
-  await s.evalJs(`(() => { const t = document.querySelector(${q(inPane('.pane-title .pane-name'))}); t.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.activeElement?.blur(); })()`);
+  // A press on the title row focuses the pane (the pane's pointerdown
+  // since M9 fix 902) and takes the keyboard off the page.
+  await s.evalJs(`(() => { const t = document.querySelector(${q(inPane('.pane-title .pane-name'))}); t.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); document.activeElement?.blur(); })()`);
   await s.key('D', 'KeyD', 68, CTRL | SHIFT);
   await s.waitFor(`document.querySelector(${q(inPane('.browser-design'))})?.getAttribute('aria-pressed') === 'true'`, 'Ctrl+Shift+D turns the mode on');
   until = Date.now() + 5000;

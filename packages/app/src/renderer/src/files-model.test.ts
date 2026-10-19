@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
 import type { Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -263,6 +263,26 @@ test('filePaneFolders: the parent of every file view across every tab, deduplica
     ],
   };
   assert.deepEqual(filePaneFolders(layout), ['C:\\repo\\src', 'C:\\other']);
+});
+
+test("browserPaneFolders: a page from the disk gives its file's folder and its root, across tabs, deduplicated; a web page and a page with no root give none (M9 fix 898)", () => {
+  const id = '0f1e2d3c-4b5a-4968-8776-655443322110';
+  const browserTab = (tabId: string, paneId: string, view: unknown): LayoutTab => ({ id: tabId, name: tabId, focusedPaneId: paneId, root: { kind: 'pane', id: paneId, sessionId: null, view } }) as LayoutTab;
+  const layout: Layout = {
+    revision: 1,
+    currentTabId: 't1',
+    tabs: [
+      browserTab('t1', 'p1', { kind: 'browser', url: `emerald-file://${id}/site/page.html`, root: 'C:/work' }),
+      // A second page of the same folder: no new folders.
+      browserTab('t2', 'p2', { kind: 'browser', url: `emerald-file://${id}/site/two.html`, root: 'C:\\work' }),
+      // A page at the root itself: the root once.
+      browserTab('t3', 'p3', { kind: 'browser', url: `emerald-file://${id}/index.html`, root: 'C:\\work' }),
+      browserTab('t4', 'p4', { kind: 'browser', url: 'http://localhost:3000/' }),
+      browserTab('t5', 'p5', { kind: 'browser', url: `emerald-file://${id}/x.html` }),
+    ],
+  };
+  assert.deepEqual(browserPaneFolders(layout), ['C:\\work\\site', 'C:\\work']);
+  assert.deepEqual(localPageFolders({ kind: 'browser', url: `emerald-file://${id}/a/b/c.html`, root: 'D:\\pages' }), ['D:\\pages\\a\\b', 'D:\\pages']);
 });
 
 test('chatPaneFolders: the transcript folder of every pane on the chat face, a pane shown another session left out (M9 fix 689)', () => {

@@ -53,13 +53,17 @@ export function ctrlCWaitMs(last: number | undefined, now: number): number {
 // emerald mod, with no Enter pause, when the session is not busy. A send
 // while it works is typed, since a mod submit made mid-turn waits in the
 // mod's own chain and writes no enqueue line, which would lose fix 754's
-// Queued card; Claude Code's own queue holds a typed one. `typed` is the
-// caller's word that the text must be typed (an image chip's [Image #N]
-// marker lives in Claude Code's input, and a mod submit would leave it
-// there). The daemon itself answers typed when the mod has no channel.
+// Queued card; Claude Code's own queue holds a typed one. A session at
+// waiting (its turn ended with a background task still running) is at
+// rest for this: the mod takes the submit at once there (read on Claude
+// Code 2.1.303, M9 fix 911), and there is no turn to queue behind. `typed`
+// is the caller's word that the text must be typed (an image chip's
+// [Image #N] marker lives in Claude Code's input, and a mod submit would
+// leave it there). The daemon itself answers typed when the mod has no
+// channel.
 export function sendRoute(session: Pick<SessionInfo, 'kind' | 'state'>, text: string, level: number, typed: boolean): 'mod' | 'typed' {
   if (typed || session.kind !== 'claude' || level < MOD_CHANNEL_LEVEL) return 'typed';
-  if (isBusy(session.state) || session.state === 'needs-input') return 'typed';
+  if (session.state === 'working' || session.state === 'needs-input') return 'typed';
   return modRoutable(text) ? 'mod' : 'typed';
 }
 

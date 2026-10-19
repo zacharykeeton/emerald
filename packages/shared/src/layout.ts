@@ -77,8 +77,11 @@ export type FilePaneView = { kind: 'file'; path: string; view?: FileTabView };
 // pane's header does, so there is no chrome field. M9 fix 673: profile
 // names the page's own cookies and storage (BROWSER_PROFILE); absent is
 // the shared default. M9 fix 839: toolbar, kept only when false, hides
-// that row alone from the pane menu, the title bar staying.
-export type BrowserPaneView = { kind: 'browser'; url: string; profile?: string; toolbar?: false };
+// that row alone from the pane menu, the title bar staying. M9 fix 896:
+// url may be an emerald-file: page (browser-url.ts), and root is then the
+// absolute folder it is served from, kept only beside such a url, so main
+// can serve it again after a restart.
+export type BrowserPaneView = { kind: 'browser'; url: string; root?: string; profile?: string; toolbar?: false };
 export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView;
 
 export type LayoutNode =

@@ -11,8 +11,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin({ exclude: ['@emerald/shared', 'electron-updater'] })],
     // The git worker thread (M9 fix 226) is a second entry, so it lands as
     // out/main/git-worker.js beside index.js and git-runner.ts starts it by
-    // that path; the unit tests load src/main under Node, where an
-    // electron-vite ?nodeWorker import would not resolve.
+    // that path. The entry is shared's worker (M9 fix 916, one copy for the
+    // app and the daemon), which src/main/git-worker.ts only imports; the
+    // unit tests load src/main under Node, where an electron-vite
+    // ?nodeWorker import would not resolve.
     build: { rollupOptions: { input: { index: 'src/main/index.ts', 'git-worker': 'src/main/git-worker.ts' } } },
   },
   preload: {

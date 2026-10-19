@@ -167,6 +167,27 @@ test("readAgentsRunning: the agents' requests after the transcript's last own me
   assert.equal(await readAgentsRunning(id, log), null, 'a transcript that went');
 });
 
+test("readAgentsRunning (M9 fix 903): said is each agent's last text and its time, read on as the file grows, absent for an agent with no text", async () => {
+  const id = 'conv-903';
+  const file = path.join(projects, `${id}.jsonl`);
+  fs.writeFileSync(file, usage('msg_1', '2026-10-18T10:00:00.000Z', 100));
+  const agents = path.join(projects, id, 'subagents');
+  fs.mkdirSync(agents, { recursive: true });
+  const said = (msg: string, at: string, content: unknown[]) =>
+    line({ type: 'assistant', isSidechain: true, agentId: 'a1', timestamp: at, message: { id: msg, role: 'assistant', model: 'claude-opus-5', usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 }, content } });
+  const a1 = path.join(agents, 'agent-a1.jsonl');
+  fs.writeFileSync(a1, said('msg_2', '2026-10-18T10:01:00.000Z', [{ type: 'text', text: 'First look.\n\nReading the grid.' }]) + said('msg_3', '2026-10-18T10:02:00.000Z', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]));
+  fs.writeFileSync(path.join(agents, 'agent-a2.jsonl'), usage('msg_4', '2026-10-18T10:01:30.000Z', 20, { isSidechain: true, agentId: 'a2' }));
+  const first = await readAgentsRunning(id, log);
+  assert.ok(first !== null);
+  assert.deepEqual(first.said, { a1: { text: 'First look. Reading the grid.', at: Date.parse('2026-10-18T10:01:00.000Z') } }, 'a1 by its last text, none for a2');
+  fs.appendFileSync(a1, said('msg_5', '2026-10-18T10:03:00.000Z', [{ type: 'text', text: 'Placing the grid.' }]));
+  const grown = await readAgentsRunning(id, log);
+  assert.ok(grown !== null);
+  assert.deepEqual(grown.said['a1'], { text: 'Placing the grid.', at: Date.parse('2026-10-18T10:03:00.000Z') }, 'read on as the file grows');
+  assert.equal(await readAgentsRunning(id, log), grown, 'an unchanged set answers the same object');
+});
+
 // M9 fix 528: a transcript that has only grown is read on from where
 // the last read stopped, and the answer is the one a fresh read of the
 // same bytes gives; anything that is not an append is read again whole.

@@ -7,13 +7,15 @@
 // reaches the title row, the page has no bridge, a link and Back work,
 // Reload and its right-click hard reload reach the server, a new window
 // goes to the system browser (held to the log under this private home),
+// a popup to a sign-in host opens a small window in the page's session
+// that hands back to the page and closes (fix 894),
 // a navigation off the web is refused, a webview on another partition is
 // still refused (fix 477's guarded case), a menu over the page reads on
 // top, a hidden layout tab keeps the page, a split, a zoom, a close and
 // a move beside it keep it too (fix 669), the app's chords and Ctrl+R
 // pressed in the page reach the app and not the page (fix 670), the toolbar row hides from the pane menu and stays hidden across a link and the reload (fix 839), the record survives a
 // renderer reload, and `emmer open <host:port>` opens a second browser
-// pane. Uses a private home and pipe unless the environment names them.
+// pane, an HTML file in a folder the Files rail shows opens rendered from its row's menu and its tab's Browser button on emerald-file:, its stylesheet and a file a level up read, a path out of the folder refused and a web page unable to reach it (fix 896 and 897), and the page reloads when its file or stylesheet changes on disk (fix 898). Uses a private home and pipe unless the environment names them.
 // Run: npm run verify:browser -w @emerald/app
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -28,19 +30,19 @@ const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, l
 let app = null;
 let server = null;
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 150 s');
+  console.error('[verify] WATCHDOG: run exceeded 240 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   server?.close();
   setTimeout(() => process.exit(3), 500);
-}, 150000);
+}, 240000);
 
 // The fixture: two pages and two targets for the new-window reads, no
 // caching header on any answer, every request's path and cache-control
 // kept.
 const requests = [];
 server = http.createServer((req, res) => {
-  requests.push({ path: req.url, cacheControl: req.headers['cache-control'] ?? '' });
+  requests.push({ path: req.url, cacheControl: req.headers['cache-control'] ?? '', ua: req.headers['user-agent'] ?? '' });
   const page = (title, body) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(`<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`);
@@ -49,6 +51,8 @@ server = http.createServer((req, res) => {
   // not reach it, a plain key must.
   if (req.url === '/') page('Emerald fixture one', `<a id="next" href="/two">two</a> <a id="blank" href="/blank-target" target="_blank">blank</a><script>window.__keys = 0; addEventListener('keydown', () => { window.__keys++; }, true);</script>`);
   else if (req.url === '/two') page('Emerald fixture two', '<p>two</p>');
+  else if (req.url === '/signin') page('Emerald sign-in', '<a id="done" href="/signin-done">done</a>');
+  else if (req.url === '/signin-done') page('Emerald sign-in done', '<p>done</p>');
   else page('Emerald fixture other', '<p>other</p>');
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -84,9 +88,12 @@ const cliOpen = (...args) =>
     child.on('close', (code) => resolve({ code, out, err }));
   });
 
-const s = await launch(freshPort(), { freshState: true });
+const s = await launch(freshPort(), { freshState: true, env: { EMERALD_SIGNIN_TEST_PREFIX: `${origin}/signin` } });
 app = s;
 let guest = null;
+// Block (n)'s fixture folder and its local page's connection (fixes 896 to 898).
+let pageFixture = null;
+let pageGuest = null;
 try {
   const targets = async () => (await (await fetch(`http://127.0.0.1:${s.port}/json`)).json());
   const guestTargets = async () => (await targets()).filter((t) => t.type === 'webview' || (t.type !== 'page' && typeof t.url === 'string' && t.url.startsWith(origin)));
@@ -321,6 +328,48 @@ try {
   expect((await guestTargets()).length === 1, `one guest target (${(await guestTargets()).length})`);
   expect((await guest.evalJs(`location.href`)) === home, 'the guest is still on /');
   step('(f) window.open and a target=_blank link open no window and go to the system browser');
+
+  // (f2) M9 fix 894: a popup to a sign-in host (the test prefix stands in
+  // for one under this private home) opens a small window in the page's
+  // session; it follows a link, hands a message and a cookie back to the
+  // page through window.opener and closes itself.
+  const signin = `${origin}/signin`;
+  await guest.evalJs(`window.__signin = null; addEventListener('message', (e) => { window.__signin = e.data; }); true`);
+  expect((await gesture(`window.open(${JSON.stringify(signin)}) !== null`)) === true, 'window.open to a sign-in host answers a window');
+  let signinTarget = null;
+  for (let until = Date.now() + 5000; Date.now() < until && signinTarget === null; await sleep(100)) signinTarget = (await pageTargets()).find((t) => t.url === signin) ?? null;
+  expect(signinTarget !== null, `a page target on ${signin} (${JSON.stringify((await pageTargets()).map((t) => t.url))})`);
+  expect((await pageTargets()).length === 2, `two page targets (${(await pageTargets()).length})`);
+  const signinWin = await connect(signinTarget.webSocketDebuggerUrl);
+  await waitLog(`browser: sign-in window opened: ${signin}`, 'the sign-in window opened', 5000);
+  expect((await signinWin.evalJs(`window.opener !== null`)) === true, 'the sign-in window keeps window.opener');
+  const signinSize = await signinWin.evalJs(`({ w: window.outerWidth, h: window.outerHeight })`);
+  console.log(`[894] the sign-in window is ${signinSize.w} by ${signinSize.h}`);
+  await signinWin.send('Runtime.evaluate', { expression: `document.getElementById('done').click()`, userGesture: true });
+  await signinWin.waitFor(`location.pathname === '/signin-done'`, 'the sign-in window followed its link', 5000);
+  await signinWin.evalJs(`document.cookie = 'signin894=1; path=/'; window.opener.postMessage('signin894', '*'); setTimeout(() => window.close(), 100); true`);
+  await guest.waitFor(`window.__signin === 'signin894'`, 'the page heard the sign-in window', 5000);
+  expect((await guest.evalJs(`document.cookie.includes('signin894=1')`)) === true, 'the sign-in window ran in the page\'s partition (its cookie is the page\'s)');
+  for (let until = Date.now() + 5000; Date.now() < until && (await pageTargets()).length !== 1; await sleep(100));
+  expect((await pageTargets()).length === 1, `one page target again (${(await pageTargets()).length})`);
+  signinWin.close();
+  await waitLog('browser: sign-in window closed', 'the sign-in window closed', 5000);
+  expect((await guestTargets()).length === 1, `one guest target (${(await guestTargets()).length})`);
+  expect((await guest.evalJs(`location.href`)) === home, 'the guest is still on /');
+  expect(!logText().includes(`link held under a private EMERALD_HOME: ${signin}`), 'the sign-in popup did not go to the system browser');
+  step('(f2) M9 fix 894: a popup to a sign-in host opens a 500 by 650 window in the page\'s session, follows a link, hands a message and a cookie back to the page and closes itself; a popup off the list still goes to the system browser');
+
+  // (f3) M9 fix 895: the page and the server both read Chrome's own
+  // frozen agent, with no Electron or Emerald token.
+  const pageUa = await guest.evalJs(`navigator.userAgent`);
+  const serverUa = hits('/').at(-1)?.ua ?? '';
+  for (const [who, ua] of [['the page', pageUa], ['the server', serverUa]]) {
+    expect(/Chrome\/\d+\.0\.0\.0 Safari\/537\.36$/.test(ua), `${who} reads Chrome's frozen agent (${ua})`);
+    expect(!/Electron|Emerald|@emerald/.test(ua), `${who} reads no Electron or Emerald token (${ua})`);
+  }
+  console.log(`[895] brands ${JSON.stringify(await guest.evalJs(`navigator.userAgentData?.brands ?? null`))}`);
+  await waitLog('browser: persist:emerald-browser sends Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'the partition\'s agent is logged');
+  step('(f3) M9 fix 895: the page and the server read Chrome\'s own user agent, no Electron or Emerald token');
 
   // (g) A navigation off the web goes nowhere. Chromium refuses a file:
   // URL from an http page in the renderer, before will-navigate (measured
@@ -595,6 +644,148 @@ try {
   console.log(`[694] note: ${logText().split(/\r?\n/).filter((l) => /renderer: note .*Invalid guestInstanceId/.test(l)).length} renderer: note lines for Invalid guestInstanceId`);
   step('(m) closing a browser pane writes no renderer: error line for its guest');
 
+  // (n) M9 fixes 896 and 897: an HTML file in a folder the Files rail
+  // shows, rendered in a browser pane on emerald-file:. The fixture is
+  // realpathed, since %TEMP% is in 8.3 form on this box and the rail's
+  // data-paths are the long form.
+  if (guest === null) {
+    const t = (await targets()).find((x) => x.type === 'webview' && x.url === home);
+    expect(t !== undefined, 'the web page guest on / to reconnect');
+    guest = await connect(t.webSocketDebuggerUrl);
+  }
+  const fx = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-verify-page-')));
+  pageFixture = fx;
+  const site = path.join(fx, 'site');
+  const pagePath = path.join(site, 'page.html');
+  const pageHtml = (title) => `<!doctype html><html><head><title>${title}</title><link rel="stylesheet" href="style.css"></head><body><p id="p">local</p><a id="web" href="${origin}/two">web</a></body></html>`;
+  fs.mkdirSync(site);
+  fs.writeFileSync(pagePath, pageHtml('Local page one'));
+  fs.writeFileSync(path.join(site, 'style.css'), '#p { color: rgb(1, 2, 3); }');
+  fs.writeFileSync(path.join(fx, 'up.txt'), 'up text');
+  fs.writeFileSync(path.join(site, 'dot.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+  fs.mkdirSync(fx + '-outside');
+  fs.writeFileSync(path.join(fx + '-outside', 'secret.txt'), 'secret');
+  fs.symlinkSync(fx + '-outside', path.join(site, 'out'), 'junction');
+  // A file opens pinned as a tab, and the rail follows it.
+  r = await cliOpen(pagePath);
+  expect(r.code === 0, `emmer open page.html (${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)})`);
+  await s.waitFor(`document.querySelector('.file-view .file-header .file-path')?.title === ${JSON.stringify(pagePath)}`, 'the page.html file tab');
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(site)}`, 'the rail on site', 8000).catch(() => {});
+  console.log(`[897] the rail's root after the open: ${await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`)}`);
+  await s.evalJs(`document.querySelector('.files-up').click()`);
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(fx)}`, 'the rail up on the fixture');
+  // The tab's Browser button.
+  expect((await s.evalJs(`document.querySelector('.file-view .file-browser')?.textContent ?? null`)) === 'Browser', 'the file tab offers Browser');
+  await s.evalJs(`document.querySelector('.file-view .file-browser').click()`);
+  const localView = async () => leaves(await getLayout(s)).filter((p) => p.view?.kind === 'browser' && p.view.url.startsWith('emerald-file://')).map((p) => p.view);
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 2 && [...document.querySelectorAll(${JSON.stringify(browserPane)})].every((e) => e.getBoundingClientRect().width > 0)`, 'two browser panes on show');
+  const firstLocal = (await localView())[0];
+  expect(firstLocal !== undefined && /^emerald-file:\/\/[0-9a-f-]{36}\/site\/page\.html$/.test(firstLocal.url) && firstLocal.root === fx, `the new pane's record is the page on its root (${JSON.stringify(firstLocal)})`);
+  const localUrl = firstLocal.url;
+  const rootId = new URL(localUrl).host;
+  let localTarget = null;
+  const localDeadline = Date.now() + 15000;
+  while (localTarget === null && Date.now() < localDeadline) {
+    localTarget = (await targets()).find((x) => x.type === 'webview' && x.url.startsWith('emerald-file://')) ?? null;
+    if (localTarget === null) await sleep(200);
+  }
+  expect(localTarget !== null, 'a guest target on emerald-file:');
+  const local = await connect(localTarget.webSocketDebuggerUrl);
+  pageGuest = local;
+  const localGesture = async (expression) => {
+    const res = await local.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: true });
+    if (res.exceptionDetails) throw new Error('local page threw: ' + JSON.stringify(res.exceptionDetails).slice(0, 400));
+    return res.result.value;
+  };
+  await local.waitFor(`document.title === 'Local page one' && document.readyState === 'complete'`, 'the local page loaded');
+  expect((await local.evalJs(`getComputedStyle(document.getElementById('p')).color`)) === 'rgb(1, 2, 3)', 'the stylesheet came from the folder');
+  expect((await local.evalJs(`fetch('../up.txt').then((x) => x.text())`)) === 'up text', 'a file a level up, under the rail root, reads');
+  expect((await local.evalJs(`fetch('out/secret.txt').then((x) => x.status)`)) === 403, 'a junction out of the folder is 403');
+  await waitLog('browser: local page refused (403 outside the folder): emerald-file://', 'the junction refusal');
+  expect((await local.evalJs(`fetch('..%5C..%5Csecret.txt').then((x) => x.status)`)) === 400, 'a backslash path is 400');
+  expect((await local.evalJs(`fetch('nope.html').then((x) => x.status)`)) === 404, 'a missing file is 404');
+  expect((await local.evalJs(`[typeof window.emerald, typeof require, typeof process].join()`)) === 'undefined,undefined,undefined', 'the local page has no bridge');
+  const localPaneSel = `.pane[data-view="browser"][data-url=${JSON.stringify(localUrl)}]`;
+  await s.waitFor(`document.querySelector(${JSON.stringify(localPaneSel + ' .pane-name')})?.textContent === 'Local page one'`, 'the pane title names the local page');
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(localPaneSel + ' .browser-address')})?.value`)) === 'site/page.html', 'the unfocused address reads site/page.html');
+  // Out to the web and Back.
+  await localGesture(`document.getElementById('web').click()`);
+  await local.waitFor(`location.href === ${JSON.stringify(`${origin}/two`)}`, 'the local page linked out to /two');
+  const pageRecord = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser' && p.view.url !== home)?.view ?? null;
+  const outDeadline = Date.now() + 5000;
+  let outView = await pageRecord();
+  while (!(outView?.url === `${origin}/two`) && Date.now() < outDeadline) {
+    await sleep(150);
+    outView = await pageRecord();
+  }
+  expect(outView?.url === `${origin}/two` && !('root' in outView), `the record went to /two with no root (${JSON.stringify(outView)})`);
+  await localGesture('history.back()');
+  await local.waitFor(`document.title === 'Local page one'`, 'Back on the local page');
+  const backDeadline = Date.now() + 5000;
+  let backView = await pageRecord();
+  while (!(backView?.url === localUrl && backView.root === fx) && Date.now() < backDeadline) {
+    await sleep(150);
+    backView = await pageRecord();
+  }
+  expect(backView?.url === localUrl && backView.root === fx, `the record back on the local page with its root (${JSON.stringify(backView)})`);
+  // The control: the web page cannot navigate into, fetch or embed it.
+  await gesture(`location.href = ${JSON.stringify(localUrl)}`).catch(() => {});
+  await sleep(1500);
+  expect((await guest.evalJs('location.href')) === home, 'the web page stayed on / (it cannot navigate into the disk)');
+  console.log(`[896] the guard logged the local navigation: ${logText().includes('browser: navigation refused: emerald-file://')}`);
+  expect((await guest.evalJs(`fetch(${JSON.stringify(localUrl)}).then(() => 'read', () => 'refused')`)) === 'refused', 'the web page cannot fetch the local page');
+  const dotUrl = `emerald-file://${rootId}/site/dot.png`;
+  expect((await guest.evalJs(`new Promise((res) => { const i = new Image(); i.onload = () => res('loaded'); i.onerror = () => res('error'); i.src = ${JSON.stringify(dotUrl)}; })`)) === 'error', 'the web page cannot embed a local image');
+  // The row's menu. The focus moving to the new browser pane can put the
+  // rail back on following (fix 332), so it goes Up once more if it has.
+  const railNow = await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`);
+  console.log(`[897] the rail's root before the row menu: ${railNow}`);
+  if (railNow !== fx) {
+    await s.evalJs(`document.querySelector('.files-up').click()`);
+    await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(fx)}`, 'the rail up on the fixture again');
+  }
+  const pageRow = `.files-row[data-path=${JSON.stringify(pagePath)}]`;
+  const styleRow = `.files-row[data-path=${JSON.stringify(path.join(site, 'style.css'))}]`;
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(pageRow)}) && !!document.querySelector(${JSON.stringify(styleRow)})`, 'the page.html and style.css rows under site');
+  const rowCentre = (sel) => s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+  const menuLabels = () => s.evalJs(`[...document.querySelectorAll('.files-menu .menu-label')].map((b) => b.textContent).join(',')`);
+  let rowAt = await rowCentre(pageRow);
+  await s.rightClick(rowAt.x, rowAt.y);
+  await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(pagePath)}`, 'the page row menu');
+  const pageLabels = await menuLabels();
+  expect(pageLabels === 'Open in a tab,Rename,Open in a pane,Open in browser,Open with Windows,Reveal in Explorer,Copy path,Copy relative path,Insert path into pane,Delete', `the page row menu offers Open in browser (${pageLabels})`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.files-menu')`, 'the menu closed');
+  rowAt = await rowCentre(styleRow);
+  await s.rightClick(rowAt.x, rowAt.y);
+  await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(path.join(site, 'style.css'))}`, 'the style row menu');
+  expect(!(await menuLabels()).split(',').includes('Open in browser'), 'style.css offers no Open in browser');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.files-menu')`, 'the menu closed again');
+  rowAt = await rowCentre(pageRow);
+  await s.rightClick(rowAt.x, rowAt.y);
+  await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(pagePath)}`, 'the page row menu again');
+  await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Open in browser').click()`);
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 3`, 'a third browser pane');
+  const locals = await localView();
+  expect(locals.length === 2 && locals.every((v) => new URL(v.url).host === rootId && v.root === fx), `the newest pane shares the root id and its root (${JSON.stringify(locals)})`);
+  step('(n) M9 fixes 896 and 897: an HTML file in a folder the rail shows opens rendered on emerald-file: from its tab\'s Browser button and its row\'s Open in browser, its stylesheet and a file a level up read, a junction out of the folder and a backslash path refused, a link out and Back, and a web page unable to navigate, fetch or embed it');
+
+  // (n2) M9 fix 898: the page reloads on the Files rail's watcher. The
+  // mark tells a reload from a script's own change.
+  await local.evalJs('window.__mark = 898');
+  fs.writeFileSync(pagePath, pageHtml('Local page two'));
+  await local.waitFor(`document.title === 'Local page two'`, 'the page reloaded on its own change', 5000);
+  expect((await local.evalJs('window.__mark')) === undefined, 'a reload, not a change in place');
+  fs.writeFileSync(path.join(site, 'style.css'), '#p { color: rgb(4, 5, 6); }');
+  await local.waitFor(`getComputedStyle(document.getElementById('p') ?? document.body).color === 'rgb(4, 5, 6)'`, 'the page reloaded on its stylesheet', 5000);
+  fs.rmSync(pagePath);
+  // The body is null for a moment while the page reloads.
+  await local.waitFor(`document.body?.innerText.includes('is not there') === true`, 'the not-there page once the file is gone', 5000);
+  fs.writeFileSync(pagePath, pageHtml('Local page three'));
+  await local.waitFor(`document.title === 'Local page three'`, 'the page back once the file is written again', 5000);
+  step('(n2) M9 fix 898: a page from the disk reloads when its file or its stylesheet changes on disk, shows the not-there page when the file is deleted and comes back when it is written again');
+
   // Anything the window's console said about a renderer that failed to
   // start, for the report.
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[659] window console: ${line}`);
@@ -607,9 +798,19 @@ try {
   process.exitCode = 1;
 } finally {
   guest?.close();
+  pageGuest?.close();
   s.close();
   killTree(s.child);
   stopDaemon();
   server.close();
+  if (pageFixture !== null) {
+    for (const dir of [pageFixture, pageFixture + '-outside']) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.log(`[896] note: the fixture ${dir} stays: ${err.message}`);
+      }
+    }
+  }
   setTimeout(() => process.exit(process.exitCode ?? 0), 500);
 }

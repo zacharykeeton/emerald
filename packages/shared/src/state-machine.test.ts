@@ -282,7 +282,7 @@ test('team: a SubagentStart then its SubagentStop is one returned member, and th
   assert.equal(started.state, 'working');
   assert.equal(started.stateSince, T0, 'no transition');
   assert.equal(started.lastEventAt, T0 + 10, 'still a sign of life');
-  assert.deepEqual(started.team, [{ id: 'a1', kind: 'agent', type: 'fork', description: null, command: null, startedAt: T0 + 10, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null }]);
+  assert.deepEqual(started.team, [{ id: 'a1', kind: 'agent', type: 'fork', description: null, command: null, startedAt: T0 + 10, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null, seq: 1 }]);
   assert.equal(reduce(started, hook('SubagentStart', { agent_id: 'a1', agent_type: 'fork' }, T0 + 11)).team, started.team, 'the same start again changes nothing');
   const stopped = reduce(started, hook('SubagentStop', { agent_id: 'a1', agent_type: 'fork' }, T0 + 40));
   assert.deepEqual(stopped.team, [{ ...started.team[0]!, endedAt: T0 + 40, outcome: 'returned' }]);
@@ -314,7 +314,7 @@ test('team: the Agent tool binds the description by id, before or after the star
   const working = session({ state: 'working' });
   const posted = reduce(working, hook('PostToolUse', AGENT_TOOL, T0 + 5));
   assert.equal(posted.state, 'working');
-  assert.deepEqual(posted.team, [{ id: 'a1', kind: 'agent', type: 'Explore', description: 'Verify the history panel', command: null, startedAt: T0 + 5, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null }]);
+  assert.deepEqual(posted.team, [{ id: 'a1', kind: 'agent', type: 'Explore', description: 'Verify the history panel', command: null, startedAt: T0 + 5, endedAt: null, outcome: 'running', cwd: null, branch: null, commits: [], activity: null, seq: 1 }]);
   const started = reduce(posted, hook('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, T0 + 6));
   assert.equal(started.team, posted.team, 'the start after the post adds nothing');
   // The other order: the start first, the post fills the words in.
@@ -402,6 +402,33 @@ test('team: a new conversation, a SessionEnd and an exit clear it; a state chang
   assert.equal(reduce(running, hook('PermissionRequest')).team, running.team);
   assert.equal(reduce(running, hook('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }] })).team, running.team, 'listed as still running, unchanged');
   assert.equal(reduce(running, { type: 'ack', at: T0 + 9 }).team, running.team);
+});
+
+test('team (M9 fix 904): each agent takes the next handle number in spawn order, kept when the returned before it are dropped and never given twice, none for a shell, and the count starts over with a new conversation, a SessionEnd and an exit', () => {
+  const seqs = (s: SessionInfo) => s.team.map((m) => [m.id, m.seq ?? null]);
+  let s = reduce(session({ state: 'working' }), hook('SubagentStart', { agent_id: 'a1', agent_type: 'fork' }, T0 + 1));
+  s = reduce(s, hook('SubagentStart', { agent_id: 'a2', agent_type: 'Explore' }, T0 + 2));
+  assert.deepEqual(seqs(s), [['a1', 1], ['a2', 2]]);
+  assert.equal(s.teamSeq, 2);
+  s = reduce(s, hook('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running' }, { id: 'a2', type: 'subagent', status: 'running' }, { id: 's1', type: 'shell', status: 'running', command: 'npm test' }] }, T0 + 3));
+  const shell = s.team.find((m) => m.id === 's1')!;
+  assert.equal('seq' in shell, false, 'a shell takes no number');
+  assert.equal(s.teamSeq, 2, 'and moves no count');
+  s = reduce(s, hook('SubagentStop', { agent_id: 'a1', agent_type: 'fork' }, T0 + 4));
+  s = reduce(s, hook('UserPromptSubmit', { prompt: 'next' }, T0 + 5));
+  assert.deepEqual(seqs(s).filter(([id]) => id !== 's1'), [['a2', 2]], 'a2 keeps 2 once a1 is dropped');
+  s = reduce(s, hook('SubagentStart', { agent_id: 'a1', agent_type: 'fork' }, T0 + 6));
+  assert.equal(s.team.find((m) => m.id === 'a1')!.seq, 3, 'a1 again is a new number, never 1 twice');
+  s = reduce(s, hook('PostToolUse', { ...AGENT_TOOL, tool_response: { ...AGENT_TOOL.tool_response, agentId: 'a4' } }, T0 + 7));
+  assert.equal(s.team.find((m) => m.id === 'a4')!.seq, 4, 'the Agent call that lands first fixes the number');
+  s = reduce(s, hook('SubagentStart', { agent_id: 'a4', agent_type: 'Explore' }, T0 + 8));
+  assert.equal(s.team.find((m) => m.id === 'a4')!.seq, 4, 'and the start after it keeps it');
+  for (const over of [reduce(s, hook('SessionStart', { source: 'clear' }, T0 + 9)), reduce(s, hook('SessionEnd', {}, T0 + 9)), reduce(s, { type: 'pty.exit', exitCode: 0, at: T0 + 9 })]) {
+    assert.deepEqual(over.team, []);
+    assert.equal('teamSeq' in over, false, 'the count goes with the team');
+  }
+  const cleared = reduce(reduce(s, hook('SessionStart', { source: 'clear' }, T0 + 9)), hook('SubagentStart', { agent_id: 'b1', agent_type: 'fork' }, T0 + 10));
+  assert.equal(cleared.team[0]!.seq, 1, 'and starts over at 1');
 });
 
 test("team (M9 fix 138): a dropped member's commits fold into the session's list with the agent on them, a hash the session holds takes the agent on its entry, and the live team keeps its own", () => {

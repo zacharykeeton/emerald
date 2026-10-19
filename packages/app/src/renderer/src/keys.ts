@@ -9,6 +9,8 @@ import type { Action, Chord, KeyLike } from './keys-model.ts';
 import { hasModel, saveFile } from './monaco.ts';
 import { editTab, getState } from './store.ts';
 import { PANES } from './tabs-model.ts';
+import { fileTabTextKey } from './pane-text.ts';
+import { resetWindowZoom, stepWindowZoom } from './window-zoom.ts';
 import { recordUse } from './use-record.ts';
 import {
   adjustFontSize,
@@ -203,14 +205,23 @@ export function runAction(action: Action, from: UseFrom = 'key'): Promise<unknow
     case 'cheat-sheet':
       openCheatSheet();
       return Promise.resolve();
-    // The text size keys act on the focused pane; Ctrl+wheel on the pane
-    // under the mouse.
+    // The text size keys act on the file tab on show, else the focused pane; Ctrl+wheel on the pane or tab under the mouse.
     case 'text-bigger':
-      return withFocusedPane((paneId) => adjustFontSize(paneId, 1));
+      return withTextTarget((key) => adjustFontSize(key, 1));
     case 'text-smaller':
-      return withFocusedPane((paneId) => adjustFontSize(paneId, -1));
+      return withTextTarget((key) => adjustFontSize(key, -1));
     case 'text-reset':
-      return withFocusedPane(resetFontSize);
+      return withTextTarget(resetFontSize);
+    // M9 fix 900: the whole window's zoom.
+    case 'window-zoom-in':
+      stepWindowZoom(1);
+      return Promise.resolve();
+    case 'window-zoom-out':
+      stepWindowZoom(-1);
+      return Promise.resolve();
+    case 'window-zoom-reset':
+      resetWindowZoom();
+      return Promise.resolve();
     // An empty pane has no scrollback to search.
     case 'find': {
       const tab = shownTab();
@@ -306,6 +317,17 @@ function withFocusedPane(act: (paneId: string) => void): Promise<void> {
   const tab = shownTab();
   if (tab !== null) act(tab.focusedPaneId);
   return Promise.resolve();
+}
+
+// M9 fix 899: the text size's target, the file tab on show (its size is
+// kept by path) else the focused pane.
+function withTextTarget(act: (sizeKey: string) => void): Promise<void> {
+  const fileKey = fileTabTextKey(getUiState().tabs.active);
+  if (fileKey !== null) {
+    act(fileKey);
+    return Promise.resolve();
+  }
+  return withFocusedPane(act);
 }
 
 // Installs the window-level handler. Capture phase so a chord is consumed
@@ -415,6 +437,8 @@ export function installKeybindings(): () => void {
 }
 
 function sendGuestChords(): void {
-  const chords = BINDINGS.flatMap((b) => (b.plain === null ? [] : [b.plain]));
+  // An alias is forwarded beside its plain chord (M9 fix 900), so Ctrl+=,
+  // Ctrl+- and Ctrl+Shift+= in a browser page zoom the window.
+  const chords = BINDINGS.flatMap((b) => [...(b.plain === null ? [] : [b.plain]), ...(b.alias === undefined ? [] : [b.alias])]);
   window.emerald.keys.configure(chords, prefix);
 }

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { claudeHome, claudeHomeExists } from './claude-home.ts';
-import { isSessionId, parseTurns, sliceUsage, tokensUp, usageFold, usageList, usageState } from '@emerald/shared';
-import type { UsageMessage, UsageState } from '@emerald/shared';
+import { isSessionId, parseTurns, saidFold, saidState, sliceUsage, tokensUp, usageFold, usageList, usageState } from '@emerald/shared';
+import type { SaidState, UsageMessage, UsageState } from '@emerald/shared';
 import { markKind, markOf, readWholeLines, statStamp } from './appended-read.ts';
 import type { FileStamp, ReadMark } from './appended-read.ts';
 import type { AgentsRunning, ConversationUsage, HistoryScan, HistorySession, TranscriptCost, TranscriptTurns } from '../preload/api.ts';
@@ -370,6 +370,7 @@ interface UsageCached {
   mark: ReadMark;
   state: UsageState;
   messages: UsageMessage[];
+  said: SaidState;
 }
 
 const usageCache = new Map<string, UsageCached>();
@@ -432,9 +433,13 @@ async function parseUsage(f: ConversationFiles['files'][number], log: HistoryLog
   try {
     const grown = have !== undefined && kind === 'grown';
     const state = grown ? have.state : usageState();
-    const offset = await readWholeLines(handle, grown ? have.mark.offset : 0, f.stat.size, (text) => usageFold(state, text, f.agentId));
+    const said = grown ? have.said : saidState();
+    const offset = await readWholeLines(handle, grown ? have.mark.offset : 0, f.stat.size, (text) => {
+      usageFold(state, text, f.agentId);
+      saidFold(said, text);
+    });
     const messages = usageList(state);
-    usageCache.set(f.path, { mark: markOf(f.stat, offset), state, messages });
+    usageCache.set(f.path, { mark: markOf(f.stat, offset), state, messages, said });
     return messages;
   } catch (err) {
     log(`could not read ${f.path}: ${String(err)}`);
@@ -524,20 +529,27 @@ export async function readAgentsRunning(conversation: string, log: HistoryLog): 
   // says what each member has cost so far, a breakdown of the
   // session's own figure and never a second total.
   const whole: UsageMessage[] = [];
+  // And the latest words per agent (M9 fix 903), off the same parse, for
+  // the card's now line; keyed by the file's agent id, which is the
+  // member's id.
+  const said: Record<string, { text: string; at: number }> = {};
   for (const f of set.files.slice(1)) {
-    for (const m of await parseUsage(f, log)) {
+    const messages = await parseUsage(f, log);
+    for (const m of messages) {
       if (m.at > since) after.push(m);
       if (m.agentId !== null && m.model !== null) models[m.agentId] = m.model;
       whole.push(m);
     }
+    const heard = usageCache.get(f.path)?.said;
+    if (f.agentId !== null && heard !== undefined && heard.text !== null && heard.at !== null) said[f.agentId] = { text: heard.text, at: heard.at };
   }
   const spend: Record<string, number> = {};
   for (const a of sliceUsage(whole, -Infinity, Infinity)?.agents ?? []) if (a.usd !== null) spend[a.id] = a.usd;
   const usage = sliceUsage(after, -Infinity, Infinity);
   const running: AgentsRunning =
     usage === null
-      ? { since, usd: null, tokens: { up: 0, down: 0, cached: 0 }, requests: 0, agents: 0, models, spend }
-      : { since, usd: usage.usd, tokens: { up: tokensUp(usage.tokens), down: usage.tokens.output, cached: usage.tokens.cacheRead }, requests: usage.requests, agents: usage.agents.length, models, spend };
+      ? { since, usd: null, tokens: { up: 0, down: 0, cached: 0 }, requests: 0, agents: 0, models, spend, said }
+      : { since, usd: usage.usd, tokens: { up: tokensUp(usage.tokens), down: usage.tokens.output, cached: usage.tokens.cacheRead }, requests: usage.requests, agents: usage.agents.length, models, spend, said };
   runningCache.set(conversation, { stamp: set.stamp, running });
   return running;
 }

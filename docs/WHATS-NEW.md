@@ -2,6 +2,48 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 888 to 917, 2026-10-19
+
+Twenty-nine fixes, most of them what was asked for in 0.1.859: remote control in the chat face, the chat view as a phone chat, a subagent's card that says what it is doing now and a handle to call it by, Ctrl+wheel text size over any pane and the window zoom, and a pause and a slider on the replay. Beside them come sign in with Google inside a browser pane, an `.html` file rendered in a browser pane, one git runner for the app and the daemon, and a round of small fixes. The daemon goes from level 73 to 74, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**The chat view is a phone chat.** Open a Claude session's Chat face: your prompt is a bubble on the right in the accent's tint, the reply a bubble on the left, and the dotted rail with its dots is gone. A tool fold says its state in its text, in the working colour while it runs and in the error colour after a failed call. A pasted picture shows at twice its old size, and a prompt that is only pictures shows them bare.
+
+**Remote control in the chat face.** Type `/remote-control` in the chat box, or pick it from the `/` menu, where it now sends at once. The connect line draws as a divider in the conversation with its link, and while remote control is on a small `rc` chip stands in the footer; click it to open the session's remote page.
+
+**Text size over any pane, and the window zoom.** Ctrl+wheel now sizes the text of whatever a pane shows: a terminal, a chat face, a file tab, a shade, or the page in a browser pane. Ctrl+= and Ctrl+- zoom the whole window in VS Code's steps, with a note in the corner saying the percent, and Ctrl+0 puts it back. A pane's own text size keeps the prefix's `=`, `-` and `0` and the pane menu. The commit graph, the activity strip and a picture keep their own Ctrl+wheel zoom.
+
+**What a subagent is doing now.** Hover a working subagent in the shade: its card ends on the agent's own latest words, with their age, and moves on while the card is open. Each subagent has a handle, `A3`, in the order they were sent out, on its box, its card and its `emmer ls --team` line, so you can ask about "A3" by name.
+
+**Pause the replay.** `Replay from here` on a commit row now has a play and pause button and a slider at the front of its strip. Space pauses and plays, and dragging the slider holds the replay where you let go. A replay also shows the agents that made no commit, as rows on their session's line, and no row opens its card while it runs.
+
+### Details
+
+**Sign in with Google in a browser pane.** A sign-in popup from a page, Google's among them, opens as a small emerald window over the pane, in the pane's own cookie jar, and closes itself when the sign-in ends, so the page in the pane is signed in. Every other popup still goes to your browser. The browser panes also send Chrome's own user agent now. Whether Google accepts the pane is still to be seen on your machine.
+
+**An `.html` file in a browser pane.** Right-click an `.html` file in the Files rail and pick `Open in browser`, or press the `Browser` button on its file tab: the page opens rendered in a browser pane, served from the folder the Files rail shows, and reloads itself whenever the file or its folder changes on disk. A web page cannot reach a page from the disk.
+
+**A markdown file opened at a line.** A markdown file opened at a line, from a Ctrl+click in a terminal or a chat reply or from a tab, now opens on Rendered, scrolled to the block holding the line and lit for a moment. The Files rail's search hits still open Raw at the exact line.
+
+**A scaled picture.** A picture scaled in a file tab keeps its exact width, and only a raster picture carries the pixel mark.
+
+**The pane title's name.** A narrowing pane title keeps its session name whole for longer: the folder goes with the state word, and the name gives only after that, never below eight characters.
+
+**The exited row's countdown.** An exited row's `removing in 10s` now sits right before its Resume button, on whichever line the button is, and the badge keeps the plain Exited word.
+
+**The review card's Back.** The sidebar's question card draws Back with its `←` key cap, as the chat card does.
+
+**A prompt to a waiting Claude.** A prompt from the chat box to a Claude at `waiting`, with background work still out, goes in through the emerald mod as `emmer send` does.
+
+**A press on the scrollbar.** A press on a terminal's scrollbar now focuses its pane.
+
+**The review tab's new files.** The review tab counts the lines of every untracked file with two git calls, however many there are, where it used to start one git per file. All the app's and the daemon's git reads now share one runner.
+
+**Browser verbs.** `emmer browser drag <x>,<y> ...` starts a drag from a point on the page, for a canvas or a map, and `screenshot` prints the page's size in CSS pixels and how many device pixels make one. A snapshot's region row says how many rows it holds, `@r2 dialog "Edit step" (3 rows)`.
+
+**A slash word from Git Bash.** `emmer send` and the emmer skill now say that Git Bash turns a word beginning with `/` into a Windows path, and the two ways round it: `MSYS_NO_PATHCONV=1` on the call, or the text piped to `--stdin`.
+
 ## Fixes 859 to 887, 2026-10-18
 
 Twenty-nine fixes, most of them what was asked for in 0.1.825: the pane title's buttons, Close on the exited card, a Ctrl+click that opens beside, the usage record's switch, a Stats tab on the rail, a replay of the commit graph and a second window. Beside them come a second round of `emmer browser` verbs, a taskbar button that shows how busy the window is, and a second round for the answer cards. The daemon goes from level 71 to 73, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

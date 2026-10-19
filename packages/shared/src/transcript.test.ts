@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, editCounts, effortFold, effortOf, effortState, modRowLine, movesHead, parseSteps, parseTurns, resultText, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, editCounts, effortFold, effortOf, effortState, modRowLine, movesHead, parseSteps, parseTurns, resultText, saidFold, saidState, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { Limits } from './limits.ts';
 import type { Step, StepTurn } from './transcript.ts';
 
 const line = (o: unknown): string => JSON.stringify(o);
@@ -305,6 +306,33 @@ test('usageOf: the 1-hour share of a cache write reads off cache_creation, and 0
   assert.equal(got[1]!.cacheWrite1h, 0, 'no cache_creation object reads as 0');
 });
 
+test('saidFold (M9 fix 903): the last text block of the last assistant line with one, its whitespace made one space, cut at Limits.memberSaidChars, a tool-only or thinking-only line keeping it, a fold over two halves the same as the whole', () => {
+  const side = { isSidechain: true, agentId: 'a1' };
+  const lines = [
+    assistant([{ type: 'text', text: 'First look.' }], { ...side, timestamp: '2026-10-18T10:00:00.000Z' }),
+    assistant([{ type: 'text', text: 'Early part.' }, { type: 'tool_use', id: 't0', name: 'Read', input: {} }, { type: 'text', text: 'Reading\n\n  the   grid.' }], { ...side, timestamp: '2026-10-18T10:01:00.000Z' }),
+    assistant([{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], { ...side, timestamp: '2026-10-18T10:02:00.000Z' }),
+    assistant([{ type: 'thinking', thinking: '', signature: 'x' }], { ...side, timestamp: '2026-10-18T10:03:00.000Z' }),
+    assistant([{ type: 'text', text: '  \n ' }], { ...side, timestamp: '2026-10-18T10:04:00.000Z' }),
+    assistant([{ type: 'text', text: 'No time on this one.' }], side),
+    line({ type: 'user', timestamp: '2026-10-18T10:05:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'a user line' }] } }),
+  ];
+  const whole = saidState();
+  saidFold(whole, lines.join('\n'));
+  assert.deepEqual(whole, { text: 'Reading the grid.', at: Date.parse('2026-10-18T10:01:00.000Z') }, "the second line's last text block and its time");
+  const halves = saidState();
+  saidFold(halves, lines.slice(0, 2).join('\n'));
+  saidFold(halves, lines.slice(2).join('\n'));
+  assert.deepEqual(halves, whole, 'two halves fold as the whole');
+  const long = saidState();
+  saidFold(long, assistant([{ type: 'text', text: 'x'.repeat(400) }], { timestamp: '2026-10-18T10:06:00.000Z' }));
+  assert.equal(long.text!.length, Limits.memberSaidChars, 'cut to the limit');
+  assert.ok(long.text!.endsWith('…'), 'with an ellipsis');
+  const none = saidState();
+  saidFold(none, lines.slice(2).join('\n'));
+  assert.deepEqual(none, { text: null, at: null }, 'no text block, no line');
+});
+
 test("usageOf: an agent's own file takes the agent named by the caller for its lines", () => {
   const text = usageLine('msg_5', '2026-09-16T10:00:00.000Z', { input_tokens: 1, output_tokens: 2 }, { isSidechain: true });
   assert.deepEqual(usageOf(text, 'a9').map((m) => m.agentId), ['a9']);
@@ -573,6 +601,37 @@ test('parseSteps: an empty output, a dialog\'s leftover and /compact\'s hint add
   }
   const text = [user('hello', '2026-10-16T14:00:00.000Z'), sys('<local-command-stderr>Unknown model</local-command-stderr>', '2026-10-16T14:00:01.000Z')].join('\n');
   assert.deepEqual(parseFolded(text)[0]!.steps.map((s) => (s.kind === 'command' ? s.text : s.kind)), ['Unknown model']);
+});
+
+// M9 fix 889: remote control's connect line and an error's disconnect line.
+const bridge = (url: string, at: string) => line({ type: 'system', subtype: 'bridge_status', content: `/remote-control is active · Continue here, on your phone, or at ${url}`, url, isMeta: false, timestamp: at, uuid: 'b1' });
+
+test('parseSteps: remote control\'s connect line is a note with its URL in the open turn, its endAt the reply\'s (M9 fix 889)', () => {
+  const url = 'https://claude.ai/code/session_889';
+  const text = [user('hello', '2026-10-16T14:00:00.000Z'), turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'), bridge(url, '2026-10-16T14:10:00.000Z')].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.at(-1), { kind: 'command', text: `/remote-control is active · Continue here, on your phone, or at ${url}`, at: Date.parse('2026-10-16T14:10:00.000Z'), url });
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+});
+
+test('parseSteps: a connect line before any prompt opens a bare turn holding its note (M9 fix 889)', () => {
+  const url = 'https://claude.ai/code/session_889';
+  const turns = parseFolded(bridge(url, '2026-10-16T14:10:00.000Z'));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '');
+  assert.deepEqual(turns[0]!.steps.map((s) => (s.kind === 'command' ? s.url : s.kind)), [url]);
+});
+
+test('parseSteps: an error\'s Remote Control disconnected line is a note with no url key, another informational line adds nothing, and an empty connect line is dropped (M9 fix 889)', () => {
+  const said = 'Remote Control disconnected — network error — run /remote-control to reconnect';
+  const text = [
+    user('hello', '2026-10-16T14:00:00.000Z'),
+    line({ type: 'system', subtype: 'informational', level: 'warning', content: said, timestamp: '2026-10-16T14:00:01.000Z' }),
+    line({ type: 'system', subtype: 'informational', content: 'Something else', timestamp: '2026-10-16T14:00:02.000Z' }),
+    line({ type: 'system', subtype: 'bridge_status', content: '', url: 'https://claude.ai/code/x', timestamp: '2026-10-16T14:00:03.000Z' }),
+  ].join('\n');
+  assert.deepEqual(parseFolded(text)[0]!.steps, [{ kind: 'command', text: said, at: Date.parse('2026-10-16T14:00:01.000Z') }]);
 });
 
 test('parseSteps: a non-empty thinking part with no thinkingDisplay stays thinking (older lines, the mod rows)', () => {

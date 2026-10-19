@@ -240,6 +240,10 @@ try {
   fs.writeFileSync(path.join(repo, 'extra.txt'), 'the only line\n');
   await s.evalJs(`document.querySelector('.review-refresh').click()`);
   await s.waitFor(`[...document.querySelectorAll('.review-file')].some(f => f.dataset.letter === 'A' && f.dataset.rel === 'extra.txt')`, 'the untracked file listed as A');
+  // M9 fix 917: the untracked count comes off a scratch index now, two gits
+  // for every new file; the row's figure says the one line.
+  const extraCounts = await s.evalJs(`document.querySelector('.review-file[data-rel="extra.txt"] .review-file-counts')?.textContent ?? null`);
+  expect(extraCounts === '+1 −0', `the untracked file's row counts its one line (${extraCounts})`);
   await s.evalJs(`[...document.querySelectorAll('.review-file')].find(f => f.dataset.rel === 'extra.txt').click()`);
   await s.waitFor(`document.querySelector('.review-diff')?.dataset.rel === 'extra.txt' && document.querySelector('.review-diff')?.dataset.state === 'ready'`, 'the diff of the added file read');
   await s.waitFor(`document.querySelector('.review-editor')?.emeraldDiff?.getModel()?.modified.getValue().startsWith('the only line')`, 'the work tree side has the text');

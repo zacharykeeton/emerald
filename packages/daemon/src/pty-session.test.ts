@@ -291,6 +291,11 @@ test('a stamped env var is visible inside the spawned shell', async () => {
 // M9 fix 505: the wrapper's Enter writes the C mark and then calls the
 // profile's own Enter handler. $PROFILE cannot be moved on 5.1, so the
 // profile is dot-sourced ahead of the wrapper, the order a real launch has.
+// The shell starts in the profile's own folder at 200 columns (fix 912), so
+// the typed line and the profile's marker never reach the right edge,
+// whatever the checkout's path: at 120 columns in process.cwd(), a worktree
+// with a 22 to 35 character branch name wrapped the marker and the read
+// failed.
 async function shellWithProfile(profile: string): Promise<{ s: PtySession; out: () => string; waitFor: (re: RegExp, from: number, ms: number) => Promise<number> }> {
   const dir = fs.realpathSync.native(mkTemp('emerald-505-'));
   const file = path.join(dir, 'profile.ps1');
@@ -298,9 +303,9 @@ async function shellWithProfile(profile: string): Promise<{ s: PtySession; out: 
   const s = PtySession.spawn({
     file: 'powershell.exe',
     args: ['-NoProfile', '-NoLogo', '-NoExit', '-Command', `. '${file}'; ` + PROMPT_WRAPPER],
-    cwd: process.cwd(),
+    cwd: dir,
     env: stampEnv(process.env, { sessionId: 'test-505' }),
-    cols: 120,
+    cols: 200,
     rows: 30,
   });
   let text = '';

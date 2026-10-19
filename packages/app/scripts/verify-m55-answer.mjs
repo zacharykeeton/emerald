@@ -263,6 +263,37 @@ try {
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 879: the review card closed');
   step('fix 879: the sidebar card draws the Review your answers tab, the question with its answer, and one Cancel');
+
+  // M9 fix 910: with the sidebar's review card open, a Left press goes to
+  // the focused terminal and reaches the session, as the digits its caps
+  // name do (the card takes no key but Escape), so Back carries the cap.
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'review again' });
+  await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'working'`, 'fix 910: working on the review');
+  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRowR}; ${rowsR.map((r) => `Write-Host ('${glyphR(r)}')`).join('; ')}; $e = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got key ' + $e.Key); Read-Host | Out-Null`);
+  await waitScreen(sessionId, (rs) => rs.some((r) => r.trimEnd().endsWith('2. Cancel')), 'fix 910: the review drawn');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'fix 910: the row needs input for the review');
+  const badge910 = await centerOf(`${rowSel} .sidebar-row-state`);
+  await s.click(badge910.x, badge910.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-review')`, 'fix 910: the card with the review');
+  const cap910 = await s.evalJs(`document.querySelector('.answer-popover-back .answer-popover-key')?.textContent ?? null`);
+  expect(cap910 === '←', `fix 910: Back carries its ← cap, got ${JSON.stringify(cap910)}`);
+  const focus910 = () => s.evalJs(`(() => { const a = document.activeElement; return { tag: a?.tagName ?? null, cls: a?.className ?? null, inPane: !!a?.closest('[data-pane-id]') }; })()`);
+  let at910 = await focus910();
+  if (!at910.inPane) {
+    const paneId910 = leaves(layout)[0].id;
+    await s.evalJs(`document.querySelector('[data-pane-id=' + ${JSON.stringify(JSON.stringify(paneId910))} + '] .xterm-helper-textarea').focus()`);
+    at910 = await focus910();
+  }
+  console.log(`[verify] fix 910: focus is on ${JSON.stringify(at910)}`);
+  await s.key('ArrowLeft', 'ArrowLeft', 37);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('got key LeftArrow'), 'fix 910: a Left press with the sidebar card open reaches the session');
+  await type(sessionId, '');
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 910: the review card closed');
+  step("fix 910: the sidebar's review card draws Back with its ← cap, and a Left press with the card open reaches the session");
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

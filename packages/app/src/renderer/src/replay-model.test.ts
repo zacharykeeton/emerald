@@ -4,7 +4,7 @@ import { clockTime, dayKey } from '@emerald/shared';
 import type { ActivitySession, TeamMember } from '@emerald/shared';
 import { sessionGraph } from './commit-graph-model.ts';
 import type { GraphLine, GraphSession, SessionGraph } from './commit-graph-model.ts';
-import { REPLAY_BEAT_MS, buildReplay, frameAt, nextChange, recordAt, replayAt, replayGraph, replayInput, replayKey, replayNote } from './replay-model.ts';
+import { REPLAY_BEAT_MS, buildReplay, frameAt, nextChange, recordAt, replayAt, replayGraph, replayInput, replayKey, replayNote, togglePlay } from './replay-model.ts';
 import type { GraphCommit } from '../../preload/api.ts';
 
 // The helpers of commit-graph-model.test.ts, with the commit's time a
@@ -23,12 +23,13 @@ const rowOf = (g: SessionGraph, name: string): number => g.items.findIndex((it) 
 const F1 = { id: 'f1', branch: 'f1', type: 'fork', description: 'fork one' };
 const folded = () => [c('r1', ['r0']), c('f1c', ['r0']), c('r0')];
 
-test('replayInput: an exited record is made live for its spans, a member with a commit gets a stand-in row on its lane, one with none only its marks', () => {
+test("replayInput: an exited record is made live for its spans, a member with a commit gets a stand-in row on its lane, one with none a stand-in on the session's line, one that never worked only its marks", () => {
   const record = claude({ id: 's', state: 'exited', commits: [{ hash: 'r1', at: 1 }, { hash: 'f1c', at: 1, agent: F1 }] });
   const rows = [
     row({ sessionId: 's', spans: [{ from: 10, to: 20, prompt: 'go' }] }),
     row({ sessionId: 's', agentId: 'f1', parentId: 's', name: 'fork one', agentType: 'fork', kind: 'agent', spans: [{ from: 12, to: 18, prompt: null }] }),
     row({ sessionId: 's', agentId: 'x1', parentId: 's', name: 'reader', agentType: 'Explore', kind: 'agent', spans: [{ from: 13, to: 14, prompt: null }] }),
+    row({ sessionId: 's', agentId: 'z1', parentId: 's', name: 'idle one', agentType: 'Explore', kind: 'agent', spans: [] }),
   ];
   const commits = folded();
   const shown = new Set(commits.map((x) => x.hash));
@@ -39,7 +40,7 @@ test('replayInput: an exited record is made live for its spans, a member with a 
   const part = input.sessions[0]!;
   assert.equal(part.state, 'idle');
   assert.equal(part.removedAt, null);
-  assert.equal(part.team.length, 1);
+  assert.equal(part.team.length, 2);
   const f1 = part.team[0]!;
   assert.equal(f1.id, 'f1');
   assert.equal(f1.type, 'fork');
@@ -48,10 +49,24 @@ test('replayInput: an exited record is made live for its spans, a member with a 
   assert.equal(f1.outcome, 'returned');
   assert.equal(f1.startedAt, 12);
   assert.equal(f1.endedAt, 18);
-  assert.deepEqual([...input.marks.keys()].sort(), ['s f1', 's own', 's x1']);
-  const g = sessionGraph(commits, input.sessions, 'graph', ROOTS);
-  assert.deepEqual(picture(g), ['own@0', 'r1@0', 'f1@1', 'f1c@1', 'r0@2']);
+  const x1 = part.team[1]!;
+  assert.equal(x1.id, 'x1');
+  assert.equal(x1.type, 'Explore');
+  assert.equal(x1.description, 'reader');
+  assert.equal(x1.branch, null);
+  assert.equal(x1.outcome, 'returned');
+  assert.equal(x1.startedAt, 13);
+  assert.equal(x1.endedAt, 14);
+  assert.deepEqual([...input.membersOnLine], ['s x1']);
+  assert.deepEqual([...input.marks.keys()].sort(), ['s f1', 's own', 's x1', 's z1']);
+  const g = sessionGraph(commits, input.sessions, 'graph', ROOTS, null, new Map(), { membersOnLine: input.membersOnLine });
+  assert.deepEqual(picture(g), ['x1@0', 'own@0', 'r1@0', 'f1@1', 'f1c@1', 'r0@2']);
   assert.equal(g.lanes.length, 3);
+  assert.deepEqual(picture(sessionGraph(commits, input.sessions, 'graph', ROOTS)), ['x1@1', 'own@0', 'r1@0', 'f1@2', 'f1c@2', 'r0@3'], 'without the option the reader takes a lane of its own');
+  const r = buildReplay(g, input.marks, 'r0', 100)!;
+  const x = rowOf(g, 'x1');
+  assert.equal(frameAt(r, r.marks.get(x)!.appear / 2).hidden.has(x), true);
+  assert.equal(frameAt(r, (r.marks.get(x)!.spans[0]!.from + r.marks.get(x)!.spans[0]!.to) / 2).working.has(x), true);
   // A shell's lifetime row adds nothing.
   const more = replayInput([record], [...rows, row({ sessionId: 's', lifetime: true, kind: 'shell', spans: [{ from: 0, to: 100, prompt: null }] })], shown);
   assert.deepEqual(more.marks.get(replayKey('s', null)), [{ from: 10, to: 20, prompt: 'go' }]);
@@ -143,6 +158,13 @@ test('frameAt and nextChange: at 0 the later rows are hidden, at the end nothing
   assert.equal(nextChange(r, r.length), r.length);
   assert.equal(frameAt(r, -5).at, 0);
   assert.equal(frameAt(r, r.length + 5).at, r.length);
+
+test('togglePlay (M9 fix 905): playing holds at the position now, paused plays on from where it holds, and from the start at the end', () => {
+  assert.deepEqual(togglePlay({ startedAt: 1000, pausedAt: null }, 10000, 5000), { startedAt: 1000, pausedAt: 4000 });
+  assert.deepEqual(togglePlay({ startedAt: 1000, pausedAt: 4000 }, 10000, 9000), { startedAt: 5000, pausedAt: null });
+  assert.deepEqual(togglePlay({ startedAt: 0, pausedAt: 10000 }, 10000, 9000), { startedAt: 9000, pausedAt: null });
+  assert.deepEqual(togglePlay({ startedAt: 0, pausedAt: null }, 10000, 50000), { startedAt: 0, pausedAt: 10000 });
+});
 });
 
 test('replayGraph: a session line grows up its lane, an edge comes with its newer commit, a hidden dot goes, the marks follow the frame', () => {

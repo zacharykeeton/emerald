@@ -155,3 +155,8 @@ test("the Emerald history row's star is the muted grey of its facts line (M9 fix
   assert.equal(emerald.get('--history-glyph'), emerald.get('--muted'));
   assert.equal(emerald.get('--muted'), '#8a8a8a');
 });
+
+test('the sent bubble is the accent at 30 percent on both skins (M9 fix 891)', () => {
+  assert.equal(classic.get('--bubble-sent'), 'rgba(232, 163, 61, 0.3)');
+  assert.equal(emerald.get('--bubble-sent'), 'rgba(62, 207, 142, 0.3)');
+});

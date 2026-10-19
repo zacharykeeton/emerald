@@ -214,7 +214,7 @@ try {
     expect(emptyRing === EMERALD && tabTop === EMERALD, `an empty focused pane's ring and the tab line in emerald, got ${emptyRing} and ${tabTop}`);
     await s.key('W', 'KeyW', 87, CTRL | SHIFT);
     await s.waitFor(`document.querySelectorAll('.empty-pane').length === ${emptyBefore}`, 'the empty pane closed again');
-    await s.evalJs(`document.querySelector(${JSON.stringify(focusedSel)}).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(focusedSel)}).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`);
 
     // A default button (:2379).
     const button = await s.evalJs(`(() => { const b = document.createElement('button'); b.textContent = 'x'; document.body.append(b); const c = getComputedStyle(b); const out = { bg: c.backgroundColor, ink: c.color }; b.remove(); return out; })()`);

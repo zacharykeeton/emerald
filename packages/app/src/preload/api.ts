@@ -623,6 +623,7 @@ export interface TranscriptCost {
 // spend (M9 fix 372) is agent id to what the agent's requests have cost
 // over its whole file at the rates table, for the lid's box per member;
 // an agent whose requests name no model in the table is absent.
+// said (M9 fix 903) is agent id to the last text the agent wrote in its own file and when, for the card's now line; an agent that has written no text yet is absent.
 export interface AgentsRunning {
   since: number;
   usd: number | null;
@@ -631,6 +632,7 @@ export interface AgentsRunning {
   agents: number;
   models: Record<string, string>;
   spend: Record<string, number>;
+  said: Record<string, { text: string; at: number }>;
 }
 
 export interface HistoryApi {
@@ -765,7 +767,15 @@ export interface BrowserApi {
   tookFocus(token: number, ok: boolean): void;
 }
 
+// The window's page zoom (M9 fix 900), through webFrame in this preload, so main is not involved.
+export interface ZoomApi {
+  set(level: number): void;
+  level(): number;
+  factor(): number;
+}
+
 export interface EmeraldApi {
+  zoom: ZoomApi;
   files: FilesApi;
   browser: BrowserApi;
   keys: KeysApi;

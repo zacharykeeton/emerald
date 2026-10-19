@@ -95,6 +95,8 @@ export interface SnapshotRow {
   name: string;
   value?: string;
   states: string[];
+  // M9 fix 914: on a region's row alone, the rows --within would print under it.
+  rows?: number;
 }
 
 function cut(s: string): string {
@@ -137,6 +139,7 @@ export interface SnapshotFilter {
 // that click, fill and the rest take, and each heading without one.
 // refs maps a ref to its backendDOMNodeId, which the verbs resolve.
 // M9 fix 875: regions get @r refs of their own, every control is numbered whatever the cap or the filter, and a filter keeps only the printed lines.
+// M9 fix 914: a region's line ends with the count of the rows under it, (3 rows), (1 row) or (no rows), whatever the filter and the cap.
 export function snapshotOf(
   nodes: AxNode[],
   page: { title: string; url: string },
@@ -155,26 +158,29 @@ export function snapshotOf(
   let found = within === undefined;
   let passed = 0;
   let listed = 0;
+  let offered = 0;
   let more = 0;
   // A line passes when the walk is inside within's node and its uncut
   // name, or a control's value, holds the name; past the cap it is counted.
-  const offer = (inside: boolean, texts: string[], line: () => string, row: SnapshotRow | null): void => {
-    if (!inside) return;
-    if (needle !== undefined && !texts.some((t) => t.toLowerCase().includes(needle))) return;
+  const offer = (inside: boolean, texts: string[], line: () => string, row: SnapshotRow | null): number => {
+    if (!inside) return -1;
+    if (needle !== undefined && !texts.some((t) => t.toLowerCase().includes(needle))) return -1;
     passed += 1;
     if (listed >= BROWSER_SNAPSHOT_CAP) {
       more += 1;
-      return;
+      return -1;
     }
     lines.push(line());
     if (row !== null) shown.push(row);
     listed += 1;
+    return lines.length - 1;
   };
   const seen = new Set<string>();
   const walk = (node: AxNode, outer: boolean): void => {
     if (seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
     let inside = outer;
+    let region: { at: number; row: SnapshotRow; before: number } | null = null;
     if (within !== undefined && node.backendDOMNodeId === within.id) {
       found = true;
       inside = true;
@@ -184,9 +190,11 @@ export function snapshotOf(
       const whole = text(node.name);
       const name = cut(whole);
       if (role === 'heading') {
+        offered += 1;
         const level = (node.properties ?? []).find((p) => p.name === 'level')?.value?.value;
         offer(inside, [whole], () => `heading ${JSON.stringify(name)}${typeof level === 'number' ? ` level=${level}` : ''}`, null);
       } else if (ACTIONABLE_ROLES.has(role) && typeof node.backendDOMNodeId === 'number') {
+        offered += 1;
         const ref = `e${refs.size + 1}`;
         refs.set(ref, node.backendDOMNodeId);
         const wholeValue = text(node.value);
@@ -196,14 +204,22 @@ export function snapshotOf(
         rows.push(row);
         offer(inside, [whole, wholeValue], () => `@${ref} ${role} ${JSON.stringify(name)}${value !== '' ? ` value=${JSON.stringify(value)}` : ''}${states.length > 0 ? ` [${states.join(' ')}]` : ''}`, row);
       } else if (REGION_ROLES.has(role) && typeof node.backendDOMNodeId === 'number') {
+        offered += 1;
         const ref = `r${regions.size + 1}`;
         regions.set(ref, node.backendDOMNodeId);
-        offer(inside, [whole], () => `@${ref} ${role} ${JSON.stringify(name)}`, { ref, role, name, states: [] });
+        const row: SnapshotRow = { ref, role, name, states: [] };
+        region = { at: offer(inside, [whole], () => `@${ref} ${role} ${JSON.stringify(name)}`, row), row, before: offered };
       }
     }
     for (const id of node.childIds ?? []) {
       const child = byId.get(id);
       if (child !== undefined) walk(child, inside);
+    }
+    if (region !== null) {
+      const r: { at: number; row: SnapshotRow; before: number } = region;
+      const n = offered - r.before;
+      r.row.rows = n;
+      if (r.at >= 0) lines[r.at] += n === 0 ? ' (no rows)' : n === 1 ? ' (1 row)' : ` (${n} rows)`;
     }
   };
   for (const root of roots) walk(root, within === undefined);
@@ -298,6 +314,26 @@ export function centre(quad: number[]): { x: number; y: number } {
     y += quad[i + 1] ?? 0;
   }
   return { x: x / 4, y: y / 4 };
+}
+
+// M9 fix 915: a PNG's own size off its IHDR chunk (bytes 16 to 23, big-endian), null for anything that is not a PNG.
+export function pngSize(png: Uint8Array): { width: number; height: number } | null {
+  if (png.length < 24) return null;
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (sig.some((b, i) => png[i] !== b)) return null;
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+// The device pixels in one CSS pixel: the image's width over the page's, to two places; null when either is not above 0.
+export function shotScale(imageWidth: number, cssWidth: number): number | null {
+  if (!(imageWidth > 0) || !(cssWidth > 0)) return null;
+  return Math.round((imageWidth / cssWidth) * 100) / 100;
+}
+
+export function screenshotLine(file: string, css: { width: number; height: number } | null, scale: number | null): string {
+  if (css === null || scale === null) return `saved ${file} (its size in CSS pixels not read)`;
+  return `saved ${file} (${css.width}x${css.height} CSS pixels, ${String(scale)} device pixel${scale === 1 ? '' : 's'} each)`;
 }
 
 // M9 fix 874: the points a drag moves through, steps of them evenly from

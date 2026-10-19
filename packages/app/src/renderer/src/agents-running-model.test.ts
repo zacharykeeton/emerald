@@ -14,7 +14,7 @@ test('liveConversations leaves out an exited row whatever its exit code (M9 fix 
 // spend since the main thread's last request, and the bare figure
 // again once nothing is running.
 
-const running = { since: 1000, usd: 25.2, tokens: { up: 46_900_000, down: 12_300, cached: 46_000_000 }, requests: 9, agents: 9, models: {}, spend: {} };
+const running = { since: 1000, usd: 25.2, tokens: { up: 46_900_000, down: 12_300, cached: 46_000_000 }, requests: 9, agents: 9, models: {}, spend: {}, said: {} };
 
 test('runningFigure: the sum with a ~ on the row, both parts on the card, the agents on the tokens line', () => {
   const got = runningFigure(9.78, running);
@@ -31,7 +31,7 @@ test('runningFigure: the sum with a ~ on the row, both parts on the card, the ag
 test('runningFigure: the bare figure with nothing running, no answer yet, or no figure to add to', () => {
   const bare = { row: '$9.78', rowTitle: null, part: null, card: '$9.78', tokens: null, running: false };
   assert.deepEqual(runningFigure(9.78, null), bare, 'no answer yet');
-  assert.deepEqual(runningFigure(9.78, { since: 1, usd: null, tokens: { up: 0, down: 0, cached: 0 }, requests: 0, agents: 0, models: {}, spend: {} }), bare, 'the main thread moved past the agents');
+  assert.deepEqual(runningFigure(9.78, { since: 1, usd: null, tokens: { up: 0, down: 0, cached: 0 }, requests: 0, agents: 0, models: {}, spend: {}, said: {} }), bare, 'the main thread moved past the agents');
   assert.deepEqual(runningFigure(9.78, { ...running, usd: 0 }), bare, 'nothing priced');
   assert.equal(runningFigure(null, running), null, 'no status line yet, so no figure on the row');
 });
@@ -66,4 +66,10 @@ test('sameAgentsRunning: equal answers, a changed field, a changed model, and th
   assert.equal(sameAgentsRunning(withSpend, { ...withSpend, spend: { a1: 1.5, a2: 0.25 } }), true);
   assert.equal(sameAgentsRunning(withSpend, { ...withSpend, spend: { a1: 1.5, a2: 0.3 } }), false);
   assert.equal(sameAgentsRunning(withSpend, { ...withSpend, spend: { a1: 1.5 } }), false);
+  // M9 fix 903: the latest words per agent are part of it as well, text and time.
+  const withSaid = { ...withSpend, said: { a1: { text: 'Reading the grid.', at: 5 } } };
+  assert.equal(sameAgentsRunning(withSaid, { ...withSaid, said: { a1: { text: 'Reading the grid.', at: 5 } } }), true, 'the same words in a new object');
+  assert.equal(sameAgentsRunning(withSaid, { ...withSaid, said: { a1: { text: 'Placing the grid.', at: 5 } } }), false, 'a changed text');
+  assert.equal(sameAgentsRunning(withSaid, { ...withSaid, said: { a1: { text: 'Reading the grid.', at: 6 } } }), false, 'a changed time');
+  assert.equal(sameAgentsRunning(withSaid, { ...withSaid, said: {} }), false, 'a key gone');
 });

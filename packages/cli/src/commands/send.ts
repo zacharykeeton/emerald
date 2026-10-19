@@ -33,7 +33,7 @@ const INTERRUPT = '\x03';
 const command: Command = {
   name: 'send',
   summary: 'type text into a session',
-  usage: 'emmer send <session> [text...|--stdin|--file <path>] [--enter] [--interrupt] [--if-idle]\nraw keys, typed whatever the input already holds; emmer prompt refuses an input holding a prompt given back after an interrupt\n--stdin or --file <path> reads the text verbatim, for text holding a newline, a % or a double quote, which emmer.cmd and Windows PowerShell 5.1 change on the command line',
+  usage: 'emmer send <session> [text...|--stdin|--file <path>] [--enter] [--interrupt] [--if-idle]\nraw keys, typed whatever the input already holds; emmer prompt refuses an input holding a prompt given back after an interrupt\n--stdin or --file <path> reads the text verbatim, for text holding a newline, a % or a double quote, which emmer.cmd and Windows PowerShell 5.1 change on the command line, and for a slash command from Git Bash, which turns a word beginning with / into a Windows path unless MSYS_NO_PATHCONV=1 is set on the call',
   async run(argv) {
     const parsed = parse(argv, options);
     const [ref, ...words] = parsed.positionals;

@@ -128,9 +128,11 @@ export interface ViewPaneFacts {
   toolbarKept?: boolean | undefined;
   // What a split gives by default (M9 fix 343): the title says the kind.
   splitKind: SplitKind;
+  // A file pane's text size (M9 fix 899), for its Reset text size item; absent reads as at the default.
+  atDefaultFontSize?: boolean | undefined;
 }
 
-export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar = true, toolbarKept = false }: ViewPaneFacts): PaneMenuItem[] {
+export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar = true, toolbarKept = false, atDefaultFontSize }: ViewPaneFacts): PaneMenuItem[] {
   const items: PaneMenuItem[] = [];
   // A file pane has no controls rows to fold; its header is the tab's,
   // and the same file as a tab is what it offers instead. Only a daemon
@@ -159,6 +161,9 @@ export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept
     { run: 'split-down', label: 'Split down', action: 'split-horizontal', title: splitTitle(splitKind, folder !== null, 'below') },
     { run: 'zoom', label: zoomed ? 'Unfocus' : 'Focus', action: 'toggle-focus', disabled: onlyPane && !zoomed, title: onlyPane && !zoomed ? 'Already the only pane' : undefined },
   );
+  // M9 fix 899: a file pane's text follows the pane's size, as a session
+  // pane's does, so it has the same way back.
+  if (kind === 'file') items.push({ run: 'text-reset', label: 'Reset text size', action: 'text-reset', disabled: atDefaultFontSize !== false, title: atDefaultFontSize !== false ? 'Already at 14 px' : undefined });
   // An activity view has no folder to set; the window moves with the
   // view's own header.
   if (folder !== null) items.push({ run: 'set-folder', label: 'Set folder…', action: null, title: 'Show another repository here', separator: true });

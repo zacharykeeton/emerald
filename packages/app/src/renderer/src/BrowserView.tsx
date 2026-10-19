@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { addressShown, addressUrl } from '@emerald/shared';
+import { addressShown, addressUrl, isLocalPageUrl } from '@emerald/shared';
 import type { DesignNote } from '@emerald/shared';
 import { browserPage, registerBrowserSlot, toolbarShown, useBrowserPage } from './browser-layer.ts';
 import { designTargetOf, sendDesign } from './design.ts';
@@ -164,7 +164,9 @@ export function BrowserView({ paneId, url, onUrl, toolbar }: Props) {
   );
 
   const go = () => {
-    const href = addressUrl(address);
+    // M9 fix 897: Enter on a page from the disk's own address reloads it;
+    // any other text goes through addressUrl, which refuses the scheme.
+    const href = address === url && isLocalPageUrl(url) ? url : addressUrl(address);
     if (href === null) {
       setInvalid(true);
       return;

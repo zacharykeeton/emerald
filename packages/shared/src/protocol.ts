@@ -115,7 +115,10 @@ export const PROTOCOL_VERSION = 1;
 //  72: M9 fix 874, drag on browser.run, a press, a move in ten steps and a release, relayed to app windows at level 72 alone
 //  72: M9 fix 875, filter on browser.run and browser.requested, a snapshot's printed rows kept to a name or a region, and the snapshot's region rows (@r1), to app windows at level 72
 //  73: M9 fix 865, windows on the layout (each window's tabs and its own current tab, layout.currentTabId the front window's) and window.open, window.close and window.front
-export const DAEMON_FEATURE_LEVEL = 73;
+//  74: M9 fix 896, a browser view's emerald-file: url and its root, a page from the disk served by the app from the folder the Files rail shows
+//  74: M9 fix 915, drag from a point x,y on browser.run, relayed to app windows at level 74 alone
+//  74: M9 fix 904, seq on a team member and teamSeq on SessionInfo, each subagent's handle number in spawn order (A3), kept when the members before it are dropped
+export const DAEMON_FEATURE_LEVEL = 74;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.

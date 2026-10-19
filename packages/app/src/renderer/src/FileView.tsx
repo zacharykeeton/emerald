@@ -12,14 +12,19 @@ import { useScheme } from './scheme-store.ts';
 import type { FileMenuRun } from './file-menu-model.ts';
 import { Menu } from './Menu.tsx';
 import { dismissSaveError, hasModel, heldText, keepMine, monaco, prettyKey, prettyLive, prettyModel, prettyRuns, prettyStateFor, reloadFromDisk, retain, saveFile, saveViewState, setFileTheme, subscribePretty, takeRead, viewStateFor } from './monaco.ts';
-import { DIRTY_MARK, defaultView, isAnimatedKind, isImage, isJson, isMermaidFile, isTranscript, quickSuggestionsFor, viewFor } from './tabs-model.ts';
+import { DIRTY_MARK, defaultView, isAnimatedKind, isImage, isJson, isMarkdown, isMermaidFile, isTranscript, quickSuggestionsFor, viewFor } from './tabs-model.ts';
 import { mermaidDocument, mermaidThemeFor } from './markdown-mermaid.ts';
 import type { FileTabView } from './tabs-model.ts';
 import { TranscriptView } from './TranscriptView.tsx';
 import { ViewFindBar } from './ViewFindBar.tsx';
-import { askBeforeClose, clearReveal, closeFileTab, getUiState, revealInFiles, setFileTabView, toggleWrapLines, useUi } from './ui.ts';
+import { askBeforeClose, clearReveal, closeFileTab, FONT_SIZE_DEFAULT, getUiState, revealInFiles, setFileTabView, toggleWrapLines, useUi } from './ui.ts';
+import { fileTextKey, paneScaled, paneTextVars } from './pane-text.ts';
+import { usePaneWheel } from './pane-wheel.ts';
 import { focusPane } from '@emerald/shared';
-import { editTab } from './store.ts';
+import { editTab, useStore } from './store.ts';
+import { isHtmlFile, localPageRoot, railRoot } from './local-page-model.ts';
+import { openLocalPage } from './actions.ts';
+import { localPageSupported } from './daemon-model.ts';
 import { useSqueeze } from './squeeze.ts';
 import { anchoredScroll, clickCursor, clickTarget, fitScale, zoomChip, zoomStep } from './image-zoom-model.ts';
 import type { ImageZoom } from './image-zoom-model.ts';
@@ -125,7 +130,7 @@ interface Props {
 
 export function FileView({ path, view: viewProp, onView, onClose, inPane = false, paneId, shown = true }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const { tabs, reveal: revealed, wrapLines } = useUi();
+  const { tabs, reveal: revealed, wrapLines, fontSizes } = useUi();
   const reveal = revealed !== null && (inPane ? shown && revealed.paneId !== undefined && revealed.paneId === paneId : revealed.paneId === undefined) ? revealed : null;
   const own = defaultView(path);
   const view = viewProp ?? viewFor(tabs, path);
@@ -365,6 +370,27 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     };
   }, []);
 
+  // M9 fix 899: the text size. A file pane's is its pane's, a file tab's is
+  // kept by path. Monaco measures its glyphs and cannot take a CSS zoom, so
+  // the editor gets the size as a font size; the rendered views take the
+  // scale from --pane-text-scale, on the pane's root in a pane and on the
+  // body here in a tab.
+  const sizeKey = paneId ?? fileTextKey(path);
+  const textPx = fontSizes.get(sizeKey) ?? FONT_SIZE_DEFAULT;
+  useEffect(() => {
+    editorRef.current?.updateOptions({ fontSize: paneScaled(13, textPx) });
+  }, [textPx]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (inPane || body === null) return;
+    const vars = paneTextVars(textPx);
+    for (const name of ['--pane-text', '--pane-text-scale']) {
+      if (vars === null) body.style.removeProperty(name);
+      else body.style.setProperty(name, vars[name]!);
+    }
+  }, [textPx]);
+  usePaneWheel(bodyRef, sizeKey, !inPane);
+
   // M9 fix 438: the focused view's scheme colours the editor's syntax,
   // the window's while the file has none of its own; two views on
   // different schemes both wear whichever was focused last, since Monaco
@@ -463,7 +489,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   };
   useEffect(() => {
     const editor = editorRef.current;
-    if (editor === null || reveal === null || normalizePath(reveal.path) !== normalizePath(path) || shownRef.current !== path) return;
+    if (editor === null || reveal === null || normalizePath(reveal.path) !== normalizePath(path) || shownRef.current !== path || (view === 'rendered' && isMarkdown(path))) return;
     const model = editor.getModel();
     if (model === null) return;
     const line = Math.max(1, Math.min(reveal.line, model.getLineCount()));
@@ -515,7 +541,10 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   // ellipsis, which does not widen the header, is what says a level is
   // not enough yet.
   const sizeText = showImage && !imageFailed && loaded !== null && loaded.src === src ? `${loaded.w} \u00d7 ${loaded.h}` : '';
-  useSqueeze(headerRef, 5, '.file-path', [path, own, view, edit.dirty, json, showEditor, sizeText, animated, paused, zoom]);
+  // M9 fix 897: an .html file offers its page rendered in a browser pane.
+  const { daemon } = useStore('daemon');
+  const pageOffered = isHtmlFile(path) && localPageSupported(daemon);
+  useSqueeze(headerRef, 5, '.file-path', [path, own, view, edit.dirty, json, showEditor, sizeText, animated, paused, zoom, pageOffered]);
 
   // The DOM views' menu. The editor's own right-click is left to Monaco's
   // handler above (its host cannot be the target while hidden, since
@@ -672,7 +701,8 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       data-zoom={showImage ? (zoom === 'fit' ? 'fit' : zoom === 1 ? 'actual' : 'scaled') : undefined}
       data-scale={showImage ? String(Math.round(scale * 100) / 100) : undefined}
       data-cursor={showImage ? (clickCursor(zoom, fit) ?? undefined) : undefined}
-      data-pixelated={showImage && scale > 1 ? '' : undefined}
+      /* Only a raster draws its pixels above 100 percent; an SVG redraws crisp whatever image-rendering says (M9 fix 893). */
+      data-pixelated={raster && scale > 1 ? '' : undefined}
       data-pretty={view === 'pretty' ? prettyState.status : undefined}
       data-pretty-runs={json ? prettyRuns(path) : undefined}
       data-scheme={fileScheme?.name}
@@ -722,6 +752,11 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
               Raw
             </button>
           </span>
+        )}
+        {pageOffered && (
+          <button className="files-button file-browser" title="Open the page rendered in a browser pane beside the focused pane" onClick={() => void openLocalPage(path, localPageRoot(path, railRoot())).catch(warn('page in a browser pane'))}>
+            Browser
+          </button>
         )}
         {showEditor && (
           <button className="files-button file-wrap" data-active={wrapLines || undefined} title="Wrap long lines at the width (Alt+Z)" onClick={toggleWrapLines}>
@@ -824,7 +859,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
             <button onClick={() => void window.emerald.files.open(path).catch(warn('open'))}>Open with Windows</button>
           </div>
         )}
-        {hasText && !image && view === 'rendered' && <MarkdownView path={path} text={isMermaidFile(path) ? mermaidDocument(shownText) : shownText} diagramTheme={mermaidThemeFor(fileScheme?.background ?? null)} paneId={paneId} />}
+        {hasText && !image && view === 'rendered' && <MarkdownView path={path} text={isMermaidFile(path) ? mermaidDocument(shownText) : shownText} diagramTheme={mermaidThemeFor(fileScheme?.background ?? null)} paneId={paneId} reveal={reveal !== null && isMarkdown(path) && normalizePath(reveal.path) === normalizePath(path) ? reveal : null} onRevealed={clearReveal} />}
         {hasText && view === 'turns' && <TranscriptView path={path} text={result.text} />}
         {findSeq !== null && hasText && findView !== null && (
           <ViewFindBar body={bodyRef} viewSelector={findView} text={view === 'rendered' ? shownText : result.text} focusSeq={findSeq} onClose={closeFind} />

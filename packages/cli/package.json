@@ -1,6 +1,6 @@
 {
   "name": "@emerald/cli",
-  "version": "0.1.859",
+  "version": "0.1.888",
   "private": true,
   "description": "emmer: command line client for emmerd, the daemon behind the Emerald app",
   "license": "MIT",

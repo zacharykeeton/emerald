@@ -1,5 +1,5 @@
-import type { Layout, SessionInfo } from '@emerald/shared';
-import { allPanes } from '@emerald/shared';
+import type { BrowserPaneView, Layout, SessionInfo } from '@emerald/shared';
+import { allPanes, localPageOf } from '@emerald/shared';
 import type { FileEntry, FileListing } from '../../preload/api.ts';
 
 // The pure part of the files rail, with no DOM so node:test can cover it.
@@ -68,6 +68,19 @@ export function parentPath(p: string): string {
 // watch set.
 export function filePaneFolders(layout: Layout): string[] {
   return [...new Set(allPanes(layout).flatMap((p) => (p.view?.kind === 'file' ? [parentPath(p.view.path)] : [])))];
+}
+
+// M9 fix 898: the folders a page from the disk is read from, its own file's and its root, so the pane hears a change to the page or to a stylesheet a level up; deduplicated.
+export function localPageFolders(view: BrowserPaneView): string[] {
+  const local = localPageOf(view.url);
+  if (local === null || view.root === undefined) return [];
+  const file = normalizePath(joinPath(view.root, local.rel.split('/').join('\\')));
+  return [...new Set([local.rel === '' ? normalizePath(view.root) : parentPath(file), normalizePath(view.root)])];
+}
+
+// Every browser view's localPageFolders across every tab, deduplicated.
+export function browserPaneFolders(layout: Layout): string[] {
+  return [...new Set(allPanes(layout).flatMap((p) => (p.view?.kind === 'browser' ? localPageFolders(p.view) : [])))];
 }
 
 // The transcript folders of the panes on the chat face (M9 fix 689), so

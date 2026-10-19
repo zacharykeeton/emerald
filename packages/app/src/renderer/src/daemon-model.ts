@@ -277,6 +277,13 @@ export function windowsSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= WINDOWS_LEVEL;
 }
 
+// The level at which the daemon keeps a browser view's emerald-file: url and its root (M9 fix 896); an older one's validator refuses both, so no menu item or button opens a local page.
+export const LOCAL_PAGE_LEVEL = 74;
+
+export function localPageSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= LOCAL_PAGE_LEVEL;
+}
+
 // The level at which the daemon keeps folder labels (M9 fix 194); an
 // older daemon answers folders.list with bad-request, so the heading
 // offers no rename and the store keeps an empty map.

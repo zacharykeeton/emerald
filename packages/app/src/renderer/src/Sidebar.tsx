@@ -1010,22 +1010,30 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
       <span className="sidebar-row-reason">: {reason}</span>
     </>
   );
+  // M9 fix 909: while the row counts down, the count sits right before Resume, on whichever line Resume is on, so the two read together; the badge keeps the plain Exited word.
   const resumeButton =
     session.state === 'exited' ? (
-      <button
-        className="sidebar-row-resume"
-        data-action="resume"
-        title={resumeTitle(session)}
-        onClick={(ev) => {
-          ev.stopPropagation();
-          onResume(session.id);
-        }}
-        // Two quick clicks would also reach the row's double-click and
-        // ask for a second resume of a session already on its way.
-        onDoubleClick={(ev) => ev.stopPropagation()}
-      >
-        Resume
-      </button>
+      <>
+        {counting && (
+          <span className="sidebar-row-removal" title={REMOVAL_TITLE}>
+            {removalWords(removalSeconds)}
+          </span>
+        )}
+        <button
+          className="sidebar-row-resume"
+          data-action="resume"
+          title={resumeTitle(session)}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onResume(session.id);
+          }}
+          // Two quick clicks would also reach the row's double-click and
+          // ask for a second resume of a session already on its way.
+          onDoubleClick={(ev) => ev.stopPropagation()}
+        >
+          Resume
+        </button>
+      </>
     ) : null;
   // M9 fix 843: an exited row's Resume at the right end of its agent line, where the load mark sits on a live row and nothing does on an exited one, so the main line's countdown never pushes it off a narrow sidebar; a row with no agent line (a shell, a commented or a prompting row) keeps it on the main line.
   const resumeOnAgentLine = resumeButton !== null && !isPrompting && !isCommenting && session.comment === null && agentLine !== null;
@@ -1097,8 +1105,8 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
           </AnswerBadge>
         ) : (
           stated && (
-            <span className={`sidebar-row-state state-${label.tone}`} title={counting ? REMOVAL_TITLE : (label.detail ?? undefined)}>
-              {counting ? removalWords(removalSeconds) : label.text}
+            <span className={`sidebar-row-state state-${label.tone}`} title={label.detail ?? undefined}>
+              {label.text}
             </span>
           )
         )}

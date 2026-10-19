@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { localPageOf } from '@emerald/shared';
 import type { BrowserPaneView, PaneView } from '@emerald/shared';
 
 // The browser layer's model (M9 fix 669). Every browser pane's page lives
@@ -43,10 +44,36 @@ export function toolbarShown(toolbar: boolean, pageOn: boolean, designOn: boolea
   return toolbar || !pageOn || designOn || trayOpen;
 }
 
+// M9 fix 898: a page's reload waits this long after the last push for its folders, so a save that touches the page and its stylesheet, pushed as two folders, reloads it once.
+export const LIVE_RELOAD_MS = 150;
+
 // A navigation or an address edit writes the url and keeps the record's
 // other fields (profile, toolbar), which a bare { kind, url } dropped.
-export function withPageUrl(view: PaneView | null | undefined, url: string): BrowserPaneView {
-  return view?.kind === 'browser' ? { ...view, url } : { kind: 'browser', url };
+// M9 fix 896: root only beside a page from the disk, so a page that links
+// out to the web, or an address typed over it, leaves a web record. Back
+// from the web onto a page from the disk takes its folder from the record
+// when the record was on the same root id, else from rootOf (the folders
+// this window has seen, rememberLocalRoot); with neither the record stays.
+export function withPageUrl(view: PaneView | null | undefined, url: string, rootOf: (rootId: string) => string | undefined = rememberedLocalRoot): BrowserPaneView {
+  const { root: _root, ...rest } = view?.kind === 'browser' ? view : { kind: 'browser' as const, url: '' };
+  const local = localPageOf(url);
+  if (local === null) return { ...rest, url };
+  const kept = view?.kind === 'browser' && view.root !== undefined && localPageOf(view.url)?.rootId === local.rootId ? view.root : rootOf(local.rootId);
+  if (kept === undefined) return view?.kind === 'browser' ? view : { kind: 'browser', url: '' };
+  return { ...rest, url, root: kept };
+}
+
+// The folder of every root id this window has shown (M9 fix 896), for
+// withPageUrl's Back onto a page whose record dropped its root.
+const localRootsSeen = new Map<string, string>();
+
+export function rememberLocalRoot(view: BrowserPaneView): void {
+  const local = localPageOf(view.url);
+  if (local !== null && view.root !== undefined) localRootsSeen.set(local.rootId, view.root);
+}
+
+export function rememberedLocalRoot(rootId: string): string | undefined {
+  return localRootsSeen.get(rootId);
 }
 
 // The toolbar flag is kept only when false.

@@ -275,8 +275,10 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
             <span className="answer-popover-label">Cancel</span>
           </button>
         )}
+        {/* M9 fix 910: Back carries the ← cap, as the chat card's does: this card takes no key but Escape (Popover.tsx), so a Left goes to the focused terminal and reaches the session as the digits do. */}
         {review !== null && (
           <button type="button" className="answer-popover-option answer-popover-back" data-key="back" data-sent={sentMark} title="Sends ← to the session, back to the questions" onClick={() => press('\x1b[D')}>
+            <span className="answer-popover-key">←</span>
             <span className="answer-popover-label">Back</span>
           </button>
         )}

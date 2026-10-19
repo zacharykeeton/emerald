@@ -139,7 +139,7 @@ export const SCREEN_READ_MS = 1000;
 // table's terminal forms (`local-jsx`, and /rewind's message picker) in
 // name order, each with its argument hint and description verbatim. A
 // command whose gate reads the account, a flag or the platform is left
-// out, since the view cannot see it.
+// out, since the view cannot see it, except /remote-control, a sent row (M9 fix 890).
 export const TERMINAL_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
   { name: '/model', hint: '[model]', description: 'Set the AI model for Claude Code' },
   { name: '/permissions', hint: '', description: 'Manage allow and deny tool permission rules' },
@@ -194,9 +194,11 @@ export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats', '/setting
 // or an effort level picked by name); every other one keeps the bar.
 export const ARGUMENT_SKIPS_DIALOG: readonly string[] = ['/model', '/effort'];
 
-export function opensMenu(text: string): boolean {
+export function opensMenu(text: string, rcActive = false): boolean {
   const words = text.trim().split(/\s+/);
   const first = words[0] ?? '';
+  // M9 fix 890: a second /remote-control (or its alias /rc) while connected opens the Disconnect dialog.
+  if (rcActive && (first === '/remote-control' || first === '/rc')) return true;
   if (ARGUMENT_SKIPS_DIALOG.includes(first) && words.length > 1) return false;
   return TERMINAL_COMMANDS.some((c) => c.name === first) || TERMINAL_ALIASES.includes(first) || ARGUMENT_COMMANDS.some((c) => c.name === first);
 }
@@ -236,6 +238,43 @@ export function modeOf(rows: readonly string[]): string | null {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const m = MODE_ROW.exec(rows[i]!);
     if (m !== null) return MODE_WORDS[m[1]!] ?? null;
+  }
+  return null;
+}
+
+// M9 fix 889: remote control's footer pill, Claude Code 2.1.303's own words (the bare /rc is /rc active after its fifth showing). It sits at the right end of the footer's last row, so only the last RC_ROWS non-blank rows are read, from the bottom, stopping at the prompt box's lower rule, and a reply or a typed prompt quoting the words never wins. The compact footer's bare rc, told apart only by colour, is not read.
+export const RC_ROWS = 3;
+export type RcState = 'active' | 'connecting' | 'reconnecting' | 'failed';
+export interface RcMark { state: RcState; word: string }
+const RC_PILL = /(?:^|\s)\/rc(?: (active|connecting…|reconnecting|failed))?(?=\s|$)/;
+const RC_MARKS: Readonly<Record<string, RcMark>> = {
+  active: { state: 'active', word: '/rc active' },
+  'connecting…': { state: 'connecting', word: '/rc connecting…' },
+  reconnecting: { state: 'reconnecting', word: '/rc reconnecting' },
+  failed: { state: 'failed', word: '/rc failed' },
+};
+
+export function rcOf(rows: readonly string[]): RcMark | null {
+  let tested = 0;
+  for (let i = rows.length - 1; i >= 0 && tested < RC_ROWS; i -= 1) {
+    const row = rows[i]!.trim();
+    if (row === '') continue;
+    if (row.startsWith('─')) return null;
+    tested += 1;
+    const m = RC_PILL.exec(row);
+    if (m !== null) return RC_MARKS[m[1] ?? 'active'] ?? null;
+  }
+  return null;
+}
+
+// M9 fix 889: the link of the latest remote control line in the turns, the rc chip's title and its click.
+export function rcUrlOf(turns: readonly StepTurn[]): string | null {
+  for (let t = turns.length - 1; t >= 0; t -= 1) {
+    const steps = turns[t]!.steps;
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      const step = steps[i]!;
+      if (step.kind === 'command' && step.url !== undefined) return step.url;
+    }
   }
   return null;
 }
@@ -480,6 +519,29 @@ export function timelineItems(steps: readonly Step[], mode: ChatMode, open: bool
   return out;
 }
 
+// M9 fix 891: a prompt that is pictures alone (its text nothing but [Image #N] markers) is drawn as the pictures, with no bubble behind them.
+export function imageOnlyPrompt(prompt: string, images: readonly unknown[]): boolean {
+  return images.length > 0 && prompt.replace(/\[Image #\d+\]/g, '').trim() === '';
+}
+
+// M9 fix 891: the items whose bubble takes the near top corner, because the bubble before it in the turn, whatever rows lay between, was on the same side. A reply (text or update) is the left side; a mid-turn prompt (queued) and the turn's own prompt are the right.
+export function continuedBubbles(items: readonly TimelineItem[], hasPrompt: boolean): Set<number> {
+  const out = new Set<number>();
+  let last: 'sent' | 'reply' | null = hasPrompt ? 'sent' : null;
+  items.forEach((item, i) => {
+    if (item.kind !== 'step') return;
+    const k = item.step.kind;
+    if (k === 'text' || k === 'update') {
+      if (last === 'reply') out.add(i);
+      last = 'reply';
+    } else if (k === 'queued') {
+      if (last === 'sent') out.add(i);
+      last = 'sent';
+    }
+  });
+  return out;
+}
+
 // M9 fix 797: the plain words a shell call carries, which Claude Code
 // draws on the row in place of the command; null for any other tool or
 // a call with none. An agent's description already reaches stepArg.
@@ -603,7 +665,11 @@ export function foldText(tools: readonly ToolStep[], running: boolean): string {
 // commands). Read off Claude Code 2.1.301's command table (M9 fix 780):
 // fix 719's five first, then the rest of the table's `local` and `prompt`
 // commands, and /rename, which prints a line and opens nothing (bare, it
-// names the session itself), in name order. /review is not in the table,
+// names the session itself), in name order. /remote-control (M9 fix 890)
+// is the one command whose gate reads the account that is listed, since
+// the person asked to call it from the chat view; while the footer's rc
+// chip reads active its send opens Claude Code's Disconnect dialog, so
+// opensMenu answers true for it then. /review is not in the table,
 // /cost is /usage's alias and /btw a terminal row, since it answers in a
 // panel of its own.
 export const SENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
@@ -616,6 +682,7 @@ export const SENT_COMMANDS: readonly { name: string; description: string; hint: 
   { name: '/install-slack-app', hint: '', description: 'Install the Claude Slack app' },
   { name: '/radio', hint: '', description: 'Listen to Claude FM lo-fi radio' },
   { name: '/reload-plugins', hint: '[--force]', description: 'Activate pending plugin changes in the current session' },
+  { name: '/remote-control', hint: '[name]', description: 'Control this session from your phone or claude.ai/code' },
   { name: '/rename', hint: '[name]', description: 'Rename the current conversation' },
   { name: '/statusline', hint: '', description: "Set up Claude Code's status line UI" },
   { name: '/stickers', hint: '', description: 'Order Claude Code stickers' },

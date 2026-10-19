@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import type { Token } from 'markdown-it';
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { MouseEvent } from 'react';
 import { openBeside } from './actions.ts';
 import { browserViewSupported } from './daemon-model.ts';
@@ -8,6 +8,7 @@ import { parentPath } from './files-model.ts';
 import { defaultFolds, foldSections } from './markdown-fold-model.ts';
 import type { FoldSection } from './markdown-fold-model.ts';
 import { installImageSrc } from './markdown-url.ts';
+import { SOURCE_LINE_FLASH_MS, blockAtLine, installSourceLines } from './markdown-source-line.ts';
 import { installMermaidFence } from './markdown-mermaid.ts';
 import type { MermaidSide, MermaidTheme } from './markdown-mermaid.ts';
 import { drawMermaid, showSide } from './mermaid-draw.ts';
@@ -30,6 +31,7 @@ import { getState } from './store.ts';
 const md = new MarkdownIt({ html: false, linkify: true });
 installMermaidFence(md);
 installImageSrc(md);
+installSourceLines(md);
 
 interface ViewState {
   scrollTop: number;
@@ -55,8 +57,9 @@ function viewState(path: string): ViewState {
 // folded, so the tab opens on what is new; a plain file opens whole.
 // diagramTheme: mermaid's theme for the ground the document sits on, the
 // skin's dark one unless the file wears a light scheme of its own.
-export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'dark', paneId }: { path: string; text: string; foldOlder?: boolean; diagramTheme?: MermaidTheme; paneId?: string | undefined }) {
+export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'dark', paneId, reveal = null, onRevealed }: { path: string; text: string; foldOlder?: boolean; diagramTheme?: MermaidTheme; paneId?: string | undefined; reveal?: { line: number; seq: number } | null; onRevealed?: (seq: number) => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const flashRef = useRef<{ el: HTMLElement; timer: ReturnType<typeof setTimeout> } | null>(null);
   const articleRef = useRef<HTMLElement>(null);
   const folder = parentPath(path);
   const html = useMemo(() => render(text, folder, viewState(path), foldOlder), [text, folder, path, foldOlder]);
@@ -89,6 +92,38 @@ export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'da
       viewState(path).scrollTop = host.scrollTop;
     };
   }, [html, path]);
+
+  // M9 fix 892: a reveal at a line scrolls to the block holding it, opens
+  // the folded sections around it and lights it. Declared after the scroll
+  // restore so it wins over the kept position. The attribute on the host
+  // stays until the next reveal; the verify scripts read it.
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const article = articleRef.current;
+    if (host === null || article === null || reveal === null) return;
+    const blocks = [...article.querySelectorAll<HTMLElement>('[data-source-line]')];
+    const target = blocks[blockAtLine(blocks.map((b) => Number(b.dataset['sourceLine'])), reveal.line)];
+    if (target !== undefined) {
+      for (let fold = target.closest<HTMLElement>('.md-fold[data-folded]'); fold !== null; fold = fold.parentElement?.closest<HTMLElement>('.md-fold[data-folded]') ?? null) {
+        if (fold.firstElementChild === target) continue;
+        fold.removeAttribute('data-folded');
+        viewState(path).folded?.delete(fold.getAttribute('data-key') ?? '');
+      }
+      const tr = target.getBoundingClientRect();
+      const hr = host.getBoundingClientRect();
+      host.scrollTop += tr.top - hr.top - Math.max(0, (host.clientHeight - tr.height) / 2);
+      viewState(path).scrollTop = host.scrollTop;
+      host.dataset['revealed'] = target.dataset['sourceLine'] ?? '';
+      if (flashRef.current !== null) {
+        clearTimeout(flashRef.current.timer);
+        flashRef.current.el.classList.remove('md-line-flash');
+      }
+      target.classList.add('md-line-flash');
+      flashRef.current = { el: target, timer: setTimeout(() => { target.classList.remove('md-line-flash'); flashRef.current = null; }, SOURCE_LINE_FLASH_MS) };
+    }
+    onRevealed?.(reveal.seq);
+  }, [html, path, reveal?.seq]);
+  useEffect(() => () => { if (flashRef.current !== null) clearTimeout(flashRef.current.timer); }, []);
 
   useLayoutEffect(() => {
     const host = hostRef.current;

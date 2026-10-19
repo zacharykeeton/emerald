@@ -1,8 +1,10 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi } from './api.ts';
 
 const api: EmeraldApi = {
+  // M9 fix 900: the window's zoom, VS Code's Ctrl+= and Ctrl+-.
+  zoom: { set: (level) => webFrame.setZoomLevel(level), level: () => webFrame.getZoomLevel(), factor: () => webFrame.getZoomFactor() },
   // emmer browser (M9 fixes 672 and 673): main checks the guest is this
   // window's webview before it takes the registration.
   browser: {

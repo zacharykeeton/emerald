@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { effortFold, effortState } from '@emerald/shared';
 import type { Step, StepResult, StepTurn } from '@emerald/shared';
-import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle } from './chat-model.ts';
+import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle, continuedBubbles, imageOnlyPrompt } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
+import { rcOf, rcUrlOf } from './chat-model.ts';
 
 test('chatPanes: the pairs round trip, and a corrupt entry reads as nothing', () => {
   const panes = new Map([
@@ -111,6 +112,11 @@ test('opensMenu: a picker command first in the box, case-sensitive', () => {
   assert.equal(opensMenu('/stats'), true);
   assert.equal(opensMenu('/btw why?'), true);
   assert.equal(opensMenu('/agents'), false);
+  // M9 fix 890: /remote-control (or /rc) while the rc chip reads active opens the Disconnect dialog.
+  assert.equal(opensMenu('/remote-control'), false);
+  assert.equal(opensMenu('/remote-control', true), true);
+  assert.equal(opensMenu('/rc', true), true);
+  assert.equal(opensMenu('/rename', true), false);
 });
 
 test('hintText: by the state', () => {
@@ -131,6 +137,33 @@ test('modeOf: the four footer rows, the bottom one winning, and nothing else', (
   assert.equal(modeOf(['❯ run it', '', '✢ Proofing…', '', '────', '❯', '────']), null);
   assert.equal(modeOf(['● Pinging localhost six times · 2s', '✶ Forging… (3s · ↓ 88 tokens)', '────']), null);
   assert.equal(modeOf(['plan mode on']), null);
+});
+
+test('rcOf: the pill\'s four words and the bare /rc, on the footer\'s last rows only (M9 fix 889)', () => {
+  const box = ['────', '❯', '────'];
+  const mode = '  ⏸ manual mode on (shift+tab to cycle)            ';
+  assert.deepEqual(rcOf([...box, `${mode}/rc active`]), { state: 'active', word: '/rc active' });
+  assert.deepEqual(rcOf([...box, `${mode}/rc`]), { state: 'active', word: '/rc active' });
+  assert.deepEqual(rcOf([...box, `${mode}/rc connecting…`]), { state: 'connecting', word: '/rc connecting…' });
+  assert.deepEqual(rcOf([...box, `${mode}/rc reconnecting`]), { state: 'reconnecting', word: '/rc reconnecting' });
+  assert.deepEqual(rcOf([...box, `${mode}/rc failed`]), { state: 'failed', word: '/rc failed' });
+  // The pill on the row under the mode row, when the footer wraps to two rows.
+  assert.deepEqual(rcOf([...box, mode, '                                   /rc active', '']), { state: 'active', word: '/rc active' });
+  // A reply and a typed prompt quoting the words, above the lower rule.
+  assert.equal(rcOf(['● Done. Run /rc active to check.', '', '────', '❯ /rc failed', '────', '  ⏸ manual mode on']), null);
+  // Four non-blank rows up with no rule between.
+  assert.equal(rcOf(['/rc active', 'one', 'two', 'three']), null);
+  assert.equal(rcOf(['  ⏸ manual mode on    rc']), null);
+  assert.equal(rcOf(['C:/rc/x']), null);
+  assert.equal(rcOf([]), null);
+});
+
+test('rcUrlOf: the latest connect line\'s link, else null (M9 fix 889)', () => {
+  const note = (text: string, url?: string): Step => ({ kind: 'command', text, at: null, ...(url === undefined ? {} : { url }) });
+  const turn = (steps: Step[]): StepTurn => ({ prompt: 'p', images: [], at: null, endAt: null, steps });
+  assert.equal(rcUrlOf([turn([note('a', 'https://claude.ai/code/1')]), turn([note('b', 'https://claude.ai/code/2'), note('renamed')])]), 'https://claude.ai/code/2');
+  assert.equal(rcUrlOf([turn([note('renamed')]), turn([{ kind: 'text', text: 'hi', at: null }])]), null);
+  assert.equal(rcUrlOf([]), null);
 });
 
 test('modelChipText: the model, with its effort when known', () => {
@@ -302,7 +335,7 @@ test('SENT_COMMANDS: the five built-ins first, and slashRows puts the skills aft
     { name: 'alpha', description: 'a' },
     { name: 'compact', description: 'shadowed by the built-in' },
   ]);
-  const builtIn = ['/compact', '/clear', '/init', '/recap', '/reload-skills', '/add-dir', '/cd', '/insights', '/install-slack-app', '/radio', '/reload-plugins', '/rename', '/statusline', '/stickers', '/team-onboarding'];
+  const builtIn = ['/compact', '/clear', '/init', '/recap', '/reload-skills', '/add-dir', '/cd', '/insights', '/install-slack-app', '/radio', '/reload-plugins', '/remote-control', '/rename', '/statusline', '/stickers', '/team-onboarding'];
   assert.deepEqual(
     rows.filter((r) => r.section === 'sent').map((r) => [r.name, r.skill]),
     [...builtIn.map((n) => [n, false]), ['/alpha', true]],
@@ -323,6 +356,10 @@ test('the built-ins carry their hints and kinds, and no name is listed twice (M9
   assert.equal(row('/rename')?.hint, '[name]');
   assert.equal(row('/rename')?.argument, false);
   assert.equal(row('/rename')?.section, 'sent');
+  // M9 fix 890: the one account-gated command listed, as a sent row.
+  assert.equal(row('/remote-control')?.hint, '[name]');
+  assert.equal(row('/remote-control')?.section, 'sent');
+  assert.equal(row('/remote-control')?.argument, false);
   assert.equal(row('/add-dir')?.argument, true);
   assert.equal(row('/add-dir')?.hint, '<path>');
   assert.equal(row('/compact')?.hint, '<optional custom summarization instructions>');
@@ -766,4 +803,24 @@ test('shellWords: a shell call\'s trimmed description, else null', () => {
   assert.equal(shellWords(withInput('Bash', { command: 'ls', description: '  ' })), null);
   assert.equal(shellWords(withInput('Bash', { command: 'ls' })), null);
   assert.equal(shellWords(withInput('Read', { file_path: 'a.ts', description: 'Read a' })), null);
+});
+
+const queuedStep: Step = { kind: 'queued', text: 'also', at: null };
+const continuedOf = (steps: Step[], hasPrompt: boolean) => [...continuedBubbles(timelineItems(steps, 'normal', false), hasPrompt)].sort();
+
+test('continuedBubbles: the near corner after a bubble of the same side, whatever rows lie between (M9 fix 891)', () => {
+  assert.deepEqual(continuedOf(stubSteps(), true), []);
+  // text, fold, text
+  assert.deepEqual(continuedOf([reply('a'), tool('Bash', res({ exitCode: 0 })), reply('b')], true), [2]);
+  assert.deepEqual(continuedOf([reply('a'), queuedStep, reply('b')], true), []);
+  assert.deepEqual(continuedOf([tool('Bash', res({ exitCode: 0 })), queuedStep], true), [1]);
+  assert.deepEqual(continuedOf([reply('a'), reply('b')], false), [1]);
+});
+
+test('imageOnlyPrompt: markers alone with images are bare, typed words or no images are not (M9 fix 891)', () => {
+  assert.equal(imageOnlyPrompt('[Image #1]', [{}]), true);
+  assert.equal(imageOnlyPrompt('[Image #1] [Image #2]', [{}, {}]), true);
+  assert.equal(imageOnlyPrompt('[Image #1] look', [{}]), false);
+  assert.equal(imageOnlyPrompt('[Image #1]', []), false);
+  assert.equal(imageOnlyPrompt('', []), false);
 });

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, dragOffset, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
+import { BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, dragOffset, dragPoint, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb } from '@emerald/shared';
 import { integerOption, parse, positionals, readText } from '../args.ts';
 import { browserTarget } from '../browser-target.ts';
@@ -33,6 +33,8 @@ const options = {
 const BROWSER_LEVEL = 63;
 // The first daemon and window that take drag and a snapshot's filter (M9 fixes 874 and 875).
 const BROWSER_DRAG_LEVEL = 72;
+// The first daemon and window that take drag from a point x,y (M9 fix 915).
+const BROWSER_POINT_LEVEL = 74;
 
 const USAGE = [
   'emmer browser <verb> [<args>] [--pane <id>] [--json]',
@@ -40,11 +42,11 @@ const USAGE = [
   "  snapshot [--name <text>] [--within <ref>]  the page's controls, each with a ref (@e1), its role, name, value and state, and its regions (@r1); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control",
   "  click <ref>                   a click at the control's centre",
   '  hover <ref>                   the pointer moved over the control',
-  '  drag <ref> <ref>|<dx>,<dy>    a press on the control, a move in steps and a release on the second control, or dx,dy CSS pixels from its centre (a negative dx after --)',
+  "  drag <ref>|<x>,<y> <ref>|<dx>,<dy>  a press on the control or at x,y in the page's CSS pixels, a move in steps and a release on the second control, or dx,dy CSS pixels from the start (a negative dx after --)",
   '  fill <ref> <text>|--stdin|--file <path>|--clear  the text typed into a field, in place of what it held; --clear empties it; a select takes the option by its value or text',
   '  key <key>                     one key: Enter, Escape, Tab, an arrow, a letter, with Ctrl+, Shift+ or Alt+ before it',
   '  eval <js>|--stdin|--file <path>  an expression run in the page; prints its value as JSON',
-  '  screenshot                    a PNG of the page under the emerald home; prints its path',
+  "  screenshot                    a PNG of the page under the emerald home; prints its path, the page's size in CSS pixels and the device pixels in one CSS pixel",
   '  wait <text|ref> [--timeout <s>]  until the text is on the page, in a field\'s value or an aria-label, or the control is on screen (10 s by default)',
   '  navigate <url> [--timeout <s>]   the page loaded at that URL (http://, https:// or host:port)',
   '  upload <ref> <path>           a file set on a file input',
@@ -132,6 +134,9 @@ export async function runBrowser(argv: string[]): Promise<number> {
     if (!isFile(file)) throw new CliError(`no file ${file}`);
     args[1] = file;
   }
+  if (verb === 'drag' && !/^@?e\d+$/.test(args[0]!) && dragPoint(args[0]!) === null) {
+    throw usageError(`drag starts at a ref or at x,y in the page's CSS pixels, such as @e7 or 120,300; got ${JSON.stringify(args[0])}`);
+  }
   if (verb === 'drag' && !/^@?e\d+$/.test(args[1]!) && dragOffset(args[1]!) === null) {
     throw usageError(`drag goes to a ref or to dx,dy in CSS pixels, such as @e7 or 0,-40; got ${JSON.stringify(args[1])}`);
   }
@@ -142,8 +147,9 @@ export async function runBrowser(argv: string[]): Promise<number> {
   if (v.within !== undefined && !BROWSER_FILTER_REF.test(v.within)) throw usageError('--within takes a ref such as @r1 or @e3');
   const filter: BrowserFilter = { ...(v.name === undefined ? {} : { name: v.name }), ...(v.within === undefined ? {} : { within: v.within }) };
   const filtered = v.name !== undefined || v.within !== undefined;
-  const needs = verb === 'drag' || filtered ? BROWSER_DRAG_LEVEL : BROWSER_LEVEL;
-  const what = verb === 'drag' ? 'emmer browser drag' : filtered ? 'emmer browser snapshot --name and --within' : 'emmer browser';
+  const fromPoint = verb === 'drag' && dragPoint(args[0]!) !== null;
+  const needs = fromPoint ? BROWSER_POINT_LEVEL : verb === 'drag' || filtered ? BROWSER_DRAG_LEVEL : BROWSER_LEVEL;
+  const what = fromPoint ? 'emmer browser drag from a point' : verb === 'drag' ? 'emmer browser drag' : filtered ? 'emmer browser snapshot --name and --within' : 'emmer browser';
   const own = process.env['EMERALD_SESSION_ID'];
   const { client, hello } = await connectHello();
   try {

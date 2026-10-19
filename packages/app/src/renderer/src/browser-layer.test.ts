@@ -97,3 +97,20 @@ test("a navigation keeps the record's profile and toolbar, and the toolbar flag 
   assert.deepEqual(shown, { kind: 'browser', url: 'http://a/', profile: 'b' });
   assert.equal('toolbar' in shown, false);
 });
+
+test('a navigation keeps the root for a page from the disk and drops it for a web page (M9 fix 896)', () => {
+  const local = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/two.html';
+  const v = { kind: 'browser', url: 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html', root: 'C:\\pages', profile: 'b' } as const;
+  assert.deepEqual(withPageUrl(v, local), { kind: 'browser', url: local, root: 'C:\\pages', profile: 'b' });
+  const web = withPageUrl(v, 'http://b/');
+  assert.deepEqual(web, { kind: 'browser', url: 'http://b/', profile: 'b' });
+  assert.equal('root' in web, false);
+  // Back from the web onto the page: the folder from the root ids seen.
+  const seen = (id: string) => (id === '0f1e2d3c-4b5a-4968-8776-655443322110' ? 'C:\\pages' : undefined);
+  assert.deepEqual(withPageUrl(web, v.url, seen), { kind: 'browser', url: v.url, root: 'C:\\pages', profile: 'b' });
+  // A page of another root id never takes this record's folder, and with
+  // no folder known the record stays as it was.
+  const other = 'emerald-file://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/x.html';
+  assert.deepEqual(withPageUrl(v, other, seen), v);
+  assert.deepEqual(withPageUrl(web, other, seen), web);
+});

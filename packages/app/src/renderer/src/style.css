@@ -82,6 +82,8 @@
   --daemon-bg: #4a2d5a;
   --history-glyph: #d97757;
   --review-hover: rgba(232, 163, 61, 0.08);
+  /* M9 fix 891: the sent chat bubble, the accent at 30 percent. */
+  --bubble-sent: rgba(232, 163, 61, 0.3);
   --review-comment: rgba(74, 144, 217, 0.1);
   --outside-line: #4a4a4a;
   --outside-ink: #6e6e6e;
@@ -177,6 +179,7 @@
   --daemon-bg: #4a2d5a; /* = Classic */
   --history-glyph: #8a8a8a; /* = --muted, the history row's facts line (M9 fix 595) */
   --review-hover: rgba(62, 207, 142, 0.08);
+  --bubble-sent: rgba(62, 207, 142, 0.3); /* the accent at 30 percent (M9 fix 891) */
   --review-comment: rgba(74, 144, 217, 0.1); /* = Classic */
   --outside-line: #434d48;
   --outside-ink: #68736e;
@@ -557,6 +560,10 @@ body,
 .file-view[data-zoom="scaled"] .file-image {
   max-width: none;
   max-height: none;
+}
+/* M9 fix 893: away from fit the inline size is exact; the flex host no longer shrinks the picture to its snapped height's width. */
+.file-view:not([data-zoom="fit"]) .file-image {
+  flex: none;
 }
 .file-view[data-cursor="zoom-in"] .file-image {
   cursor: zoom-in;
@@ -9078,8 +9085,8 @@ body.dragging-tab .tab {
    gives, in the order of what a sliver of a pane needs least: the
    state word at the fifth (the row and the shade face still say it,
    and the mark's colour and motion carry it on the title), the name at
-   the sixth with the reading, the folded roster, the seam and the cwd
-   (a pane too narrow to name has no room for a figure either). Only
+   the sixth with the reading, the folded roster and the seam (the cwd a
+   level sooner, with the state word, M9 fix 908) (a pane too narrow to name has no room for a figure either). Only
    then do the buttons give (M9 fix 840): the chat button at the eighth,
    hide and close at the ninth (a pane that narrow is one to zoom or
    shade, not close, and the keys and the menu still close it), the two
@@ -9803,6 +9810,11 @@ body.dragging-tab .tab {
 
 .markdown .md-fold[data-folded] > :not(:first-child) {
   display: none;
+}
+
+/* M9 fix 892: the block a reveal at a line landed on, lit as the editor's line is. */
+.markdown .md-line-flash {
+  background: var(--line-flash);
 }
 
 .markdown > .md-fold:first-child > :first-child {
@@ -12310,9 +12322,9 @@ body.dragging-session .browser-frame {
 .chat-view {
   --chat-column: 760px;
   --chat-dock: 712px;
-  --rail-dot: 7px;
-  --rail-cell: 9px;
-  --rail-inset: 18px;
+  --bubble-radius: 12px;
+  --bubble-radius-near: 4px;
+  --bubble-cap: 80%;
   --chip-height: 20px;
   position: absolute;
   inset: 0;
@@ -12358,36 +12370,44 @@ body.dragging-session .browser-frame {
 
 .chat-prompt-row {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
   min-width: 0;
 }
 
 .chat-prompt {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: var(--bubble-cap);
   min-width: 0;
-  padding: 8px 10px;
-  background: var(--title-bg);
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  padding: 8px 12px;
+  background: var(--bubble-sent);
+  border: none;
+  border-radius: var(--bubble-radius);
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.chat-prompt[data-bare] {
+  padding: 0;
+  background: none;
+}
+
+.chat-prompt[data-bare] .chat-prompt-images {
+  margin-top: 0;
+}
+
 .chat-prompt-time {
   flex: none;
-  margin-left: auto;
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
-/* The steps hang from the bubble on a dotted rail; each marker is
-   centred on it and has the ground behind it, so the rail stops there. */
+/* The steps sit at the column's content edge under the reply bubble (M9 fix 891, the handoff's A6); no rail, no dots. */
 .chat-rail {
-  margin-left: 4px;
-  padding-left: var(--rail-inset);
-  border-left: 1px dotted var(--line-strong);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -12397,35 +12417,6 @@ body.dragging-session .browser-frame {
 .chat-step {
   position: relative;
   min-width: 0;
-}
-
-.chat-dot {
-  position: absolute;
-  left: -22px;
-  top: 4.5px;
-  box-sizing: border-box;
-  width: var(--rail-dot);
-  height: var(--rail-dot);
-  border-radius: 50%;
-  background: var(--done);
-  box-shadow: 0 0 0 2px var(--bg);
-}
-
-.chat-dot[data-tone="error"] {
-  background: var(--error);
-}
-
-.chat-dot[data-tone="pending"] {
-  background: var(--idle);
-}
-
-.chat-dot[data-tone="thinking"] {
-  background: var(--bg);
-  border: 1px solid var(--idle);
-}
-
-.chat-dot[data-tone="blocked"] {
-  background: var(--blocked);
 }
 
 .chat-step[data-kind="tool"] {
@@ -12482,30 +12473,21 @@ body.dragging-session .browser-frame {
   overflow-wrap: anywhere;
 }
 
-/* The reply is rendered Markdown (M9 fix 716); the tick cell sits at the
-   top of the first block, whose top margin is zero, so it stays beside
-   the first line. */
+/* The reply is rendered Markdown (M9 fix 716) in a left bubble (M9 fix 891); the Markdown's outer margins are zero, so the padding is the bubble's alone. */
 .chat-reply {
+  box-sizing: border-box;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  background: var(--row-selected);
+  border-radius: var(--bubble-radius);
   color: var(--fg);
   overflow-wrap: anywhere;
 }
 
-.chat-tick-cell {
-  position: absolute;
-  left: -23px;
-  top: 0;
-  width: var(--rail-cell);
-  height: 1.45em;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-  color: var(--done);
-  font-size: 9px;
-}
-
-.chat-tick-cell::before {
-  content: '\2713';
+.chat-reply[data-continued] {
+  border-top-left-radius: var(--bubble-radius-near);
 }
 
 /* M9 fix 716: a reply's Markdown in the column's 13px, never the
@@ -12635,28 +12617,22 @@ body.dragging-session .browser-frame {
   color: var(--muted);
 }
 
-/* The live line, on a rail of its own under the last turn. */
+/* The live line at the column's edge, its mark inline before the word (M9 fix 891). */
 .chat-live {
-  position: relative;
-  margin-left: 4px;
-  padding-left: calc(var(--rail-inset) + 1px);
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   line-height: 16px;
 }
 
 .chat-live-mark {
-  position: absolute;
-  left: -6px;
-  top: 2px;
+  flex: none;
   width: 12px;
   height: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg);
 }
 
 .chat-live-word {
@@ -12764,20 +12740,10 @@ body.dragging-session .browser-frame {
   border-color: var(--focus);
 }
 
-/* M9 fix 690: the ask as a card on the rail (the handoff's section 6),
-   the options as the sidebar card's buttons at 12px. Its own rail, since
-   it follows the last turn. */
+/* M9 fix 690: the ask as a card (the handoff's section 6), the options as
+   the sidebar card's buttons at 12px. */
 .chat-ask-step {
-  margin-left: 4px;
-  padding-left: var(--rail-inset);
-  border-left: 1px dotted var(--line-strong);
   outline: none;
-}
-
-/* Centred on the step's own rail, the 1px border just left of it. */
-.chat-ask-step > .chat-dot {
-  left: -4px;
-  top: 12px;
 }
 
 .chat-ask {
@@ -12979,6 +12945,18 @@ body.dragging-session .browser-frame {
   background: var(--working);
 }
 
+/* M9 fix 889: remote control's chip, its dot in the pill's own colour. */
+.chat-chip[data-chip="rc"] .chat-chip-dot[data-state="active"] {
+  background: var(--done);
+}
+.chat-chip[data-chip="rc"] .chat-chip-dot[data-state="connecting"],
+.chat-chip[data-chip="rc"] .chat-chip-dot[data-state="reconnecting"] {
+  background: var(--working);
+}
+.chat-chip[data-chip="rc"] .chat-chip-dot[data-state="failed"] {
+  background: var(--error);
+}
+
 /* The view chip while its menu is open (M9 fix 714), and the mode and
    model chips' (fixes 743 and 744). */
 .chat-chip[data-chip="view"][data-open],
@@ -12989,8 +12967,7 @@ body.dragging-session .browser-frame {
 }
 
 /* A turn's tool calls folded into one row (M9 fix 714). A flex row, so
-   the ellipsis sits on the words and the rail's dot, outside the box at
-   the left, is not clipped. */
+   the ellipsis sits on the words. */
 .chat-fold {
   font: inherit;
   font-size: 12px;
@@ -13019,6 +12996,16 @@ body.dragging-session .browser-frame {
   background: none;
 }
 
+/* M9 fix 891: the fold's tone, which its dot carried, is in its text. */
+.chat-fold[data-tone="pending"] {
+  font-style: italic;
+  color: var(--working);
+}
+
+.chat-fold[data-tone="error"] {
+  color: var(--error);
+}
+
 .chat-fold:hover .chat-fold-text {
   color: var(--text-dim);
 }
@@ -13031,12 +13018,12 @@ body.dragging-session .browser-frame {
 
 /* M9 fixes 717 and 718: the timeline's thumbnails, an image result's
    under its tool row and a paste's on its prompt bubble, three to a
-   row, and the full size over the window on a click. */
+   row (a paste at the result's size since M9 fix 891), and the full size over the window on a click. */
 .chat-view {
   --chat-thumb-w: 176px;
   --chat-thumb-h: 110px;
-  --chat-paste-w: 88px;
-  --chat-paste-h: 55px;
+  --chat-paste-w: 176px;
+  --chat-paste-h: 110px;
 }
 
 .chat-thumb,
@@ -13044,8 +13031,6 @@ body.dragging-session .browser-frame {
   box-sizing: border-box;
   display: block;
   object-fit: cover;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
   background: var(--page-ground);
   cursor: zoom-in;
 }
@@ -13053,11 +13038,15 @@ body.dragging-session .browser-frame {
 .chat-thumb {
   width: var(--chat-thumb-w);
   height: var(--chat-thumb-h);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
 }
 
 .chat-prompt-thumb {
   width: var(--chat-paste-w);
   height: var(--chat-paste-h);
+  border: none;
+  border-radius: var(--bubble-radius);
 }
 
 .chat-prompt-images {
@@ -13363,8 +13352,8 @@ body.dragging-session .browser-frame {
 
 /* M9 fix 752: the reply a fold toggle kept in place, tinted once. The
    tint is a pseudo-element fading by opacity (the Style rule: a reply is
-   bigger than a glyph), under the text by its own stacking context, and
-   clear of the tick cell at the left. The class is removed by a timer. */
+   bigger than a glyph), under the text by its own stacking context. The
+   class is removed by a timer. */
 .chat-reply.chat-fold-flash {
   isolation: isolate;
 }
@@ -13372,9 +13361,9 @@ body.dragging-session .browser-frame {
 .chat-reply.chat-fold-flash::before {
   content: '';
   position: absolute;
-  inset: -2px -6px;
+  inset: 0;
   z-index: -1;
-  border-radius: 3px;
+  border-radius: inherit;
   background: var(--focus-header);
   opacity: 0;
   pointer-events: none;
@@ -13396,30 +13385,37 @@ body.dragging-session .browser-frame {
 }
 
 /* M9 fix 754: a message Claude read mid-turn, a small bubble in its turn
-   with the prompt's ground, and the person's messages still queued under
+   in the sent bubble (M9 fix 891), and the person's messages still queued under
    the live line, dashed and muted, each with Edit and Remove. */
 .chat-queued-step {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
   min-width: 0;
 }
 
 .chat-queued-bubble {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: var(--bubble-cap);
   min-width: 0;
-  font-size: 12px;
-  padding: 4px 8px;
-  background: var(--title-bg);
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  font-size: 13px;
+  padding: 8px 12px;
+  background: var(--bubble-sent);
+  border: none;
+  border-radius: var(--bubble-radius);
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.chat-queued-step[data-continued] .chat-queued-bubble {
+  border-top-right-radius: var(--bubble-radius-near);
+}
+
 .chat-queued-time {
   flex: none;
-  margin-left: auto;
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -13442,7 +13438,7 @@ body.dragging-session .browser-frame {
   min-width: 0;
   padding: 4px 8px;
   border: 1px dashed var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--bubble-radius);
   color: var(--muted);
 }
 
@@ -13624,11 +13620,12 @@ body.dragging-session .browser-frame {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
-  max-width: 85%;
-  padding: 8px 10px;
-  background: var(--title-bg);
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  box-sizing: border-box;
+  max-width: var(--bubble-cap);
+  padding: 8px 12px;
+  background: var(--bubble-sent);
+  border: none;
+  border-radius: var(--bubble-radius);
   color: var(--text);
 }
 
@@ -13894,7 +13891,6 @@ body.dragging-session .browser-frame {
 .chat-starting {
   font-size: 12px;
   color: var(--muted);
-  padding-left: calc(var(--rail-inset) + 1px);
 }
 
 /* The trust card's answers wait for the next screen read after a press. */
@@ -13987,6 +13983,15 @@ body.dragging-session .browser-frame {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* M9 fix 889: remote control's link in its divider, as a reply's link reads. */
+.chat-command-note-link {
+  color: var(--focus);
+  text-decoration: none;
+}
+.chat-command-note-link:hover {
+  text-decoration: underline;
 }
 
 /* M9 fix 821: what the agent card says beyond the graph's first cut. The
@@ -14207,7 +14212,9 @@ body.dragging-session .browser-frame {
 /* Replay from here (M9 fix 869): the strip above the rows while a replay
    plays, in the branch line's shape, its note on where the working record
    starts giving way first; and the rows whose commits have not landed yet,
-   dimmed with no transition, since several land at once. */
+   dimmed with no transition, since several land at once; since fix 905 a
+   play and pause button and a slider lead it, the slider moving four times
+   a second while the replay plays. */
 .commits-replay {
   display: flex;
   align-items: center;
@@ -14223,16 +14230,110 @@ body.dragging-session .browser-frame {
 }
 
 .commits-replay-text {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .commits-replay-note {
+  flex-shrink: 100;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-dim);
 }
 
+.commits-replay-play {
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.commits-replay-range {
+  flex: 0 1 120px;
+  min-width: 60px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--focus);
+}
+
 .commits-row[data-replay="dim"] {
   opacity: 0.3;
+}
+
+/* M9 fix 908: the pane title's name takes no shrink while anything else
+   on the line can still give. Flex shares the shrink by weight times
+   basis, so at fix 27's weight of 1 beside the cwd's 2000 the name lost a
+   fraction of a pixel to every pixel the cwd gave, and Chrome draws an
+   ellipsis at any overflow: ZacharyKeet… beside C…, two cut words. A
+   rigid name that does not fit makes the title itself overflow, which
+   squeeze.ts measures, so the level steps rather than a button being
+   clipped. At the fifth level the cwd goes with the state word and the
+   name gives alone, down to its eight-character floor; at the sixth it
+   goes, as before. */
+.pane-title[data-squeeze="0"] .pane-name,
+.pane-title[data-squeeze="1"] .pane-name,
+.pane-title[data-squeeze="2"] .pane-name,
+.pane-title[data-squeeze="3"] .pane-name,
+.pane-title[data-squeeze="4"] .pane-name {
+  flex-shrink: 0;
+}
+
+.pane-title[data-squeeze="5"] .pane-cwd {
+  display: none;
+}
+
+/* M9 fix 909: an Exited row's countdown, right before its Resume on whichever line the button is on, in the age's muted colour, never shrunk or wrapped. */
+.sidebar-row-removal {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* M9 fix 899: a pane's text size (--pane-text-scale, set on the pane only
+   off 14 px, and on a file tab's body) zooms the faces that are not a
+   terminal or an editor, as pictures, so their proportions hold. The zoom
+   sits inside each scroller, never on it, so a scroller's scrollTop and
+   its children's rects stay in one unit for the scroll reads in
+   ChatView.tsx and MarkdownView.tsx. */
+.chat-column,
+.chat-dock-inner,
+.pane-shade-face,
+.markdown-view > .markdown,
+.transcript-turns {
+  zoom: var(--pane-text-scale, 1);
+}
+
+/* M9 fix 903: the now line, the member's own latest words, set apart from the call phrases by a rule in the lane's colour and the body's tone, three lines at most; the age after it is muted. */
+.agent-card-now {
+  margin-top: 6px;
+  padding-left: 6px;
+  border-left: 2px solid var(--lane, var(--folder));
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.agent-card-now-age {
+  color: var(--muted);
+}
+
+.agent-card-now-age::before {
+  content: ' · ';
+}
+
+/* M9 fix 904: a subagent's handle, the first word on its box's state line and the first chip on its card, in the mono face so A1 and A11 line up. */
+.pane-shade-member-handle,
+.agent-card-handle {
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
 }

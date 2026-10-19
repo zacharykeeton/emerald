@@ -259,11 +259,16 @@ export function defaultView(path: string): FileTabView | null {
   return null;
 }
 
+// The views that cannot show a line (M9 fix 892): a file with a view of its own opens on Raw at a line, but markdown keeps Rendered, which scrolls to the block holding the line (MarkdownView).
+export function rawAtLine(path: string): boolean {
+  return defaultView(path) !== null && !isMarkdown(path);
+}
+
 // The view a path opened beside at a line takes (M9 fix 864): Raw for a
-// file with a view of its own, since only the editor shows a line, as a
-// tab's open at a line does (ui.ts openTab).
+// file with a view of its own other than markdown (fix 892), since only
+// the editor shows a line, as a tab's open at a line does (ui.ts openTab).
 export function fileViewAt(path: string, line: number | undefined): FilePaneView {
-  return line !== undefined && defaultView(path) !== null ? { kind: 'file', path, view: 'raw' } : { kind: 'file', path };
+  return line !== undefined && rawAtLine(path) ? { kind: 'file', path, view: 'raw' } : { kind: 'file', path };
 }
 
 // A markdown, SVG, transcript or JSON tab has a view; anything else is the

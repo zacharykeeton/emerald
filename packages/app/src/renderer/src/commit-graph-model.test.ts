@@ -218,6 +218,20 @@ test('sessionGraph (M68): six new sessions off one tip read as six lanes with si
   assert.ok(g.lines.every((l) => l.kind === 'start' && l.toRow === 6), 'six start stretches and no other line');
 });
 
+test("sessionGraph (M9 fix 907): a member named in membersOnLine sits on its session's line with no lane and no fork, a dashed stretch to the anchor, while the others keep their lanes", () => {
+  const commits = [c('p2', ['main']), c('p1')];
+  const parent = session({ id: 'p', commits: claim(['p2', 'p1']), team: [member({ id: 'explore', type: 'Explore' }), member({ id: 'r2', type: 'Explore', startedAt: 1 }), member({ id: 'wt', branch: 'wtb', startedAt: 2 })] });
+  const lanesOf = (g: ReturnType<typeof sessionGraph>) => g.lanes.map((l) => `${l.slot}:${l.block}:${l.sessionId}:${l.memberId}:${l.branch}`);
+  const plain = sessionGraph(commits, [parent], 'graph', ROOTS);
+  assert.deepEqual(picture(plain), ['explore~@1', 'r2~@2', 'wt~@3', 'p2@0', 'p1@0']);
+  assert.equal(plain.lanes.length, 4);
+  assert.deepEqual(wires(plain), ['session:0:3-4', 'fork:1:0-3>0~', 'fork:2:1-3>0~', 'fork:3:2-3>0~']);
+  const g = sessionGraph(commits, [parent], 'graph', ROOTS, null, new Map(), { membersOnLine: new Set(['p explore', 'p r2']) });
+  assert.deepEqual(picture(g), ['explore~@0', 'r2~@0', 'wt~@1', 'p2@0', 'p1@0']);
+  assert.deepEqual(lanesOf(g), ['0:0:p:null:null', '1:0:p:wt:wtb']);
+  assert.deepEqual(wires(g), ['session:0:3-4', 'pending:0:0-3~', 'pending:0:1-3~', 'fork:1:2-3>0~']);
+});
+
 test("sessionGraph (M68): a new session's commit-less members fork into its own dot, not into main's lane; a member of a session with commits still forks into the parent commit's lane", () => {
   const commits = [c('m1', ['main', 'wt1', 'wt2', 'wt3'])];
   const fresh = claude({ id: 'f', createdAt: 5, team: [member({ id: 'a1', branch: 'wt1', startedAt: 1 }), member({ id: 'a2', branch: 'wt2', startedAt: 2 })] });

@@ -1,7 +1,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, dragPoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -152,6 +152,8 @@ export const FILE_OPEN_ANSWER_LEVEL = 58;
 export const BROWSER_DRIVE_LEVEL = 63;
 // The first app level whose driver takes drag and a snapshot's filter (M9 fixes 874 and 875); a drag or a filtered snapshot to an older window is counted as no driver, since a window at 63 to 71 would ignore the filter and print the whole page as if filtered.
 export const BROWSER_DRAG_LEVEL = 72;
+// The first app level whose driver takes drag from a point x,y (M9 fix 915); a drag from a point to an older window is counted as no driver, since a window at 72 or 73 would refuse 120,300 as a bad ref.
+export const BROWSER_POINT_LEVEL = 74;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -577,7 +579,7 @@ export class PipeServer {
     const { paneId, verb, args, by, timeoutMs, filter } = req;
     const apps = this.subscribedCount('app');
     if (apps === 0) return Promise.resolve({ apps: 0 });
-    const need = verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
+    const need = verb === 'drag' && dragPoint(args[0] ?? '') !== null ? BROWSER_POINT_LEVEL : verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
     const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= need);
     const short = paneId.slice(0, 8);
     if (drivers.length === 0) {

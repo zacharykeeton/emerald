@@ -52,6 +52,7 @@ import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.t
 import type { ClosedSpot } from './close-countdown-model.ts';
 import { exitsToShell } from './exit-to-shell-model.ts';
 import { normalizePath } from './files-model.ts';
+import { localPageView } from './local-page-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
 import { flashCornerNote } from './ui.ts';
@@ -258,6 +259,15 @@ export function openViewBeside(view: PaneView): Promise<void> {
 // The same unrecorded (M9 fix 676), for openFileFromOutside, whose call
 // is `emmer open`'s and comes after an await.
 async function openViewBesideUnrecorded(view: PaneView): Promise<void> {
+  const paneId = await roomBesideFocused();
+  await editTab((t) => setPaneView(t, paneId, view), paneId);
+}
+
+// M9 fix 897: an HTML file rendered in a browser pane beside the focused pane, from the Files rail's folder, with the panes tab put in front so the page is on show.
+export async function openLocalPage(file: string, root: string): Promise<void> {
+  recordUse('open-view-beside');
+  const view = localPageView(getState().layout, root, file);
+  showTab(PANES);
   const paneId = await roomBesideFocused();
   await editTab((t) => setPaneView(t, paneId, view), paneId);
 }

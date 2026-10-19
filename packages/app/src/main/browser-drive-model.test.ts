@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_HOLD_IDLE_MS, BROWSER_OPTIONS_LISTED, EventLog, centre, downloadName, dragPath, eventLine, keySpec, parseRef, parseRegion, fillPlan, fromElectron, holdIdleMs, pageThrew, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode } from './browser-drive-model.ts';
+import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_HOLD_IDLE_MS, BROWSER_OPTIONS_LISTED, EventLog, centre, downloadName, dragPath, eventLine, keySpec, parseRef, parseRegion, fillPlan, fromElectron, holdIdleMs, pageThrew, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode } from './browser-drive-model.ts';
 
 // M9 fix 673: the events, the download names and the pause rule.
 
@@ -108,14 +108,15 @@ test('a snapshot lists regions with @r refs after the controls before them, the 
     pageLine,
     'heading "Drag" level=1',
     '@e1 button "Save draft"',
-    '@r1 dialog "Edit step"',
+    '@r1 dialog "Edit step" (3 rows)',
     '@e2 textbox "Step name" value="Saved one"',
     '@e3 button "Save"',
     '@e4 button "Cancel"',
-    '@r2 list "Steps"',
+    '@r2 list "Steps" (1 row)',
     '@e5 button "Step A"',
   ].join('\n'));
   assert.deepEqual([...snap.regions], [['r1', 20], ['r2', 30]]);
+  assert.deepEqual(snapshotOf(filterTree, filterPage).shown.find((r) => r.ref === 'r1'), { ref: 'r1', role: 'dialog', name: 'Edit step', states: [], rows: 3 });
   assert.equal(snap.found, true);
 });
 
@@ -129,12 +130,46 @@ test('--name keeps the rows whose name or value holds it, any case, under the wh
 
 test('--within keeps the region\'s own row and the rows inside it, and an id not on the page is not found (M9 fix 875)', () => {
   const within = { id: 20, ref: 'r1' };
-  assert.equal(snapshotOf(filterTree, filterPage, { within }).text, [pageLine, '@r1 dialog "Edit step"', '@e2 textbox "Step name" value="Saved one"', '@e3 button "Save"', '@e4 button "Cancel"'].join('\n'));
+  assert.equal(snapshotOf(filterTree, filterPage, { within }).text, [pageLine, '@r1 dialog "Edit step" (3 rows)', '@e2 textbox "Step name" value="Saved one"', '@e3 button "Save"', '@e4 button "Cancel"'].join('\n'));
   assert.equal(snapshotOf(filterTree, filterPage, { within, name: 'save' }).text, [pageLine, '@e2 textbox "Step name" value="Saved one"', '@e3 button "Save"'].join('\n'));
   assert.equal(snapshotOf(filterTree, filterPage, { within, name: 'zzz' }).text, [pageLine, 'no row under @r1 matches "zzz"'].join('\n'));
   assert.equal(snapshotOf(filterTree, filterPage, { within: { id: 20, ref: 'r1' } }).found, true);
   assert.equal(snapshotOf(filterTree, filterPage, { within: { id: 99, ref: 'r9' } }).found, false);
   assert.equal(snapshotOf(filterTree, filterPage, { within: { id: 31, ref: 'e5' }, name: 'nope' }).text, [pageLine, 'no row under @e5 matches "nope"'].join('\n'));
+});
+
+test('a region\'s line counts every row under it, nested regions and headings included, whatever the name filter and the cap (M9 fix 914)', () => {
+  const tree: AxNode[] = [
+    { nodeId: '1', role: v('RootWebArea'), childIds: ['2', '6', '7'] },
+    { nodeId: '2', role: v('form'), name: v('Outer'), childIds: ['3', '4'], backendDOMNodeId: 50 },
+    { nodeId: '3', role: v('heading'), name: v('H'), backendDOMNodeId: 56 },
+    { nodeId: '4', role: v('list'), name: v('Inner'), childIds: ['5'], backendDOMNodeId: 51 },
+    { nodeId: '5', role: v('button'), name: v('B'), backendDOMNodeId: 52 },
+    { nodeId: '6', role: v('navigation'), name: v('Nav'), backendDOMNodeId: 53 },
+    { nodeId: '7', role: v('dialog'), name: v('One'), childIds: ['8'], backendDOMNodeId: 54 },
+    { nodeId: '8', role: v('button'), name: v('X'), backendDOMNodeId: 55 },
+  ];
+  const page = { title: 'T', url: 'u' };
+  assert.equal(snapshotOf(tree, page).text, [
+    'page "T" u',
+    '@r1 form "Outer" (3 rows)',
+    'heading "H"',
+    '@r2 list "Inner" (1 row)',
+    '@e1 button "B"',
+    '@r3 navigation "Nav" (no rows)',
+    '@r4 dialog "One" (1 row)',
+    '@e2 button "X"',
+  ].join('\n'));
+  assert.equal(snapshotOf(tree, page, { name: 'outer' }).text, ['page "T" u', '@r1 form "Outer" (3 rows)'].join('\n'));
+  const buttons: AxNode[] = Array.from({ length: 502 }, (_, i) => ({ nodeId: `b${i}`, role: v('button'), name: v(`b${i}`), backendDOMNodeId: 61 + i }));
+  const big: AxNode[] = [
+    { nodeId: 'r', role: v('RootWebArea'), childIds: ['l'] },
+    { nodeId: 'l', role: v('list'), name: v('Big'), childIds: buttons.map((b) => b.nodeId), backendDOMNodeId: 60 },
+    ...buttons,
+  ];
+  const lines = snapshotOf(big, page).text.split('\n');
+  assert.equal(lines[1], '@r1 list "Big" (502 rows)');
+  assert.equal(lines.at(-1), '... 3 more not listed');
 });
 
 test('a ref is @e3 or e3, nothing else', () => {
@@ -161,6 +196,25 @@ test('keys: named, letters with their text, modifiers, and a key not on the list
 test('the centre of a quad, and a screenshot named by the local time', () => {
   assert.deepEqual(centre([10, 20, 30, 20, 30, 40, 10, 40]), { x: 20, y: 30 });
   assert.equal(screenshotName(new Date(2026, 9, 14, 9, 5, 7, 42)), 'browser-20261014-090507-042.png');
+});
+
+test('a PNG\'s size off its header, the device pixels in a CSS pixel and the screenshot\'s answer (M9 fix 915)', () => {
+  const png = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]).copy(png);
+  png.writeUInt32BE(1920, 16);
+  png.writeUInt32BE(1080, 20);
+  assert.deepEqual(pngSize(png), { width: 1920, height: 1080 });
+  const bad = Buffer.from(png);
+  bad[0] = 0x88;
+  assert.equal(pngSize(bad), null);
+  assert.equal(pngSize(png.subarray(0, 23)), null);
+  assert.equal(shotScale(1920, 1280), 1.5);
+  assert.equal(shotScale(1280, 1280), 1);
+  assert.equal(shotScale(1600, 1280), 1.25);
+  assert.equal(shotScale(100, 0), null);
+  assert.equal(screenshotLine('C:\\s\\a.png', { width: 1280, height: 720 }, 1.5), 'saved C:\\s\\a.png (1280x720 CSS pixels, 1.5 device pixels each)');
+  assert.equal(screenshotLine('C:\\s\\a.png', { width: 1280, height: 720 }, 1), 'saved C:\\s\\a.png (1280x720 CSS pixels, 1 device pixel each)');
+  assert.equal(screenshotLine('C:\\s\\a.png', null, null), 'saved C:\\s\\a.png (its size in CSS pixels not read)');
 });
 
 test('a drag moves in ten steps 16 ms apart, the last point the target itself (M9 fix 874)', () => {

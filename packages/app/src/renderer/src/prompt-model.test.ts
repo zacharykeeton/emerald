@@ -18,10 +18,10 @@ test('isBusy is working and waiting, the states that are taken as moving', () =>
   assert.equal(isBusy('done'), false);
 });
 
-test('sendRoute sends a plain prompt to a Claude at rest through the mod, and types the rest (M9 fix 781)', () => {
+test('sendRoute sends a plain prompt to a Claude at rest or at waiting through the mod, and types the rest (M9 fixes 781 and 911)', () => {
   const claude = (state: 'idle' | 'done' | 'errored' | 'working' | 'waiting' | 'needs-input') => ({ kind: 'claude' as const, state });
-  for (const state of ['idle', 'done', 'errored'] as const) assert.equal(sendRoute(claude(state), 'fix it', 65, false), 'mod', state);
-  for (const state of ['working', 'waiting', 'needs-input'] as const) assert.equal(sendRoute(claude(state), 'fix it', 65, false), 'typed', state);
+  for (const state of ['idle', 'done', 'errored', 'waiting'] as const) assert.equal(sendRoute(claude(state), 'fix it', 65, false), 'mod', state);
+  for (const state of ['working', 'needs-input'] as const) assert.equal(sendRoute(claude(state), 'fix it', 65, false), 'typed', state);
   assert.equal(sendRoute(claude('idle'), 'fix it', 64, false), 'typed', 'level 64');
   assert.equal(sendRoute({ kind: 'shell', state: 'idle' }, 'fix it', 65, false), 'typed', 'a shell');
   assert.equal(sendRoute(claude('idle'), '/compact', 65, false), 'typed', 'a command');

@@ -535,6 +535,21 @@ try {
   expect(leaves(await getLayout(s)).find((p) => p.id === foldPane).view.rows === undefined, 'rows on reads as no field on the record');
   await s.evalJs(`document.querySelector(${JSON.stringify(tabSel)}).click()`);
   await s.waitFor(`!!document.querySelector('.files-rail .commits-open-pane')`, 'the rail on the Activity tab again');
+  // M9 fix 899: the graph pane keeps its own Ctrl+wheel zoom; the pane's
+  // text size is not touched by it.
+  const graphView899 = foldSel + ' .commits-graph-view';
+  const graphWheel899 = (deltaY) =>
+    s.evalJs(`document.querySelector(${JSON.stringify(graphView899)}).dispatchEvent(new WheelEvent('wheel', { deltaY: ${deltaY}, ctrlKey: true, bubbles: true, cancelable: true }))`);
+  const graphScale899 = async () => Number(await s.evalJs(`document.querySelector(${JSON.stringify(graphView899)})?.dataset.scale ?? 'NaN'`));
+  const scale899 = await graphScale899();
+  await graphWheel899(-100);
+  await s.waitFor(`+document.querySelector(${JSON.stringify(graphView899)})?.dataset.scale > ${scale899}`, "the graph pane's own zoom steps in", 4000);
+  const foldText899 = await s.evalJs(`getComputedStyle(document.querySelector('[data-pane-id=${JSON.stringify(foldPane)}]')).getPropertyValue('--pane-text').trim()`);
+  const foldStored899 = JSON.parse((await s.evalJs(`localStorage.getItem('emerald.fontSizes')`)) ?? '{}')[foldPane];
+  expect(foldText899 === '' && foldStored899 === undefined, `fix 899: the graph pane's text size is untouched by its zoom, got ${JSON.stringify([foldText899, foldStored899])}`);
+  await graphWheel899(100);
+  await s.waitFor(`+document.querySelector(${JSON.stringify(graphView899)})?.dataset.scale === ${scale899}`, "the graph pane's zoom back", 4000);
+  step('M9 fix 899: the graph pane keeps its own Ctrl+wheel zoom; the pane text size is untouched');
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(foldPane)}] .pane-hide').click()`);
   await s.waitFor(`document.querySelectorAll('.pane[data-view="commits"]').length === 2`, 'the fold pane closed again');
   step('M9 fix 162 and 173: the rows button leaves the gutter alone with no labels and no leaders, five tips a row apart bare, the rail keeps its rows, and the flag rides the view record across a reload');
@@ -698,6 +713,28 @@ try {
   fileLeaf = leaves(await getLayout(s)).find((p) => p.id === notesPaneId);
   expect(fileLeaf.view.view === undefined, `the file's own view reads as no field on the record, got ${JSON.stringify(fileLeaf.view)}`);
   step("M9 fix 180: the row menu's Open in a pane puts a markdown file beside the focused pane, rendered, and Raw and Rendered ride the record");
+
+  // M9 fix 899: Ctrl+wheel over a file pane sizes its rendered text by
+  // zoom and its editor by font size, that pane alone.
+  const notesWheel899 = (sel, deltaY) =>
+    s.evalJs(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new WheelEvent('wheel', { deltaY: ${deltaY}, ctrlKey: true, bubbles: true, cancelable: true }))`);
+  const paneText899 = (sel) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).getPropertyValue('--pane-text').trim()`;
+  const otherFile899 = await s.evalJs(`[...document.querySelectorAll('.pane[data-view="file"]')].find((p) => p.dataset.paneId !== ${JSON.stringify(notesPaneId)}).dataset.paneId`);
+  const otherSel899 = `[data-pane-id=${JSON.stringify(otherFile899)}]`;
+  await notesWheel899(notesSel + ' .markdown-view', -100);
+  await s.waitFor(`${paneText899(notesSel)} === '15px'`, 'one Ctrl+wheel notch up over the rendered file pane', 3000);
+  const mdZoom899 = await s.evalJs(`parseFloat(getComputedStyle(document.querySelector(${JSON.stringify(notesSel + ' .markdown-view > .markdown')})).zoom)`);
+  expect(Math.abs(mdZoom899 - 1.0714) < 0.01, `fix 899: the rendered markdown zooms by the pane's scale, got ${mdZoom899}`);
+  expect((await s.evalJs(paneText899(otherSel899))) === '', 'fix 899: the other file pane keeps no size of its own');
+  await s.evalJs(`document.querySelector('${notesSel} .file-view-switch [data-view="raw"]').click()`);
+  await s.waitFor(`document.querySelector('${notesSel} .file-view')?.dataset.view === 'raw'`, 'the raw view for the editor size');
+  await s.waitFor(`document.querySelector(${JSON.stringify(notesSel + ' .file-editor')})?.emeraldEditor?.getRawOptions().fontSize === 14`, "the editor at Monaco's 13 scaled to 15 px", 3000);
+  await s.evalJs(`document.querySelector('${notesSel} .file-view-switch [data-view="rendered"]').click()`);
+  await s.waitFor(`document.querySelector('${notesSel} .file-view')?.dataset.view === 'rendered'`, 'rendered again after the editor size');
+  await notesWheel899(notesSel + ' .markdown-view', 100);
+  await s.waitFor(`${paneText899(notesSel)} === ''`, 'one notch down takes the file pane back to 14', 3000);
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(notesSel + ' .file-editor')})?.emeraldEditor?.getRawOptions().fontSize ?? null`)) === 13, "fix 899: the editor back at Monaco's 13");
+  step('M9 fix 899: Ctrl+wheel over a file pane sizes its rendered text and its editor, that pane alone');
 
   // M9 fix 389: the header gives its parts up in a fixed order as the
   // pane narrows, squeeze.ts's rule (fix 76) worn here as the pane

@@ -494,6 +494,54 @@ test('browser.run relays drag to a window at level 72 alone (M9 fix 874)', async
   }
 });
 
+test('browser.run relays a drag from a point to a window at level 74 alone (M9 fix 915)', async () => {
+  const pipe = `${PIPE}-browser-point`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { paneId: 'pane-1234567890', verb: 'drag' as const, args: ['120,300', '0,-60'], by: 'alpha', timeoutMs: 1000 };
+
+    // A window at 73 drives a drag from a ref and is counted as no driver for one from a point.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 73 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 0 });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'browser.requested'), []);
+    const refPushed = waitFor(old, (m) => m.type === 'browser.requested' && m.verb === 'drag');
+    const refReply = cli.request('browser.run', { ...ask, args: ['e1', '0,-60'] });
+    const refPush = (await refPushed) as { runId: number; args: string[] };
+    assert.deepEqual(refPush.args, ['e1', '0,-60']);
+    await old.request('browser.done', { runId: refPush.runId, answer: { ok: true, text: 'dragged @e1 by 0,-60' } });
+    assert.equal((await refReply).answered, true);
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 74 });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', ask);
+    const push = await requested;
+    const runId = (push as { runId: number }).runId;
+    assert.deepEqual(push, { type: 'browser.requested', runId, paneId: 'pane-1234567890', verb: 'drag', args: ['120,300', '0,-60'], by: 'alpha', timeoutMs: 1000 });
+    const answer = { ok: true, text: 'dragged from 120,300 by 0,-60' };
+    await app.request('browser.done', { runId, answer });
+    assert.deepEqual(await reply, { apps: 1, drivers: 1, answered: true, answer });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
 // M9 fix 781: a channel answering each push as the mod does, posting its
 // word on the submit (the hook sink hands it to modSubmitAnswered); a drop
 // says the prompt did not enter. And a push read without its id.

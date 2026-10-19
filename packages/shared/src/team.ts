@@ -216,3 +216,15 @@ export function memberLine(m: TeamMember, now: number, model: string | null = nu
   const { type, elapsed, task, activity } = memberParts(m, now);
   return [type, model, elapsed, task, activity].filter((part) => part !== null).join(' · ');
 }
+
+// M9 fix 904: the member's handle, A and its number, for its box, its card and emmer ls --team; null for a shell and for a member from an older daemon.
+export function memberHandle(m: TeamMember): string | null {
+  return m.kind === 'agent' && m.seq !== undefined ? `A${m.seq}` : null;
+}
+
+// M9 fix 904: a member's line under its row in emmer ls --team: an agent's handle and its id first, two spaces apart, the id being what the tech lead's SendMessage takes; a shell's line as memberLine gives it.
+export function memberListLine(m: TeamMember, now: number): string {
+  if (m.kind === 'shell') return memberLine(m, now);
+  const handle = memberHandle(m);
+  return handle === null ? `${m.id}  ${memberLine(m, now)}` : `${handle}  ${m.id}  ${memberLine(m, now)}`;
+}

@@ -13,9 +13,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ipcMain, webContents, type DownloadItem, type WebContents } from 'electron';
-import { browserUrl, dragOffset } from '@emerald/shared';
+import { browserUrl, dragOffset, dragPoint, stepZoomLevel } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb, Requests, ServerMessage } from '@emerald/shared';
-import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, dragPath, FILL_TARGET_FN, fillPlan, fromElectron, holdIdleMs, keySpec, pageThrew, parseRef, parseRegion, pauseFor, screenshotName, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type FillTarget, type SnapshotFilter, type SnapshotRow } from './browser-drive-model.ts';
+import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, dragPath, FILL_TARGET_FN, fillPlan, fromElectron, holdIdleMs, keySpec, pageThrew, parseRef, parseRegion, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type FillTarget, type SnapshotFilter, type SnapshotRow } from './browser-drive-model.ts';
 
 // The pane's driven mark, pushed to the window as emerald:browser-drive.
 export type DriveState = { by: string; running: boolean; paused: boolean } | null;
@@ -163,6 +163,19 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
     contents.on('did-navigate', () => {
       const h = holder();
       if (h !== null) h[1].navigations += 1;
+    });
+    // M9 fix 899: Ctrl+wheel over the page is its page zoom, in the window's
+    // steps (shared zoom.ts, fix 900); Electron only reports the wheel.
+    // Electron 44 emits zoom-changed twice for one wheel on a guest, under a
+    // millisecond apart with one listener (read on a scratch driver), so an
+    // echo within 8 ms is dropped. It fires only for a wheel with ticks, as
+    // a mouse sends; a CDP mouseWheel carries none and zooms nothing.
+    let lastZoomAt = -Infinity;
+    contents.on('zoom-changed', (_e, direction) => {
+      const now = performance.now();
+      if (now - lastZoomAt < 8) return;
+      lastZoomAt = now;
+      contents.setZoomLevel(stepZoomLevel(Math.round(contents.getZoomLevel()), direction === 'in' ? 1 : -1));
     });
     contents.on('console-message', (e) => {
       if (e.level !== 'error') return;
@@ -533,8 +546,18 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
         const dir = path.join(opts.home, 'screenshots');
         fs.mkdirSync(dir, { recursive: true });
         const file = path.join(dir, screenshotName(new Date()));
-        fs.writeFileSync(file, image.toPNG());
-        return { ok: true, text: file, data: { path: file } };
+        const png = image.toPNG();
+        fs.writeFileSync(file, png);
+        // M9 fix 915: the page's size in CSS pixels, so a point read off the image converts to what a drag from a point takes.
+        let css: { width: number; height: number } | null = null;
+        try {
+          const res = await send('Runtime.evaluate', { expression: '[innerWidth, innerHeight]', returnByValue: true });
+          const value = (res['result'] as { value?: unknown }).value;
+          if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'number' && value[0] > 0 && value[1] > 0) css = { width: value[0], height: value[1] };
+        } catch {}
+        const size = pngSize(png);
+        const scale = css === null || size === null ? null : shotScale(size.width, css.width);
+        return { ok: true, text: screenshotLine(file, css, scale), data: { path: file, ...(css === null || scale === null ? {} : { width: css.width, height: css.height, scale }) } };
       }
       case 'wait': {
         const started = Date.now();
@@ -582,11 +605,13 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       }
       case 'drag': {
         // M9 fix 874: a press, a move in steps and a release, the shape a drag-and-drop library such as dnd-kit takes as a drag (it starts past a few pixels of move).
-        const from = resolveRef(p, a);
+        // M9 fix 915: or from a point x,y on the page, for a canvas or a map with no rows.
+        const point = dragPoint(a);
+        const from = point === null ? resolveRef(p, a) : null;
         const offset = dragOffset(b);
         const onto = offset === null ? resolveRef(p, b) : null;
         const pause = () => new Promise((resolve) => setTimeout(resolve, BROWSER_DRAG_PAUSE_MS));
-        const start = await boxCentre(send, from);
+        const start = point ?? (await boxCentre(send, from!));
         await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: start.x, y: start.y, button: 'left', buttons: 1, clickCount: 1 });
         let at = start;
         try {
@@ -606,7 +631,8 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
             await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: 0, clickCount: 1 });
           } catch {}
         }
-        return { ok: true, text: onto === null ? `dragged ${described(from)} by ${b}` : `dragged ${described(from)} onto ${described(onto)}` };
+        const who = from === null ? `from ${a}` : described(from);
+        return { ok: true, text: onto === null ? `dragged ${who} by ${b}` : `dragged ${who} onto ${described(onto)}` };
       }
       case 'events':
       case 'resume':

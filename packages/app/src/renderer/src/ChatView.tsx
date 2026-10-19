@@ -3,9 +3,11 @@ import { contextWords, describeState, effortFold, effortState, folderName, forma
 import type { EffortState, QueueState, SessionInfo, SessionState, Step, StepState, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendCtrlC, sendPrompt, typeInto } from './actions.ts';
 import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
-import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
+import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, continuedBubbles, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
+import { rcOf, rcUrlOf } from './chat-model.ts';
+import type { ReactNode } from 'react';
 import type { ChatMode, FoldItem, PendingItem, SlashRow } from './chat-model.ts';
 import { CARRY_MS, CARRY_POLL_MS, carryRead, stopCarry } from './chat-model.ts';
 import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
@@ -14,6 +16,7 @@ import type { MentionRow } from './ChatMenus.tsx';
 import type { SkillEntry, TailMark } from '../../preload/api.ts';
 import { parentPath } from './files-model.ts';
 import { ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
+import { openWebLink } from './ChatParts.tsx';
 import { pendingEdit } from './chat-hunk.ts';
 import { LIVE_ROWS_CAP, dropTaken, liveTurns } from './chat-feed.ts';
 import type { LiveRow } from './chat-feed.ts';
@@ -221,6 +224,9 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // guess is off then), else the pty scanner's or the screen's.
   const liveWord = session.liveVerb ?? spinner?.word ?? null;
   const mode = screen === null ? null : modeOf(screen.rows);
+  // M9 fix 889: remote control's pill, off the same screen read.
+  const rc = screen === null ? null : rcOf(screen.rows);
+  const rcUrl = useMemo(() => rcUrlOf(turns), [turns]);
   const askScreen = screen !== null && screen.sentAt >= askFrom.current ? screen : null;
 
   // The scroll sticks to the end unless the person has scrolled up, read
@@ -543,7 +549,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     setBox('');
     lastSent.current = Date.now();
     setChips([]);
-    const menu = opensMenu(prompt);
+    const menu = opensMenu(prompt, rc?.state === 'active');
     // M9 fix 782: a send drops the refused and unseen bubbles, then draws
     // its own unless it is a command or empty.
     const id = (nextPending.current += 1);
@@ -1410,6 +1416,22 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             {modelMenu !== null && (
               <Menu x={modelMenu.x} y={modelMenu.y} above items={modelMenuItems} onClose={() => setModelMenu(null)} className="chat-model-menu" data={{ menu: 'chat-model' }} anchor={modelChipRef.current} />
             )}
+            {rc !== null && (
+              <button
+                type="button"
+                className="chat-chip chat-chip-plain"
+                data-chip="rc"
+                data-state={rc.state}
+                onMouseDown={keepKeys}
+                title={rcUrl ?? 'Remote Control; its link is in the terminal'}
+                onClick={(ev) => {
+                  if (rcUrl !== null) openWebLink(rcUrl, paneId, ev.ctrlKey);
+                }}
+              >
+                <span className="chat-chip-dot" data-state={rc.state} />
+                <span className="chat-chip-word">{rc.word}</span>
+              </button>
+            )}
             {showViewChip && (
               <button ref={viewChipRef} type="button" className="chat-chip" data-chip="view" data-open={viewMenu !== null || undefined} onMouseDown={keepKeys} title="What the timeline shows (Ctrl+O)" onClick={openViewMenu}>
                 <span className="chat-chip-word">{CHAT_MODE_WORDS[view]}</span>
@@ -1615,7 +1637,6 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
         }
       }}
     >
-      <span className="chat-dot" data-tone="blocked" />
       <div className="chat-ask" {...links.handlers}>
         {editCard !== null ? (
           <EditCardHead session={session} edit={editCard} />
@@ -1785,13 +1806,16 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   const links = usePathLinks(paneId);
+  const bare = imageOnlyPrompt(turn.prompt, turn.images);
+  const items = timelineItems(turn.steps, mode, open);
+  const continued = continuedBubbles(items, turn.prompt !== '');
   return (
     <div className="chat-turn" data-turn-index={index} {...links.handlers}>
       {/* M9 fix 798: a bare turn holds a command's note made before the first prompt. */}
       {turn.prompt !== '' && (
         <div className="chat-prompt-row">
-          <div className="chat-prompt">
-            {turn.prompt}
+          <div className="chat-prompt" data-bare={bare ? '' : undefined}>
+            {bare ? null : turn.prompt}
             <PromptImages images={turn.images} />
           </div>
           {(when !== null || length !== null) && <span className="chat-prompt-time">{[when, length].filter((x) => x !== null).join(' · ')}</span>}
@@ -1801,7 +1825,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
         <div className="chat-rail">
           {/* An image result's thumbnail follows its tool row, and in a
               folded mode the closed fold's images item (M9 fix 717). */}
-          {timelineItems(turn.steps, mode, open).map((item, i) =>
+          {items.map((item, i) =>
             item.kind === 'fold' ? (
               <ChatFold key={i} fold={item} onToggle={onToggle} />
             ) : item.kind === 'images' ? (
@@ -1812,7 +1836,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
               </Fragment>
             ) : (
               <Fragment key={i}>
-                <ChatStep step={item.step} paneId={paneId} session={session} />
+                <ChatStep step={item.step} paneId={paneId} session={session} continued={continued.has(i)} />
                 <ChatThumbRow step={item.step} />
               </Fragment>
             ),
@@ -1825,12 +1849,11 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
 }
 
 // M9 fix 714: a turn's tool calls folded into one row; a click opens it.
-// Fix 753: its dot wears the folded calls' tone (foldTone). Fix 797: one
+// Fix 753: the row wears the folded calls' tone (foldTone) on data-tone, in its text since fix 891. Fix 797: one
 // row per stretch, under Claude Code's own sentence (foldText).
 function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) {
   return (
-    <button type="button" className="chat-step chat-fold" data-kind="fold" data-open={fold.open || undefined} onClick={onToggle}>
-      <span className="chat-dot" data-tone={fold.tone} />
+    <button type="button" className="chat-step chat-fold" data-kind="fold" data-tone={fold.tone} data-open={fold.open || undefined} onClick={onToggle}>
       <span className="chat-fold-text">{fold.text}</span>
       {fold.added + fold.removed > 0 && (
         <>
@@ -1843,33 +1866,55 @@ function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) 
   );
 }
 
-function ChatStep({ step, paneId, session }: { step: Step; paneId: string; session: SessionInfo }) {
+function ChatStep({ step, paneId, session, continued }: { step: Step; paneId: string; session: SessionInfo; continued: boolean }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
-        <span className="chat-dot" data-tone="thinking" />
         <div className="chat-thinking-head">{step.ms === null ? 'Thought' : `Thought for ${Math.round(step.ms / 1000)}s`}</div>
         {step.text.trim() !== '' && <div className="chat-thinking-text">{step.text}</div>}
       </div>
     );
   }
   if (step.kind === 'text' || step.kind === 'update') {
-    return <ChatReply step={step} paneId={paneId} session={session} />;
+    return <ChatReply step={step} paneId={paneId} session={session} continued={continued} />;
   }
   if (step.kind === 'command') {
     // M9 fix 798: what a command printed, its first line as a centred
     // divider across the rail, the whole of it in the tooltip.
-    const [first] = step.text.split('\n');
+    const [first = ''] = step.text.split('\n');
+    // M9 fix 889: remote control's connect line carries its URL, drawn as
+    // a link in place in the first line, or after it when the line lacks it.
+    const url = step.url;
+    let text: ReactNode = first;
+    if (url !== undefined) {
+      const at = first.indexOf(url);
+      const link = (
+        <a className="chat-command-note-link" href={url}>
+          {url}
+        </a>
+      );
+      text =
+        at >= 0 ? (
+          <>
+            {first.slice(0, at)}
+            {link}
+            {first.slice(at + url.length)}
+          </>
+        ) : (
+          <>
+            {first} {link}
+          </>
+        );
+    }
     return (
-      <div className="chat-step chat-command-note" data-kind="command" title={step.text}>
-        <span className="chat-command-note-text">{first}</span>
+      <div className="chat-step chat-command-note" data-kind="command" data-url={url} title={step.text}>
+        <span className="chat-command-note-text">{text}</span>
       </div>
     );
   }
   if (step.kind === 'note') {
     return (
       <div className="chat-step chat-note" data-kind="note">
-        <span className="chat-dot" data-tone="thinking" />
         {step.text}
       </div>
     );
@@ -1878,8 +1923,7 @@ function ChatStep({ step, paneId, session }: { step: Step; paneId: string; sessi
     // M9 fix 754: a message Claude read mid-turn, a small bubble in place.
     const when = timeOf(step.at);
     return (
-      <div className="chat-step chat-queued-step" data-kind="queued">
-        <span className="chat-dot" data-tone="thinking" />
+      <div className="chat-step chat-queued-step" data-kind="queued" data-continued={continued ? '' : undefined}>
         <div className="chat-queued-bubble">{step.text}</div>
         <span className="chat-queued-time">{when === null ? 'sent mid-turn' : `sent mid-turn · ${when}`}</span>
       </div>
@@ -1890,7 +1934,6 @@ function ChatStep({ step, paneId, session }: { step: Step; paneId: string; sessi
     // message as one line; the output link opens like any chat path.
     return (
       <div className="chat-step chat-notification" data-kind="notification" data-source={step.source} data-tone={step.tone}>
-        <span className="chat-dot" data-tone={step.tone === 'error' ? 'error' : 'thinking'} />
         <span className="chat-notification-text" title={step.title}>
           {step.text}
         </span>
@@ -1916,8 +1959,7 @@ function ChatStep({ step, paneId, session }: { step: Step; paneId: string; sessi
   // under it, as Claude Code draws them.
   const words = shellWords(step);
   return (
-    <div className="chat-step" data-kind="tool" data-tool={step.name} data-described={words === null ? undefined : ''}>
-      <span className="chat-dot" data-tone={tone} />
+    <div className="chat-step" data-kind="tool" data-tool={step.name} data-tone={tone} data-described={words === null ? undefined : ''}>
       <span className="chat-tool-name">{step.name}</span>
       <span className={linked === null ? 'chat-tool-arg' : 'chat-tool-arg chat-path'} data-path={linked ?? undefined} title={step.arg}>
         {words ?? step.arg}

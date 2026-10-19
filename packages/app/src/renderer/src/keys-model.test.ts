@@ -101,7 +101,27 @@ test('every action has a prefixed key and the table has no duplicate chords', ()
       assert.ok(!seenPlain.has(q), `duplicate plain chord for ${b.action}`);
       seenPlain.add(q);
     }
+    if (b.alias !== undefined) {
+      const q = JSON.stringify(b.alias);
+      assert.ok(!seenPlain.has(q), `duplicate plain chord (alias) for ${b.action}`);
+      seenPlain.add(q);
+    }
   }
+});
+
+test('Ctrl+= and Ctrl+- zoom the window, with the Shift forms as aliases, and the text size keeps the prefix (M9 fix 900)', () => {
+  assert.equal(matchPlain(key('Equal', { ctrlKey: true })), 'window-zoom-in');
+  assert.equal(matchPlain(key('Equal', { ctrlKey: true, shiftKey: true })), 'window-zoom-in');
+  assert.equal(matchPlain(key('Minus', { ctrlKey: true })), 'window-zoom-out');
+  assert.equal(matchPlain(key('Minus', { ctrlKey: true, shiftKey: true })), 'window-zoom-out');
+  assert.equal(matchPlain(key('Digit0', { ctrlKey: true })), 'window-zoom-reset');
+  assert.equal(matchPlain(key('Digit0', { ctrlKey: true, shiftKey: true })), null, 'Windows may hold Ctrl+Shift+0');
+  assert.equal(matchPrefixed(key('Equal')), 'text-bigger');
+  assert.equal(matchPrefixed(key('Equal', { shiftKey: true })), 'window-zoom-in');
+  assert.equal(plainKeyFor('text-bigger'), '');
+  assert.equal(plainKeyFor('text-smaller'), '');
+  assert.equal(plainKeyFor('text-reset'), '');
+  assert.equal(plainKeyFor('window-zoom-in'), 'Ctrl+=');
 });
 
 test('isModifierKey', () => {

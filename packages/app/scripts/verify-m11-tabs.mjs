@@ -124,6 +124,21 @@ try {
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === undefined && !document.querySelector('.tab-file[data-dirty]')`, 'undo clears the mark', 3000);
   step('the editor takes typing and marks the tab dirty; the disk waits for a save, and an undo clears the mark');
 
+  // M9 fix 899: Ctrl+wheel over a file tab sizes its editor, the size kept
+  // by the file's path since a tab has no pane.
+  const tabWheel899 = (deltaY) =>
+    s.evalJs(`document.querySelector('.file-editor').dispatchEvent(new WheelEvent('wheel', { deltaY: ${deltaY}, ctrlKey: true, bubbles: true, cancelable: true }))`);
+  const bodyText899 = `getComputedStyle(document.querySelector('.file-body')).getPropertyValue('--pane-text').trim()`;
+  await tabWheel899(-100);
+  await s.waitFor(`${bodyText899} === '15px' && document.querySelector('.file-editor').emeraldEditor.getRawOptions().fontSize === 14`, 'one Ctrl+wheel notch up over the file tab', 3000);
+  const tabStored899 = JSON.parse((await s.evalJs(`localStorage.getItem('emerald.fontSizes')`)) ?? '{}');
+  expect(Object.keys(tabStored899).some((k) => k.startsWith('file:') && tabStored899[k] === 15), `fix 899: the tab's size is kept under its path, got ${JSON.stringify(tabStored899)}`);
+  await tabWheel899(100);
+  await s.waitFor(`${bodyText899} === '' && document.querySelector('.file-editor').emeraldEditor.getRawOptions().fontSize === 13`, 'one notch down takes the tab back', 3000);
+  const tabBack899 = JSON.parse((await s.evalJs(`localStorage.getItem('emerald.fontSizes')`)) ?? '{}');
+  expect(!Object.keys(tabBack899).some((k) => k.startsWith('file:')), `fix 899: a tab back at 14 leaves no file: key, got ${JSON.stringify(tabBack899)}`);
+  step('M9 fix 899: Ctrl+wheel over a file tab sizes its editor, kept by path');
+
   // A write on disk shows without a refresh.
   fs.writeFileSync(hello, '{\n  "a": 1,\n  "b": "two",\n  "c": [1, 2, 3]\n}\n');
   await s.waitFor(`Number(document.querySelector('.file-view')?.dataset.lines) === 6`, 'the re-read after a change on disk', 3000);
@@ -320,10 +335,8 @@ try {
     await s.waitFor(`document.querySelector('.file-view').dataset.scale === ${JSON.stringify(want)}`, `Ctrl+wheel steps the picture to ${want}`, 4000);
   }
   const z1 = await zoomRead();
-  // Within a pixel of 990 (M9 fix 850): the flex host shrinks the picture
-  // to its height's 13.2 px snapped down to 13.1875 times the 75 to 1
-  // ratio, 989.06 px wide.
-  expect(z1.zoom === 'scaled' && z1.scale === '0.33' && Math.abs(z1.w - 990) <= 1 && z1.chip === '33%', `fix 820: two Ctrl+wheel steps from fit take the picture to 33 percent about the pointer, got ${JSON.stringify(z1)}`);
+  // Within half a pixel of 990 (M9 fix 893): the inline width is kept; before flex: none the host shrank it to 989.06 px, its height's 13.2 px snapped to 13.1875 times the 75 to 1 ratio.
+  expect(z1.zoom === 'scaled' && z1.scale === '0.33' && Math.abs(z1.w - 990) <= 0.5 && z1.chip === '33%', `fix 820: two Ctrl+wheel steps from fit take the picture to 33 percent about the pointer, got ${JSON.stringify(z1)}`);
   console.log('fix 820 picture point under the pointer after the wheel', JSON.stringify(await s.evalJs(`(() => { const r = document.querySelector('img.file-image').getBoundingClientRect(); return { x: ${wheelAt.x}, imageLeft: Math.round(r.left), width: Math.round(r.width) }; })()`)));
   await s.evalJs(`document.querySelector('.file-image-host').focus()`);
   await s.key('0', 'Digit0', 48);
@@ -343,6 +356,7 @@ try {
   await s.evalJs(`(() => { const h = document.querySelector('.file-image-host'); h.scrollLeft = 0; h.scrollTop = 0; })()`);
   await s.screenshot('m11-svg-300.png');
   console.log(`fix 850 SVG at 300 percent, data-pixelated ${svg300.pixelated}`);
+  expect(svg300.pixelated === false, `fix 893: the SVG at 300 percent carries no data-pixelated, got ${JSON.stringify(svg300)}`);
   await s.key('0', 'Digit0', 48);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, 'fix 850: 0 goes back to fit from 300 percent', 4000);
   step('fix 820: Ctrl+wheel takes a picture through its own zoom steps about the pointer, = steps it, 0 and the chip go back to fit, and the cursor shows a magnifier at fit; fix 850: the steps run a tenth to eight times, = takes a wide SVG to 300 percent, and a 1 by 1 PNG\'s chip reads 100%');

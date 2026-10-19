@@ -21,8 +21,9 @@ test('a session pane lists the menu in order, the key items naming their binding
   assert.equal(menuHint(items.find((i) => i.run === 'split-right')!), 'Ctrl+Shift+E');
   assert.equal(menuHint(items.find((i) => i.run === 'rename')!), undefined);
   // M9 fix 390: always shown, disabled at the default with a title saying
-  // so, and listed under Keys since it doubles the Ctrl+0 chord.
-  assert.equal(menuHint(items.find((i) => i.run === 'text-reset')!), 'Ctrl+0');
+  // so. Since fix 900 the reset has the prefix's 0 alone, Ctrl+0 being the
+  // window's zoom, so the item carries no plain chord.
+  assert.equal(menuHint(items.find((i) => i.run === 'text-reset')!), '');
   assert.equal(items.find((i) => i.run === 'text-reset')?.disabled, true);
   assert.equal(items.find((i) => i.run === 'text-reset')?.title, 'Already at 14 px');
   const changed = sessionPaneMenu({ session: session(), sessionId: 's1', zoomed: false, onlyPane: false, splitKind: 'shell', atDefaultFontSize: false });
@@ -82,6 +83,20 @@ test('a view pane offers its own items first: the chrome toggle, the file as a t
   const file = viewPaneMenu({ kind: 'file', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' });
   assert.equal(file[0]?.run, 'open-as-tab');
   assert.equal(file.find((i) => i.run === 'hide')?.title, 'Close this pane; the file stays in the rail');
+  // M9 fix 899: a file pane's text follows the pane's size, with the
+  // session pane's way back right after Focus; no other view has it.
+  const sized = viewPaneMenu({ kind: 'file', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell', atDefaultFontSize: false });
+  const zoomAt = sized.findIndex((i) => i.run === 'zoom');
+  assert.equal(sized[zoomAt + 1]?.run, 'text-reset');
+  assert.equal(sized[zoomAt + 1]?.disabled, false);
+  assert.equal(sized[zoomAt + 1]?.title, undefined);
+  const reset = file.find((i) => i.run === 'text-reset');
+  assert.equal(reset?.disabled, true, 'the fact absent reads as at the default');
+  assert.equal(reset?.title, 'Already at 14 px');
+  for (const kind of ['commits', 'activity', 'browser'] as const) {
+    const items = viewPaneMenu({ kind, folder: kind === 'commits' ? 'C:\\w' : null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell', atDefaultFontSize: false });
+    assert.ok(!items.some((i) => i.run === 'text-reset'), `no Reset text size on a ${kind} pane`);
+  }
 });
 
 test('the close and hide tooltips', () => {

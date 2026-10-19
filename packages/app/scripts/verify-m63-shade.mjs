@@ -42,7 +42,7 @@ const rightClick = (sel) => s.evalJs(`(() => { const el = ${q(sel)}; if (!el) re
 const menuItem = (label) => s.evalJs(`(() => { const items = [...document.querySelectorAll('.menu-item')]; const it = items.find((i) => i.textContent.trim().startsWith(${JSON.stringify(label)})); if (!it) return false; it.click(); return true; })()`);
 const hostVisibility = (paneId) => s.evalJs(`(() => { const h = ${q(paneSel(paneId) + ' .term-host')}; return h ? getComputedStyle(h).visibility : null; })()`);
 // A real press and release at the element's centre, for the focus a
-// synthetic click() does not carry (the pane focuses on mousedown).
+// synthetic click() does not carry (the pane focuses on pointerdown, M9 fix 902).
 const realClick = async (sel) => {
   const c = await s.evalJs(`(() => { const r = ${q(sel)}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   await s.click(c.x, c.y);
@@ -616,6 +616,13 @@ try {
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(rowSel654 + ' .sidebar-row-member')}).length === 0`, 'the team folded away');
   step("M9 fix 654: the shade's face carries the row's activity line under the state word, and the fork's box and its team line carry its latest tool call");
 
+  // M9 fix 904: the fork's box leads its state line with its handle. The
+  // prompt above dropped the returned shade-a1, so a number counted from
+  // the team's order would read A1 here; the daemon's record keeps A2.
+  const handle904a = await s.evalJs(`(() => { const first = ${q(paneSel(p1) + ' .pane-shade-member[data-member="shade-a2"] .pane-shade-member-line')}?.firstElementChild; return first ? { cls: first.className, text: first.textContent } : null; })()`);
+  expect(handle904a !== null && handle904a.cls === 'pane-shade-member-handle' && handle904a.text === 'A2', `fix 904: shade-a2's state line leads with A2, got ${JSON.stringify(handle904a)}`);
+  step("M9 fix 904: the fork's box leads its state line with its handle, A2, kept after the returned A1 was dropped");
+
   // M9 fix 764: the team line's activity gives way before its task. A
   // second running member with a long task and a long Bash phrase, the
   // team unfolded, and its line read at three sidebar widths: at none may
@@ -720,6 +727,9 @@ try {
       !card835.price,
     `fix 835: the card says the first three lines of the prompt, the model resolved before any request and the two calls before the latest, got ${JSON.stringify(card835)}`,
   );
+  // M9 fix 904: the Agent call made shade-a3 the session's third agent.
+  const handle904b = await s.evalJs(`document.querySelector('.agent-popover[data-member="shade-a3"] .agent-card-handle')?.textContent ?? null`);
+  expect(handle904b === 'A3', `fix 904: shade-a3's card leads its chips with A3, got ${JSON.stringify(handle904b)}`);
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
   await s.waitFor(`!document.querySelector('.agent-popover')`, "shade-a3's card closes after the mouse leaves");
   step("M9 fix 835: a member's card says the first three lines it was asked, its model off the Agent call before any request, and its two calls before the latest");
@@ -968,6 +978,57 @@ try {
     await s.waitFor(`!document.querySelector('.agent-popover')`, `${id}'s card closes after the mouse leaves`);
   }
   step("fix 834: the agent card gives the name a line of its own at least 100px wide, the role, model, state and price under it at the name's start and inside the card, on a long-typed member and a long-named one");
+
+  // M9 fix 903: a working member's card ends on its latest words, off its
+  // own transcript, and they move while the card stays open. The
+  // seed's lines carry the text 'ok', ten minutes old, so the line starts
+  // there with its age. The card node is kept so every wait also proves it
+  // was never reopened. The member is a5, not the plan's a1: a call gives a
+  // box an activity line that never clears, and a1's taller box pushed the
+  // narrow fold's "and 3 more" under the pane's bottom, where a5's box is
+  // folded away. The first call is posted before the hover: the box grows
+  // and the name moves up half a line, which left a pointer placed before
+  // it on the name's bottom edge, where the hover flipped on every layout
+  // and the card closed and reopened about once a second. A second call
+  // then moves the phrase on the open card, the entry's check.
+  const card903 = '.agent-popover[data-member="a5"]';
+  await postSix({ hook_event_name: 'PreToolUse', agent_id: 'a5', tool_name: 'Read', tool_input: { file_path: 'C:/sim/grid.ts' } });
+  await s.waitFor(`${q(sixSel + ' .pane-shade-member[data-member="a5"] .pane-shade-member-activity')}?.textContent === 'Reading grid.ts'`, "a5's box carries its activity line before the hover (fix 903)", 5000);
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a5"] .pane-shade-member-name', card903, "a5's card for the now line");
+  await s.evalJs(`(() => { window.__card903 = document.querySelector(${JSON.stringify(card903)}); return true; })()`);
+  const sameCard903 = `document.querySelector(${JSON.stringify(card903)}) === window.__card903`;
+  const nowRead903 = `(() => { const c = window.__card903; const t = c?.querySelector('.agent-card-now-text')?.textContent ?? null; const a = c?.querySelector('.agent-card-now-age')?.textContent ?? null; return { t, a }; })()`;
+  await postSix({ hook_event_name: 'PreToolUse', agent_id: 'a5', tool_name: 'Read', tool_input: { file_path: 'C:/sim/roster.ts' } });
+  await s.waitFor(`${sameCard903} && window.__card903.querySelector('.agent-card-activity')?.textContent === 'Reading roster.ts'`, "a5's activity line moves on the open card", 5000);
+  await s.waitFor(`${sameCard903} && (() => { const r = ${nowRead903}; return r.t === 'ok' && /^\\d+m ago$/.test(r.a ?? ''); })()`, "a5's now line reads the seed's 'ok' with its age", 8000);
+  const file903 = path.join(projectDir, sixConv, 'subagents', 'agent-a5.jsonl');
+  const saidLine903 = (content) => jl({ type: 'assistant', isSidechain: true, agentId: 'a5', timestamp: new Date().toISOString(), message: { id: `msg_${msgN++}`, role: 'assistant', model: 'claude-opus-5', usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 1000, output_tokens: 10 }, content } });
+  fs.appendFileSync(file903, saidLine903([{ type: 'text', text: 'Reading the roster reads\n\nto place the grid.' }]));
+  await s.waitFor(`${sameCard903} && (() => { const r = ${nowRead903}; return r.t === 'Reading the roster reads to place the grid.' && r.a === null; })()`, "a5's now line moves to its new words with no age, the card still open", 8000);
+  fs.appendFileSync(file903, saidLine903([{ type: 'text', text: 'Placing the grid under the rule.' }, { type: 'tool_use', id: 'toolu_903', name: 'Edit', input: {} }]));
+  await s.waitFor(`${sameCard903} && (() => { const r = ${nowRead903}; return r.t === 'Placing the grid under the rule.' && r.a === null; })()`, "a5's now line moves a second time, the card still open", 8000);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a5's card closes after the mouse leaves (fix 903)");
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a2"] .pane-shade-member-name', '.agent-popover[data-member="a2"]', "a2's card for the now line");
+  expect(await s.evalJs(`!document.querySelector('.agent-popover[data-member="a2"] .agent-card-now')`), "fix 903: a2 has returned, so its card has no now line though its file holds 'ok'");
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a2's card closes after the mouse leaves (fix 903)");
+  step("M9 fix 903: a working member's card ends on its latest words off its own transcript, the age after them once a minute old, and the line moves twice while the card stays open, the phrase line moving too; a returned member's card has none");
+
+  // M9 fix 904: the six agents' handles in spawn order, none on the shell,
+  // and the same handle on a card.
+  const handles904 = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sixSel + ' .pane-shade-member')})].map((b) => b.querySelector('.pane-shade-member-handle')?.textContent ?? null)`);
+  expect(JSON.stringify(handles904) === JSON.stringify(['A1', 'A2', 'A3', 'A4', 'A5', 'A6', null]), `fix 904: the boxes read A1 to A6 and the shell none, got ${JSON.stringify(handles904)}`);
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a1"] .pane-shade-member-name', '.agent-popover[data-member="a1"]', "a1's card for its handle");
+  const a1Handle904 = await s.evalJs(`document.querySelector('.agent-popover[data-member="a1"] .agent-card-handle')?.textContent ?? null`);
+  expect(a1Handle904 === 'A1', `fix 904: a1's card leads with A1, got ${JSON.stringify(a1Handle904)}`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a1's card closes after the mouse leaves (fix 904)");
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="sh1"] .pane-shade-member-name', '.agent-popover[data-member="sh1"]', "sh1's card for its handle");
+  expect(await s.evalJs(`!document.querySelector('.agent-popover[data-member="sh1"] .agent-card-handle')`), "fix 904: the shell's card carries no handle");
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "sh1's card closes after the mouse leaves (fix 904)");
+  step("M9 fix 904: the six agents' boxes read A1 to A6 in spawn order and the shell's none; a1's card leads with A1, the shell's card with no handle");
 
   // The narrow fold: the six-member pane at a quarter of the row (under
   // 360px) is one column of four boxes, the fifth on hidden, and "and 3

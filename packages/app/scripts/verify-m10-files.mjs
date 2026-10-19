@@ -254,7 +254,7 @@ try {
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(other)}`, 'the second shell brings its folder');
   const p2 = (await getLayout(s)).focusedPaneId;
   expect(p2 !== p1, 'pane 2 is focused');
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'focus back on pane 1 restores its tree');
   expect(await s.evalJs(`!!document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data', 'two.json')))})`), 'and data is still expanded');
   step('focus moves the tree between panes and keeps what was expanded');
@@ -265,11 +265,11 @@ try {
   // new file is there without Refresh. Then a synthetic window focus, the
   // other moment the rail re-lists, with the tree left as it is; a covered
   // harness window never gets the real one.
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(other)}`, 'pane 2 focused, its tree shown');
   fs.writeFileSync(path.join(seed, 'late.txt'), 'late');
   await sleep(1200);
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'focus back on pane 1');
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'late.txt')))})`, 'the file written while pane 2 was focused shows after the click', 3000);
   expect(await s.evalJs(`!!document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data', 'two.json')))})`), 'and data is still expanded');
@@ -1018,7 +1018,7 @@ try {
   // session, killed here) focused and empty, and the rail follows the
   // focused pane, so put the focus back on the first session's pane.
   const p1Focus = async () => {
-    await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+    await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
     await s.waitFor(`document.querySelector('.commits-panel') !== null && document.querySelectorAll('.commits-row').length > 0`, 'the commits list for the first session', 10000);
   };
   await zreq(s, 'session.kill', { sessionId: second.id, remove: true });
@@ -1172,7 +1172,7 @@ try {
     10000,
   );
   await zreq(s, 'session.kill', { sessionId: rover590.id, remove: true });
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(rover590Pane)}]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(rover590Pane)}]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   for (let i = 0; i < 50 && (await getLayout(s)).focusedPaneId !== rover590Pane; i++) await sleep(100);
   expect((await getLayout(s)).focusedPaneId === rover590Pane, 'the rover pane focused for closing');
   await s.key('W', 'KeyW', 87, CTRL | SHIFT);
@@ -2441,7 +2441,7 @@ try {
   expect(!(await s.evalJs(`[...document.querySelectorAll('.tab-file')].some((t) => t.dataset.tab === ${JSON.stringify(paneFile)})`)), 'the file has no tab of its own');
 
   await typeInto(s, shell1.id, `cd ${JSON.stringify(seed)}`);
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'the rail left the pane-file folder');
 
   fs.writeFileSync(paneFile, 'two\n');
@@ -2500,9 +2500,9 @@ try {
   // editor's focus dropped, and the key still saves.
   await endTypeIn(paneFile, 'S3');
   await s.waitFor(`${viewOf(paneFile)}.querySelector('.file-view').dataset.dirty === 'true'`, 'dirty for the blurred save');
-  // A click in a pane focuses it (mousedown), which the script's typing
+  // A click in a pane focuses it (pointerdown since M9 fix 902), which the script's typing
   // by focus() does not; the layout's focused pane is what the key reads.
-  await s.evalJs(`${viewOf(paneFile)}.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`${viewOf(paneFile)}.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   const filePaneId = await s.evalJs(`${viewOf(paneFile)}.dataset.paneId`);
   for (let i = 0; i < 30 && (await getLayout(s)).focusedPaneId !== filePaneId; i++) await sleep(100);
   expect((await getLayout(s)).focusedPaneId === filePaneId, 'the file pane is the focused one');
@@ -2513,7 +2513,7 @@ try {
   expect(fs.readFileSync(paneFile, 'utf8').includes('S3'), 'the third edit is on disk');
   // A dirty file tab in front, the keyboard off the editor.
   // The rail followed the file pane's folder; back to the seed's.
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'the rail back on the seed');
   await clickRow(s, saveRowA);
   // The panes stay mounted under a file tab, so the tab's own view is the
@@ -2538,7 +2538,7 @@ try {
   const movedFile = path.join(paneSeed, 'moved.txt');
   await endTypeIn(paneFile, 'R1');
   await s.waitFor(`${viewOf(paneFile)}.querySelector('.file-view').dataset.dirty === 'true'`, 'the file pane dirty before the rename');
-  await s.evalJs(`${viewOf(paneFile)}.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`${viewOf(paneFile)}.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(paneSeed)}`, "the rail on the file pane's folder", 5000);
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(paneFile))})`, 'note.txt listed for the rename', 5000);
   at = await centreOf(paneFile);
@@ -2565,11 +2565,11 @@ try {
   // pane-file shell, focused by hand so Ctrl+Shift+W does not reach p1.
   await s.evalJs(`${paneFileSel}.querySelector('.files-button[title="Close pane"]').click()`);
   await s.waitFor(`document.querySelectorAll('.pane[data-view="file"]').length === 0`, 'the file pane closed');
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneSeedPaneId)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneSeedPaneId)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(paneSeed)}`, 'the pane-file shell focused for closing');
   await s.key('W', 'KeyW', 87, CTRL | SHIFT);
   await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(paneSeedPaneId)}]')`, 'the pane-file shell closed too');
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'focus back on the first pane');
   step('the panes put back');
 
@@ -2657,10 +2657,10 @@ try {
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(emptyFolder)} && !document.querySelector('.files-root[data-lift]')`, 'back down to the followed folder', 8000);
   step("M9 fix 588: the folder's own menu opens on the header's name and the list's blank space, in the tree and the Changed list, names the lift when one is up, has no Rename and no Copy relative path, leaves the keyboard in the terminal, and Reveal is called; an empty folder says Empty folder and a row keeps its own menu");
   // Put the panes back as the fix 436 block expects them.
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(rootMenuPaneId)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(rootMenuPaneId)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.key('W', 'KeyW', 87, CTRL | SHIFT);
   await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(rootMenuPaneId)}]')`, 'the root menu shell closed');
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`, 'focus back on the first pane after the root menu');
 
   // M9 fix 436: the lift keeps the folder it came from in a listing the

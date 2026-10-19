@@ -11,7 +11,7 @@ import { emptyFocusHistory, recordFocus, stepFocus } from './focus-history-model
 import type { FocusEntry, FocusHistory } from './focus-history-model.ts';
 import type { ChimeMode } from '../../preload/api.ts';
 import { isDirty } from './file-edits.ts';
-import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, emptyTabs, isDocument, openFile, pinTab, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
+import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, rawAtLine, emptyTabs, isDocument, openFile, pinTab, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
 import { renamedPath } from './files-model.ts';
 import { tabsKeyFor, windowIdFromSearch, windowOfTabsKey } from './window-keys.ts';
 import { cycleKeys, currentKey, layoutTabOf, moveKey, orderFromJson, orderWithNew, replaceKey, stripOrder } from './tab-order.ts';
@@ -31,6 +31,7 @@ import type { ShowOffscreen } from './show-model.ts';
 import { WHATS_NEW_SEEN_KEY, shouldOpenWhatsNew, whatsNewStamp } from './whats-new-model.ts';
 import { parseChatModes, parseChatPanes, serializeChatPanes } from './chat-model.ts';
 import { parsePlan } from './plan-model.ts';
+import { FILE_TEXT_PREFIX } from './pane-text.ts';
 import type { PlanEntry } from './plan-model.ts';
 import type { ChatMode } from './chat-model.ts';
 
@@ -1185,16 +1186,15 @@ function saveTabs(): void {
   }
 }
 
-// With a line (a contents hit) the tab also gets a one-shot reveal, and a
-// markdown tab is switched to Raw for it: the rendered view has no lines.
+// With a line the tab also gets a one-shot reveal. A file with a view of its own is switched to Raw for it, but markdown stays as it is and its rendered view scrolls to the block holding the line (M9 fix 892); a contents hit asks for the exact line (exactLine), so markdown goes to Raw for it too, as before.
 // This opener pins (M9 fix 203); the rail's single click goes through
 // `openPreviewTab`, which is the same open into the preview tab.
 export function openFileTab(path: string, line?: number, column = 1): void {
-  openTab(path, false, line, column);
+  openTab(path, false, line, column, false);
 }
 
-export function openPreviewTab(path: string, line?: number, column = 1): void {
-  openTab(path, true, line, column);
+export function openPreviewTab(path: string, line?: number, column = 1, exactLine = false): void {
+  openTab(path, true, line, column, exactLine);
 }
 
 // The preview tab kept for good: the rail's double click on a file, a
@@ -1203,13 +1203,13 @@ export function pinFileTab(path: string): void {
   setTabs(pinTab(state.tabs, path));
 }
 
-function openTab(path: string, preview: boolean, line: number | undefined, column: number): void {
+function openTab(path: string, preview: boolean, line: number | undefined, column: number, exactLine: boolean): void {
   let tabs = openFile(state.tabs, path, { preview });
   if (line === undefined) {
     setTabs(tabs);
     return;
   }
-  if (defaultView(path) !== null) tabs = setView(tabs, path, 'raw');
+  if (exactLine ? defaultView(path) !== null : rawAtLine(path)) tabs = setView(tabs, path, 'raw');
   const reveal = { path, line, column, seq: (state.reveal?.seq ?? 0) + 1 };
   setState({ ...state, tabs, reveal });
   saveTabs();
@@ -1666,9 +1666,12 @@ export function inheritFontSize(fromPaneId: string, toPaneId: string): void {
 
 // Drops the sizes of panes that are no longer in the layout, so a closed
 // pane's id does not sit in storage for good.
+// A file tab's size (M9 fix 899) is keyed by its path, not a pane, and
+// stays until it is brought back to 14 px.
 export function pruneFontSizes(livePaneIds: ReadonlySet<string>): void {
-  if ([...state.fontSizes.keys()].every((id) => livePaneIds.has(id))) return;
-  const fontSizes = new Map([...state.fontSizes].filter(([id]) => livePaneIds.has(id)));
+  const kept = (id: string): boolean => livePaneIds.has(id) || id.startsWith(FILE_TEXT_PREFIX);
+  if ([...state.fontSizes.keys()].every(kept)) return;
+  const fontSizes = new Map([...state.fontSizes].filter(([id]) => kept(id)));
   setState({ ...state, fontSizes });
   saveFontSizes();
 }

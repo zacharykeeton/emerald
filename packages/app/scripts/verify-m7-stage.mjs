@@ -208,6 +208,35 @@ async function main() {
   await until('session exited', () => emeraldJson('ls', '--json').json?.sessions?.[0]?.state === 'exited');
   expect(true, 'ls shows it exited');
 
+  // M9 fix 916: the staged daemon runs git through shared's worker, found by
+  // shared's exports map from stage/node_modules. A reftable folder's branch
+  // is read only through the worker (git-branch.ts), so a staged daemon that
+  // cannot find it leaves the branch null. The first shell's exited record
+  // is still listed, so the new one is found by its id.
+  const reftable = path.join(verifyDir, 'stage-reftable');
+  fs.rmSync(reftable, { recursive: true, force: true });
+  const init = spawnSync('git', ['init', '-q', '--ref-format=reftable', '-b', 'stage-reftable', reftable], { encoding: 'utf8', windowsHide: true });
+  expect(init.status === 0, `git init a reftable repository (${(init.stderr ?? '').trim() || 'ok'})`);
+  const rt = emeraldJson('shell', reftable, '--json');
+  expect(rt.code === 0 && rt.json?.session?.kind === 'shell', 'emmer shell starts a shell in the reftable folder');
+  const rtId = rt.json.session.id;
+  let branch = null;
+  await until(
+    'the reftable branch',
+    () => {
+      branch = emeraldJson('ls', '--json').json?.sessions?.find((s) => s.id === rtId)?.branch ?? null;
+      return branch === 'stage-reftable';
+    },
+    15000,
+  ).catch(() => {});
+  expect(branch === 'stage-reftable', `the staged daemon reads a reftable repository's branch through shared's git worker (${branch})`);
+  const daemonLog = fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8');
+  expect(!daemonLog.includes('git worker ended') && !daemonLog.includes('git worker has no file'), 'no git worker failure in emmerd.log');
+  r = emerald('kill', rtId);
+  expect(r.code === 0, 'kill the reftable shell');
+  await until('the reftable shell exited', () => emeraldJson('ls', '--json').json?.sessions?.find((s) => s.id === rtId)?.state === 'exited');
+  expect(true, 'ls shows the reftable shell exited');
+
   r = emerald('daemon', 'stop');
   expect(r.code === 0 && /^stopped emmerd/.test(r.out), `daemon stop: ${r.out.trim()}`);
   expect(readDaemonInfo() === null, 'daemon.json removed');

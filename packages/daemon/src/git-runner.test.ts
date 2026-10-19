@@ -17,8 +17,8 @@ test('a NUL argument answers null and the worker lives on for the next job', asy
   const lines: string[] = [];
   setGitRunnerLog((msg) => lines.push(msg));
   const cwd = os.tmpdir();
-  assert.equal(await gitText(['--version', 'a\0b'], cwd, LOAD_TIMEOUT_MS), null);
-  const next = await gitText(['--version'], cwd, LOAD_TIMEOUT_MS);
+  assert.equal(await gitText(['--version', 'a\0b'], cwd, { timeoutMs: LOAD_TIMEOUT_MS }), null);
+  const next = await gitText(['--version'], cwd, { timeoutMs: LOAD_TIMEOUT_MS });
   assert.match(next ?? '', /^git version /);
   assert.deepEqual(lines, [] as string[], 'the worker never ended');
   setGitRunnerLog(() => {});
@@ -26,6 +26,6 @@ test('a NUL argument answers null and the worker lives on for the next job', asy
 
 // A job's stdin (M9 fix 476), which readMerges hands its hashes through.
 test('stdin reaches git', async () => {
-  const out = await gitText(['hash-object', '--stdin'], os.tmpdir(), LOAD_TIMEOUT_MS, undefined, 'hello\n');
+  const out = await gitText(['hash-object', '--stdin'], os.tmpdir(), { timeoutMs: LOAD_TIMEOUT_MS, stdin: 'hello\n' });
   assert.equal(out?.trim(), 'ce013625030ba8dba906f756967f9e9ca394464a');
 });

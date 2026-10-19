@@ -57,6 +57,11 @@
 // and reads each drawn as one line in its turn. Block `copy` (fix 806,
 // needs notes) turns Copy on select on and reads a selection in the chat
 // view copied with its corner note, and nothing copied with it off.
+// Block `remote` (fixes 889 and 890) plays Claude with a shell whose
+// transcript gains remote control's connect line and whose screen draws
+// the footer pill's words: the line drawn as a divider with its link, the
+// rc chip through its states, and /remote-control picked from the menu
+// bringing the bar while the chip reads active.
 // Block `exited` (fix 804) kills a stub on the chat face, restarts the
 // daemon and reads the conversation kept, dimmed, under the notice, then
 // Resume carrying on.
@@ -78,8 +83,9 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'story', fixes: ['797', '798'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
-  { name: 'beside', fixes: ['863', '864'], needs: ['paths'] },
-  { name: 'thumbs', fixes: ['717', '718'], needs: ['stub'] },
+  { name: 'beside', fixes: ['863', '864', '892'], needs: ['paths'] },
+  { name: 'bubbles', fixes: ['891'], needs: ['stub'] },
+  { name: 'thumbs', fixes: ['717', '718', '891'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
   { name: 'real', fixes: ['690', '778', '799', '809'], needs: [] },
   { name: 'fresh', fixes: ['722'], needs: [] },
@@ -100,6 +106,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'notes', fixes: ['805'], needs: [] },
   { name: 'copy', fixes: ['806', '849', '882'], needs: ['notes'] },
   { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
+  { name: 'remote', fixes: ['889', '890'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
 ]);
@@ -188,7 +195,7 @@ const timeline = (paneId) =>
     return {
       prompts: [...p.querySelectorAll('.chat-prompt')].map((e) => e.textContent),
       thinking: [...p.querySelectorAll('.chat-step[data-kind="thinking"] .chat-thinking-head')].map((e) => e.textContent),
-      tools: [...p.querySelectorAll('.chat-step[data-kind="tool"]')].map((e) => ({ tool: e.dataset.tool, tone: e.querySelector('.chat-dot')?.dataset.tone ?? null, arg: e.querySelector('.chat-tool-arg')?.textContent ?? '', result: e.querySelector('.chat-tool-result')?.textContent ?? '' })),
+      tools: [...p.querySelectorAll('.chat-step[data-kind="tool"]')].map((e) => ({ tool: e.dataset.tool, tone: e.dataset.tone ?? null, arg: e.querySelector('.chat-tool-arg')?.textContent ?? '', result: e.querySelector('.chat-tool-result')?.textContent ?? '' })),
       replies: [...p.querySelectorAll('.chat-reply')].map((e) => e.textContent),
     };
   })()`);
@@ -207,7 +214,7 @@ const toChat = async (paneId) => {
   await s.waitFor(`${q(paneSel(paneId))}.dataset.face === 'chat'`, 'the stub on the chat face');
 };
 
-// M9 fix 823: a shell playing Claude, bound to a pane, posting hooks as Claude would and started with one turn. Block turns and chips use these; the other copies move over in a later batch, so the blocks this batch's other branches edit are not rewritten under them.
+// M9 fixes 823 and 888: a shell playing Claude, bound to a pane, posting hooks as Claude would and started with one turn; every stub block uses these. The four root-only rebinds (stub's (j), real, fresh and more) keep their own layout.set, since they put a session into or out of the root pane itself.
 // The layout is read fresh at each call, since a stale one is the trap a later block meets.
 const bindPane = async (paneId, sessionId, { focus = true } = {}) => {
   const lay = await getLayout(s);
@@ -215,8 +222,9 @@ const bindPane = async (paneId, sessionId, { focus = true } = {}) => {
   await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), ...(focus ? { focusedPaneId: paneId } : {}) } });
 };
 const hookPoster = (sessionId, { simId, cwd, transcript }) => {
-  const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
   return async (payload) => {
+    // Read at each post: the exited block restarts the daemon, and the sink comes back on a new port and token.
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
     const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
       method: 'POST',
       headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sessionId },
@@ -318,6 +326,8 @@ let exitedId = null;
 // M9 fix 808: the real Claude at its folder's trust dialog, and the folder.
 let trustId = null;
 let trustDir = null;
+// M9 fixes 889 and 890: the remote block's stub.
+let remoteId = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -345,19 +355,8 @@ try {
     const layout = await getLayout(s);
     stubPane = leaves(layout)[0].id;
     stubId = leaves(layout)[0].sessionId;
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    post = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': stubId },
-        body: JSON.stringify({ session_id: 'sim-chat-689', cwd: 'C:/sim', transcript_path: fixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await post({ hook_event_name: 'SessionStart', source: 'startup' });
-    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the browser check and fix what fails' });
-    await post({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(stubId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the stub bound with its transcript', 10000);
+    post = hookPoster(stubId, { simId: 'sim-chat-689', cwd: 'C:/sim', transcript: fixture });
+    await startStub(post, stubId, 'run the browser check and fix what fails');
 
     // (c) The title's face button flips the pane to the chat; the terminal
     // stays mounted under it, hidden.
@@ -380,7 +379,7 @@ try {
     const tl = await timeline(stubPane);
     expect(tl.prompts.length === 1 && tl.prompts[0] === 'run the browser check and fix what fails', `one prompt, got ${JSON.stringify(tl.prompts)}`);
     expect(JSON.stringify(tl.thinking) === '["Thought for 6s"]', `the thinking step, got ${JSON.stringify(tl.thinking)}`);
-    expect(JSON.stringify(tl.tools.map((t) => t.tone)) === '["done","error","done"]', `the dots, got ${JSON.stringify(tl.tools)}`);
+    expect(JSON.stringify(tl.tools.map((t) => t.tone)) === '["done","error","done"]', `the tones, got ${JSON.stringify(tl.tools)}`);
     expect(JSON.stringify(tl.tools.map((t) => t.result)) === JSON.stringify(['exit 0 · 38s', 'exit 3 · 1s', '+6 \u22122']), `the results, got ${JSON.stringify(tl.tools.map((t) => t.result))}`);
     expect(tl.tools[0].arg === 'npm run verify:browser', `the Bash row's argument, got ${tl.tools[0].arg}`);
     expect(tl.replies.at(-1) === 'Done.', `the reply, got ${JSON.stringify(tl.replies)}`);
@@ -490,9 +489,9 @@ try {
     await waitCursorRow(stubId, (row) => row.trim().endsWith('differently'), 'the cursor sits at the end of the last option');
     await post({ hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: 'C:/sim/session.ts' } });
     await s.waitFor(`!!${q(paneSel(stubPane) + ' .chat-ask-option[data-key="3"]')}`, 'the ask card with its options');
-    const card = await s.evalJs(`(() => { const c = ${q(paneSel(stubPane) + ' .chat-step[data-kind="ask"]')}; const box = ${q(paneSel(stubPane) + ' .chat-box')}; return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, tone: c.querySelector('.chat-dot')?.dataset.tone ?? null, lines: (c.querySelector('.chat-ask-screen')?.textContent ?? '').split('\\n'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), disabled: box.disabled, placeholder: box.placeholder, hint: ${q(paneSel(stubPane) + ' .chat-hint')}.textContent }; })()`);
+    const card = await s.evalJs(`(() => { const c = ${q(paneSel(stubPane) + ' .chat-step[data-kind="ask"]')}; const box = ${q(paneSel(stubPane) + ' .chat-box')}; return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, dot: !!c.querySelector('.chat-dot'), lines: (c.querySelector('.chat-ask-screen')?.textContent ?? '').split('\\n'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), disabled: box.disabled, placeholder: box.placeholder, hint: ${q(paneSel(stubPane) + ' .chat-hint')}.textContent }; })()`);
     expect(card.heading === 'Claude is asking permission', `the heading, got ${card.heading}`);
-    expect(card.tone === 'blocked', `the card's dot is blocked, got ${card.tone}`);
+    expect(card.dot === false, `fix 891: the card has no dot, got ${JSON.stringify(card)}`);
     expect(card.lines[0] === 'Do you want to make this edit to session.ts?', `the excerpt's first line, got ${JSON.stringify(card.lines)}`);
     expect(JSON.stringify(card.keys) === JSON.stringify(['1', '2', '3', 'esc']), `three options and Esc, got ${JSON.stringify(card.keys)}`);
     expect(card.disabled && card.placeholder === 'Answer the ask above, or press Esc to cancel', `the box is disabled under the card, got ${JSON.stringify(card)}`);
@@ -952,8 +951,8 @@ try {
     step('fix 714: the view menu opens upward with Normal checked, and a pick sets the mode');
 
     // Fix 753: the stub's last folded call is the passing Edit.
-    const stubTone = await s.evalJs(`${q(P + ' .chat-fold .chat-dot')}?.dataset.tone ?? null`);
-    expect(stubTone === 'done', `the stub's fold dot reads done, got ${stubTone}`);
+    const stubTone = await s.evalJs(`${q(P + ' .chat-fold')}?.dataset.tone ?? null`);
+    expect(stubTone === 'done', `the stub's fold reads done, got ${stubTone}`);
     await s.evalJs(`${q(P + ' .chat-fold')}.click()`);
     await s.waitFor(`${q(P)}.querySelectorAll('.chat-step[data-kind="tool"]').length === 3 && ${q(P + ' .chat-fold-caret')}?.textContent === '⌄'`, 'the fold opened', 3000);
     await s.screenshot('m9-chat-views-open.png');
@@ -1066,7 +1065,7 @@ try {
     expect(r.pre === 'npm run verify:browser', `the fenced block, got ${r.pre}`);
     expect(!r.text.includes('**') && !r.text.includes('`'), `no Markdown marks in the text, got ${JSON.stringify(r.text)}`);
     expect(r.code === notes && r.link === notes && r.href === false, `the code span and the link carry the note's path, got ${JSON.stringify(r)}`);
-    expect(r.first === 'chat-tick-cell', `the tick cell first, got ${r.first}`);
+    expect(r.first === 'chat-md', `the Markdown first, no tick cell (fix 891), got ${r.first}`);
     step('fix 716: the reply is rendered Markdown, bold, a list, a fenced block, and its inline path and relative link are live');
   });
 
@@ -1195,6 +1194,112 @@ try {
     await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
     await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab', 5000);
     step('fix 864: a picture outside the folder is a link in a code span and bare in the text; a Ctrl+click opens it in a file pane beside the chat\'s pane, a plain click in a tab, and a web link Ctrl+clicked goes beside the pane clicked in, not the focused one');
+    // (f) M9 fix 892: a markdown path at a line opens on Rendered, scrolled to
+    // the block holding the line and lit, in a pane beside and in a tab.
+    const notes892 = path.join(longFixtureDir(), 'notes-892.md');
+    const filler = (from) => Array.from({ length: 40 }, (_, k) => [`Filler paragraph ${from + k}.`, '']).flat();
+    fs.writeFileSync(notes892, ['# Notes 892', '', ...filler(1), '## Later', '', 'The block for line 86 starts here,', 'and line 86 is inside it,', 'and it ends here.', '', ...filler(41)].join('\n'));
+    fs.appendFileSync(fixture, [userLine('show me the notes', 255), asstLine([{ type: 'text', text: 'The block is at `notes-892.md:86`.' }], 256)].join('\n') + '\n');
+    const notesCode = `${lastReply}?.querySelector('code.chat-path[data-line="86"]')`;
+    await s.waitFor(`!!${notesCode}`, 'the reply with the notes path at a line', 5000);
+    await clickOn(notesCode, ', ctrlKey: true');
+    const notesPane = await waitLeaf({ kind: 'file', path: notes892 }, 'fix 892: the Ctrl+click opened a file pane on the notes with no view field, so Rendered');
+    await besideStub(notesPane, 'the notes pane');
+    const NP = `[data-pane-id=${JSON.stringify(notesPane.id)}]`;
+    await s.waitFor(`${q(NP + ' .file-view')}?.dataset.view === 'rendered' && ${q(NP + ' .markdown-view')}?.dataset.revealed === '85'`, 'the notes pane rendered with the block at line 85 revealed', 5000);
+    const inView = await s.evalJs(`(() => { const h = ${q(NP + ' .markdown-view')}.getBoundingClientRect(); const b = ${q(NP + ' [data-source-line="85"]')}.getBoundingClientRect(); return b.top >= h.top && b.bottom <= h.bottom; })()`);
+    expect(inView === true, 'fix 892: the block at line 85 lies inside the markdown view');
+    await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(NP + ' .md-fold > h2')})].find((h) => h.textContent.includes('Later')).click()`);
+    await s.waitFor(`!!${q(NP + ' .md-fold[data-folded]')}`, 'the Later section folded', 3000);
+    await closePane(notesPane.id);
+    await clickOn(notesCode, '');
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === ${JSON.stringify(notes892)}`, 'the plain click opened the notes in a tab', 5000);
+    await s.waitFor(`document.querySelector('.file-view')?.dataset.view === 'rendered' && document.querySelector('.markdown-view')?.dataset.revealed === '85'`, 'the notes tab rendered with the block at line 85 revealed', 5000);
+    const unfolded = await s.evalJs(`document.querySelectorAll('.markdown-view .md-fold[data-folded]').length`);
+    expect(unfolded === 0, `fix 892: the reveal opened the folded section holding the block, ${unfolded} still folded`);
+    await s.evalJs(`${q(`.tab-file[data-tab=${JSON.stringify(notes892)}] .tab-close`)}.click()`);
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab', 5000);
+    step('fix 892: a markdown path at a line Ctrl+clicked opens a pane beside on Rendered with the block holding the line in view, and its plain click opens the tab on Rendered there, opening the folded section that holds it');
+  });
+
+  await block('bubbles', async () => {
+    // M9 fix 891: the chat view is a phone chat. The prompt is a right bubble
+    // at 80 percent of the column's content, the reply a left bubble, the
+    // rail and its dots gone, and the fold carries its tone in its text.
+    // A token's colour is resolved by a probe span inside the chat view,
+    // since the custom property's own value is a hex or rgba string.
+    await toChat(stubPane);
+    if ((await viewWord(stubPane)) !== null) await pickView(stubPane, 'Normal');
+    const P891 = paneSel(stubPane);
+    fs.appendFileSync(
+      fixture,
+      [
+        userLine('bubbles 891: ' + 'a long prompt that wraps inside the cap of the bubble '.repeat(8), 260),
+        asstLine([{ type: 'text', text: 'First half.' }], 261),
+        asstLine([useOf('b891', 'Bash', { command: 'echo b891' })], 262),
+      ].join('\n') + '\n',
+    );
+    const lastTurn = `[...document.querySelectorAll(${JSON.stringify(P891 + ' .chat-turn')})].at(-1)`;
+    await s.waitFor(`(() => { const t = ${lastTurn}; return !!t && t.querySelector('.chat-reply')?.textContent.trim() === 'First half.' && t.querySelector('.chat-fold')?.dataset.tone === 'pending'; })()`, 'the bubbles turn drawn with its call pending', 5000);
+    const readBubbles = await s.evalJs(`(() => {
+      const p = document.querySelector(${JSON.stringify(P891)});
+      const t = ${lastTurn};
+      const rect = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width }; };
+      const col = p.querySelector('.chat-column');
+      const cs = getComputedStyle(col);
+      const probe = (name) => { const sp = document.createElement('span'); sp.style.color = 'var(' + name + ')'; p.querySelector('.chat-view').appendChild(sp); const c = getComputedStyle(sp).color; sp.remove(); return c; };
+      const prompt = t.querySelector('.chat-prompt');
+      const reply = t.querySelector('.chat-reply');
+      const fold = t.querySelector('.chat-fold');
+      const rail = t.querySelector('.chat-rail');
+      const rs = getComputedStyle(rail);
+      return {
+        col: rect(col), padL: parseFloat(cs.paddingLeft), padR: parseFloat(cs.paddingRight),
+        prompt: rect(prompt), time: rect(t.querySelector('.chat-prompt-time')), reply: rect(reply), rail: rect(rail),
+        railMargin: rs.marginLeft, railPad: rs.paddingLeft, railBorder: rs.borderLeftStyle,
+        dots: p.querySelectorAll('.chat-dot').length, ticks: p.querySelectorAll('.chat-tick-cell').length,
+        foldStyle: getComputedStyle(fold).fontStyle, foldColor: getComputedStyle(fold).color,
+        working: probe('--working'), muted: probe('--muted'), rowSelected: probe('--row-selected'), bubbleSent: probe('--bubble-sent'),
+        promptBg: getComputedStyle(prompt).backgroundColor, replyBg: getComputedStyle(reply).backgroundColor,
+        replyRadius: getComputedStyle(reply).borderTopLeftRadius, replyContinued: reply.hasAttribute('data-continued'),
+      };
+    })()`);
+    const b = readBubbles;
+    console.log(`[verify] fix 891 rects: col ${JSON.stringify(b.col)} prompt ${JSON.stringify(b.prompt)} reply ${JSON.stringify(b.reply)} time ${JSON.stringify(b.time)}`);
+    const contentW = b.col.width - b.padL - b.padR;
+    expect(Math.abs(b.prompt.right - (b.col.right - b.padR)) <= 1, `fix 891: the prompt's right edge is the column's content edge, got ${JSON.stringify(b)}`);
+    expect(Math.abs(b.prompt.width - 0.8 * contentW) <= 1, `fix 891: the long prompt reaches the 80 percent cap (${0.8 * contentW}), got ${b.prompt.width}`);
+    expect(Math.abs(b.reply.left - (b.col.left + b.padL)) <= 1 && b.reply.width < contentW - 40, `fix 891: the reply is a left bubble hugging its text, got ${JSON.stringify(b)}`);
+    expect(b.railMargin === '0px' && b.railPad === '0px' && b.railBorder === 'none', `fix 891: the rail has no margin, padding or border, got ${b.railMargin} ${b.railPad} ${b.railBorder}`);
+    expect(b.dots === 0 && b.ticks === 0, `fix 891: no dots and no tick cells, got ${b.dots} and ${b.ticks}`);
+    expect(b.foldStyle === 'italic' && b.foldColor === b.working, `fix 891: the pending fold is italic in working, got ${b.foldStyle} ${b.foldColor} against ${b.working}`);
+    expect(b.time.top >= b.prompt.bottom - 0.5, `fix 891: the time mark sits under the bubble, got ${JSON.stringify(b)}`);
+    expect(b.replyBg === b.rowSelected && b.promptBg === b.bubbleSent, `fix 891: the bubbles' grounds, got ${b.replyBg} ${b.promptBg} against ${b.rowSelected} ${b.bubbleSent}`);
+    expect(b.replyRadius === '12px' && !b.replyContinued, `fix 891: the first reply has the full radius and is not continued, got ${b.replyRadius} ${b.replyContinued}`);
+    fs.appendFileSync(
+      fixture,
+      [
+        resultOf('b891', 'b891', 263, { toolUseResult: { stdout: 'b891', stderr: '', interrupted: false } }),
+        asstLine([{ type: 'text', text: 'Second half.' }], 264),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`(() => { const t = ${lastTurn}; return !!t && t.querySelector('.chat-fold')?.dataset.tone === 'done' && [...t.querySelectorAll('.chat-reply')].some((r) => r.textContent.trim() === 'Second half.'); })()`, 'the fold done and the second reply drawn', 5000);
+    const after = await s.evalJs(`(() => {
+      const p = document.querySelector(${JSON.stringify(P891)});
+      const t = ${lastTurn};
+      const probe = (name) => { const sp = document.createElement('span'); sp.style.color = 'var(' + name + ')'; p.querySelector('.chat-view').appendChild(sp); const c = getComputedStyle(sp).color; sp.remove(); return c; };
+      const replies = [...t.querySelectorAll('.chat-reply')];
+      const fold = t.querySelector('.chat-fold');
+      return {
+        foldStyle: getComputedStyle(fold).fontStyle, foldColor: getComputedStyle(fold).color, muted: probe('--muted'),
+        second: { continued: replies[1].hasAttribute('data-continued'), radius: getComputedStyle(replies[1]).borderTopLeftRadius },
+        first: { continued: replies[0].hasAttribute('data-continued') },
+      };
+    })()`);
+    expect(after.foldStyle === 'normal' && after.foldColor === after.muted, `fix 891: the done fold is plain muted, got ${JSON.stringify(after)}`);
+    expect(after.second.continued && after.second.radius === '4px' && !after.first.continued, `fix 891: a reply split by a fold takes the near corner, the first does not, got ${JSON.stringify(after)}`);
+    step('fix 891: the prompt is a right bubble at the 80 percent cap in bubble-sent, the reply a left bubble in row-selected, no rail and no dots, the fold italic in working while its call runs and muted once done, and a reply split by a fold takes the near corner');
   });
 
   await block('thumbs', async () => {
@@ -1239,12 +1344,12 @@ try {
       if (when === 'in Normal' && (await viewWord(stubPane)) !== null) await pickView(stubPane, 'Normal');
       if (when === 'in Verbose') await toVerbose(stubPane);
       const t = await read(when);
-      expect(JSON.stringify(t.typed) === '["64 40 88 55"]', `the typed paste ${when}, got ${JSON.stringify(t)}`);
+      expect(JSON.stringify(t.typed) === '["64 40 176 110"]', `the typed paste ${when}, got ${JSON.stringify(t)}`);
       expect(JSON.stringify(t.slash.map((x) => x.split(' ').slice(0, 2).join(' '))) === '["40 64"]', `the slash command's paste ${when}, got ${JSON.stringify(t)}`);
       expect(JSON.stringify(t.result) === '["48 30 176 110"]', `the result's thumbnail ${when}, got ${JSON.stringify(t)}`);
     }
     await s.screenshot('m9-chat-thumbs.png');
-    step('fix 718: a pasted image is an 88 by 55 thumbnail on its bubble, natural 64 by 40, and a slash command\'s paste rides on its meta line');
+    step('fix 718: a pasted image is a 176 by 110 thumbnail on its bubble (fix 891), natural 64 by 40, and a slash command\'s paste rides on its meta line');
     const thumb = `[...${q(paneSel(stubPane))}.querySelectorAll('.chat-thumb')].at(-1)`;
     await s.evalJs(`${thumb}.click()`);
     await s.waitFor(`document.querySelector('.chat-image-full img')?.src === ${thumb}.src && document.activeElement === document.querySelector('.chat-image-full')`, 'the full size over the window', 3000);
@@ -1252,6 +1357,42 @@ try {
     await s.waitFor(`!document.querySelector('.chat-image-full')`, 'Escape closed the full size', 2000);
     expect((await s.evalJs(`${q(paneSel(stubPane))}.dataset.face ?? null`)) === 'chat', 'the pane still on the chat face');
     step('fix 717: an image result is a 176 by 110 thumbnail, natural 48 by 30, and a click opens it full size');
+    // M9 fix 891: a paste with nothing typed is the pictures alone, no bubble
+    // behind them, at the rail's size with the bubble's radius and no hairline.
+    fs.appendFileSync(
+      fixture,
+      [
+        userLine([{ type: 'text', text: '[Image #3]' }, png(await pngOf(64, 40, 'rgb(0, 160, 80)'))], 320, { promptId: 'p891', imagePasteIds: [3] }),
+        asstLine([{ type: 'text', text: 'Seen 891.' }], 321),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`(() => { const e = ${q(paneSel(stubPane))}.querySelector('.chat-prompt[data-bare]'); const i = e?.querySelectorAll('img.chat-prompt-thumb'); return !!i && i.length === 1 && i[0].complete && i[0].naturalWidth > 0; })()`, 'the bare prompt drawn with its picture', 5000);
+    const bare = await s.evalJs(`(() => {
+      const p = ${q(paneSel(stubPane))};
+      const e = p.querySelector('.chat-prompt[data-bare]');
+      const row = e.closest('.chat-prompt-row');
+      const img = e.querySelector('img.chat-prompt-thumb');
+      const ir = img.getBoundingClientRect();
+      const imgs = e.querySelector('.chat-prompt-images').getBoundingClientRect();
+      const ic = getComputedStyle(img);
+      const cs = getComputedStyle(e);
+      const thumb = [...p.querySelectorAll('.chat-thumb')].at(-1);
+      const tr = thumb ? thumb.getBoundingClientRect() : null;
+      const tc = thumb ? getComputedStyle(thumb) : null;
+      return {
+        img: [Math.round(ir.width), Math.round(ir.height)], radius: ic.borderTopLeftRadius, borderStyle: ic.borderTopStyle,
+        bubbleW: e.getBoundingClientRect().width, imagesW: imgs.width,
+        padL: cs.paddingLeft, bg: cs.backgroundColor, text: e.textContent,
+        timeTop: row.querySelector('.chat-prompt-time')?.getBoundingClientRect().top ?? null, imgBottom: ir.bottom,
+        thumb: tr ? { w: Math.round(tr.width), h: Math.round(tr.height), radius: tc.borderTopLeftRadius, bw: tc.borderTopWidth } : null,
+      };
+    })()`);
+    expect(JSON.stringify(bare.img) === '[176,110]' && bare.radius === '12px' && bare.borderStyle === 'none', `fix 891: the pasted picture is 176 by 110 at the bubble's radius with no hairline, got ${JSON.stringify(bare)}`);
+    expect(bare.bubbleW >= bare.imagesW + 23 || (bare.padL === '0px' && bare.bubbleW >= bare.imagesW - 0.5), `fix 891: the bubble holds the pictures, got ${JSON.stringify(bare)}`);
+    expect(bare.padL === '0px' && bare.bg === 'rgba(0, 0, 0, 0)' && bare.text === '', `fix 891: the bare prompt has no padding, no ground and no text, got ${JSON.stringify(bare)}`);
+    expect(bare.timeTop === null || bare.timeTop >= bare.imgBottom - 0.5, `fix 891: the time mark sits under the picture, got ${JSON.stringify(bare)}`);
+    expect(bare.thumb !== null && bare.thumb.w === 176 && bare.thumb.h === 110 && bare.thumb.radius === '3px' && bare.thumb.bw === '1px', `fix 891: the result's thumbnail keeps its hairline and 3px corners, got ${JSON.stringify(bare)}`);
+    step('fix 891: a pasted picture is 176 by 110 with the bubble\'s radius and no hairline, a prompt of pictures alone is the pictures with the mark under them, and the result\'s thumbnail keeps its hairline');
   });
 
   await block('edit-ask', async () => {
@@ -1392,7 +1533,7 @@ try {
       expect(log.includes(`mod submit for ${realId.slice(0, 8)}`), `the box's first prompt went in through the mod (fix 781); emmerd.log has mod channel up: ${log.includes(`mod channel up for ${realId.slice(0, 8)}`)}`);
       step('fix 781: a prompt from the box to the idle real Claude went in through the mod');
     }
-    const drawn =`(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => ((t.querySelector('.chat-tool-command') ?? t.querySelector('.chat-tool-arg'))?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.querySelector('.chat-dot')?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
+    const drawn =`(() => { const p = ${q(paneSel(pane.id))}; const tools = [...p.querySelectorAll('.chat-step[data-kind="tool"][data-tool="Bash"]')]; const bash = tools.find((t) => ((t.querySelector('.chat-tool-command') ?? t.querySelector('.chat-tool-arg'))?.textContent ?? '').includes(${JSON.stringify(`echo chat-${marker}`)})); const replies = [...p.querySelectorAll('.chat-reply')]; return { prompt: [...p.querySelectorAll('.chat-prompt')].some((e) => e.textContent === ${JSON.stringify(prompt)}), tone: bash?.dataset.tone ?? null, result: bash?.querySelector('.chat-tool-result')?.textContent ?? null, reply: replies.at(-1)?.textContent.trim() ?? null }; })()`;
     const okDrawn = `(() => { const d = ${drawn}; return d.prompt && d.tone === 'done' && (d.result ?? '').startsWith('exit 0') && d.reply === ${JSON.stringify(marker)}; })()`;
     try {
       await s.waitFor(okDrawn, 'the real turn drawn', 5000);
@@ -1489,8 +1630,8 @@ try {
       await s.key('Enter', 'Enter', 13);
       // Any Bash row pending: the row's words may be the call's
       // description rather than its command.
-      const sleeping = `[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"][data-tool="Bash"]')})].some((t) => t.querySelector('.chat-dot')?.dataset.tone === 'pending')`;
-      const toolRows = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"]')})].map((t) => [t.dataset.tool, t.querySelector('.chat-tool-arg')?.textContent ?? '', t.querySelector('.chat-dot')?.dataset.tone ?? null])`);
+      const sleeping = `[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"][data-tool="Bash"]')})].some((t) => t.dataset.tone === 'pending')`;
+      const toolRows = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(P + ' .chat-step[data-kind="tool"]')})].map((t) => [t.dataset.tool, t.querySelector('.chat-tool-arg')?.textContent ?? '', t.dataset.tone ?? null])`);
       const sleepBy = Date.now() + 60000;
       let asked = false;
       while (Date.now() < sleepBy && !(await s.evalJs(sleeping))) {
@@ -1766,22 +1907,10 @@ try {
     menusId = spawned.session.id;
     let lay = await getLayout(s);
     const menusPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === menusPane ? { ...n, sessionId: menusId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await bindPane(menusPane, menusId, { focus: false });
     await s.waitFor(`!!${q(paneSel(menusPane) + ' .term-host')}`, 'the menus stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postMenus = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': menusId },
-        body: JSON.stringify({ session_id: 'sim-chat-719', cwd: menusDir, transcript_path: menusFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postMenus({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postMenus({ hook_event_name: 'UserPromptSubmit', prompt: 'list the menus' });
-    await postMenus({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(menusId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the menus stub bound with its transcript', 10000);
+    const postMenus = hookPoster(menusId, { simId: 'sim-chat-719', cwd: menusDir, transcript: menusFixture });
+    await startStub(postMenus, menusId, 'list the menus');
     const boxSel = paneSel(menusPane) + ' .chat-box';
     // On the chat face with the box holding the keyboard; the box set the
     // way React hears it (cdp.mjs's setInput is an input's setter).
@@ -1977,13 +2106,10 @@ try {
     const oldId = menusId;
     const spawnedK = await zreq(s, 'session.spawn', { kind: 'shell', cwd: srcDir, cols: 120, rows: 30 });
     menusId = spawnedK.session.id;
-    lay = await getLayout(s);
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await bindPane(menusPane, menusId, { focus: false });
     await zreq(s, 'session.kill', { sessionId: oldId }).catch(() => {});
-    await postMenus({ hook_event_name: 'SessionStart', source: 'startup', cwd: srcDir });
-    await postMenus({ hook_event_name: 'UserPromptSubmit', prompt: 'list the menus', cwd: srcDir });
-    await postMenus({ hook_event_name: 'Stop', stop_hook_active: false, cwd: srcDir });
-    await waitRecord(menusId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the subfolder stub bound with its transcript', 10000);
+    const postSub = hookPoster(menusId, { simId: 'sim-chat-719', cwd: srcDir, transcript: menusFixture });
+    await startStub(postSub, menusId, 'list the menus');
     await toChat();
     await s.waitFor(`document.querySelector(${JSON.stringify(paneSel(menusPane) + ' .chat-view')})?.dataset.sessionId === ${JSON.stringify(menusId)}`, 'the chat view on the subfolder session', 10000);
     await setBoxText('');
@@ -2007,8 +2133,7 @@ try {
     imageId = spawned.session.id;
     let lay = await getLayout(s);
     const imagePane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === imagePane ? { ...n, sessionId: imageId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await bindPane(imagePane, imageId, { focus: false });
     await waitRecord(imageId, (r) => r.state === 'idle' && r.claudeSessionId !== null, 'the real Claude idle', 30000);
     await sleep(2000);
     const boxSel = paneSel(imagePane) + ' .chat-box';
@@ -2173,16 +2298,8 @@ try {
     // as asking, after Claude Code has closed its dialog. A posted
     // PermissionRequest holds the record at needs-input while Claude's own
     // prompt stays open, which is that moment held still.
-    const imageDaemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
     const imageRec = await record(imageId);
-    const postImage = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${imageDaemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': imageDaemon.hookToken, 'X-Emerald-Session': imageId },
-        body: JSON.stringify({ session_id: imageRec.claudeSessionId, cwd: imageRec.cwd, transcript_path: imageRec.transcriptPath, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name} (fix 807)`);
-    };
+    const postImage = hookPoster(imageId, { simId: imageRec.claudeSessionId, cwd: imageRec.cwd, transcript: imageRec.transcriptPath });
     await postImage({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'x' } });
     await s.waitFor(`${q(boxSel)}.disabled === true`, 'fix 807 (h): the view reads the session as asking', 5000);
     await dropOn(attachPng, paneSel(imagePane) + ' .chat-timeline');
@@ -2409,9 +2526,9 @@ try {
       ].join('\n') + '\n',
     );
     await s.waitFor(`document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')}).length >= 3 && !!${replyOf('It broke.')}`, 'turns B and C drawn', 10000);
-    const tones = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold .chat-dot')})].map((d) => d.dataset.tone).slice(-3)`);
-    expect(JSON.stringify(tones) === '["done","error","pending"]', `the fold dots of turns A, B and C, got ${JSON.stringify(tones)}`);
-    step('fix 753: a fold dot reads done, error after a failed last call, and pending while a call runs');
+    const tones = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(TP + ' .chat-fold')})].map((d) => d.dataset.tone).slice(-3)`);
+    expect(JSON.stringify(tones) === '["done","error","pending"]', `the folds of turns A, B and C, got ${JSON.stringify(tones)}`);
+    step('fix 753: a fold reads done, error after a failed last call, and pending while a call runs');
   });
 
   await block('queued', async () => {
@@ -2467,22 +2584,10 @@ try {
     feedId = spawned.session.id;
     const lay = await getLayout(s);
     const feedPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === feedPane ? { ...n, sessionId: feedId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: feedPane } });
+    await bindPane(feedPane, feedId);
     await s.waitFor(`!!${q(paneSel(feedPane) + ' .term-host')}`, 'the feed stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postFeed = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': feedId },
-        body: JSON.stringify({ session_id: 'sim-chat-769', cwd: feedDir, transcript_path: feedFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postFeed({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postFeed({ hook_event_name: 'UserPromptSubmit', prompt: 'feed me' });
-    await postFeed({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(feedId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the feed stub bound with its transcript', 10000);
+    const postFeed = hookPoster(feedId, { simId: 'sim-chat-769', cwd: feedDir, transcript: feedFixture });
+    await startStub(postFeed, feedId, 'feed me');
     await s.waitFor(`!!${q(paneSel(feedPane) + ' .pane-face-toggle')}`, 'the face button on the feed stub', 10000);
     await toChat(feedPane);
     // Ctrl+O, not the view chip: the fixture holds no tool call or thinking
@@ -2561,22 +2666,10 @@ try {
     tailId = spawned.session.id;
     const lay = await getLayout(s);
     const tailPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === tailPane ? { ...n, sessionId: tailId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: tailPane } });
+    await bindPane(tailPane, tailId);
     await s.waitFor(`!!${q(paneSel(tailPane) + ' .term-host')}`, 'the tail stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postTail = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': tailId },
-        body: JSON.stringify({ session_id: 'sim-chat-770', cwd: tailDir, transcript_path: tailFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postTail({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postTail({ hook_event_name: 'UserPromptSubmit', prompt: 'big turn 449' });
-    await postTail({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(tailId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the tail stub bound with its transcript', 10000);
+    const postTail = hookPoster(tailId, { simId: 'sim-chat-770', cwd: tailDir, transcript: tailFixture });
+    await startStub(postTail, tailId, 'big turn 449');
     await s.waitFor(`!!${q(paneSel(tailPane) + ' .pane-face-toggle')}`, 'the face button on the tail stub', 10000);
     await toChat(tailPane);
     const TP = paneSel(tailPane);
@@ -2617,8 +2710,7 @@ try {
     // blocks before leave the first pane on another session when run
     // whole, so the stub is put back in it first.
     const lay = await getLayout(s);
-    const rec = (n) => (n.kind === 'pane' ? (n.id === stubPane ? { ...n, sessionId: stubId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: stubPane } });
+    await bindPane(stubPane, stubId);
     await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the stub back in the first pane', 10000);
     await toChat(stubPane);
     fs.appendFileSync(fixture, [userLine('ask me about the button', 2000), asstLine([useOf('q777', 'AskUserQuestion', { questions: [] })], 2001)].join('\n') + '\n');
@@ -2758,8 +2850,7 @@ try {
     // row is still needs-input. The stub is put back in the first pane
     // first, as the question block does, so this also runs alone.
     const lay = await getLayout(s);
-    const rec = (n) => (n.kind === 'pane' ? (n.id === stubPane ? { ...n, sessionId: stubId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: stubPane } });
+    await bindPane(stubPane, stubId);
     await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the stub back in the first pane', 10000);
     await toChat(stubPane);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the probe' });
@@ -2829,22 +2920,10 @@ try {
     boxId = spawned.session.id;
     const lay = await getLayout(s);
     const boxPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === boxPane ? { ...n, sessionId: boxId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: boxPane } });
+    await bindPane(boxPane, boxId);
     await s.waitFor(`!!${q(paneSel(boxPane) + ' .term-host')}`, 'the box stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postBox = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': boxId },
-        body: JSON.stringify({ session_id: 'sim-chat-779', cwd: boxDir, transcript_path: boxFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postBox({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postBox({ hook_event_name: 'UserPromptSubmit', prompt: 'suggest' });
-    await postBox({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(boxId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the box stub bound with its transcript', 10000);
+    const postBox = hookPoster(boxId, { simId: 'sim-chat-779', cwd: boxDir, transcript: boxFixture });
+    await startStub(postBox, boxId, 'suggest');
     const boxSel = paneSel(boxPane) + ' .chat-box';
     const toBox = async () => {
       await s.waitFor(`!!${q(paneSel(boxPane) + ' .pane-face-toggle')}`, 'the face button on the box stub', 10000);
@@ -3061,22 +3140,10 @@ try {
     sendId = spawned.session.id;
     const lay = await getLayout(s);
     sendPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === sendPane ? { ...n, sessionId: sendId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: sendPane } });
+    await bindPane(sendPane, sendId);
     await s.waitFor(`!!${q(paneSel(sendPane) + ' .term-host')}`, 'the send stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postSend = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sendId },
-        body: JSON.stringify({ session_id: 'sim-chat-781', cwd: sendDir, transcript_path: sendFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postSend({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postSend({ hook_event_name: 'UserPromptSubmit', prompt: 'send me' });
-    await postSend({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(sendId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the send stub bound with its transcript', 10000);
+    const postSend = hookPoster(sendId, { simId: 'sim-chat-781', cwd: sendDir, transcript: sendFixture });
+    await startStub(postSend, sendId, 'send me');
     await s.waitFor(`!!${q(paneSel(sendPane) + ' .pane-face-toggle')}`, 'the face button on the send stub', 10000);
     await toChat(sendPane);
     const SP = paneSel(sendPane);
@@ -3428,18 +3495,9 @@ try {
     reviewId790 = spawned.session.id;
     const lay = await getLayout(s);
     const pane790 = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === pane790 ? { ...n, sessionId: reviewId790 } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: pane790 } });
+    await bindPane(pane790, reviewId790);
     await s.waitFor(`!!${q(paneSel(pane790) + ' .term-host')}`, 'the 790 stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const post790 = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': reviewId790 },
-        body: JSON.stringify({ session_id: 'sim-chat-790', cwd: repo790, transcript_path: fixture790, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
+    const post790 = hookPoster(reviewId790, { simId: 'sim-chat-790', cwd: repo790, transcript: fixture790 });
     await post790({ hook_event_name: 'SessionStart', source: 'startup' });
     const start790 = (await waitRecord(reviewId790, (r) => (r.spans?.at(-1)?.startHead ?? null) !== null, 'the span read its start commit', 10000)).spans.at(-1).startHead;
     expect(start790 === git790('rev-parse', 'HEAD'), `the span's start commit is the seed, got ${start790}`);
@@ -3495,8 +3553,7 @@ try {
     askId = spawned.session.id;
     const lay = await getLayout(s);
     const askPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === askPane ? { ...n, sessionId: askId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root) } });
+    await bindPane(askPane, askId, { focus: false });
     await waitRecord(askId, (r) => r.state === 'idle' && r.claudeSessionId !== null, 'the real Claude idle', 30000);
     await s.waitFor(`!!${q(paneSel(askPane) + ' .pane-face-toggle')}`, 'the face button on the real Claude', 10000);
     await toChat(askPane);
@@ -3629,22 +3686,10 @@ try {
     notesId = spawned.session.id;
     const lay = await getLayout(s);
     notesPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === notesPane ? { ...n, sessionId: notesId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: notesPane } });
+    await bindPane(notesPane, notesId);
     await s.waitFor(`!!${q(paneSel(notesPane) + ' .term-host')}`, 'the notes stub in the first pane', 10000);
-    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-    const postNotes = async (payload) => {
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': notesId },
-        body: JSON.stringify({ session_id: 'sim-chat-805', cwd: notesDir, transcript_path: notesFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postNotes({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postNotes({ hook_event_name: 'UserPromptSubmit', prompt: 'start the background check' });
-    await postNotes({ hook_event_name: 'Stop', stop_hook_active: false });
-    await waitRecord(notesId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the notes stub bound with its transcript', 10000);
+    const postNotes = hookPoster(notesId, { simId: 'sim-chat-805', cwd: notesDir, transcript: notesFixture });
+    await startStub(postNotes, notesId, 'start the background check');
     await s.waitFor(`!!${q(paneSel(notesPane) + ' .pane-face-toggle')}`, 'the face button on the notes stub', 10000);
     await toChat(notesPane);
     const NP = paneSel(notesPane);
@@ -3994,6 +4039,155 @@ try {
     await zreq(s, 'layout.set', { layout: { ...now808, root: before808.root, focusedPaneId: before808.focusedPaneId } });
   });
 
+  await block('remote', async () => {
+    // M9 fixes 889 and 890: (a) a shell playing Claude in the first pane,
+    // on the chat face.
+    const remoteDir = path.join(emeraldHome, 'chat-889');
+    fs.mkdirSync(remoteDir, { recursive: true });
+    const remoteFixture = path.join(remoteDir, 'fixture.jsonl');
+    fs.writeFileSync(remoteFixture, [userLine('turn on remote control', 0), asstLine([{ type: 'text', text: 'Ready.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: remoteDir, cols: 120, rows: 30 });
+    remoteId = spawned.session.id;
+    const remotePane = leaves(await getLayout(s))[0].id;
+    await bindPane(remotePane, remoteId);
+    await s.waitFor(`!!${q(paneSel(remotePane) + ' .term-host')}`, 'the remote stub in the first pane', 10000);
+    const postRemote = hookPoster(remoteId, { simId: 'sim-chat-889', cwd: remoteDir, transcript: remoteFixture });
+    await startStub(postRemote, remoteId, 'turn on remote control');
+    await s.waitFor(`!!${q(paneSel(remotePane) + ' .pane-face-toggle')}`, 'the face button on the remote stub', 10000);
+    await toChat(remotePane);
+    const RP = paneSel(remotePane);
+
+    // (b) Remote control's connect line lands in the transcript ten minutes
+    // after the reply: a divider in the turn with its link, the prompt row's
+    // length untouched. Port 9 is the discard port, as in the beside block.
+    const url889 = 'http://127.0.0.1:9/889';
+    const said889 = `/remote-control is active · Continue here, on your phone, or at ${url889}`;
+    await s.waitFor(`!!${q(RP + ' .chat-prompt-time')}`, 'the prompt row\'s time', 5000);
+    const timeBefore = await s.evalJs(`${q(RP + ' .chat-prompt-time')}.textContent`);
+    fs.appendFileSync(remoteFixture, line({ type: 'system', subtype: 'bridge_status', content: said889, url: url889, isMeta: false, timestamp: at(600), uuid: 'verify-889' }) + '\n');
+    const notes889 = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(RP + ' .chat-command-note')})].map((n) => ({ text: n.querySelector('.chat-command-note-text')?.textContent ?? null, url: n.dataset.url ?? null, link: n.querySelector('a.chat-command-note-link')?.getAttribute('href') ?? null }))`);
+    try {
+      await s.waitFor(`(() => { const n = document.querySelectorAll(${JSON.stringify(RP + ' .chat-command-note')}); return n.length === 1 && n[0].querySelector('.chat-command-note-text')?.textContent === ${JSON.stringify(said889)} && !!n[0].querySelector(${JSON.stringify(`a.chat-command-note-link[href="${url889}"]`)}); })()`, 'fix 889 (b): the connect line drawn as a divider with its link', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: notes ${JSON.stringify(await notes889())}`);
+    }
+    const timeAfter = await s.evalJs(`${q(RP + ' .chat-prompt-time')}.textContent`);
+    expect(timeAfter === timeBefore, `fix 889: the connect line drawn as a divider with its link, the turn's length not stretched to it, got ${JSON.stringify([timeBefore, timeAfter])}`);
+    step('fix 889 (b): remote control\'s connect line is a divider in its turn with the link, the turn\'s length untouched');
+
+    // (c) The divider's link Ctrl+clicked opens a browser pane beside.
+    const link889 = `${q(RP + ` a.chat-command-note-link[href="${url889}"]`)}`;
+    const leafWith = async (view) => leaves(await getLayout(s)).find((p) => JSON.stringify(p.view) === JSON.stringify(view)) ?? null;
+    const waitLeaf = async (view, what) => {
+      const until = Date.now() + 5000;
+      while ((await leafWith(view)) === null && Date.now() < until) await sleep(150);
+      const leaf = await leafWith(view);
+      expect(leaf !== null, `${what}, got ${JSON.stringify(leaves(await getLayout(s)).map((p) => p.view))}`);
+      return leaf;
+    };
+    const closePane = async (id) => {
+      await s.evalJs(`${q(`[data-pane-id=${JSON.stringify(id)}] .pane-hide`)}.click()`);
+      await s.waitFor(`!${q(`[data-pane-id=${JSON.stringify(id)}]`)}`, 'the pane beside closed', 5000);
+    };
+    const panesBefore = await s.evalJs(`document.querySelectorAll('.pane').length`);
+    await s.evalJs(`${link889}.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }))`);
+    const page889 = await waitLeaf({ kind: 'browser', url: url889 }, 'fix 889 (c): the Ctrl+click opened a browser pane on the divider\'s link');
+    {
+      const split = ((node) => {
+        const find = (n) => (n.kind !== 'split' ? null : n.first.id === page889.id || n.second.id === page889.id ? n : (find(n.first) ?? find(n.second)));
+        return find(node);
+      })((await getLayout(s)).root);
+      expect(split !== null && split.first.id === remotePane && split.second.id === page889.id, `fix 889 (c): the browser pane beside the chat's pane, got ${JSON.stringify(split && { first: split.first.id, second: split.second.id })}`);
+    }
+    await closePane(page889.id);
+    await s.waitFor(`document.querySelectorAll('.pane').length === ${panesBefore}`, 'the panes back as they were', 5000);
+    step('fix 889 (c): the divider\'s link Ctrl+clicked opens a browser pane beside the chat\'s pane');
+
+    // (d) The rc chip through its states, all inside one command in the
+    // stub, since the command's end at the prompt drops the face (fix 360).
+    const chip889 = () => s.evalJs(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return c === null ? null : { word: c.querySelector('.chat-chip-word')?.textContent ?? null, state: c.dataset.state ?? null, title: c.title }; })()`);
+    const shown = async () => (await screen(remoteId)).rows.filter((r) => r.trim() !== '').slice(-6);
+    const waitChip = async (word, state, what) => {
+      try {
+        await s.waitFor(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return !!c && c.querySelector('.chat-chip-word')?.textContent === ${JSON.stringify(word)} && c.dataset.state === ${JSON.stringify(state)}; })()`, what, 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: chip ${JSON.stringify(await chip889())}, screen ${JSON.stringify(await shown())}`);
+      }
+    };
+    // The pane's terminal is about 80 columns (the harness pane is 678 px),
+    // so the mode row is padded short of that and the pill stays on its row.
+    await typeRaw(
+      remoteId,
+      `$r = ('  ' + [char]0x23F8 + ' manual mode on (shift+tab to cycle)' + (' ' * 10)); cls; Write-Host ''; Write-Host ($r + '/rc connecting' + [char]0x2026); $null = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ($r + '/rc active'); $null = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ($r + '/rc'); $x = Read-Host; cls; Write-Host ('got ' + $x); Read-Host | Out-Null\r`,
+    );
+    await waitChip('/rc connecting…', 'connecting', 'fix 889 (d): the chip reads /rc connecting…');
+    await typeRaw(remoteId, ' ');
+    await waitChip('/rc active', 'active', 'fix 889 (d): the chip reads /rc active');
+    expect((await chip889()).title === url889, `fix 889 (d): the chip's title is the divider's link, got ${JSON.stringify(await chip889())}`);
+    await typeRaw(remoteId, ' ');
+    {
+      const until = Date.now() + 5000;
+      while (Date.now() < until && !(await screen(remoteId)).rows.some((r) => r.trimEnd().endsWith(' /rc'))) await sleep(150);
+      expect((await screen(remoteId)).rows.some((r) => r.trimEnd().endsWith(' /rc')), `fix 889 (d): the bare /rc on the screen, got ${JSON.stringify(await shown())}`);
+    }
+    await sleep(2000);
+    {
+      const c = await chip889();
+      expect(c !== null && c.word === '/rc active' && c.state === 'active', `fix 889 (d): the bare /rc reads as active, got ${JSON.stringify(c)}`);
+    }
+    await s.screenshot('m9-chat-fix889-rc.png');
+    const mainLog = path.join(emeraldHome, 'logs', 'main.log');
+    const held889 = () => {
+      try {
+        return fs.readFileSync(mainLog, 'utf8').split('\n').filter((l) => l.includes(`link held under a private EMERALD_HOME: ${url889}`)).length;
+      } catch {
+        return 0;
+      }
+    };
+    const heldBefore = held889();
+    await s.evalJs(`${q(RP + ' .chat-chip[data-chip="rc"]')}.click()`);
+    {
+      const until = Date.now() + 3000;
+      while (held889() <= heldBefore && Date.now() < until) await sleep(100);
+    }
+    expect(held889() === heldBefore + 1, `fix 889 (d): the chip's click sent its link to the browser, got ${held889() - heldBefore} held lines`);
+    step('fix 889 (d): the rc chip reads the pill off the screen, connecting then active, the bare /rc as active, its title the link and its click the browser');
+
+    // (e) /remote-control from the menu, its send while the chip reads
+    // active bringing the bar; the stub's Read-Host takes the send.
+    const box889 = RP + ' .chat-box';
+    await s.evalJs(`${q(box889)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(box889)}`, 'the remote box holds the keyboard', 5000);
+    const activeRow889 = () => s.evalJs(`(() => { const r = document.querySelector('.chat-menu .chat-menu-row[data-active="true"]'); return r === null ? null : { name: r.dataset.name ?? null, hint: r.dataset.hint ?? null, section: r.dataset.section ?? null, shownHint: r.querySelector('.chat-menu-hint')?.textContent ?? null, desc: r.querySelector('.chat-menu-desc')?.textContent ?? null }; })()`);
+    await s.type('/remote');
+    try {
+      await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/remote-control'`, 'fix 890 (e): the menu on /remote-control', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await activeRow889())}`);
+    }
+    {
+      const row = await activeRow889();
+      expect(row.hint === '[name]' && row.shownHint === '[name]' && row.section === 'sent' && row.desc === 'Control this session from your phone or claude.ai/code', `fix 890 (e): the /remote-control row with its hint and Claude Code's description, got ${JSON.stringify(row)}`);
+    }
+    await s.key('Enter', 'Enter', 13);
+    {
+      const until = Date.now() + 10000;
+      while (Date.now() < until && !(await screen(remoteId)).rows.some((r) => r.trim() === 'got /remote-control')) await sleep(200);
+      expect((await screen(remoteId)).rows.some((r) => r.trim() === 'got /remote-control'), `fix 890 (e): the stub got /remote-control, got ${JSON.stringify(await shown())}`);
+    }
+    try {
+      await s.waitFor(`!!${q(RP + ' .chat-fallback')}`, 'fix 890: the bar', 3000);
+    } catch {
+      expect(false, `fix 890: /remote-control sent while the chip reads active brings the fallback bar, got ${JSON.stringify({ chip: await chip889(), bar: false })}`);
+    }
+    await s.waitFor(`!${q(RP + ' .chat-chip[data-chip="rc"]')}`, 'fix 890 (e): the chip gone with the pill', 5000);
+    step('fix 890 (e): /remote-control is a sent row with its hint and Claude Code\'s description, and its send while the chip reads active brings the bar; the chip goes with the pill');
+
+    // (f) The stub's command ends at its prompt.
+    await typeRaw(remoteId, '\r');
+    await waitRecord(remoteId, (r) => r.command?.state !== 'running', 'the remote stub\'s command ended at the prompt', 10000);
+  });
+
   await block('exited', async () => {
     // M9 fix 804: (a) nothing else live, so the restart below stops no
     // real Claude; then a stub on the chat face over a two-turn fixture.
@@ -4012,23 +4206,10 @@ try {
     exitedId = spawned.session.id;
     const lay = await getLayout(s);
     const exitedPane = leaves(lay)[0].id;
-    const rec = (n) => (n.kind === 'pane' ? (n.id === exitedPane ? { ...n, sessionId: exitedId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
-    await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: exitedPane } });
+    await bindPane(exitedPane, exitedId);
     await s.waitFor(`!!${q(paneSel(exitedPane) + ' .term-host')}`, 'the exited stub in the first pane', 10000);
-    const postExited = async (payload) => {
-      // Read each time: the restart below gives the sink a new port and token.
-      const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
-      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
-        method: 'POST',
-        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': exitedId },
-        body: JSON.stringify({ session_id: 'sim-chat-804', cwd: exitedDir, transcript_path: exitedFixture, ...payload }),
-      });
-      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
-    };
-    await postExited({ hook_event_name: 'SessionStart', source: 'startup' });
-    await postExited({ hook_event_name: 'UserPromptSubmit', prompt: 'second exited turn' });
-    await postExited({ hook_event_name: 'Stop', stop_hook_active: false });
-    const bound = await waitRecord(exitedId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the exited stub bound with its transcript', 10000);
+    const postExited = hookPoster(exitedId, { simId: 'sim-chat-804', cwd: exitedDir, transcript: exitedFixture });
+    const bound = await startStub(postExited, exitedId, 'second exited turn');
     const boundPath = bound.transcriptPath;
     await s.waitFor(`!!${q(paneSel(exitedPane) + ' .pane-face-toggle')}`, 'the face button on the exited stub', 10000);
     await toChat(exitedPane);
@@ -4178,6 +4359,7 @@ try {
   if (notesId !== null) await zreq(s, 'session.kill', { sessionId: notesId }).catch(() => {});
   if (exitedId !== null) await zreq(s, 'session.kill', { sessionId: exitedId }).catch(() => {});
   if (trustId !== null) await zreq(s, 'session.kill', { sessionId: trustId }).catch(() => {});
+  if (remoteId !== null) await zreq(s, 'session.kill', { sessionId: remoteId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();

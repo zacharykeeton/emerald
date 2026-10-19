@@ -1,10 +1,12 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { GitChanges, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
-import { gitBytes, gitPipe, gitText } from './git-runner.ts';
+import { forgetInFlight, gitBytes, gitPipe, gitText, type GitOptions } from './git-runner.ts';
 import { defaultBranchOf, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, twinGroups } from '../renderer/src/git-changes-model.ts';
 import type { GitStatusResult } from '../renderer/src/git-status-model.ts';
 import { parseStatus } from '../renderer/src/git-status-model.ts';
+import { normalizePath } from '../renderer/src/files-model.ts';
 import { watchFolder } from './watch-folder.ts';
 
 // The git status behind the files rail's colours. The daemon reads the
@@ -293,18 +295,14 @@ export function gitReview(dir: string, base: string): Promise<GitReview> {
       files.push({ rel, path: path.join(root, rel), letter, added: c?.[0] ?? null, removed: c?.[1] ?? null });
     }
     const untracked = status.files.filter((f) => f.status === 'untracked' && !letters.has(f.path.toLowerCase()));
-    // Four counts at a time, so a tree with hundreds of new files does
-    // not start hundreds of gits at once.
-    const added: (number | null)[] = [];
-    let next = 0;
-    const lane = async () => {
-      for (let i = next++; i < untracked.length; i = next++) added[i] = await countLines(untracked[i]!.path, root);
-    };
-    await Promise.all([lane(), lane(), lane(), lane()]);
-    untracked.forEach((f, i) => {
+    const added = await countUntracked(root, untracked.map((f) => f.path));
+    for (const f of untracked) {
       const rel = path.relative(root, f.path).replaceAll('\\', '/');
-      files.push({ rel, path: f.path, letter: 'A', added: added[i] ?? null, removed: 0 });
-    });
+      const n = added.get(normalizePath(f.path).toLowerCase()) ?? null;
+      // No count is no number on both sides: `+0 −0` would read as an
+      // empty file (M9 fix 917).
+      files.push({ rel, path: f.path, letter: 'A', added: n, removed: n === null ? null : 0 });
+    }
     files.sort((a, b) => a.rel.localeCompare(b.rel));
     return { root, head, defaultBranch, baseHash, files };
   })();
@@ -332,27 +330,66 @@ export async function resolveReviewBase(base: string, defaultBranch: string | nu
 // a 400 MB log in the tree was read whole on every review refresh.
 export const COUNT_LINES_CAP = 4 * 1024 * 1024;
 
+let scratchIndexes = 0;
+
 // An untracked file has no numstat, so its count is its lines; null for a
-// file that cannot be read, is binary or is past the cap, which the
-// renderer shows as no number. The count is git's own, on the worker
-// (M9 fix 474; it was a readFileSync and a byte walk on the main thread):
-// `diff --no-index --numstat` against /dev/null answers the lines added,
-// or a dash for a binary file, and exits 1 because the two differ. `run`
-// is the worker's gitText unless a test hands in its own.
-export async function countLines(file: string, root: string, run: (args: string[], cwd: string, okExits?: number[]) => Promise<string | null> = gitText): Promise<number | null> {
-  let size: number;
+// file that cannot be read, is binary, is a folder or is past the cap,
+// which the renderer shows as no number. Two gits for every file at once
+// (M9 fix 917; fix 474 spawned one `diff --no-index` per file, about 200
+// ms a spawn on this box, so five hundred new files took 25 s): the
+// measured files are added intent-to-add to a scratch index, and `diff
+// --numstat` under that index lists exactly them, the real index never
+// touched. The paths go on stdin, since hundreds of them pass Windows'
+// 32,767-character command line (fix 476's lesson), with
+// --literal-pathspecs so `[ab].txt` is not a glob. An add that fails (a
+// git before 2.25, or a file deleted since the status, which fails the add
+// whole) leaves every measured file null until the next refresh. Keyed by
+// the lowercased normalised path, as parseNumstat keys its rows. `run` is
+// the worker's gitText unless a test hands in its own.
+export async function countUntracked(root: string, files: readonly string[], run: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null> = gitText): Promise<Map<string, number | null>> {
+  const counts = new Map<string, number | null>();
+  const measured: string[] = [];
+  await Promise.all(
+    files.map(async (file) => {
+      const key = normalizePath(file).toLowerCase();
+      let size: number;
+      try {
+        const st = await fs.promises.stat(file);
+        if (!st.isFile()) {
+          counts.set(key, null);
+          return;
+        }
+        size = st.size;
+      } catch {
+        counts.set(key, null);
+        return;
+      }
+      if (size > COUNT_LINES_CAP) counts.set(key, null);
+      else if (size === 0) counts.set(key, 0);
+      else measured.push(file);
+    }),
+  );
+  if (measured.length === 0) return counts;
+  for (const file of measured) counts.set(normalizePath(file).toLowerCase(), null);
+  // One scratch file per read, so two review tabs on one repository never
+  // share one; the realpath because os.tmpdir() may be a short 8.3 path.
+  const idx = path.join(fs.realpathSync.native(os.tmpdir()), `emerald-review-${process.pid}-${++scratchIndexes}.idx`);
+  const env = { GIT_INDEX_FILE: idx };
   try {
-    const st = fs.statSync(file);
-    if (!st.isFile()) return null;
-    size = st.size;
-  } catch {
-    return null;
+    const rels = measured.map((f) => path.relative(root, f).replaceAll('\\', '/'));
+    const addedToIndex = await run([LITERAL, NO_LOCKS, 'add', '-N', '--pathspec-from-file=-', '--pathspec-file-nul'], root, { stdin: rels.join('\0'), env });
+    if (addedToIndex === null) return counts;
+    const out = await run([NO_LOCKS, 'diff', '--numstat', '-z'], root, { env });
+    if (out === null) return counts;
+    const nums = parseNumstat(out, root);
+    for (const file of measured) {
+      const key = normalizePath(file).toLowerCase();
+      counts.set(key, nums.get(key)?.[0] ?? null);
+    }
+    return counts;
+  } finally {
+    await fs.promises.rm(idx, { force: true });
   }
-  if (size > COUNT_LINES_CAP) return null;
-  if (size === 0) return 0;
-  const out = await run([NO_LOCKS, 'diff', '--no-index', '--numstat', '/dev/null', file], root, [1]);
-  const m = out === null ? null : /^(\d+)\t/.exec(out);
-  return m === null ? null : Number(m[1]);
 }
 
 // One file as it was at a base (M64): `git show <hash>:<rel>` for the
@@ -719,7 +756,16 @@ export class GitLogWatcher {
   private dirs: readonly string[] = [];
 
   constructor(onChanged: (root: string) => void) {
-    this.onChanged = onChanged;
+    // A push shares only reads that started after it (M9 fix 916): the
+    // runner shares an identical read in flight, and a `git log` begun a
+    // moment before the commit would otherwise be handed to the reads this
+    // push makes the renderer ask for, leaving the new row to the next
+    // poll. Every read here runs with the root as its cwd, the same string
+    // the push names.
+    this.onChanged = (root) => {
+      forgetInFlight(root);
+      onChanged(root);
+    };
   }
 
   set(dirs: readonly string[]): void {

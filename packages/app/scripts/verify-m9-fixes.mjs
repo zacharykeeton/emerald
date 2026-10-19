@@ -76,6 +76,8 @@ const BLOCKS = [
   { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
   { name: 'fix-738', fixes: ['fix-738'], needs: [] },
   { name: 'fix-787', fixes: ['fix-787', 'fix-813', 'fix-814'], needs: [] },
+  { name: 'fix-899', fixes: ['fix-899', 'fix-902'], needs: [] },
+  { name: 'fix-900', fixes: ['fix-900'], needs: [] },
   // Restarts the daemon and crashes the new one, ending every session it
   // held: it stays the last block whatever lands after it (M9 fix 815).
   { name: 'fix-815', fixes: ['fix-815'], needs: [] },
@@ -216,7 +218,7 @@ try {
   expect(afterZoom.active === false && afterZoom.buttons === 2 && layout.focusedPaneId === p1 && leaves(layout).length === 2 && layout.revision <= revisionBeforeZoom + 1, `the layout is back with pane 1 focused and nothing but that focus changed, got ${JSON.stringify(afterZoom)} at revision ${layout.revision} of ${revisionBeforeZoom}`);
   // The button focused pane 1 (the zoom follows the focus); the steps
   // below start from pane 2 focused, as before the zoom.
-  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+  await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p2)}] .pane-title').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await s.waitFor(`document.querySelector('.pane.focused')?.dataset.paneId === ${JSON.stringify(p2)}`, 'pane 2 focused again');
   layout = await getLayout(s);
   step('M9 fix 181: the title bar zoom button zooms the pane, lights up, unzooms, and is absent on the only pane');
@@ -471,15 +473,17 @@ try {
   step('Ctrl+drag on a divider pulled out a new shell pane sized by the drag');
 
   // Fix 6 and fix 17, text size. Ctrl+wheel over one terminal grows the
-  // text in that pane alone and its PTY loses columns; Ctrl+minus and
-  // Ctrl+0 act on the focused pane. The pulled pane (5) inherited the size
+  // text in that pane alone and its PTY loses columns; the prefix's minus
+  // and 0 act on the focused pane (Ctrl+minus and Ctrl+0 zoom the window
+  // since M9 fix 900). The pulled pane (5) inherited the size
   // of pane 2, so both are checked. The sizes live in localStorage across
   // runs, so start by resetting.
   const fontOf = (paneId) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .term-host')?.emeraldTerm?.options.fontSize ?? null`);
   const colsOf = (paneId) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .term-host')?.emeraldTerm?.cols ?? null`);
   const waitFont = (paneId, px, what) => s.waitFor(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .term-host')?.emeraldTerm?.options.fontSize === ${px}`, what, 5000);
   const sizesStored = async () => JSON.parse((await s.evalJs(`localStorage.getItem('emerald.fontSizes')`)) ?? '{}');
-  await s.key('0', 'Digit0', 48, CTRL);
+  await s.key('b', 'KeyB', 66, CTRL);
+  await s.key('0', 'Digit0', 48);
   await waitFont(p5, 14, 'text size at the default');
   expect((await fontOf(p2)) === 14, 'pane 2 at the default');
   await sleep(400);
@@ -502,8 +506,9 @@ try {
   await wheel(p2, 100);
   await waitFont(p2, 13, 'Ctrl+wheel down on pane 2 shrinks pane 2');
   expect((await fontOf(p5)) === 17, 'pane 5 unmoved by it');
-  await s.key('-', 'Minus', 189, CTRL);
-  await waitFont(p5, 16, 'Ctrl+minus on the focused pane');
+  await s.key('b', 'KeyB', 66, CTRL);
+  await s.key('-', 'Minus', 189);
+  await waitFont(p5, 16, "the prefix's minus on the focused pane");
   expect((await fontOf(p2)) === 13, 'pane 2 unmoved by it');
   await s.screenshot('m9-fixes-zoom.png');
   // M9 fix 390: Reset text size on the pane menu does what Ctrl+0 did,
@@ -548,7 +553,7 @@ try {
   expect((await sizesStored())[p2] === 15, 'pane 2 still remembered');
   await wheel(p2, 100);
   await waitFont(p2, 14, 'pane 2 back at the default');
-  step('text size: Ctrl+wheel changes one pane, Ctrl+minus and the pane menu the focused pane, a split inherits, a close forgets');
+  step("text size: Ctrl+wheel changes one pane, the prefix's minus and the pane menu the focused pane, a split inherits, a close forgets");
 
   // Fix 7, close kills and hide keeps. The × on pane 5 kills its shell and
   // the row leaves on its own once the exit lands (node-pty reports it
@@ -2477,7 +2482,7 @@ try {
     expect(tabAmber.color === null && tabAmber.top === AMBER, `fix 43: the tab's line is amber with an empty pane focused, got ${JSON.stringify(tabAmber)}`);
     await s.key('W', 'KeyW', 87, CTRL | SHIFT);
     await s.waitFor(`document.querySelectorAll('.empty-pane').length === ${emptyBefore}`, 'the empty pane closed again');
-    await s.evalJs(`document.querySelector(${JSON.stringify(holderSel)}).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(holderSel)}).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`);
     await s.waitFor(focusedPaneIs(addedPane), 'the added pane focused again');
     step('fix 43: the focus ring and the active tab line in the session colour, amber on an empty pane');
     const tabStrip = await s.evalJs(
@@ -2674,7 +2679,7 @@ try {
     // no measure). Closing the new pane moves the
     // holder up a level, the sibling-close re-mount (M2 gotcha 7), and the
     // tag survives that too.
-    await s.evalJs(`document.querySelector(${JSON.stringify(holderSel)}).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(holderSel)}).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
     await s.waitFor(focusedPaneIs(addedPane), 'the holder pane focused for the split');
     const termProbe = () =>
       s.evalJs(
@@ -3944,6 +3949,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       await s.waitFor(`!document.querySelector(${JSON.stringify(pane787(paneId))})`, 'the closed pane gone', 8000);
     };
     const badge787 = (id) => s.evalJs(`document.querySelector(${JSON.stringify(row787(id) + ' .sidebar-row-state')})?.textContent ?? null`);
+    // M9 fix 909: the count, right before Resume on whichever line Resume is on.
+    const removal787 = (id) => s.evalJs(`(() => { const sp = document.querySelector(${JSON.stringify(row787(id) + ' .sidebar-row-removal')}); const b = document.querySelector(${JSON.stringify(row787(id) + ' .sidebar-row-resume')}); return sp === null ? null : { text: sp.textContent, title: sp.title, beside: b !== null && sp.parentElement === b.parentElement && sp.nextElementSibling === b, line: sp.parentElement?.classList.contains('sidebar-row-main') ? 'main' : sp.parentElement?.classList.contains('sidebar-row-turn') ? 'agent' : 'other' }; })()`);
     const counting787 = (id) =>
       s.waitFor(`(() => { const r = document.querySelector(${JSON.stringify(exited787 + ' ' + row787(id))}); return !!r && r.dataset.state === 'exited' && r.dataset.removing !== undefined; })()`, 'the Exited row counting down', 8000);
 
@@ -3953,15 +3960,18 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     const at = await place787(a.id);
     await closePane787(at.P);
     await counting787(a.id);
-    const first787 = await badge787(a.id);
-    expect(/^removing in (10|[1-9])s$/.test(first787), `fix 787: the closed Claude's Exited row counts down where its badge sits, got ${first787}`);
+    const first787 = await removal787(a.id);
+    const word787 = await badge787(a.id);
+    expect(first787 !== null && /^removing in (10|[1-9])s$/.test(first787.text) && first787.beside && first787.title.startsWith('Closed: removed from the list'), `fix 909: the closed Claude's count sits right before its Resume, got ${JSON.stringify(first787)}`);
+    expect(/^(exited( \(-?\d+\))?|killed)$/.test(word787 ?? ''), `fix 909: the badge keeps the plain Exited word while the row counts, got ${word787}`);
+    console.log(`fix 909: the count and Resume sit on the ${first787.line} line`);
 
     // Hover: the count holds past its deadline.
     await enter787(a.id);
     await s.waitFor(`document.querySelector(${JSON.stringify(row787(a.id))})?.dataset.removingPaused !== undefined`, 'the count held by the hover', 2000);
-    const held787 = await badge787(a.id);
+    const held787 = (await removal787(a.id))?.text ?? null;
     await sleep(12_000);
-    const heldAfter787 = await badge787(a.id);
+    const heldAfter787 = (await removal787(a.id))?.text ?? null;
     const stillListed787 = (await listed787()).find((x) => x.id === a.id);
     expect(heldAfter787 === held787 && stillListed787?.state === 'exited', `fix 787: a hover holds the count past its deadline, got ${held787} then ${heldAfter787} (${stillListed787?.state})`);
 
@@ -3974,7 +3984,7 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     };
     let back787 = false;
     for (const end = Date.now() + 10_000; !back787 && Date.now() < end; await sleep(200)) back787 = await backIn787();
-    const noCount787 = await s.evalJs(`document.querySelector(${JSON.stringify(row787(a.id))})?.dataset.removing === undefined`);
+    const noCount787 = await s.evalJs(`document.querySelector(${JSON.stringify(row787(a.id))})?.dataset.removing === undefined && !document.querySelector(${JSON.stringify(row787(a.id) + ' .sidebar-row-removal')})`);
     expect(back787 && noCount787, `fix 787: Resume during the count puts the session back in its split beside the pane it left, got back ${back787} and count gone ${noCount787}`);
     await leave787(a.id);
 
@@ -4065,8 +4075,8 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     const shellE = await waitShell813(atE.P, e.id);
     const countingE = shellE !== null && (await isCounting813(e.id));
     expect(shellE !== null && countingE, `fix 813: an /exit drops the pane to a shell and the Claude row counts down, got shell ${shellE} counting ${countingE}`);
-    const resume843 = await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}); const side = document.querySelector('.sidebar').getBoundingClientRect(); if (b === null) return null; const r = b.getBoundingClientRect(); return { onAgentLine: b.closest('.sidebar-row-turn') !== null, onMain: b.closest('.sidebar-row-main') !== null, width: r.width, right: r.right, sideRight: side.right, sidebar: Math.round(side.width) }; })()`);
-    expect(resume843 !== null && resume843.onAgentLine && !resume843.onMain && resume843.width > 0 && resume843.right <= resume843.sideRight + 0.5, `fix 843: the counting Claude row's Resume is at the end of its agent line, inside the ${resume843?.sidebar}px sidebar, got ${JSON.stringify(resume843)}`);
+    const resume843 = await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}); const side = document.querySelector('.sidebar').getBoundingClientRect(); if (b === null) return null; const r = b.getBoundingClientRect(); return { onAgentLine: b.closest('.sidebar-row-turn') !== null, onMain: b.closest('.sidebar-row-main') !== null, width: r.width, right: r.right, sideRight: side.right, sidebar: Math.round(side.width), removal: b.previousElementSibling?.classList.contains('sidebar-row-removal') ? b.previousElementSibling.textContent : null }; })()`);
+    expect(resume843 !== null && resume843.onAgentLine && !resume843.onMain && resume843.width > 0 && resume843.right <= resume843.sideRight + 0.5 && /^removing in (10|[1-9])s$/.test(resume843.removal ?? ''), `fix 843: the counting Claude row's Resume is at the end of its agent line, inside the ${resume843?.sidebar}px sidebar, got ${JSON.stringify(resume843)}`);
     step(`M9 fix 843: the counting Claude row's Resume sits at the end of its agent line, inside the ${resume843.sidebar}px sidebar`);
     // Resume during the count.
     await s.evalJs(`document.querySelector(${JSON.stringify(row787(e.id) + ' .sidebar-row-resume')}).click()`);
@@ -4123,6 +4133,152 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       fs.rmSync(dir787, { recursive: true, force: true });
     } catch {}
     step("M9 fix 787: a closed Claude's Exited row counts down from 10s, a hover holds it, Resume restores its split, a close left alone is removed, and a counting row shows in a folded group and under a chip");
+  });
+  // M9 fix 899 and 900: the session in a new pane split right of the
+  // focused pane, and focused (fix 787's place787, which stays in its own
+  // block). Two blocks call it, so it sits above both.
+  const placeRight = async (id) => {
+    const layout = await getLayout(s);
+    const F = layout.focusedPaneId;
+    const P = crypto.randomUUID();
+    const split = (node) =>
+      node.kind === 'pane'
+        ? node.id === F
+          ? { kind: 'split', id: crypto.randomUUID(), direction: 'row', ratio: 0.5, first: node, second: { kind: 'pane', id: P, sessionId: id, view: null } }
+          : node
+        : { ...node, first: split(node.first), second: split(node.second) };
+    await zreq(s, 'layout.set', { layout: { ...layout, root: split(layout.root), focusedPaneId: P } });
+    await s.waitFor(`!!document.querySelector(${JSON.stringify('[data-pane-id=' + JSON.stringify(P) + '] .term-host')})`, 'the placed pane', 10_000);
+    return P;
+  };
+  await block('fix-899', async () => {
+    // M9 fix 899: a pane's text size covers every face. Ctrl+wheel over a
+    // Claude pane's chat face sizes that pane alone; its terminal and its
+    // shade read the same size, and the pane menu's Reset text size takes
+    // it back. The block spawns a shell (P1) and a real claude at the
+    // trust dialog of a fresh folder (P2, as fix 787's, which makes no
+    // request) and removes both in its last lines.
+    const pane899 = (id) => '[data-pane-id=' + JSON.stringify(id) + ']';
+    const row899 = (id) => '.sidebar-row[data-session-id=' + JSON.stringify(id) + ']';
+    const shell899 = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: os.homedir(), cols: 80, rows: 24 })).session;
+    const P1 = await placeRight(shell899.id);
+    const dir899 = fs.mkdtempSync(path.join(os.tmpdir(), 'm9-899-'));
+    const claude899 = (await zreq(s, 'session.spawn', { kind: 'claude', cwd: dir899, cols: 80, rows: 24 })).session;
+    const P2 = await placeRight(claude899.id);
+    await s.waitFor(focusedPaneIs(P2), 'the Claude pane focused', 5000);
+    await s.key('M', 'KeyM', 77, CTRL | SHIFT);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(pane899(P2) + '[data-face="chat"] .chat-view')})`, 'the Claude pane on its chat face', 5000);
+    const wheel899 = (sel, deltaY) =>
+      s.evalJs(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new WheelEvent('wheel', { deltaY: ${deltaY}, ctrlKey: true, bubbles: true, cancelable: true }))`);
+    const textVarOf899 = (paneId) => `getComputedStyle(document.querySelector(${JSON.stringify(pane899(paneId))})).getPropertyValue('--pane-text').trim()`;
+    const zoomOf899 = (sel) => s.evalJs(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); return el === null ? null : parseFloat(getComputedStyle(el).zoom); })()`);
+    const stored899 = async () => JSON.parse((await s.evalJs(`localStorage.getItem('emerald.fontSizes')`)) ?? '{}');
+    await wheel899(pane899(P2) + ' .chat-timeline', -100);
+    await wheel899(pane899(P2) + ' .chat-timeline', -100);
+    await s.waitFor(`${textVarOf899(P2)} === '16px'`, 'two Ctrl+wheel notches up over the chat face', 3000);
+    const dock899 = await zoomOf899(pane899(P2) + ' .chat-dock-inner');
+    const column899 = await zoomOf899(pane899(P2) + ' .chat-column');
+    expect(dock899 !== null && Math.abs(dock899 - 1.1429) < 0.01, `fix 899: the chat dock zooms by the pane's scale, got ${dock899}`);
+    expect(column899 === null || Math.abs(column899 - 1.1429) < 0.01, `fix 899: the chat column zooms by the pane's scale, got ${column899}`);
+    expect((await s.evalJs(textVarOf899(P1))) === '', 'fix 899: the shell pane beside it keeps no size of its own');
+    expect((await stored899())[P2] === 16, `fix 899: the size is kept by pane, got ${JSON.stringify(await stored899())}`);
+    await s.key('M', 'KeyM', 77, CTRL | SHIFT);
+    await s.waitFor(
+      `!document.querySelector(${JSON.stringify(pane899(P2) + '[data-face="chat"]')}) && document.querySelector(${JSON.stringify(pane899(P2) + ' .term-host')})?.emeraldTerm?.options.fontSize === 16`,
+      "the Claude pane's terminal at the pane's 16",
+      5000,
+    );
+    await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(pane899(P2) + ' .pane-shade-face')})`, 'the Claude pane shaded', 5000);
+    const shade899 = await zoomOf899(pane899(P2) + ' .pane-shade-face');
+    expect(shade899 !== null && Math.abs(shade899 - 1.1429) < 0.01, `fix 899: the shade's face zooms by the pane's scale, got ${shade899}`);
+    await s.key('K', 'KeyK', 75, CTRL | SHIFT);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(pane899(P2) + ' .pane-shade-face')})`, 'the Claude pane lifted', 5000);
+    await chooseMenu(s, P2, 'Reset text size');
+    await s.waitFor(`${textVarOf899(P2)} === ''`, 'Reset text size takes the pane back to 14', 3000);
+    expect((await stored899())[P2] === undefined, 'fix 899: a pane back at 14 has no entry');
+    step('M9 fix 899: Ctrl+wheel over a chat face sizes that pane alone, its terminal and its shade follow, and Reset text size takes it back');
+
+    // M9 fix 902: a real press on an unfocused terminal pane's scrollbar
+    // focuses that pane. xterm's scrollbar cancels the pointerdown, so no
+    // mousedown follows it; the pane takes focus on pointerdown.
+    const term902 = `document.querySelector(${JSON.stringify(pane899(P1) + ' .term-host')})?.emeraldTerm`;
+    await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(shell899.id)}, data: '1..200 | ForEach-Object { "line $_" }' + String.fromCharCode(13) })`);
+    await s.waitFor(`(${term902}?.buffer.active.length ?? 0) > (${term902}?.rows ?? 0) + 100`, "the shell pane's scrollback", 15_000);
+    const p2Host902 = await centerOf(s, pane899(P2) + ' .term-host');
+    await s.click(p2Host902.x, p2Host902.y);
+    await s.waitFor(focusedPaneIs(P2), 'the Claude pane focused by a press', 5000);
+    const bar902 = pane899(P1) + ' .xterm-scrollable-element > .scrollbar.vertical';
+    await s.evalJs(`document.querySelector(${JSON.stringify(pane899(P1) + ' .xterm-scrollable-element')}).dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);
+    const shown902 = await s.evalJs(
+      `(async () => { for (let i = 0; i < 30; i++) { const b = document.querySelector(${JSON.stringify(bar902)}); if (b?.classList.contains('visible')) return 'visible'; await new Promise((r) => setTimeout(r, 100)); } return document.querySelector(${JSON.stringify(bar902)})?.className ?? 'no scrollbar'; })()`,
+    );
+    expect(shown902 === 'visible', `fix 902: the shell pane's scrollbar is shown for the press, got ${shown902}`);
+    const barAt902 = await centerOf(s, bar902);
+    await s.click(barAt902.x, barAt902.y);
+    await s.waitFor(focusedPaneIs(P1), 'fix 902: a press on the scrollbar focuses its pane', 3000);
+    step("M9 fix 902: a real press on an unfocused terminal pane's scrollbar focuses that pane");
+
+    // Clean-up: both panes closed, both rows gone (the Claude row counts
+    // down 10 s, fix 787), the folder removed.
+    for (const p of [P2, P1]) {
+      await s.evalJs(`document.querySelector(${JSON.stringify(pane899(p) + ' .pane-close')}).click()`);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(pane899(p))})`, 'the closed pane gone', 8000);
+    }
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row899(shell899.id))}) && !document.querySelector(${JSON.stringify(row899(claude899.id))})`, "fix 899's two rows gone", 15_000);
+    try {
+      fs.rmSync(dir899, { recursive: true, force: true });
+    } catch {}
+  });
+  await block('fix-900', async () => {
+    // M9 fix 900: Ctrl+= and Ctrl+- zoom the whole window in VS Code's 20
+    // percent steps with a corner note, and the terminal refits; Ctrl+0
+    // goes back to 100 and clears the key; Ctrl+Shift+= and Ctrl+Shift+-
+    // are the same keys; the prefix's = and 0 still size the pane. The
+    // window is put back at 100 whatever happens, so fix-815 starts there.
+    const pane900 = (id) => '[data-pane-id=' + JSON.stringify(id) + ']';
+    const row900 = (id) => '.sidebar-row[data-session-id=' + JSON.stringify(id) + ']';
+    const shell900 = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: os.homedir(), cols: 80, rows: 24 })).session;
+    const P1 = await placeRight(shell900.id);
+    try {
+      await s.waitFor(focusedPaneIs(P1), 'the shell pane focused', 5000);
+      const term900 = `document.querySelector(${JSON.stringify(pane900(P1) + ' .term-host')})?.emeraldTerm`;
+      await s.waitFor(`!!${term900}`, 'the shell pane terminal', 10_000);
+      await sleep(400);
+      const c0 = await s.evalJs(`${term900}.cols`);
+      expect((await s.evalJs(`window.emerald.zoom.factor()`)) === 1 && (await s.evalJs(`localStorage.getItem('emerald.zoom')`)) === null, 'fix 900: the window starts at 100 with no key');
+      const at900 = (pct, factor, key) =>
+        `Math.abs(window.emerald.zoom.factor() - ${factor}) < 0.001 && document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Zoom ${pct}%`)} && localStorage.getItem('emerald.zoom') === ${JSON.stringify(key)}`;
+      const font900 = () => s.evalJs(`${term900}.options.fontSize`);
+      await s.key('=', 'Equal', 187, CTRL);
+      await s.waitFor(at900(120, 1.2, '1'), 'Ctrl+= zooms the window to 120 with a note and the key', 3000);
+      await s.waitFor(`${term900}.cols < ${c0}`, 'the terminal refits to fewer columns at 120', 5000);
+      await s.key('=', 'Equal', 187, CTRL);
+      await s.waitFor(at900(144, 1.44, '2'), 'Ctrl+= again to 144', 3000);
+      await s.key('-', 'Minus', 189, CTRL);
+      await s.waitFor(at900(120, 1.2, '1'), 'Ctrl+- back to 120', 3000);
+      await s.key('0', 'Digit0', 48, CTRL);
+      await s.waitFor(at900(100, 1, null), 'Ctrl+0 back to 100, the key cleared', 3000);
+      await s.waitFor(`${term900}.cols === ${c0}`, 'the terminal back to its columns at 100', 5000);
+      expect((await font900()) === 14, 'fix 900: the pane text size stayed at 14 through the window zoom');
+      await s.key('+', 'Equal', 187, CTRL | SHIFT);
+      await s.waitFor(at900(120, 1.2, '1'), 'Ctrl+Shift+= zooms in as Ctrl+= does', 3000);
+      await s.key('_', 'Minus', 189, CTRL | SHIFT);
+      await s.waitFor(at900(100, 1, null), 'Ctrl+Shift+- zooms out as Ctrl+- does', 3000);
+      expect((await font900()) === 14, 'fix 900: the pane still at 14 after the aliases');
+      await s.key('b', 'KeyB', 66, CTRL);
+      await s.key('=', 'Equal', 187);
+      await s.waitFor(`${term900}.options.fontSize === 15`, "the prefix's = sizes the pane", 3000);
+      expect((await s.evalJs(`window.emerald.zoom.factor()`)) === 1, "fix 900: the prefix's = leaves the window at 100");
+      await s.key('b', 'KeyB', 66, CTRL);
+      await s.key('0', 'Digit0', 48);
+      await s.waitFor(`${term900}.options.fontSize === 14`, "the prefix's 0 puts the pane back", 3000);
+      step("M9 fix 900: Ctrl+= and Ctrl+- (and Ctrl+Shift+= and Ctrl+Shift+-) zoom the window in 20 percent steps with a note, the terminal refits, Ctrl+0 goes back to 100 and clears the key, and the prefix's keys size the pane");
+    } finally {
+      await s.evalJs(`(() => { window.emerald.zoom.set(0); localStorage.removeItem('emerald.zoom'); })()`);
+    }
+    await s.evalJs(`document.querySelector(${JSON.stringify(pane900(P1) + ' .pane-close')}).click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(row900(shell900.id))})`, "fix 900's shell row gone", 10_000);
   });
   await block('fix-815', async () => {
     // M9 fix 815: a daemon the window started that ends on a crash code
