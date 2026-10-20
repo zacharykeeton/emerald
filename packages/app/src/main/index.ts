@@ -28,6 +28,7 @@ import type { NotifyOutcome } from './notify.ts';
 import { rendererLogLine } from './renderer-log.ts';
 import { awayAfterMs, IDLE_POLL_MS, PresenceTracker } from './presence.ts';
 import { createTaskbar } from './taskbar.ts';
+import { wireWindowDrag } from './window-drag.ts';
 import { createUseRecord } from './use-record.ts';
 import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
 import { PipeClient } from './pipe-client.ts';
@@ -865,8 +866,9 @@ ipcMain.on('emerald:attention', (event, req: AttentionRequest) => taskbars.get(e
 // what the renderer cannot: the window ground, the caption buttons'
 // overlay and the taskbar badge.
 initSkin(path.join(emeraldHomeOf(process.env), 'skin.json'), log);
-// Every window's ground and overlay (M9 fix 866); another window's page
-// keeps its skin until its next reload.
+// Every window's ground and overlay (M9 fix 866); every other window's
+// page follows the flip through the storage event on emerald.skin (M9 fix
+// 925, skin.ts).
 ipcMain.on('emerald:skin-set', (_event, skin: unknown) => {
   for (const w of allWindows()) applySkin(w, skin);
 });
@@ -988,12 +990,18 @@ function createWindow(id: string | null, index: number): void {
   const chrome = chromeOf(currentSkin());
   // A person's later window opens 32 px down and right of the one they
   // were in (M9 fix 866); no window keeps its size or place yet.
+  // A window a drop outside every window opened sits where it was dropped
+  // (M9 fix 928). A harness window never reads a drop's place, so it
+  // always takes its background spot, never the work area of a display
+  // somebody is looking at.
+  const dropped = id === null || background ? null : windowDrag.placementFor(id);
   const anchor = id === null || background ? null : (live(lastFocused) ? lastFocused : frontBrowserWindow());
   const cascade = anchor === null ? null : cascadeBounds(anchor.getBounds(), screen.getDisplayMatching(anchor.getBounds()).workArea);
+  const at = dropped ?? cascade;
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    ...(cascade === null ? {} : { x: cascade.x, y: cascade.y }),
+    ...(at === null ? {} : { x: at.x, y: at.y }),
     minWidth: 640,
     minHeight: 400,
     backgroundColor: chrome.bg,
@@ -1074,6 +1082,7 @@ function createWindow(id: string | null, index: number): void {
     quitting = true;
   });
   taskbars.set(contentsId, createTaskbar(() => w, log));
+  windowDrag.attach(w);
   // M9 fix 355: the renderer's warnings and errors reach main.log, so a
   // fallen-back terminal renderer or a failed IPC in the installed build
   // leaves a line somebody can read (its devtools console is nobody's).
@@ -1321,6 +1330,24 @@ const designMode = wireDesignMode({
   },
   writeText: writeClipboardText,
   writePng: writeClipboardPng,
+});
+
+// M9 fix 927: a pane's, a row's or a layout tab's drag carried from one
+// window to another; fix 928: one dropped outside every window opens a
+// window there, as openNewWindow opens one.
+const windowDrag = wireWindowDrag({
+  log,
+  windows: allWindows,
+  idOf: windowIdOf,
+  lift: liftWindow,
+  layout: () => lastLayout,
+  kept: windowsKept,
+  openTab: async (tabId) => {
+    const { layout, windowId } = await client.request('window.open', { tabId });
+    lastLayout = layout;
+    reconcile(layout);
+    return windowId;
+  },
 });
 
 // The rules a key pressed in a page goes through, in order, the first

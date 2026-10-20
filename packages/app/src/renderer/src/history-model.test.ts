@@ -122,6 +122,17 @@ test('countPrompts counts typed prompts only', () => {
   assert.equal(countPrompts(text, true), 2);
 });
 
+// M9 fix 920: a compaction's summary is Claude Code's, never a prompt.
+const compactSummary = (at: number) => user('This session is being continued from a previous conversation that ran out of context.', at, { isCompactSummary: true, isVisibleInTranscriptOnly: true });
+const compactBoundary = (at: number) => line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 1000 }, timestamp: iso(at) });
+
+test('parseTranscriptHead, parseTranscriptTail and countPrompts skip a compaction\'s summary (M9 fix 920)', () => {
+  assert.equal(parseTranscriptHead(compactBoundary(T0) + compactSummary(T0) + user('real one', T0 + 1000), true).firstPrompt, 'real one');
+  const tail = parseTranscriptTail(user('do it', T0) + assistant([{ type: 'text', text: 'Done.' }], T0 + 1000) + compactBoundary(T0 + 2000) + compactSummary(T0 + 3000), true);
+  assert.deepEqual(tail.preview, { who: 'agent', text: 'Done.' });
+  assert.equal(countPrompts(user('one', T0) + compactSummary(T0 + 1000), true), 1);
+});
+
 test('buildSession prefers the history index for counts and times and the transcript for the rest', () => {
   const head = { title: 'A title', cwd: 'C:\\code\\emerald', branch: 'main', firstPrompt: 'from transcript', startedAt: T0 + 5, remoteIds: ['session_a'] };
   const tail = { model: 'claude-opus-5', lastAt: T0 + 100, preview: { who: 'agent' as const, text: 'Done.' }, remoteIds: ['session_c', 'session_a'] };

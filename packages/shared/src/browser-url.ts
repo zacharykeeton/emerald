@@ -108,6 +108,23 @@ export function isLocalPageUrl(url: string): boolean {
   return localPageOf(url) !== null;
 }
 
+// M9 fix 931: whether a load keeps the page's own zoom: the same scheme
+// and host, a port included, so a reload and a link within a site keep it
+// and another site opens at the window's zoom. A page from the disk's host
+// is its root's id, so its folder is its site.
+export function zoomKeptAcross(from: string, to: string): boolean {
+  let a: URL;
+  let b: URL;
+  try {
+    a = new URL(from);
+    b = new URL(to);
+  } catch {
+    return false;
+  }
+  // Not origin, which is the string null for emerald-file: in node.
+  return a.protocol === b.protocol && a.host === b.host;
+}
+
 // What a browser pane's record may hold: whatever browserUrl takes, or a
 // page from the disk whole. Every answer gives itself back, which is what
 // the layout validator and the attach guard read.

@@ -5,6 +5,7 @@ import { resumeSession, resumeTranscript, showSession } from './actions.ts';
 import { parseTranscriptHead, parseTranscriptTail, promptsText } from './history-model.ts';
 import { useStore } from './store.ts';
 import { setTabTitle } from './ui.ts';
+import { treeKeepsKeys } from './focus.ts';
 
 // A conversation's transcript read as its turns (M53), the tab the
 // Sessions rail's Expand opens: the row's facts and Resume at the top,
@@ -44,9 +45,10 @@ export function TranscriptView({ path, text }: { path: string; text: string }) {
     };
   }, [path]);
 
-  // The keyboard comes here on open, as a rendered markdown's does (MarkdownView.tsx), so a first Ctrl+F finds; fix 619 left it in the rail on purpose, but neither rail has keys of its own that this takes over (M9 fix 636). A live transcript re-renders on every growth but keeps its path, so the focus is not taken again.
+  // The keyboard comes here on open, as a rendered markdown's does (MarkdownView.tsx), so a first Ctrl+F finds; since M9 fix 929 a click in the Files tree keeps the keyboard on the tree, which has keys of its own, and Enter there brings it here (M9 fix 636). A live transcript re-renders on every growth but keeps its path, so the focus is not taken again.
   useLayoutEffect(() => {
-    hostRef.current?.focus();
+    const host = hostRef.current;
+    if (host !== null && !treeKeepsKeys(path, host)) host.focus();
   }, [path]);
 
   const { head, tail, turns } = read;

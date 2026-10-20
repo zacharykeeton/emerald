@@ -705,7 +705,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
   for (const b of blocks) if (!isDrawn(b.sessionId)) b.laneKeys = [];
   // Lanes in a block (M68): the walk over the block's own commits gives
   // each a lane and each parent edge a bend; lane 0 is the session's
-  // own line (its newest own commit seeds it, and it is never handed to
+  // own line (its newest own commit seeds it, or since M9 fix 937 the head of its branch when that commit is newer than the head, and it is never handed to
   // anyone else), the grey block's trunk the default branch's tip when
   // it holds it. A member whose commits are in the block is on the lane
   // its newest commit took; a member with nothing in the log gets a
@@ -778,6 +778,18 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     const watch = fresh.map((m) => (m.branch === null ? undefined : refRow.get(m.branch)) ?? seat).filter((r): r is number => r !== undefined);
     const withRow = b.session !== null && hasOwnRow(b.session) && inRepo(b.session, roots);
     const trunkDrawn = b.session === null || hasOwn || ((start !== undefined || head !== undefined) && withRow);
+    // The session's line is its branch's (M9 fix 937): when its newest
+    // own commit is newer than the head of the branch it is on (commits
+    // it made in a worktree while its folder stayed on main, the tech
+    // lead committing in a seat's worktree), the trunk waits for that
+    // head, so those commits take a side lane and nothing of the
+    // session's sits above its star on its line. A head in another
+    // block is watched, so the walk follows the trunk's chain through it.
+    const ownTop = mine.find((i) => commitMember[i] === null);
+    if (b.sessionId !== null && withRow && head !== undefined && ownTop !== undefined && ownTop < head) {
+      seed = commits[head]!.hash;
+      if (!mine.includes(head)) watch.push(head);
+    }
     const walk = blockTopology(mine, commits, rowOf, seed, (i) => b.sessionId === null || commitMember[i] === null, watch, trunkDrawn);
     walkOf.set(bi, walk);
     walk.laneOf.forEach((lane, i) => {

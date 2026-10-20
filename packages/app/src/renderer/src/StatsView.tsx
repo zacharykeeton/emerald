@@ -5,7 +5,7 @@ import { statsSupported } from './daemon-model.ts';
 import { folderName } from './files-model.ts';
 import { PLAN_KINDS, PLAN_PRICES, PLAN_PRICES_READ, paidOver, paidShare, paidText, paidTitle, planEntryText, withPlanEntry, withoutPlanEntry } from './plan-model.ts';
 import type { PlanKind } from './plan-model.ts';
-import { askDue, countAsk, keepAnswer, keptAnswer, statsCounts, statsSheet } from './stats-answer.ts';
+import { askDue, countAsk, keepAnswer, keptAnswer, noteAsk, onAnswer, statsCounts, statsSheet } from './stats-answer.ts';
 import type { StatsAnswer, StatsSheet } from './stats-answer.ts';
 import { STATS_OLD_TEXT, STATS_REFRESH_MS, countText, historyDay, monthName, spanDays, startsBeforeHistory, tokensText, usdText } from './stats-model.ts';
 import { useStore } from './store.ts';
@@ -19,7 +19,8 @@ import { setPlan, usePlan } from './ui.ts';
 // per month under them. Asked when shown and once a minute while shown, the
 // answer kept per folder for a minute outside the component
 // (stats-answer.ts, M9 fix 885), so a remount or the rail's tab asks
-// nothing new inside the minute.
+// nothing new inside the minute. Since fix 942 the folder is asked at most
+// once a minute however many panels show it.
 export function StatsView({ path }: { path: string }) {
   const folder = statsFolder(path);
   if (folder === null) return null;
@@ -27,8 +28,9 @@ export function StatsView({ path }: { path: string }) {
 }
 
 // The answer to a folder and the ask for it: it starts on the kept answer,
-// so one draws at once however old, and the first ask waits until that
-// answer is a minute old.
+// so one draws at once however old; the first ask waits until the folder's
+// last ask, by any panel, is a minute old (M9 fix 942), and every panel on
+// the folder takes the answer the moment it is kept.
 function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | null; failed: string | null } {
   const [answer, setAnswer] = useState<StatsAnswer | null>(() => keptAnswer(folder));
   const [failed, setFailed] = useState<string | null>(null);
@@ -36,8 +38,21 @@ function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | 
     if (!live) return;
     let gone = false;
     let timer: ReturnType<typeof setTimeout>;
+    const off = onAnswer(folder, (a) => {
+      setAnswer(a);
+      setFailed(null);
+    });
     const tick = () => {
+      // Another panel on this folder asked under a minute ago (M9 fix 942):
+      // its answer reaches this one through onAnswer, so wait for the minute
+      // and ask nothing.
+      const due = askDue(folder, Date.now());
+      if (due > 0) {
+        timer = setTimeout(tick, due);
+        return;
+      }
       const asked = Date.now();
+      noteAsk(folder, asked);
       countAsk(folder);
       // Serial: the git read takes the log's first day, which the fold
       // answers (M9 fix 885), so a span before the log is priced on its tail.
@@ -46,10 +61,9 @@ function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | 
         .then(async (t) => [t, await window.emerald.files.gitProjectCounts(folder, historyDay(t.historyFrom))] as const)
         .then(([t, c]) => {
           const a: StatsAnswer = { totals: t, counts: c, now: t.to > 0 ? t.to : asked, at: asked };
+          // The listener sets the state of every panel still mounted on the
+          // folder, this one included.
           keepAnswer(folder, a);
-          if (gone) return;
-          setAnswer(a);
-          setFailed(null);
         })
         .catch((err: unknown) => {
           if (!gone) setFailed(err instanceof Error ? err.message : String(err));
@@ -60,6 +74,7 @@ function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | 
     return () => {
       gone = true;
       clearTimeout(timer);
+      off();
     };
   }, [folder, live]);
   return { answer, failed };

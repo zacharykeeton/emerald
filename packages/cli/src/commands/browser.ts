@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, dragOffset, dragPoint, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
+import { BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_PROFILE, BROWSER_TIMEOUT_MS, browserUrl, dragOffset, pagePoint, currentTab, findPane, focusPane, paneShowingIn, replaceTab, setPaneView, splitPane } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb } from '@emerald/shared';
 import { integerOption, parse, positionals, readText } from '../args.ts';
 import { browserTarget } from '../browser-target.ts';
@@ -35,13 +35,15 @@ const BROWSER_LEVEL = 63;
 const BROWSER_DRAG_LEVEL = 72;
 // The first daemon and window that take drag from a point x,y (M9 fix 915).
 const BROWSER_POINT_LEVEL = 74;
+// The first daemon and window that take click and hover at a point x,y (M9 fix 935).
+const BROWSER_CLICK_POINT_LEVEL = 75;
 
 const USAGE = [
   'emmer browser <verb> [<args>] [--pane <id>] [--json]',
   '  open <url> [--profile <name>]  a browser pane on the page, beside the pane of the session this runs in; --profile gives it cookies and storage of its own',
   "  snapshot [--name <text>] [--within <ref>]  the page's controls, each with a ref (@e1), its role, name, value and state, and its regions (@r1); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control",
-  "  click <ref>                   a click at the control's centre",
-  '  hover <ref>                   the pointer moved over the control',
+  "  click <ref>|<x>,<y>           a click at the control's centre or at x,y in the page's CSS pixels",
+  "  hover <ref>|<x>,<y>           the pointer moved over the control or to x,y in the page's CSS pixels",
   "  drag <ref>|<x>,<y> <ref>|<dx>,<dy>  a press on the control or at x,y in the page's CSS pixels, a move in steps and a release on the second control, or dx,dy CSS pixels from the start (a negative dx after --)",
   '  fill <ref> <text>|--stdin|--file <path>|--clear  the text typed into a field, in place of what it held; --clear empties it; a select takes the option by its value or text',
   '  key <key>                     one key: Enter, Escape, Tab, an arrow, a letter, with Ctrl+, Shift+ or Alt+ before it',
@@ -134,11 +136,14 @@ export async function runBrowser(argv: string[]): Promise<number> {
     if (!isFile(file)) throw new CliError(`no file ${file}`);
     args[1] = file;
   }
-  if (verb === 'drag' && !/^@?e\d+$/.test(args[0]!) && dragPoint(args[0]!) === null) {
+  if (verb === 'drag' && !/^@?e\d+$/.test(args[0]!) && pagePoint(args[0]!) === null) {
     throw usageError(`drag starts at a ref or at x,y in the page's CSS pixels, such as @e7 or 120,300; got ${JSON.stringify(args[0])}`);
   }
   if (verb === 'drag' && !/^@?e\d+$/.test(args[1]!) && dragOffset(args[1]!) === null) {
     throw usageError(`drag goes to a ref or to dx,dy in CSS pixels, such as @e7 or 0,-40; got ${JSON.stringify(args[1])}`);
+  }
+  if ((verb === 'click' || verb === 'hover') && !/^@?e\d+$/.test(args[0]!) && pagePoint(args[0]!) === null) {
+    throw usageError(`${verb} takes a ref or x,y in the page's CSS pixels, such as @e7 or 120,300; got ${JSON.stringify(args[0])}`);
   }
   // M9 fix 875: a snapshot's printed rows kept to a name or a region.
   if (v.name !== undefined && verb !== 'snapshot') throw usageError('--name is for snapshot');
@@ -147,9 +152,9 @@ export async function runBrowser(argv: string[]): Promise<number> {
   if (v.within !== undefined && !BROWSER_FILTER_REF.test(v.within)) throw usageError('--within takes a ref such as @r1 or @e3');
   const filter: BrowserFilter = { ...(v.name === undefined ? {} : { name: v.name }), ...(v.within === undefined ? {} : { within: v.within }) };
   const filtered = v.name !== undefined || v.within !== undefined;
-  const fromPoint = verb === 'drag' && dragPoint(args[0]!) !== null;
-  const needs = fromPoint ? BROWSER_POINT_LEVEL : verb === 'drag' || filtered ? BROWSER_DRAG_LEVEL : BROWSER_LEVEL;
-  const what = fromPoint ? 'emmer browser drag from a point' : verb === 'drag' ? 'emmer browser drag' : filtered ? 'emmer browser snapshot --name and --within' : 'emmer browser';
+  const fromPoint = (verb === 'drag' || verb === 'click' || verb === 'hover') && pagePoint(args[0]!) !== null;
+  const needs = fromPoint ? (verb === 'drag' ? BROWSER_POINT_LEVEL : BROWSER_CLICK_POINT_LEVEL) : verb === 'drag' || filtered ? BROWSER_DRAG_LEVEL : BROWSER_LEVEL;
+  const what = fromPoint ? `emmer browser ${verb} from a point` : verb === 'drag' ? 'emmer browser drag' : filtered ? 'emmer browser snapshot --name and --within' : 'emmer browser';
   const own = process.env['EMERALD_SESSION_ID'];
   const { client, hello } = await connectHello();
   try {

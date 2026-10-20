@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
-import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, walk, watchOrder, withPending } from './files-model.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
@@ -10,7 +10,7 @@ import type { FilesModel, MenuFrom, Pending, Row, TouchedBy, TouchedIndex } from
 import { indexCodes, indexStatuses, letterAt, letterFor, statusAt } from './git-status-model.ts';
 import type { CodeIndex, GitFile, GitStatus, StatusIndex } from './git-status-model.ts';
 import { fileIcon } from './file-icons.ts';
-import { focusTerminal } from './focus.ts';
+import { focusFileTab, focusTerminal, holdKeysInTree } from './focus.ts';
 import { countsText, folderCounts, folderCountsTitle } from './git-changes-model.ts';
 import type { FolderCounts } from './git-changes-model.ts';
 import { useGitPoll } from './git-poll.ts';
@@ -56,10 +56,11 @@ import type { RailTab } from './ui.ts';
 // focus moving to another pane, and the window coming back to the front.
 // Per session, the last cwd the daemon read a branch in (fix 114).
 const lastRepoCwd = new Map<string, string>();
-// The last root the rail had (M9 fix 140): an activity view (M69) is
-// pinned to a window, not a place, so while one has focus the rail keeps
-// the folder it showed before, the strip and the graph with it, the way
-// it keeps the repository while a session's cwd is outside one. An empty
+// The last root the rail had (M9 fix 140): an activity view (M69) or a
+// browser pane (M9 fix 659) is pinned to no place, so while one has focus
+// the rail keeps the folder it showed before, the strip, the graph and a
+// lift with it, the way it keeps the repository while a session's cwd is
+// outside one. An empty
 // pane still clears the rail, since "No session in this pane" is true
 // there.
 let lastRoot: string | null = null;
@@ -87,9 +88,11 @@ export function FilesRail() {
   const focusedView = useFocusedView();
   // A look above the followed folder (M9 fix 332): the header's up button
   // sets it to the parent of what is shown, and it drops whenever the
-  // followed root changes (a cd, another pane focused, a file tab in
-  // front), so the rail is back on following; a click into the tree does
-  // not drop it.
+  // followed root changes (a cd, a focused pane whose folder differs, a
+  // file tab in front), so the rail is back on following; a click into the
+  // tree, or focusing a pane that keeps the root (a browser or activity
+  // pane, fix 140's lastRoot above), does not drop it, and since fix 932
+  // nor does opening a view beside.
   const [lift, setLift] = useState<string | null>(null);
   // The folders every lift since the rail last followed came from (M9 fix
   // 436, a chain since fix 524): each parent's listing asks for the one it
@@ -157,8 +160,9 @@ export function FilesRail() {
   // An entry being renamed in place (M9 fix 574): its name box stands in
   // for its row until Enter renames it or Escape drops it.
   const [renaming, setRenaming] = useState<RenameBoxState | null>(null);
-  // The tree takes the keyboard for F2 (M9 fix 574) on a right-click on a
-  // row or a second click on the selected file, and no other way.
+  // The tree takes the keyboard on a click or a right-click on any row (M9
+  // fix 929, as VS Code's explorer does; fix 574 gave it only on a
+  // right-click or a second click), and after a rename.
   const listRef = useRef<HTMLDivElement>(null);
   const focusTree = () => listRef.current?.focus({ preventScroll: true });
   // The header's + menu (M9 fix 309), the root's way to a new entry.
@@ -316,7 +320,7 @@ export function FilesRail() {
   // root or a listing, and either shows the row (selected, scrolled to,
   // flashed once) or says it cannot. The timer only wakes the read at the
   // deadline, since nothing else may change by then.
-  const revealing = useRef<{ path: string; seq: number; until: number; relist: 'none' | 'pending' | 'done'; before: Map<string, FileListing | undefined>; landed: string[] } | null>(null);
+  const revealing = useRef<{ path: string; seq: number; rename: boolean; until: number; relist: 'none' | 'pending' | 'done'; before: Map<string, FileListing | undefined>; landed: string[] } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   // The n alternates the row's data-flash between 'a' and 'b' (M9 fix 684),
   // so a second reveal on a row still flashing restarts the animation: a
@@ -328,14 +332,14 @@ export function FilesRail() {
   const revealSeq = revealFile?.seq ?? null;
   useEffect(() => {
     if (revealFile === null) return;
-    const { path, seq } = revealFile;
+    const { path, seq, rename } = revealFile;
     setFilesChanged(false);
     setNeedle('');
     if (lift !== null && !isUnder(lift, path)) {
       liftChain.current = [];
       setLift(null);
     }
-    revealing.current = { path, seq, until: Date.now() + REVEAL_IN_FILES_MS, relist: 'none', before: new Map(), landed: [] };
+    revealing.current = { path, seq, rename: rename === true, until: Date.now() + REVEAL_IN_FILES_MS, relist: 'none', before: new Map(), landed: [] };
     setRevealTick((t) => t + 1);
     const timer = setTimeout(() => setRevealTick((t) => t + 1), REVEAL_IN_FILES_MS + 20);
     return () => clearTimeout(timer);
@@ -346,8 +350,19 @@ export function FilesRail() {
     const step = revealStep(model, r.path);
     if (step.kind === 'shown') {
       revealing.current = null;
-      setModel((m) => select(m, step.row));
-      setFlashRow({ path: step.row, n: ++flashSeq.current });
+      if (r.rename) {
+        // M9 fix 930: F2 in a file's editor asked for the rename, so the box
+        // opens on the row (startRename's three lines, inlined: startRename
+        // is declared below the collapsed rail's early return, and an effect
+        // of a collapsed render that called it would find it uninitialised).
+        // The box stands in for the row, so no flash.
+        setPending(null);
+        setModel((m) => select(m, step.row));
+        setRenaming({ path: normalizePath(step.row), kind: 'file', name: folderName(step.row), refused: null, tries: 0 });
+      } else {
+        setModel((m) => select(m, step.row));
+        setFlashRow({ path: step.row, n: ++flashSeq.current });
+      }
       setScrollToRow(step.row);
       clearRevealFile(r.seq);
       return;
@@ -448,9 +463,16 @@ export function FilesRail() {
     setModel((m) => (kind === 'dir' ? toggleFolder(m, path) : select(m, path)));
     if (kind === 'file') openPreviewTab(path, line, column, true);
   };
+  const handKeysToFile = (path: string) => {
+    holdKeysInTree(null);
+    focusFileTab(path);
+  };
   const onDoubleClick = (path: string, kind: FileEntry['kind']) => {
     if (kind === 'dir') setModel((m) => toggleFolder(m, path));
-    else pinFileTab(path);
+    else {
+      pinFileTab(path);
+      handKeysToFile(path);
+    }
   };
   // M9 fix 199: a changed row's letter, or Show diff on its menu, opens
   // the file in the review tab, the focused session's when there is one
@@ -633,15 +655,43 @@ export function FilesRail() {
         refuse('refused');
       });
   };
-  // F2 alone, on the tree itself while it shows, with no box up, renames
-  // the selected row (M9 fix 574). A key inside a name box stops there.
+  // The tree's keys while it holds the keyboard and shows, with no box up
+  // (M9 fixes 574 and 929): F2 renames the selected row, Enter opens a file
+  // pinned with the keyboard in it or opens and folds a folder, and the
+  // arrows, Home and End walk the rows (moveSelection, files-model.ts). A
+  // key inside a name box stops there; Escape is the window listener's
+  // above.
   const onTreeKey = (ev: React.KeyboardEvent) => {
-    if (ev.target !== ev.currentTarget || ev.key !== 'F2' || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
-    if (search !== null || filesChanged || pending !== null || renaming !== null || model.selected === null) return;
-    const row = rows.find((r) => r.type === 'entry' && r.path === model.selected);
-    if (row === undefined || row.type !== 'entry') return;
+    if (ev.target !== ev.currentTarget || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
+    if (search !== null || filesChanged || pending !== null || renaming !== null) return;
+    const found = model.selected === null ? undefined : rows.find((r) => r.type === 'entry' && r.path === model.selected);
+    const row = found !== undefined && found.type === 'entry' ? found : undefined;
+    if (ev.key === 'F2') {
+      if (row === undefined) return;
+      ev.preventDefault();
+      startRename(row.path, row.kind);
+      return;
+    }
+    if (ev.key === 'Enter') {
+      if (row === undefined) return;
+      // First, so the Enter's own keypress never types a line into the
+      // editor it hands the keyboard to.
+      ev.preventDefault();
+      if (row.kind === 'dir') setModel((m) => toggleFolder(m, row.path));
+      else {
+        openPreviewTab(row.path);
+        pinFileTab(row.path);
+        handKeysToFile(row.path);
+      }
+      return;
+    }
+    const next = moveSelection(model, rows, ev.key);
+    if (next === null) return;
+    // A focused list would scroll on the arrows itself.
     ev.preventDefault();
-    startRename(row.path, row.kind);
+    if (next === model) return;
+    setModel(next);
+    if (next.selected !== null) setScrollToRow(next.selected);
   };
   return (
     <div className="files-rail" style={{ width: filesWidth }} data-root={model.root ?? undefined} data-tab={railTab} data-changed={filesChanged || undefined}>
@@ -766,6 +816,9 @@ export function FilesRail() {
         ref={listRef}
         tabIndex={-1}
         onKeyDown={onTreeKey}
+        onBlur={(ev) => {
+          if (ev.target === ev.currentTarget) holdKeysInTree(null);
+        }}
         onContextMenu={(ev) => {
           if (ev.target instanceof Element && ev.target.closest('.files-row') !== null) return;
           onRootMenu(ev);
@@ -798,14 +851,18 @@ export function FilesRail() {
               touched={row.type !== 'entry' ? [] : row.kind === 'file' ? touchedAt(touched, row.path) : row.expanded ? [] : touchedUnder(touched, row.path)}
               onShowDiff={row.type === 'entry' && row.kind === 'file' ? diffOf(row.path) : undefined}
               selected={row.type === 'entry' && row.path === model.selected}
-              onClick={(ev) => {
+              onClick={() => {
                 if (row.type !== 'entry') return;
-                // M9 fix 574: a second click on the selected file puts the
-                // keyboard on the tree for F2; the second click of a double
-                // click (detail 2) does not count.
-                const again = row.kind === 'file' && row.path === model.selected && ev.detail < 2;
+                // M9 fix 929: a click on any row selects it and gives the
+                // tree the keyboard, as VS Code's explorer does; a file
+                // opens in the preview tab (fix 203) and its view leaves the
+                // keyboard on the tree (focus.ts); Enter or a double click
+                // hands it to the file. Keys typed after a click on a folder
+                // now go to the tree, not the terminal.
+                focusTree();
+                if (row.kind === 'file') holdKeysInTree(row.path);
                 onOpen(row.path, row.kind);
-                if (again) focusTree();
+                if (row.kind === 'dir') setModel((m) => select(m, row.path));
               }}
               onDoubleClick={() => row.type === 'entry' && onDoubleClick(row.path, row.kind)}
               onContextMenu={(ev) => {
@@ -1508,10 +1565,9 @@ function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, sel
       }}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      // Keyboard focus stays in the terminal, as with the sidebar; a left
-      // press on a file may become a drag onto a pane. A right-click, or a
-      // second click on the selected file, puts the keyboard on the tree
-      // for F2 (M9 fix 574).
+      // A press moves no focus, so a press that becomes a drag onto a pane
+      // leaves the keyboard where it was; the click gives it to the tree
+      // (M9 fix 929), as a right-click does.
       onMouseDown={press.onMouseDown}
     >
       <span className="files-chevron">{row.kind === 'dir' ? (row.expanded ? '▾' : '▸') : ''}</span>
@@ -1546,8 +1602,8 @@ function TouchedDots({ by }: { by: TouchedBy[] }) {
 // M9 fix 180: a press on a file row may become a drag onto a pane, the
 // file landing there as a view; nothing shows until the mouse has moved,
 // so a click is unchanged, and the click that follows a drag released
-// on the row is swallowed, as the sidebar's rows do. The press keeps the
-// keyboard in the terminal either way. null is a row that does not drag.
+// on the row is swallowed, as the sidebar's rows do. The press itself
+// moves no focus either way. null is a row that does not drag.
 // A line (a contents hit, M9 fix 437) rides on the drag and a markdown
 // file lands in Raw, as the tab's reveal does, since the rendered view
 // has no lines.

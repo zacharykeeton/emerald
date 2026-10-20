@@ -194,11 +194,15 @@ export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats', '/setting
 // or an effort level picked by name); every other one keeps the bar.
 export const ARGUMENT_SKIPS_DIALOG: readonly string[] = ['/model', '/effort'];
 
-export function opensMenu(text: string, rcActive = false): boolean {
+export function opensMenu(text: string): boolean {
   const words = text.trim().split(/\s+/);
   const first = words[0] ?? '';
-  // M9 fix 890: a second /remote-control (or its alias /rc) while connected opens the Disconnect dialog.
-  if (rcActive && (first === '/remote-control' || first === '/rc')) return true;
+  // M9 fixes 890 and 923: /remote-control (or its alias /rc) opens a dialog
+  // of the terminal's in every state: the one-time Enable Remote Control on
+  // an account that has not enabled it, Disconnect while connected. On an
+  // account already enabled the connect line lands in the transcript and
+  // the bar goes on growth (FALLBACK_ON_GROWTH), so it shows for a moment.
+  if (first === '/remote-control' || first === '/rc') return true;
   if (ARGUMENT_SKIPS_DIALOG.includes(first) && words.length > 1) return false;
   return TERMINAL_COMMANDS.some((c) => c.name === first) || TERMINAL_ALIASES.includes(first) || ARGUMENT_COMMANDS.some((c) => c.name === first);
 }
@@ -471,9 +475,9 @@ export interface FoldItem {
 export type TimelineItem = { kind: 'step'; step: Step } | FoldItem | { kind: 'images'; steps: ToolStep[] };
 
 // The steps that end a stretch of calls (fix 797; fix 798's command notes;
-// fix 805's notifications).
+// fix 805's notifications; fix 920's compactions; fix 921's bash runs).
 function breaksStretch(s: Step): boolean {
-  return s.kind === 'text' || s.kind === 'update' || s.kind === 'note' || s.kind === 'queued' || s.kind === 'command' || s.kind === 'notification';
+  return s.kind === 'text' || s.kind === 'update' || s.kind === 'note' || s.kind === 'queued' || s.kind === 'command' || s.kind === 'notification' || s.kind === 'compact' || s.kind === 'bash';
 }
 
 export function timelineItems(steps: readonly Step[], mode: ChatMode, open: boolean): TimelineItem[] {
@@ -524,22 +528,16 @@ export function imageOnlyPrompt(prompt: string, images: readonly unknown[]): boo
   return images.length > 0 && prompt.replace(/\[Image #\d+\]/g, '').trim() === '';
 }
 
-// M9 fix 891: the items whose bubble takes the near top corner, because the bubble before it in the turn, whatever rows lay between, was on the same side. A reply (text or update) is the left side; a mid-turn prompt (queued) and the turn's own prompt are the right.
-export function continuedBubbles(items: readonly TimelineItem[], hasPrompt: boolean): Set<number> {
-  const out = new Set<number>();
-  let last: 'sent' | 'reply' | null = hasPrompt ? 'sent' : null;
-  items.forEach((item, i) => {
-    if (item.kind !== 'step') return;
-    const k = item.step.kind;
-    if (k === 'text' || k === 'update') {
-      if (last === 'reply') out.add(i);
-      last = 'reply';
-    } else if (k === 'queued') {
-      if (last === 'sent') out.add(i);
-      last = 'sent';
-    }
-  });
-  return out;
+// M9 fix 921: a bash run's output cut as Claude Code cuts it (2.1.304's
+// bash output view): the first three lines, all four when only one would
+// be hidden, else three and the count of the rest. The chat view cuts
+// source lines, since it does not wrap at a terminal's width.
+export const BASH_SHOWN_LINES = 3;
+export function bashCut(text: string): { shown: string[]; hidden: number } {
+  if (text === '') return { shown: [], hidden: 0 };
+  const lines = text.split('\n');
+  if (lines.length <= BASH_SHOWN_LINES + 1) return { shown: lines, hidden: 0 };
+  return { shown: lines.slice(0, BASH_SHOWN_LINES), hidden: lines.length - BASH_SHOWN_LINES };
 }
 
 // M9 fix 797: the plain words a shell call carries, which Claude Code
@@ -667,9 +665,9 @@ export function foldText(tools: readonly ToolStep[], running: boolean): string {
 // commands, and /rename, which prints a line and opens nothing (bare, it
 // names the session itself), in name order. /remote-control (M9 fix 890)
 // is the one command whose gate reads the account that is listed, since
-// the person asked to call it from the chat view; while the footer's rc
-// chip reads active its send opens Claude Code's Disconnect dialog, so
-// opensMenu answers true for it then. /review is not in the table,
+// the person asked to call it from the chat view; its send opens one of
+// Claude Code's dialogs (the one-time Enable Remote Control, or Disconnect
+// while connected), so opensMenu answers true for it (fix 923). /review is not in the table,
 // /cost is /usage's alias and /btw a terminal row, since it answers in a
 // panel of its own.
 export const SENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
@@ -1025,21 +1023,26 @@ export interface PendingItem {
 // M9 fix 782: a sent message with no prompt line this long after the session last went quiet reads Not seen yet.
 export const PENDING_UNSEEN_MS = 15000;
 
-// M9 fix 782: whether a send draws a pending bubble. A slash command, bash
-// mode and the memory key write no prompt line of the same text (the texts
-// modRoutable keeps typed), so none draws one; the fallback bar is a
-// picker's feedback. Chips with no words draw none either.
+// M9 fix 782: whether a send draws a pending bubble. A slash command and
+// the memory key write no prompt line of the same text (the texts
+// modRoutable keeps typed), so neither draws one; the fallback bar is a
+// picker's feedback. Chips with no words draw none either. Since fix 921 a
+// bash-mode send draws one, matched by the run's bash step (landedCounts),
+// since its input line lands only when the run ends.
 export function drawsPending(prompt: string): boolean {
   if (prompt.trim() === '') return false;
   const first = prompt.trimStart()[0];
-  return first !== '/' && first !== '!' && first !== '#';
+  return first !== '/' && first !== '#';
 }
 
 // The text a pending message and its landed line are matched on: Claude
 // Code writes an image sent with words as the words with its [Image #N]
-// marker before them, and trims the prompt.
+// marker before them, and trims the prompt. A bash-mode send keys as `!`
+// and the command trimmed, so `! ls` and `!ls` match the same run (fix
+// 921); a prompt never starts with `!`, since a typed `!` is bash mode.
 export function pendingKey(text: string): string {
-  return text.replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
+  const flat = text.replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
+  return flat.startsWith('!') ? `!${flat.slice(1).trim()}` : flat;
 }
 
 // How many landed messages carry each key: every turn's prompt, every
@@ -1056,7 +1059,10 @@ export function landedCounts(turns: readonly StepTurn[], queued: readonly { text
   };
   for (const turn of turns) {
     add(turn.prompt);
-    for (const step of turn.steps) if (step.kind === 'queued') add(step.text);
+    for (const step of turn.steps) {
+      if (step.kind === 'queued') add(step.text);
+      else if (step.kind === 'bash') add(`!${step.command}`);
+    }
   }
   for (const m of queued) add(m.text);
   return counts;
@@ -1082,6 +1088,9 @@ export function pendingItem(id: number, text: string, at: number, items: readonl
 // message may only be waiting its turn); else Sending.
 export function pendingWords(item: PendingItem, now: number, quietSince: number | null): { state: 'sending' | 'unseen' | 'refused'; words: string } {
   if (item.refusal !== null) return { state: 'refused', words: item.refusal };
+  // M9 fix 921: nothing of a bash run lands until it ends, so a long run
+  // would read unseen; it reads Running instead, and stays a send.
+  if (item.key.startsWith('!')) return { state: 'sending', words: 'Running' };
   if (quietSince !== null && now - Math.max(item.at, quietSince) >= PENDING_UNSEEN_MS) return { state: 'unseen', words: 'Not seen yet' };
   return { state: 'sending', words: 'Sending' };
 }

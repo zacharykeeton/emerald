@@ -46,14 +46,11 @@ export interface ConflictReading {
   pairsBySession: Map<string, number>;
   linesBySession: Map<string, ConflictLine[]>;
   baseBySession: Map<string, BaseLine>;
-  // Where the base figure sits on the graph for a stale lane: the row
-  // and slot of the lane's fork mark (its start dot, else the bar that
-  // closes it), when the session is stale and drawn.
-  figures: { sessionId: string; row: number; lane: number; behind: number }[];
 }
 
-// Past this many commits behind the default the base line takes the
-// tone and the graph shows the figure beside the lane's fork.
+// Past this many commits behind the default the card's base line takes
+// the tone (M9 fix 320); the graph draws no figure for it since M9 fix
+// 938, so the count is on the card alone.
 export const BEHIND_AT = 40;
 
 // What a session's peers look like to the card: a name and a colour.
@@ -136,16 +133,5 @@ export function conflictReading(graph: SessionGraph, report: ConflictReport, pee
     const line = baseLine(base, now);
     if (line !== null) baseBySession.set(id, line);
   }
-  // The figure beside a stale lane's fork mark: the block's start dot
-  // (M9 fix 117), else its fork bar (fix 145), whichever the graph has,
-  // on the oldest row of them.
-  const figures: ConflictReading['figures'] = [];
-  for (const [id, line] of baseBySession) {
-    if (!line.stale || !drawn.has(id)) continue;
-    const marks = graph.dots.filter((d) => d.sessionId === id && (d.kind === 'start' || d.kind === 'fork'));
-    if (marks.length === 0) continue;
-    const mark = marks.reduce((best, d) => (d.row > best.row ? d : best));
-    figures.push({ sessionId: id, row: mark.row, lane: mark.lane, behind: line.behind });
-  }
-  return { ties, pairsBySession, linesBySession, baseBySession, figures };
+  return { ties, pairsBySession, linesBySession, baseBySession };
 }

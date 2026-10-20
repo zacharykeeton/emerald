@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addressShown, addressUrl, BROWSER_PARTITION, browserUrl, guestNavigationAllowed, isLocalPageUrl, localPageOf, localPageUrl, looksLikeUrl, pageLabel, paneUrl, SEARCH_URL } from './browser-url.ts';
+import { addressShown, addressUrl, BROWSER_PARTITION, browserUrl, guestNavigationAllowed, isLocalPageUrl, localPageOf, localPageUrl, looksLikeUrl, pageLabel, paneUrl, SEARCH_URL, zoomKeptAcross } from './browser-url.ts';
 
 test("a page from the disk shows as its path in the bar and its file's name as its label; a web page its host (M9 fix 897)", () => {
   const local = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/my%20page.html';
@@ -144,4 +144,17 @@ test('addressShown drops the scheme and a lone trailing slash (M9 fix 667)', () 
   assert.equal(addressShown('https://duckduckgo.com/?q=a'), 'duckduckgo.com/?q=a');
   assert.equal(addressShown('google.com'), 'google.com');
   assert.equal(addressShown(''), '');
+});
+
+test("a load keeps the page's zoom within one site (M9 fix 931)", () => {
+  const id = '0b5c3a9e-1f2d-4c3b-8a7e-6d5c4b3a2f10';
+  const other = '9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f';
+  assert.equal(zoomKeptAcross('http://127.0.0.1:5000/', 'http://127.0.0.1:5000/'), true);
+  assert.equal(zoomKeptAcross('http://127.0.0.1:5000/', 'http://127.0.0.1:5000/two'), true);
+  assert.equal(zoomKeptAcross(`emerald-file://${id}/site/page.html`, `emerald-file://${id}/site/other.html`), true);
+  assert.equal(zoomKeptAcross('http://127.0.0.1:5000/', 'http://127.0.0.1:5001/'), false);
+  assert.equal(zoomKeptAcross('http://example.com/', 'https://example.com/'), false);
+  assert.equal(zoomKeptAcross(`emerald-file://${id}/site/page.html`, `emerald-file://${other}/site/page.html`), false);
+  assert.equal(zoomKeptAcross('', 'http://127.0.0.1:5000/'), false);
+  assert.equal(zoomKeptAcross('about:blank', 'http://127.0.0.1:5000/'), false);
 });

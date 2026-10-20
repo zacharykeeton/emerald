@@ -65,8 +65,7 @@ test("the board's reading: three ties between the newest commit nodes, the count
   assert.equal(conflictWords(debt[0]!), 'conflicts with fix-live-count on style.css and 2 more');
   assert.deepEqual(r.baseBySession.get('debt'), { text: '12 ahead, 40 behind main, forked 2d ago', stale: true, behind: 40 });
   assert.deepEqual(r.baseBySession.get('sweep'), { text: '7 ahead, 1 behind main, forked 3h ago', stale: false, behind: 1 });
-  // The figure on the stale lane's fork dot alone.
-  assert.deepEqual(r.figures, [{ sessionId: 'debt', row: 10, lane: 4, behind: 40 }]);
+  assert.equal('figures' in r, false, 'no count on the graph; the card has it (M9 fix 938)');
 });
 
 test('a pair whose session is not drawn, exited or off the graph is dropped, and its lines with it', () => {
@@ -79,7 +78,6 @@ test('a pair whose session is not drawn, exited or off the graph is dropped, and
   const gone = graph({ items: graph().items.filter((it) => it.sessionId !== 'debt'), blocks: graph().blocks.filter((b) => b.sessionId !== 'debt') });
   const r2 = conflictReading(gone, report, peers, NOW);
   assert.deepEqual(r2.ties.map((t) => [t.a, t.b]), [['live-count', 'pocket']]);
-  assert.equal(r2.figures.length, 0, 'no figure for a lane that is not drawn');
 });
 
 test('a session whose newest head is another block\'s commit ties there, and one with no tip in the log has no tie', () => {

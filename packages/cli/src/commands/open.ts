@@ -33,12 +33,17 @@ import { sessionRefFor } from './set.ts';
 // fix 659: a positional that reads as a URL (http://, https:// or
 // host:port) is a page for a browser pane, in a pane always, sent as
 // browserUrl writes it with url set, never resolved as a path and never
-// with a scheme; anything else is a path as before.
+// with a scheme; anything else is a path as before. M9 fix 936:
+// --browser sends an .html or .htm path with browser set, in a pane
+// always, and the window renders it on emerald-file: from the rail's
+// folder or the file's own; an emerald-file: URL is refused, since only
+// the window mints its root id.
 const options = {
   pane: { type: 'boolean', default: false },
   beside: { type: 'string' },
   scheme: { type: 'string' },
   'clear-scheme': { type: 'boolean', default: false },
+  browser: { type: 'boolean', default: false },
   json: { type: 'boolean', default: false },
 } as const;
 
@@ -49,6 +54,8 @@ const OPEN_LEVEL = 53;
 const EXTRAS_LEVEL = 55;
 // The first daemon whose layout takes a browser view (M9 fix 659).
 const URL_LEVEL = 62;
+// The first daemon that takes browser on file.open, an .html file rendered in a browser pane (M9 fix 936).
+const BROWSER_OPEN_LEVEL = 75;
 
 // What a window that did not answer says (M9 fix 582); 3 s is the
 // daemon's FILE_OPEN_ACK_MS. A daemon or a window older than level 58
@@ -74,20 +81,26 @@ export async function runOpen(argv: string[]): Promise<number> {
   const parsed = parse(withBareBeside(argv), options);
   const { file } = positionals(parsed, ['file']);
   const v = parsed.values;
+  // M9 fix 936: an emerald-file: URL names a root id only the window
+  // minted, so the page's own path with --browser is the way to it.
+  if (/^emerald-file:/i.test(file.trim())) throw usageError("an emerald-file: URL is the window's own; give the page's path with --browser");
   let page: string | null = null;
   if (looksLikeUrl(file)) {
+    if (v.browser) throw usageError('--browser is for an .html or .htm file; a URL opens in a browser pane without it');
     page = browserUrl(file);
     if (page === null) throw usageError(`${file} is not a URL the browser pane opens: http://, https:// or host:port`);
     if (v.scheme !== undefined || v['clear-scheme']) throw usageError('--scheme and --clear-scheme are for a file, not a URL');
   }
+  if (v.browser && !/\.html?$/i.test(file)) throw usageError(`--browser opens an .html or .htm file; got ${JSON.stringify(file)}`);
+  if (v.browser && (v.scheme !== undefined || v['clear-scheme'])) throw usageError('--scheme and --clear-scheme are for a file tab, not --browser');
   const target = page ?? path.resolve(file);
   if (v.scheme !== undefined && v['clear-scheme']) throw usageError('--scheme and --clear-scheme together');
   if (v.scheme !== undefined && v.scheme.trim() === '') throw usageError('--scheme needs a name, the one the file menu lists');
   const scheme: string | null | undefined = v.scheme !== undefined ? v.scheme.trim() : v['clear-scheme'] ? null : undefined;
   const besideRef = v.beside === undefined ? undefined : sessionRefFor(v.beside.trim() === '' ? undefined : v.beside.trim(), process.env);
-  const pane = page !== null || v.pane || besideRef !== undefined;
-  const needs = page !== null ? URL_LEVEL : scheme === undefined && besideRef === undefined ? OPEN_LEVEL : EXTRAS_LEVEL;
-  const what = page !== null ? 'emmer open <url>' : scheme !== undefined ? 'emmer open --scheme' : besideRef !== undefined ? 'emmer open --beside' : 'emmer open';
+  const pane = page !== null || v.pane || besideRef !== undefined || v.browser;
+  const needs = page !== null ? URL_LEVEL : v.browser ? BROWSER_OPEN_LEVEL : scheme === undefined && besideRef === undefined ? OPEN_LEVEL : EXTRAS_LEVEL;
+  const what = page !== null ? 'emmer open <url>' : v.browser ? 'emmer open --browser' : scheme !== undefined ? 'emmer open --scheme' : besideRef !== undefined ? 'emmer open --beside' : 'emmer open';
   const { client, hello } = await connectHello();
   try {
     const level = hello.featureLevel ?? 1;
@@ -95,7 +108,7 @@ export async function runOpen(argv: string[]): Promise<number> {
     // The session named, or the one this runs in, as one id; a name or a
     // prefix that matches nothing is refused here, before the window.
     const beside = besideRef === undefined ? undefined : resolveSession((await client.request('session.list', {})).sessions, besideRef);
-    const { apps, known, besideFound, besidePane, besideTab, answered } = await client.request('file.open', { path: target, pane, ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside: beside.id }), ...(page === null ? {} : { url: true }) });
+    const { apps, known, besideFound, besidePane, besideTab, answered } = await client.request('file.open', { path: target, pane, ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside: beside.id }), ...(page === null ? {} : { url: true }), ...(v.browser ? { browser: true } : {}) });
     if (apps === 0) throw new CliError(NO_WINDOW, EXIT.noWindow);
     const besideWord = beside === undefined ? '' : ` ${beside.name} (${shortId(beside.id)})`;
     // Which of the session's panes the window picked (M9 fix 404): the
@@ -105,7 +118,7 @@ export async function runOpen(argv: string[]): Promise<number> {
     // characters, the same as a session's short id, and --json keeps the
     // full one (M9 fix 432).
     const pickedWord = besidePane === undefined ? '' : ` in pane ${shortId(besidePane)}${besideTab === undefined ? '' : ` on tab ${besideTab}`}`;
-    if (v.json) printJson({ path: target, pane, apps, answered: answered ?? null, ...(page === null ? {} : { url: true }), ...(scheme === undefined ? {} : { scheme, known: known ?? null }), ...(beside === undefined ? {} : { beside: beside.id, besideFound: besideFound ?? null, besidePane: besidePane ?? null, besideTab: besideTab ?? null }) });
+    if (v.json) printJson({ path: target, pane, apps, answered: answered ?? null, ...(page === null ? {} : { url: true }), ...(v.browser ? { browser: true } : {}), ...(scheme === undefined ? {} : { scheme, known: known ?? null }), ...(beside === undefined ? {} : { beside: beside.id, besideFound: besideFound ?? null, besidePane: besidePane ?? null, besideTab: besideTab ?? null }) });
     else {
       if (answered === false) throw new CliError(NO_ANSWER, EXIT.noAnswer);
       println(`opened ${target}${pane ? (beside !== undefined && besideFound !== false ? ` beside${besideWord}${pickedWord}` : ' in a pane') : ''}${scheme === undefined ? '' : scheme === null ? ', its own scheme cleared' : ` in ${scheme}`}`);
@@ -124,9 +137,9 @@ export async function runOpen(argv: string[]): Promise<number> {
 const command: Command = {
   name: 'open',
   summary:
-    "open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane (the one on the tab in front, else the first in tab order); --scheme picks the file's own colour scheme; a URL opens a browser pane",
+    "open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane (the one on the tab in front, else the first in tab order); --scheme picks the file's own colour scheme; a URL opens a browser pane, and --browser renders an .html file in one",
   usage:
-    'emmer open <path | url> [--pane | --beside [<session>]] [--scheme <name> | --clear-scheme] [--json]\n--beside takes the session\'s pane on the tab in front, else its first in tab order, and the reply names the pane and the tab\na url (http://, https:// or host:port, such as localhost:3000) opens in a browser pane, beside the focused one or beside --beside\'s session',
+    'emmer open <path | url> [--pane | --beside [<session>]] [--scheme <name> | --clear-scheme] [--browser] [--json]\n--beside takes the session\'s pane on the tab in front, else its first in tab order, and the reply names the pane and the tab\na url (http://, https:// or host:port, such as localhost:3000) opens in a browser pane, beside the focused one or beside --beside\'s session\n--browser renders an .html or .htm file in a browser pane, served from the Files rail\'s folder when the file is under it, else from its own folder',
   run: (argv) => runOpen(argv),
 };
 

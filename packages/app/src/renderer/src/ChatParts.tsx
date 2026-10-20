@@ -7,6 +7,7 @@ import { openBeside } from './actions.ts';
 import { editHunk, lineOf } from './chat-hunk.ts';
 import type { PendingEdit } from './chat-hunk.ts';
 import { renderReply } from './chat-markdown.ts';
+import { bashCut } from './chat-model.ts';
 import { PATH_CACHE_MAX, PATH_MENU } from './chat-paths.ts';
 import type { PathAction } from './chat-paths.ts';
 import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
@@ -113,7 +114,7 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
 
 // M9 fix 797: an update (Claude Code's ● progress line) is drawn as a
 // reply in every mode, its kind on data-kind.
-export function ChatReply({ step, session, continued }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo; continued?: boolean }) {
+export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo }) {
   // Bumped when a stat lands, so the paths it settled are drawn as links.
   const [version, setVersion] = useState(0);
   const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
@@ -140,7 +141,7 @@ export function ChatReply({ step, session, continued }: { step: Extract<Step, { 
   }, [ask]);
   // The clicks are the turn's (usePathLinks), which this sits inside.
   return (
-    <div className="chat-step chat-reply" data-kind={step.kind} data-continued={continued ? '' : undefined}>
+    <div className="chat-step chat-reply" data-kind={step.kind}>
       <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
@@ -266,5 +267,62 @@ export function EditCardHead({ session, edit }: { session: SessionInfo; edit: Pe
         ))}
       </div>
     </>
+  );
+}
+
+// M9 fix 920: a compaction, a centred note with its size across the rail,
+// and the summary Claude Code wrote after it as a fold under the note,
+// closed until clicked. Static: no animation.
+export function ChatCompact({ step }: { step: Extract<Step, { kind: 'compact' }> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="chat-step chat-compact" data-kind="compact">
+      <div className="chat-compact-note">
+        <span className="chat-compact-note-text">{step.text}</span>
+      </div>
+      {step.summary !== null && (
+        <>
+          <button type="button" className="chat-compact-fold" data-open={open || undefined} onClick={() => setOpen((o) => !o)}>
+            Summary of the earlier conversation <span className="chat-compact-caret">{open ? '⌄' : '›'}</span>
+          </button>
+          {open && <div className="chat-compact-summary">{step.summary}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// M9 fix 921: a bash-mode run in the CLI's shape, one block across the
+// rail: the command after a pink !, then the stdout and the stderr each
+// cut at three lines with a +N lines that opens the rest in place, or the
+// CLI's (No output). With no output line yet the head stands alone.
+// Static: no animation.
+export function ChatBash({ step }: { step: Extract<Step, { kind: 'bash' }> }) {
+  const [whole, setWhole] = useState<{ stdout: boolean; stderr: boolean }>({ stdout: false, stderr: false });
+  const part = (name: 'stdout' | 'stderr', text: string, className: string) => {
+    if (text === '') return null;
+    const cut = bashCut(text);
+    const open = whole[name] || cut.hidden === 0;
+    return (
+      <>
+        <div className={className}>{open ? text : cut.shown.join('\n')}</div>
+        {!open && (
+          <button type="button" className="chat-bash-more" data-part={name} onClick={() => setWhole((w) => ({ ...w, [name]: true }))}>
+            … +{cut.hidden} lines
+          </button>
+        )}
+      </>
+    );
+  };
+  const out = step.out;
+  return (
+    <div className="chat-step chat-bash" data-kind="bash">
+      <div className="chat-bash-head">
+        <span className="chat-bash-mark">!</span> <span className="chat-bash-command">{step.command}</span>
+      </div>
+      {out !== null && part('stdout', out.stdout, 'chat-bash-out')}
+      {out !== null && part('stderr', out.stderr, 'chat-bash-err')}
+      {out !== null && out.stdout === '' && out.stderr === '' && <div className="chat-bash-empty">(No output)</div>}
+    </div>
   );
 }

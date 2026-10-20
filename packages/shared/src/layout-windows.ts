@@ -134,6 +134,39 @@ export function setFrontWindow(layout: Layout, windowId: string): Layout {
   return { ...layout, currentTabId: w.currentTabId };
 }
 
+// A tab dragged into another window (M9 fix 927): it leaves its window,
+// which lands on the tab to its left else its right (closeTab's rule) and
+// goes when it was its only tab, and joins the end of the target's list as
+// its tab on show and the layout's.
+export function moveTabToWindow(layout: Layout, tabId: string, windowId: string): Layout {
+  const wins = windowsOf(layout).map((w) => ({ ...w, tabIds: [...w.tabIds] }));
+  const from = wins.find((w) => w.tabIds.includes(tabId));
+  if (findTab(layout, tabId) === null || from === undefined) throw new LayoutError(`no tab ${tabId}`);
+  const to = wins.find((w) => w.id === windowId);
+  if (to === undefined) throw new LayoutError(`no window ${windowId}`);
+  if (from === to) return layout;
+  const i = from.tabIds.indexOf(tabId);
+  from.tabIds.splice(i, 1);
+  if (from.currentTabId === tabId && from.tabIds.length > 0) from.currentTabId = (from.tabIds[i - 1] ?? from.tabIds[i])!;
+  to.tabIds.push(tabId);
+  to.currentTabId = tabId;
+  const pool = new Map<string, LayoutTab>(layout.tabs.map((t) => [t.id, t]));
+  return collapse(rebuild(pool, wins.filter((w) => w.tabIds.length > 0), tabId, layout.revision));
+}
+
+// Tabs a whole-layout edit made, in no window's list yet, joined to the
+// end of the window named (M9 fix 927), so a drop on another window's +
+// makes its tab there rather than where fitWindows would put it.
+export function claimLooseTabs(layout: Layout, windowId: string): Layout {
+  if (layout.windows === undefined) return layout;
+  const placed = new Set(layout.windows.flatMap((w) => w.tabIds));
+  const loose = layout.tabs.filter((t) => !placed.has(t.id)).map((t) => t.id);
+  if (loose.length === 0 || !layout.windows.some((w) => w.id === windowId)) return layout;
+  const windows = layout.windows.map((w) => (w.id === windowId ? { ...w, tabIds: [...w.tabIds, ...loose] } : w));
+  const pool = new Map<string, LayoutTab>(layout.tabs.map((t) => [t.id, t]));
+  return rebuild(pool, windows, layout.currentTabId, layout.revision);
+}
+
 // The tabs window by window, each in its strip order, so a client that
 // reads the tabs alone sees window one's strip then window two's.
 function rebuild(pool: Map<string, LayoutTab>, windows: LayoutWindow[], currentTabId: string, revision: number): Layout {

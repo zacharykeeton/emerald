@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { COUNT_LINES_CAP, countUntracked } from './git-status.ts';
+import { COUNT_LINES_CAP, countUntracked, gitReview } from './git-status.ts';
 import type { GitOptions } from './git-runner.ts';
 import { normalizePath } from '../renderer/src/files-model.ts';
 
@@ -110,5 +110,36 @@ test('every file empty, missing or past the cap runs no git', async () => {
   const files = ['empty.txt', 'trace.log', 'gone.txt'].map((n) => path.join(dir, n));
   const counts = await countUntracked(dir, files, () => Promise.reject(new Error('no git expected')));
   assert.deepEqual(files.map((file) => counts.get(key(file))), [0, null, null]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gitReview lists a new folder\'s files one row each with their counts, the ignored left out and a nested repository one row (M9 fix 943)', async () => {
+  const dir = scratchRepo();
+  const f = (rel: string) => path.join(dir, ...rel.split('/'));
+  fs.writeFileSync(f('tracked.txt'), 'u\n');
+  fs.writeFileSync(f('extra.txt'), 'e\n');
+  fs.mkdirSync(f('new'));
+  fs.writeFileSync(f('new/a.txt'), 'a1\na2\n');
+  fs.writeFileSync(f('new/b.txt'), 'b1\n');
+  // Through info/exclude, so no .gitignore row joins the list.
+  fs.appendFileSync(f('.git/info/exclude'), 'skip/\n');
+  fs.mkdirSync(f('skip'));
+  fs.writeFileSync(f('skip/s.txt'), 's\n');
+  fs.mkdirSync(f('nested'));
+  execFileSync('git', ['init', '-q'], { cwd: f('nested'), stdio: 'ignore' });
+  fs.writeFileSync(f('nested/n.txt'), 'n\n');
+  const review = await gitReview(dir, 'HEAD', realGit([]));
+  assert.deepEqual(
+    review.files.map((r) => [r.rel, r.letter, r.added, r.removed]),
+    [
+      ['extra.txt', 'A', 1, 0],
+      ['nested', 'A', null, null],
+      ['new/a.txt', 'A', 2, 0],
+      ['new/b.txt', 'A', 1, 0],
+      ['tracked.txt', 'M', 1, 1],
+    ],
+  );
+  assert.match(review.baseHash ?? '', /^[0-9a-f]{40}$/);
+  assert.equal(review.files.find((r) => r.rel === 'new/a.txt')?.path, path.join(dir, 'new', 'a.txt'));
   fs.rmSync(dir, { recursive: true, force: true });
 });

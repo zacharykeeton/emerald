@@ -2,6 +2,40 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 918 to 943, 2026-10-20
+
+Twenty-five fixes: the chat view's lines (the same corners on every bubble, a turn's length, the compaction note, bash mode, the question card's tabs and the remote control bar), the second window finished (tab names, the skin and the settings kept in step, a drag between windows), the Files tree on the keyboard as in VS Code, the commit graph's star over its branch's head, the browser pane's small items and its CLI at a point, and a few small reads. The daemon goes from level 74 to 75, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**The Files tree takes the keyboard.** Click any row in the Files rail, a file or a folder, and the tree has the keyboard, as VS Code's explorer does: Up and Down move the selection, Right opens a folder and steps into it, Left folds it or goes up, Home and End go to the ends, Enter opens a file with the keyboard in it, F2 renames the row and Escape hands the keyboard back to the terminal. A click on a folder no longer leaves your keys going to the terminal. F2 in a file's editor renames that file from the rail too.
+
+**Drag between windows.** With a second window open, drag a pane's title, a sidebar row or a layout tab from one window onto the other: its drop zones light there as they do at home, and the drop lands where you let go. Drop a tab or a pane outside every window and it opens in a new window there. The windows also keep the skin and the settings in step: a skin, a scheme, the idle shade, copy on select, the chime and the notifications set in one window hold in every window, and a new tab is numbered past every window's tabs, so no two windows hold a `Panes 3`.
+
+**Bash mode and compaction in the chat view.** A `!` command shows as Claude Code draws it, one block with the command after a pink `!`, the first three lines of its output and `… +N lines` to open the rest, with Claude's answer under it; while it runs the chat view shows it as a bubble marked Running. A compaction is a centred note with its size, `Conversation compacted automatically · 411k tokens`, and the summary under it a closed fold you can open, never your own prompt bubble.
+
+**The star over its branch.** On the commit graph a session's star sits right above the head of the branch it is on and moves up with it, whoever commits there. A session's own commits on another branch, made from a worktree while its folder stays on `main`, draw on a side lane and no longer sit above its star.
+
+### Details
+
+**The chat bubbles.** Every bubble, yours and Claude's, keeps the same four rounded corners, including a reply split by a fold.
+
+**A turn's length.** The length on a prompt row ends at the turn's last work: a queued message, an away summary or a hook's line after it no longer stretches it.
+
+**The question card's tabs.** On an AskUserQuestion card in the chat view or the sidebar, another question's tab is a button that moves the dialog to that question, and the card keeps the tab it moved to as the current one.
+
+**Remote control.** `/remote-control` from the chat view brings the bar whatever state the session is in, and the `rc` chip, when no link has been read yet, shows the terminal.
+
+**A browser page's zoom.** A page zoomed with Ctrl+wheel keeps its zoom across a reload or a link on the same site, and the pane menu has `Reset page zoom`. Opening a page beside, `Open in browser` among them, keeps the Files rail's lifted folder, and Back onto a page from the disk no longer flashes a refusal on the error line.
+
+**`emmer open --browser`.** `emmer open page.html --browser` renders a local page in a browser pane, from the Files rail's folder when the file is under it.
+
+**Browser verbs at a point.** `emmer browser click <x>,<y>` and `hover <x>,<y>` act at a point on the page, as `drag` already starts at one, and `fill` reads the field back after its fallback and refuses a text the field did not keep, a date, a range or a colour the page dropped.
+
+**The lane card's figure.** A lane forty or more behind says so on its card's base line, in the tone, and no longer draws a figure on the graph by its start.
+
+**Small reads.** A hover on the graph waiting when a replay starts no longer opens its card. An agent's box in the shade keeps its activity line's room before its first tool call, so nothing moves under the pointer. A folder's statistics are asked at most once a minute however many panels show them. The review tab lists a new folder's files one row each, each with its line count.
+
 ## Fixes 888 to 917, 2026-10-19
 
 Twenty-nine fixes, most of them what was asked for in 0.1.859: remote control in the chat face, the chat view as a phone chat, a subagent's card that says what it is doing now and a handle to call it by, Ctrl+wheel text size over any pane and the window zoom, and a pause and a slider on the replay. Beside them come sign in with Google inside a browser pane, an `.html` file rendered in a browser pane, one git runner for the app and the daemon, and a round of small fixes. The daemon goes from level 73 to 74, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

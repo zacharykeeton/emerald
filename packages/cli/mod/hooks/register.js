@@ -315,7 +315,11 @@ async function submitAndSay($, text, submitId) {
 // door still saying a row came. A tool result keeps only its text, sliced
 // to ROW_RESULT_CAP, since the view reads only the exit code at its start;
 // that cut is not marked. A row still past ROW_POST_CAP is cut too.
-const APPEND_DOORS = ['prompt', 'command', 'response', 'tool-result', 'tool-message', 'delivery', 'attachment', 'hook-context', 'note', 'compaction', 'notice'];
+// M9 fix 920: no compaction door. Its summary row carries no
+// isCompactSummary (rowForPost keeps type, role and isMeta), so on the fork
+// it would fold as a prompt bubble; the file's line, which marks it, draws
+// the note and its summary within one read.
+const APPEND_DOORS = ['prompt', 'command', 'response', 'tool-result', 'tool-message', 'delivery', 'attachment', 'hook-context', 'note', 'notice'];
 const ROW_STRING_CAP = 32768;
 const ROW_RESULT_CAP = 4096;
 const ROW_POST_CAP = 524288;

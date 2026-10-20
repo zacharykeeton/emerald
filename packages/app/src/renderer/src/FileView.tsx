@@ -21,6 +21,7 @@ import { askBeforeClose, clearReveal, closeFileTab, FONT_SIZE_DEFAULT, getUiStat
 import { fileTextKey, paneScaled, paneTextVars } from './pane-text.ts';
 import { usePaneWheel } from './pane-wheel.ts';
 import { focusPane } from '@emerald/shared';
+import { holdKeysInTree, treeKeepsKeys } from './focus.ts';
 import { editTab, useStore } from './store.ts';
 import { isHtmlFile, localPageRoot, railRoot } from './local-page-model.ts';
 import { openLocalPage } from './actions.ts';
@@ -234,7 +235,14 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   }, [zoom]);
   // Off fit the picture draws at its natural size times the scale.
   const imgSize = zoom !== 'fit' && loaded !== null ? { width: loaded.w * scale, height: loaded.h * scale } : undefined;
-  const setView = onView ?? ((next: FileTabView) => setFileTabView(path, next));
+  // M9 fix 929: a pick of the view is work in the file view, so a hold the
+  // Files tree has on the keyboard (focus.ts) goes and the view takes it as
+  // it lands.
+  const setView = (next: FileTabView) => {
+    holdKeysInTree(null);
+    if (onView !== undefined) onView(next);
+    else setFileTabView(path, next);
+  };
   // A pane's close asks about unsaved edits the way the tab's does; the
   // tab's close asks inside closeFileTab itself.
   const close = onClose === undefined ? () => closeFileTab(path) : () => askBeforeClose(path, onClose) || onClose();
@@ -336,6 +344,16 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ],
       run: () => toggleWrapLines(),
     });
+    // F2 renames the file in front from the Files rail (M9 fix 930): the
+    // rail shows its row and opens the name box on it, which takes the
+    // keyboard. No language here registers a rename provider, so Monaco's
+    // own F2 (Rename Symbol) never claims the key.
+    const renameAction = editor.addAction({
+      id: 'emerald.renameFile',
+      label: 'Rename the file in the Files rail',
+      keybindings: [monaco.KeyCode.F2],
+      run: () => revealInFiles(pathRef.current, true),
+    });
     // For the verify scripts, as emeraldTerm on a terminal host: an occluded
     // window draws no frames, so the DOM says nothing about the cursor.
     (host as HTMLDivElement & { emeraldEditor?: monaco.editor.IStandaloneCodeEditor }).emeraldEditor = editor;
@@ -362,6 +380,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       onBlur.dispose();
       saveAction.dispose();
       wrapAction.dispose();
+      renameAction.dispose();
       editorRef.current = null;
       // The model is not the editor's to dispose; monaco.ts keeps it for
       // the tab.
@@ -394,9 +413,12 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   // M9 fix 438: the focused view's scheme colours the editor's syntax,
   // the window's while the file has none of its own; two views on
   // different schemes both wear whichever was focused last, since Monaco
-  // keeps one theme for the whole page.
+  // keeps one theme for the whole page. Since M9 fix 929 a click in the
+  // Files tree previews a file with the keyboard left on the tree, so the
+  // tab's view also takes the theme when no editor holds the keyboard, or
+  // the previewed file would wear the last focused file's syntax.
   useEffect(() => {
-    if (!focused) return;
+    if (!focused && (inPane || document.activeElement?.closest('.monaco-editor') != null)) return;
     setFileTheme(syntaxScheme);
   }, [focused, syntaxScheme]);
 
@@ -436,7 +458,8 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
   }, [path, raster]);
 
   // The model follows the read. Coming to a file restores its view state
-  // and puts the keyboard in the editor; a re-read of the file showing
+  // and puts the keyboard in the editor, unless a click in the Files tree
+  // opened it, which keeps the keyboard there (M9 fix 929); a re-read of the file showing
   // only replaces the text (takeRead), so nothing moves, and leaves a
   // dirty model alone. A rendered markdown tab leaves the editor alone
   // until Raw is picked, unless the file already has a model, whose
@@ -459,7 +482,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     editor.setModel(model);
     const key = prettyShown ? prettyKey(path) : path;
     editor.restoreViewState(viewStateFor(key));
-    editor.focus();
+    if (!treeKeepsKeys(path, hostRef.current)) editor.focus();
     shownRef.current = key;
   }, [read, path, view, editorView, prettyShown]);
 

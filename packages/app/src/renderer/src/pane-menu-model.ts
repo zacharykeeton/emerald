@@ -15,6 +15,7 @@ export type PaneMenuRun =
   | 'split-down'
   | 'zoom'
   | 'text-reset'
+  | 'page-zoom-reset'
   | 'new-shell'
   | 'new-claude'
   | 'rename'
@@ -130,9 +131,11 @@ export interface ViewPaneFacts {
   splitKind: SplitKind;
   // A file pane's text size (M9 fix 899), for its Reset text size item; absent reads as at the default.
   atDefaultFontSize?: boolean | undefined;
+  // A browser page's own zoom (M9 fix 931), for its Reset page zoom item; absent reads as at the default.
+  atDefaultPageZoom?: boolean | undefined;
 }
 
-export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar = true, toolbarKept = false, atDefaultFontSize }: ViewPaneFacts): PaneMenuItem[] {
+export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar = true, toolbarKept = false, atDefaultFontSize, atDefaultPageZoom }: ViewPaneFacts): PaneMenuItem[] {
   const items: PaneMenuItem[] = [];
   // A file pane has no controls rows to fold; its header is the tab's,
   // and the same file as a tab is what it offers instead. Only a daemon
@@ -164,6 +167,9 @@ export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept
   // M9 fix 899: a file pane's text follows the pane's size, as a session
   // pane's does, so it has the same way back.
   if (kind === 'file') items.push({ run: 'text-reset', label: 'Reset text size', action: 'text-reset', disabled: atDefaultFontSize !== false, title: atDefaultFontSize !== false ? 'Already at 14 px' : undefined });
+  // M9 fix 931: a page's own zoom (Ctrl+wheel, fix 899) has its way back
+  // here, since Ctrl+0 in the page is the window's reset (fix 900).
+  if (kind === 'browser') items.push({ run: 'page-zoom-reset', label: 'Reset page zoom', action: null, disabled: atDefaultPageZoom !== false, title: atDefaultPageZoom !== false ? 'Already at 100%' : undefined });
   // An activity view has no folder to set; the window moves with the
   // view's own header.
   if (folder !== null) items.push({ run: 'set-folder', label: 'Set folder…', action: null, title: 'Show another repository here', separator: true });

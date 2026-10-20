@@ -66,6 +66,10 @@ server = http.createServer((req, res) => {
         '<input id="ok" type="checkbox" aria-label="Agree">',
         '<input id="picky" aria-label="Picky">',
         `<script>{ const el = document.getElementById('picky'); Object.setPrototypeOf(el, Object.create(HTMLInputElement.prototype, { value: { get() { return ''; }, set() { throw new Error('picky refuses'); }, configurable: true } })); }</script>`,
+        '<input id="age" type="number" aria-label="Age">',
+        '<input id="when" type="date" aria-label="When">',
+        '<input id="level" type="range" aria-label="Level">',
+        '<input id="tint" type="color" aria-label="Tint">',
         '<div id="rich" contenteditable="true" role="textbox" aria-label="Rich"></div>',
         '<a id="two" href="/two">Two</a>',
       ].join('\n'),
@@ -105,7 +109,7 @@ document.addEventListener('pointerup', (e) => { if (drag === null) return; const
       [
         '<style>body { margin: 0 } #pad { display: block; width: 300px; height: 200px; touch-action: none }</style>',
         '<canvas id="pad" width="300" height="200"></canvas>',
-        `<script>window.__pad = { down: null, moves: 0, up: null }; const pad = document.getElementById('pad'); pad.addEventListener('pointerdown', (e) => { window.__pad.down = [e.clientX, e.clientY]; }); pad.addEventListener('pointermove', (e) => { if ((e.buttons & 1) !== 0) window.__pad.moves += 1; }); pad.addEventListener('pointerup', (e) => { window.__pad.up = [e.clientX, e.clientY]; });</script>`,
+        `<script>window.__pad = { down: null, moves: 0, up: null, hover: null }; const pad = document.getElementById('pad'); pad.addEventListener('pointerdown', (e) => { window.__pad.down = [e.clientX, e.clientY]; }); pad.addEventListener('pointermove', (e) => { if ((e.buttons & 1) !== 0) window.__pad.moves += 1; else window.__pad.hover = [e.clientX, e.clientY]; }); pad.addEventListener('pointerup', (e) => { window.__pad.up = [e.clientX, e.clientY]; });</script>`,
       ].join('\n'),
     );
   } else page('Drive fixture other', '<p>other</p>');
@@ -483,6 +487,25 @@ try {
   expect(r.code === 0, `navigate back to /drag (${said(r)})`);
   step('(k2b) M9 fix 915: drag from a point x,y on a canvas, the press at the point and the release dx,dy from it, with the window focus left on the shell');
 
+  // (k2c) M9 fix 935: click and hover at a point x,y on the same canvas, then back to /drag for (k3).
+  r = await cli('navigate', origin + '/canvas');
+  expect(r.code === 0 && r.out === `on ${origin}/canvas, titled "Drive fixture canvas"`, `navigate to /canvas again (${said(r)})`);
+  // The same paint wait as (k2b).
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  // The click first: Chromium may move the pointer to a press's point
+  // before the press, which would set hover itself.
+  r = await cli('click', '60,50');
+  expect(r.code === 0 && r.out === 'clicked at 60,50', `click at a point (${said(r)})`);
+  r = await cli('hover', '80,70');
+  expect(r.code === 0 && r.out === 'hovering at 80,70', `hover at a point (${said(r)})`);
+  const padAt = await inGuest(g1, 'window.__pad');
+  console.log(`[935] the pad: ${JSON.stringify(padAt)}`);
+  expect(within1(padAt.down, [60, 50]) && within1(padAt.up, [60, 50]) && within1(padAt.hover, [80, 70]), `the press and the release at the click's point and the pointer at the hover's (${JSON.stringify(padAt)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after the click and hover at a point');
+  r = await cli('navigate', origin + '/drag');
+  expect(r.code === 0, `navigate back to /drag (${said(r)})`);
+  step('(k2c) M9 fix 935: click and hover at a point x,y on a canvas, the press, the release and the pointer at the points, with the window focus left on the shell');
+
   // (k3) M9 fix 875: snapshot --name and --within on the same /drag page,
   // the printed lines read against the whole snapshot's, then back to /.
   r = await cli('snapshot');
@@ -723,8 +746,31 @@ try {
   const richText = await inGuest(g1, "document.getElementById('rich').textContent");
   if (richText === 'hi') expect(true, 'the contenteditable reads hi');
   else console.log(`[877] rich reads ${JSON.stringify(richText)}`);
+  // M9 fix 934: a text the field's sanitization dropped is refused with
+  // what the field holds, read in the guest to match; a good one fills, a
+  // colour's capitals passing.
+  const sanitized = [['Age', 'age', 'abc', '42', '42'], ['When', 'when', '2026-13-45', '2026-10-19', '2026-10-19'], ['Level', 'level', 'abc', '30', '30'], ['Tint', 'tint', 'nonsense', '#00FF00', '#00ff00']];
+  if (sanitized.some(([name]) => !fillLines.some((l) => l.includes(` "${name}"`)))) {
+    // Electron's Chromium naming a role otherwise than Chrome 155 did: say which, for ACTIONABLE_ROLES.
+    const ax = await g1.cdp.send('Accessibility.getFullAXTree', {});
+    console.log(`[934] the AX roles: ${JSON.stringify(ax.nodes.filter((n) => sanitized.some(([name]) => n.name?.value === name)).map((n) => [n.name.value, n.role?.value]))}`);
+  }
+  const sanitizedRows = sanitized.map(([name]) => rowOf(new RegExp(`^@e\\d+ \\S+ "${name}"( |$)`)));
+  console.log(`[934] the roles: ${sanitized.map(([name], i) => `${name} ${sanitizedRows[i].role}`).join(', ')}`);
+  for (let i = 0; i < sanitized.length; i++) {
+    const [name, id, bad, good, kept] = sanitized[i];
+    const row = sanitizedRows[i];
+    r = await onFill(row.ref, bad);
+    const held = await inGuest(g1, `document.getElementById(${JSON.stringify(id)}).value`);
+    console.log(`[934] ${name} holds ${JSON.stringify(held)}`);
+    expect(r.code === 1 && r.err === `emmer: the page refused the text for ${row.ref} ${row.role} ${JSON.stringify(name)}: the field holds ${JSON.stringify(held)}`, `a ${name} field refuses ${bad}, saying what it holds (${said(r)})`);
+    r = await onFill(row.ref, good);
+    const now = await inGuest(g1, `document.getElementById(${JSON.stringify(id)}).value`);
+    const filled = `filled ${row.ref} ${row.role} ${JSON.stringify(name)} with ${good.length} characters`;
+    expect(r.code === 0 && (r.out === filled || r.out === `${filled} (set directly)`) && now === kept, `a ${name} field fills ${good}, holding ${JSON.stringify(kept)} (${said(r)}, holds ${JSON.stringify(now)})`);
+  }
   expect(await activeIsShell(), 'the window keeps the shell textarea focused after the fills');
-  step('M9 fix 877: fill picks a select\'s option by value or text and refuses a missing one, a multiple select, a checkbox and a file input, and says when the page refuses the text');
+  step('M9 fix 877: fill picks a select\'s option by value or text and refuses a missing one, a multiple select, a checkbox and a file input, and says when the page refuses the text, and refuses a text the field\'s sanitization dropped (fix 934)');
 
   // (q) M9 fix 878: the --profile b pane of (l), driven by nothing since,
   // follows a link and its record keeps profile b (fix 839's withPageUrl).

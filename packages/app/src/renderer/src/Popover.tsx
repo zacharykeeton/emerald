@@ -83,6 +83,15 @@ export function usePopoverAnchor(hover = true): AnchorState {
     leaveTimer.current = null;
   };
   useEffect(() => clearTimers, []);
+  // A hover turned off while its timer runs (M9 fix 939): a replay that
+  // starts with the pointer on a row gates the row's card, and the timer
+  // from before would still open it 400 ms later and show it on the live
+  // graph the moment the replay ends. A card already open stays as it is.
+  useEffect(() => {
+    if (hover || hoverTimer.current === null) return;
+    clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  }, [hover]);
   const startLeave = () => {
     if (open === null || open.pinned) return;
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);

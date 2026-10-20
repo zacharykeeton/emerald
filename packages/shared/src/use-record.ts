@@ -92,6 +92,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'pane-split-down', label: 'Split down', group: 'pane-menu' },
   { name: 'pane-zoom', label: 'Focus', group: 'pane-menu' },
   { name: 'pane-text-reset', label: 'Reset text size', group: 'pane-menu' },
+  { name: 'pane-page-zoom-reset', label: 'Reset page zoom', group: 'pane-menu' },
   { name: 'pane-new-shell', label: 'New shell here', group: 'pane-menu' },
   { name: 'pane-new-claude', label: 'New Claude session here', group: 'pane-menu' },
   { name: 'pane-rename', label: 'Rename session', group: 'pane-menu' },

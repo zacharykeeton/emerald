@@ -267,26 +267,29 @@ function fetchedAt(common: string | null): number | null {
 // against the commit the review opened on rather than following a commit
 // the session makes mid-review. The list is `git diff --name-status` and
 // `--numstat` against that hash, which covers the index and the work
-// tree, plus the untracked files from the status, which a diff never
-// lists. Any failure is an empty list with the root kept.
+// tree, plus the untracked files from `git ls-files --others
+// --exclude-standard`, which a diff never lists: every file, so a new
+// folder's files are rows of their own with their counts where the status
+// named the folder once (M9 fix 943). Any failure is an empty list with the
+// root kept. `git` is the worker's gitText unless a test hands in its own.
 // M9 fix 790: since:<hash> is the session's start, the merge base of that
 // commit and HEAD in this folder, so a session in a worktree compares
 // against where its branch left the commit it started on; a hash this
 // repository lacks reads as HEAD.
-export function gitReview(dir: string, base: string): Promise<GitReview> {
+export function gitReview(dir: string, base: string, git: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null> = gitText): Promise<GitReview> {
   const empty = (root: string | null): GitReview => ({ root, head: null, defaultBranch: null, baseHash: null, files: [] });
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) return Promise.resolve(empty(null));
   const root = findRepoRoot(dir);
   if (root === null) return Promise.resolve(empty(null));
-  const run = (args: string[]) => gitText([NO_LOCKS, ...args], root);
+  const run = (args: string[]) => git([NO_LOCKS, ...args], root);
   return (async () => {
-    const head = await headOf(root);
+    const head = await headOf(root, git);
     const isMain = (await run(['rev-parse', '--verify', '--quiet', 'refs/heads/main'])) !== null;
     const isMaster = !isMain && (await run(['rev-parse', '--verify', '--quiet', 'refs/heads/master'])) !== null;
     const defaultBranch = isMain ? 'main' : isMaster ? 'master' : null;
     const baseHash = await resolveReviewBase(base, defaultBranch, head, run);
     if (baseHash === null || !/^[0-9a-f]{40}$/.test(baseHash)) return { root, head, defaultBranch, baseHash: null, files: [] };
-    const [names, nums, status] = await Promise.all([run(['diff', '--name-status', '-z', baseHash]), run(['diff', '--numstat', '-z', baseHash]), gitStatus(dir)]);
+    const [names, nums, others] = await Promise.all([run(['diff', '--name-status', '-z', baseHash]), run(['diff', '--numstat', '-z', baseHash]), run(['ls-files', '--others', '--exclude-standard', '-z'])]);
     const letters = names === null ? new Map<string, { rel: string; letter: string }>() : parseNameStatus(names, root);
     const counts = nums === null ? new Map<string, [number | null, number | null]>() : parseNumstat(nums, root);
     const files: ReviewFile[] = [];
@@ -294,14 +297,22 @@ export function gitReview(dir: string, base: string): Promise<GitReview> {
       const c = counts.get(key);
       files.push({ rel, path: path.join(root, rel), letter, added: c?.[0] ?? null, removed: c?.[1] ?? null });
     }
-    const untracked = status.files.filter((f) => f.status === 'untracked' && !letters.has(f.path.toLowerCase()));
-    const added = await countUntracked(root, untracked.map((f) => f.path));
-    for (const f of untracked) {
-      const rel = path.relative(root, f.path).replaceAll('\\', '/');
-      const n = added.get(normalizePath(f.path).toLowerCase()) ?? null;
+    // Relative to the root with forward slashes, keyed the way
+    // parseNameStatus keys its rows so the dedupe against the diff holds; a
+    // nested repository stays one entry with a trailing slash, which
+    // normalizePath drops. A null (git failed) is no untracked rows.
+    const untracked = (others ?? '')
+      .split('\0')
+      .filter((rel) => rel !== '')
+      .map((rel) => normalizePath(`${root}\\${rel}`))
+      .filter((p) => !letters.has(p.toLowerCase()));
+    const added = await countUntracked(root, untracked, git);
+    for (const p of untracked) {
+      const rel = path.relative(root, p).replaceAll('\\', '/');
+      const n = added.get(p.toLowerCase()) ?? null;
       // No count is no number on both sides: `+0 −0` would read as an
       // empty file (M9 fix 917).
-      files.push({ rel, path: f.path, letter: 'A', added: n, removed: n === null ? null : 0 });
+      files.push({ rel, path: p, letter: 'A', added: n, removed: n === null ? null : 0 });
     }
     files.sort((a, b) => a.rel.localeCompare(b.rel));
     return { root, head, defaultBranch, baseHash, files };

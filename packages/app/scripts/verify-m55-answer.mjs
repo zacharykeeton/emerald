@@ -294,6 +294,35 @@ try {
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 910: the review card closed');
   step("fix 910: the sidebar's review card draws Back with its ← cap, and a Left press with the card open reaches the session");
+  // M9 fix 922: the sidebar card's tabs but the current one are buttons too.
+  // A three-question ask on the third tab, Colour and Size answered; the
+  // stub takes the two Lefts, redraws the dialog on Colour and waits for a
+  // key.
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask me about the tabs' });
+  await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'working'`, 'fix 922: working on the tabs');
+  const tabRowA = `('' + ${ch('2190')} + ' ' + ${ch('2612')} + ' Colour ' + ${ch('2612')} + ' Size ' + ${ch('2610')} + ' Shape ' + ${ch('2713')} + ' Submit ' + ${ch('2192')})`;
+  const rowsShape = ['', 'Which shape should the sample button be?', '', '> 1. Round', '     Soft corners all round', '  2. Square', '     Sharp corners', '  3. Pill', '     Fully rounded ends', '  4. Type something.', '', '  5. Chat about this', ''];
+  const rowsColour = ['', 'Which colour should the sample button be?', '', '> 1. Green', '     Matches the brand', '  2. Grey', '     Stays quiet', '  3. Red', '     Draws the eye', '  4. Type something.', '', '  5. Chat about this', ''];
+  const drawA = (list) => list.map((r) => `Write-Host '${r}'`).join('; ');
+  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsShape)}; Write-Host -NoNewline ${footer}; $a = [Console]::ReadKey($true); $b = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsColour)}; Write-Host -NoNewline ${footer}; $c = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.Key + ' ' + $b.Key); Read-Host | Out-Null`);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('cancel'), 'fix 922: the question drawn, the cursor on its footer');
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel)})?.dataset.state === 'needs-input'`, 'fix 922: the row needs input for the tabs');
+  const badge922 = await centerOf(`${rowSel} .sidebar-row-state`);
+  await s.click(badge922.x, badge922.y);
+  await s.waitFor(`!!document.querySelector('.answer-popover .answer-popover-tab')`, 'fix 922: the card with its tabs');
+  await s.evalJs(`document.querySelector('.answer-popover button.answer-popover-tab[data-state="answered"]').click()`);
+  await s.waitFor(`document.querySelector('.answer-popover-question')?.textContent === 'Which colour should the sample button be?' && !document.querySelector('.answer-popover [data-sent]')`, 'fix 922: the dialog on Colour, the card taking a press again', 10000);
+  const tabs922 = await s.evalJs(`[...document.querySelectorAll('.answer-popover-tab')].map((t) => t.tagName + ':' + t.textContent.replace(/^✓/, '') + ':' + (t.dataset.current ?? ''))`);
+  expect(JSON.stringify(tabs922) === JSON.stringify(['SPAN:Colour:true', 'BUTTON:Size:', 'BUTTON:Shape:']), `fix 922: Colour current after the click, got ${JSON.stringify(tabs922)}`);
+  await type(sessionId, '');
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('got LeftArrow LeftArrow'), 'fix 922: the session got two Lefts');
+  await type(sessionId, '');
+  await post({ hook_event_name: 'Stop', stop_hook_active: false });
+  await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 922: the tabs card closed');
+  step("fix 922: the sidebar card's earlier tab is a button that sends a Left per tab back, and the card reads it as current while the dialog draws its question");
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

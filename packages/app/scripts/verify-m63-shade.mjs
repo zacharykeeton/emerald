@@ -838,10 +838,11 @@ try {
     );
   const wide = await lidRead(sixSel);
   // M9 fix 654: the face carries the row's activity line; no member here
-  // has called a tool, so no box carries one (the shell sh1 included).
+  // has called a tool, so no box carries a phrase: each agent's line is the
+  // empty one (fix 940) and the shell sh1 has none.
   const sixRowLine654 = await text(`.sidebar-row[data-session-id=${JSON.stringify(six.id)}] .sidebar-row-agent`);
   expect(wide.activity !== null && wide.activity === sixRowLine654 && wide.activityShown, `the wide lid's activity line is the row's and drawn, got ${JSON.stringify({ activity: wide.activity, shown: wide.activityShown })} against ${JSON.stringify(sixRowLine654)}`);
-  expect(wide.members.every((m) => m.activity === null), `no box carries an activity line with no member tool call, got ${JSON.stringify(wide.members.map((m) => [m.id, m.activity]))}`);
+  expect(wide.members.every((m) => (m.kind === 'agent' ? m.activity === ' ' : m.activity === null)), `no box carries a phrase with no member tool call, the agents' lines empty (fix 940) and the shell's absent, got ${JSON.stringify(wide.members.map((m) => [m.id, m.activity]))}`);
   expect(wide.paneWidth >= 760, `the pane alone in the window is the wide tier, got ${wide.paneWidth}px`);
   expect(wide.name === 'Batch 372' && wide.split && wide.subject === 'the shade lid and the install path' && wide.step === '1' && wide.nameSize === 56 && wide.subjectSize === 20, `the hero's name is split at the colon, the identity at the wide tier's 56px for a short name and the subject at 20px, got ${JSON.stringify({ name: wide.name, split: wide.split, subject: wide.subject, step: wide.step, nameSize: wide.nameSize, subjectSize: wide.subjectSize })}`);
   expect(wide.mark.w === 64 && wide.mark.h === 64 && wide.spend === '$61.20' && wide.spendSize === 32 && wide.lineSize === 14, `a 64px mark cell, the spend in cents (fix 395) at 32px and the line at 14px on the wide tier, got ${JSON.stringify({ mark: wide.mark, spend: wide.spend, spendSize: wide.spendSize, lineSize: wide.lineSize })}`);
@@ -986,14 +987,18 @@ try {
   // was never reopened. The member is a5, not the plan's a1: a call gives a
   // box an activity line that never clears, and a1's taller box pushed the
   // narrow fold's "and 3 more" under the pane's bottom, where a5's box is
-  // folded away. The first call is posted before the hover: the box grows
-  // and the name moves up half a line, which left a pointer placed before
+  // folded away. The first call is posted before the hover: until fix 940
+  // the box grew and the name moved up half a line on it, which left a pointer placed before
   // it on the name's bottom edge, where the hover flipped on every layout
   // and the card closed and reopened about once a second. A second call
   // then moves the phrase on the open card, the entry's check.
   const card903 = '.agent-popover[data-member="a5"]';
+  const box940 = `(() => { const m = ${q(sixSel + ' .pane-shade-member[data-member="a5"]')}; const n = m.querySelector('.pane-shade-member-name'); return { h: m.getBoundingClientRect().height, nameTop: n.getBoundingClientRect().top, empty: m.querySelector('.pane-shade-member-activity')?.dataset.empty ?? null }; })()`;
+  const before940 = await s.evalJs(box940);
   await postSix({ hook_event_name: 'PreToolUse', agent_id: 'a5', tool_name: 'Read', tool_input: { file_path: 'C:/sim/grid.ts' } });
   await s.waitFor(`${q(sixSel + ' .pane-shade-member[data-member="a5"] .pane-shade-member-activity')}?.textContent === 'Reading grid.ts'`, "a5's box carries its activity line before the hover (fix 903)", 5000);
+  const after940 = await s.evalJs(box940);
+  expect(before940.empty === '' && after940.empty === null && Math.abs(before940.h - after940.h) < 0.5 && Math.abs(before940.nameTop - after940.nameTop) < 0.5, `fix 940: a5's box keeps its height and its name's place across its first call, the empty line then the phrase, got ${JSON.stringify({ before940, after940 })}`);
   await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a5"] .pane-shade-member-name', card903, "a5's card for the now line");
   await s.evalJs(`(() => { window.__card903 = document.querySelector(${JSON.stringify(card903)}); return true; })()`);
   const sameCard903 = `document.querySelector(${JSON.stringify(card903)}) === window.__card903`;
@@ -1058,10 +1063,13 @@ try {
   expect(fold.more.length === 1 && fold.more[0].text === 'and 3 more' && fold.more[0].box.bottom <= fold.paneBottom && fold.more[0].box.h > 0, `"and 3 more" is drawn inside the pane under the four, got ${JSON.stringify(fold.more)} against the pane's bottom at ${fold.paneBottom}`);
   expect(shownBoxes.every((m) => m.box.bottom <= fold.paneBottom && m.box.w === fold.rule.face.w), `every shown box is inside the pane and as wide as the face, got ${JSON.stringify(shownBoxes.map((m) => m.box))} against ${fold.paneBottom}`);
   expect(fold.nameSize === 32 && fold.subjectSize === 15 && fold.mark.w === 40, `the narrow tier's 32px name, 15px subject and 40px mark, got ${JSON.stringify({ nameSize: fold.nameSize, subjectSize: fold.subjectSize, mark: fold.mark })}`);
+  const empties940 = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sixSel + ' .pane-shade-member:not([data-fold]) .pane-shade-member-activity[data-empty]')})].map((e) => e.getClientRects().length)`);
+  expect(empties940.length === 4 && empties940.every((n) => n === 0), `fix 940: the four shown boxes' empty lines are not drawn in the fold, got ${JSON.stringify(empties940)}`);
+  console.log(`[verify] fix 940: the fold's "and 3 more" sits ${fold.paneBottom - fold.more[0].box.bottom}px above the pane's bottom`);
   await frame('m9-372-lid-fold.png');
   expect(await click(sixSel + ' .pane-shade'), 'lift the folded shade');
   await s.waitFor(`!${q(sixSel + ' .pane-shade')}`, 'lifted');
-  step('fix 372: under 360px the six-member lid folds at four boxes with "and 3 more" inside the pane');
+  step('fix 372: under 360px the six-member lid folds at four boxes with "and 3 more" inside the pane; fix 940: the boxes\' empty activity lines are not drawn there');
 
   // Twelve members at the wide tier: the columns tighten to 132px past
   // eight (five across in the 760px column), every box shown, no fold

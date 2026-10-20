@@ -10,10 +10,13 @@
 // the screen, the model and its effort, the agents, the diff. Block
 // `views` (fix 714, needs stub) cycles Normal, Thinking and Verbose by
 // Ctrl+O and the view chip's menu and opens a fold. Block `story`
-// (fixes 797 and 798, needs stub) reads a turn of progress lines and
-// calls as update, fold, update, fold, reply under Claude Code's own
-// sentences, the shell rows' descriptions over their commands, and the
-// command notes. Block `beside` (fixes 863 and 864, needs paths)
+// (fixes 797, 798 and 919 to 921, needs stub) reads a turn of progress
+// lines and calls as update, fold, update, fold, reply under Claude
+// Code's own sentences, the shell rows' descriptions over their commands,
+// the command notes, a turn's length kept at its last work past the next
+// prompt's bookkeeping, a compaction drawn as a note with its summary a
+// closed fold (fix 920), and a bash run as one block in a turn of its own
+// (fix 921). Block `beside` (fixes 863 and 864, needs paths)
 // Ctrl+clicks a reply's web link and two pictures outside the folder, one
 // in a code span and one bare in the text, each into a pane beside the
 // chat's, and reads a plain click and a middle-click on the link still
@@ -40,15 +43,18 @@
 // the mod does and reads them drawn before the fixture has them, then
 // once each from the fixture's own lines. Block `tail` (fix 770) opens a
 // stub over a transcript past the 8 MB read cap on its last 2 MB.
-// Block `send` (fixes 781 to 784) plays Claude with a shell of its own:
-// two quick sends, the pending bubble, the chips' ×, and the CLI input
-// carried into the box and back. Block `review-base` (fix 790) plays
+// Block `send` (fixes 781 to 784 and 921) plays Claude with a shell of
+// its own: two quick sends, the pending bubble (a `!` send's marked
+// Running), the chips' ×, and the CLI input carried into the box and back. Block `review-base` (fix 790) plays
 // Claude with a shell in a fixture repository whose edit is committed:
 // the diff chip counts only the edit under the folder and opens the
 // review on the session's start commit. Block `ask-once` (fix 801, needs
 // stub) answers a Bash permission whose dialog the stub clears and reads
 // the card keeping what it answered, with no box and no second press;
 // the `question` block reads fixes 801 to 803 on a second tab. Block
+// `ask-tabs` (fix 922, needs stub) clicks an earlier tab of a
+// three-question ask and then a later one, and reads the arrows at the
+// stub and the card keeping the tab it moved to as current. Block
 // `mod-ask` (fixes 774 and 775) starts a real Claude in default mode,
 // Escapes a real permission dialog and answers a second one, a short
 // real turn of its own.
@@ -61,7 +67,9 @@
 // transcript gains remote control's connect line and whose screen draws
 // the footer pill's words: the line drawn as a divider with its link, the
 // rc chip through its states, and /remote-control picked from the menu
-// bringing the bar while the chip reads active.
+// bringing the bar while the chip reads active; before any connect line,
+// the chip's click showing the terminal and /remote-control with no pill
+// bringing the bar (fix 923).
 // Block `exited` (fix 804) kills a stub on the chat face, restarts the
 // daemon and reads the conversation kept, dimmed, under the notice, then
 // Resume carrying on.
@@ -80,11 +88,11 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'ask', fixes: ['690'], needs: ['stub'] },
   { name: 'footer', fixes: ['713', '715', '743', '744', '745', '799'], needs: ['stub'] },
   { name: 'views', fixes: ['714'], needs: ['footer'] },
-  { name: 'story', fixes: ['797', '798'], needs: ['stub'] },
+  { name: 'story', fixes: ['797', '798', '919', '920', '921'], needs: ['stub'] },
   { name: 'reply', fixes: ['716'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
   { name: 'beside', fixes: ['863', '864', '892'], needs: ['paths'] },
-  { name: 'bubbles', fixes: ['891'], needs: ['stub'] },
+  { name: 'bubbles', fixes: ['891', '918'], needs: ['stub'] },
   { name: 'thumbs', fixes: ['717', '718', '891'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
   { name: 'real', fixes: ['690', '778', '799', '809'], needs: [] },
@@ -98,15 +106,16 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'tail', fixes: ['770'], needs: [] },
   { name: 'question', fixes: ['777', '801', '802', '803', '845', '879'], needs: ['stub'] },
   { name: 'ask-once', fixes: ['801', '880'], needs: ['stub'] },
+  { name: 'ask-tabs', fixes: ['922'], needs: ['stub'] },
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846'], needs: [] },
-  { name: 'send', fixes: ['781', '782', '783', '784'], needs: [] },
+  { name: 'send', fixes: ['781', '782', '783', '784', '921'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
   { name: 'notes', fixes: ['805'], needs: [] },
   { name: 'copy', fixes: ['806', '849', '882'], needs: ['notes'] },
   { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
-  { name: 'remote', fixes: ['889', '890'], needs: [] },
+  { name: 'remote', fixes: ['889', '890', '923'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
 ]);
@@ -1036,6 +1045,124 @@ try {
       `fix 798: the note centred on the rail, got ${JSON.stringify(box)}`,
     );
     step('fix 798: a command\'s printed line is a centred note in the turn it lands in; a dialog closed with no pick and an empty output print nothing');
+
+    // M9 fix 919: a turn's length ends at its last work. The turn ends at
+    // its reply three seconds in; the next prompt's bookkeeping (an away
+    // summary, the queue lines, a hook attachment) lands twelve seconds
+    // later, and a rename note after them is the sync point the view draws.
+    const lengthTurn = `[...${q(P)}.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent === 'check the length 919')`;
+    const lengthTime = `(${lengthTurn})?.querySelector('.chat-prompt-time')?.textContent ?? ''`;
+    fs.appendFileSync(
+      fixture,
+      [
+        userLine('check the length 919', 176),
+        asstLine([{ type: 'text', text: 'Checked.' }], 179),
+        line({ type: 'system', subtype: 'stop_hook_summary', timestamp: at(179) }),
+        line({ type: 'system', subtype: 'turn_duration', durationMs: 3000, timestamp: at(179) }),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`(${lengthTime}).endsWith(' · 3s')`, 'the length 919 turn drawn three seconds long', 5000);
+    fs.appendFileSync(
+      fixture,
+      [
+        line({ type: 'system', subtype: 'away_summary', content: 'We are checking the length.', timestamp: at(190) }),
+        line({ type: 'queue-operation', operation: 'enqueue', content: 'next', timestamp: at(191) }),
+        line({ type: 'queue-operation', operation: 'dequeue', timestamp: at(191) }),
+        line({ type: 'attachment', attachment: { type: 'hook_success' }, timestamp: at(191) }),
+        line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Session renamed to: length 919</local-command-stdout>', timestamp: at(191) }),
+      ].join('\n') + '\n',
+    );
+    await s.waitFor(`[...((${lengthTurn})?.querySelectorAll('.chat-command-note-text') ?? [])].some((n) => n.textContent === 'Session renamed to: length 919')`, 'the length 919 rename note drawn', 5000);
+    const length919 = await s.evalJs(lengthTime);
+    expect(length919.endsWith(' · 3s'), `fix 919: the turn's length stays at its reply, got ${JSON.stringify(length919)}`);
+    step('fix 919: a turn\'s length ends at its last work; an away summary, the queue lines and an attachment after it leave the length alone');
+
+    // M9 fix 920: a compaction lands in the length 919 turn as Claude Code
+    // writes it: the boundary, an attachment, the summary marked
+    // isCompactSummary and the idle line. It is a centred note with its
+    // size and the summary a closed fold, never a prompt bubble.
+    const prompts920 = await s.evalJs(`${q(P)}.querySelectorAll('.chat-prompt').length`);
+    fs.appendFileSync(
+      fixture,
+      [
+        line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', level: 'info', compactMetadata: { trigger: 'auto', preTokens: 410523, durationMs: 46695 }, timestamp: at(192), uuid: 'verify-920-b' }),
+        line({ type: 'attachment', attachment: { type: 'date' }, timestamp: at(192) }),
+        userLine('This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\nThe length was checked.', 192, { isCompactSummary: true, isVisibleInTranscriptOnly: true, promptId: 'verify-920' }),
+        line({ type: 'system', subtype: 'informational', content: 'Compacted while idle, before the prompt cache expired', timestamp: at(193) }),
+      ].join('\n') + '\n',
+    );
+    const compact920 = `(${lengthTurn})?.querySelector('.chat-compact')`;
+    await s.waitFor(`!!(${compact920})?.querySelector('.chat-compact-fold')`, 'the compaction drawn with its summary fold', 5000);
+    const read920 = () =>
+      s.evalJs(`(() => {
+        const c = ${compact920};
+        const fold = c.querySelector('.chat-compact-fold');
+        return {
+          compacts: (${lengthTurn}).querySelectorAll('.chat-compact').length,
+          text: c.querySelector('.chat-compact-note-text')?.textContent ?? null,
+          prompts: ${q(P)}.querySelectorAll('.chat-prompt').length,
+          summaryPrompt: [...${q(P)}.querySelectorAll('.chat-prompt')].some((e) => e.textContent.includes('This session is being continued')),
+          open: fold.hasAttribute('data-open'),
+          summary: c.querySelector('.chat-compact-summary')?.textContent ?? null,
+          time: (${lengthTurn}).querySelector('.chat-prompt-time')?.textContent ?? '',
+        };
+      })()`);
+    const closed920 = await read920();
+    expect(
+      closed920.compacts === 1 && closed920.text === 'Conversation compacted automatically · 411k tokens' && closed920.prompts === prompts920 && !closed920.summaryPrompt && !closed920.open && closed920.summary === null,
+      `fix 920: one centred note with its size, no prompt bubble for the summary, the fold closed, got ${JSON.stringify(closed920)} against ${prompts920} prompts before`,
+    );
+    await s.evalJs(`(${compact920}).querySelector('.chat-compact-fold').click()`);
+    await s.waitFor(`!!(${compact920})?.querySelector('.chat-compact-summary')`, 'the compaction summary opened', 3000);
+    const open920 = await read920();
+    expect(open920.open && (open920.summary ?? '').startsWith('This session is being continued'), `fix 920: the fold opens on the summary, got ${JSON.stringify(open920)}`);
+    await s.evalJs(`(${compact920}).querySelector('.chat-compact-fold').click()`);
+    await s.waitFor(`!(${compact920})?.querySelector('.chat-compact-summary')`, 'the compaction summary closed', 3000);
+    expect(open920.time.endsWith(' · 3s'), `fix 920: the compaction leaves the turn's length alone, got ${JSON.stringify(open920.time)}`);
+    step('fix 920: a compaction is a centred note with its size, the summary a closed fold under it, never a prompt bubble, and the turn\'s length untouched');
+
+    // M9 fix 921: a bash run as Claude Code writes it, the input stamped
+    // with the run's start, the output with Windows line ends and escaped
+    // text, then Claude's answer. It opens a turn of its own with no prompt
+    // bubble; the story block ends on it, its reply last.
+    fs.appendFileSync(
+      fixture,
+      [
+        userLine('<bash-input> echo b921</bash-input>', 194, { promptId: 'verify-921', uuid: 'verify-921-in' }),
+        userLine('<bash-stdout>one\r\ntwo\r\nthree\r\nfour\r\nfive a &lt;b&gt;</bash-stdout><bash-stderr>warn921</bash-stderr>', 196, { promptId: 'verify-921', turnOrigin: 'human', uuid: 'verify-921-out' }),
+        asstLine([{ type: 'text', text: 'Ran it.' }], 198),
+      ].join('\n') + '\n',
+    );
+    const bashTurn = `[...${q(P)}.querySelectorAll('.chat-turn')].find((t) => !t.querySelector('.chat-prompt') && !!t.querySelector('.chat-bash'))`;
+    await s.waitFor(`!!(${bashTurn})?.querySelector('.chat-bash-out') && [...(${bashTurn}).querySelectorAll('.chat-reply')].some((r) => r.textContent.trim() === 'Ran it.')`, 'the bash run drawn in a turn of its own with its answer', 5000);
+    const read921 = () =>
+      s.evalJs(`(() => {
+        const t = ${bashTurn};
+        const b = t.querySelector('.chat-bash');
+        const probe = (name) => { const sp = document.createElement('span'); sp.style.color = 'var(' + name + ')'; ${q(P)}.querySelector('.chat-view').appendChild(sp); const c = getComputedStyle(sp).color; sp.remove(); return c; };
+        const mark = b.querySelector('.chat-bash-mark');
+        const err = b.querySelector('.chat-bash-err');
+        return {
+          command: b.querySelector('.chat-bash-command')?.textContent ?? null,
+          mark: mark?.textContent ?? null, markColor: mark ? getComputedStyle(mark).color : null, pink: probe('--bash-mode'),
+          out: b.querySelector('.chat-bash-out')?.textContent ?? null,
+          more: [...b.querySelectorAll('.chat-bash-more')].map((m) => [m.dataset.part, m.textContent]),
+          err: err?.textContent ?? null, errColor: err ? getComputedStyle(err).color : null, red: probe('--error'),
+          reply: [...t.querySelectorAll('.chat-reply')].at(-1)?.textContent.trim() ?? null,
+          length: (${lengthTurn})?.querySelector('.chat-prompt-time')?.textContent ?? '',
+        };
+      })()`);
+    const cut921 = await read921();
+    expect(
+      cut921.command === 'echo b921' && cut921.mark === '!' && cut921.markColor === cut921.pink && cut921.out === 'one\ntwo\nthree' && JSON.stringify(cut921.more) === JSON.stringify([['stdout', '… +2 lines']]),
+      `fix 921: the command after a pink !, three lines of output and +2 lines, got ${JSON.stringify(cut921)}`,
+    );
+    expect(cut921.err === 'warn921' && cut921.errColor === cut921.red && cut921.reply === 'Ran it.' && cut921.length.endsWith(' · 3s'), `fix 921: the stderr in red, Claude's answer under it, the length 919 turn untouched, got ${JSON.stringify(cut921)}`);
+    await s.evalJs(`(${bashTurn}).querySelector('.chat-bash-more').click()`);
+    await s.waitFor(`!(${bashTurn})?.querySelector('.chat-bash-more')`, 'the bash output opened whole', 3000);
+    const whole921 = await read921();
+    expect(whole921.out === 'one\ntwo\nthree\nfour\nfive a <b>' && whole921.more.length === 0, `fix 921: +2 lines opens the five lines in place, got ${JSON.stringify(whole921)}`);
+    step('fix 921: a bash run is one block in a turn of its own, the command after a pink !, three lines of output with the rest behind +N lines, the stderr in red, and Claude\'s answer under it');
   });
 
   await block('reply', async () => {
@@ -1298,8 +1425,8 @@ try {
       };
     })()`);
     expect(after.foldStyle === 'normal' && after.foldColor === after.muted, `fix 891: the done fold is plain muted, got ${JSON.stringify(after)}`);
-    expect(after.second.continued && after.second.radius === '4px' && !after.first.continued, `fix 891: a reply split by a fold takes the near corner, the first does not, got ${JSON.stringify(after)}`);
-    step('fix 891: the prompt is a right bubble at the 80 percent cap in bubble-sent, the reply a left bubble in row-selected, no rail and no dots, the fold italic in working while its call runs and muted once done, and a reply split by a fold takes the near corner');
+    expect(after.second.radius === '12px' && !after.second.continued && !after.first.continued, `fix 918: a reply split by a fold keeps the full radius, got ${JSON.stringify(after)}`);
+    step('fix 891: the prompt is a right bubble at the 80 percent cap in bubble-sent, the reply a left bubble in row-selected, no rail and no dots, the fold italic in working while its call runs and muted once done, and a reply split by a fold keeps the four 12px corners (fix 918)');
   });
 
   await block('thumbs', async () => {
@@ -2905,6 +3032,56 @@ try {
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 880: the card gone and the box back');
   });
 
+  await block('ask-tabs', async () => {
+    // M9 fix 922: a three-question ask on the stub; the card's tabs but the
+    // current one are buttons that send a Left or a Right per tab between
+    // the current tab and theirs. The stub redraws on each key.
+    const lay = await getLayout(s);
+    await bindPane(stubPane, stubId);
+    await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'the stub back in the first pane', 10000);
+    await toChat(stubPane);
+    fs.appendFileSync(fixture, [userLine('ask me about the tabs', 2100), asstLine([useOf('q922', 'AskUserQuestion', { questions: [] })], 2101)].join('\n') + '\n');
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask me about the tabs' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'fix 922: the stub working', 5000);
+    const c = (code) => `[char]0x${code}`;
+    const footer = `('Enter to select ' + ${c('00B7')} + ' Tab/Arrow keys to navigate ' + ${c('00B7')} + ' Esc to cancel')`;
+    const drawRows = (list) => list.map((r) => `Write-Host '${r}'`).join('; ');
+    const tabRowA = `('' + ${c('2190')} + ' ' + ${c('2612')} + ' Colour ' + ${c('2612')} + ' Size ' + ${c('2610')} + ' Shape ' + ${c('2713')} + ' Submit ' + ${c('2192')})`;
+    const rowsShape = ['', 'Which shape should the sample button be?', '', '> 1. Round', '     Soft corners all round', '  2. Square', '     Sharp corners', '  3. Pill', '     Fully rounded ends', '  4. Type something.', '', '  5. Chat about this', ''];
+    const rowsSize = ['', 'Which size should the sample button be?', '', '  1. Small', '     Fits a dense toolbar', '> 2. Medium (Recommended)', '     Matches the other buttons', '  3. Large', '     Easy to hit on a touch screen', '  4. Type something.', '', '  5. Chat about this', ''];
+    const rowsColour = ['', 'Which colour should the sample button be?', '', '> 1. Green', '     Matches the brand', '  2. Grey', '     Stays quiet', '  3. Red', '     Draws the eye', '  4. Type something.', '', '  5. Chat about this', ''];
+    await typeRaw(stubId, `cls; Write-Host ''; Write-Host ${tabRowA}; ${drawRows(rowsShape)}; Write-Host -NoNewline ${footer}; $a = [Console]::ReadKey($true); $b = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRowA}; ${drawRows(rowsColour)}; Write-Host -NoNewline ${footer}; $c = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRowA}; ${drawRows(rowsSize)}; Write-Host -NoNewline ${footer}; $d = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.Key + ' ' + $b.Key + ' ' + $c.Key + ' ' + $d.KeyChar); Read-Host | Out-Null\r`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 922: the question drawn, the cursor on its footer');
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+    const cardSel = paneSel(stubPane) + ' .chat-step[data-kind="ask"]';
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-option[data-key="5"]')}`, 'fix 922: the ask card with its five options', 10000);
+    const tabs922 = () => s.evalJs(`[...${q(cardSel)}.querySelectorAll('.chat-ask-tab')].map((t) => t.tagName + ':' + t.textContent.replace(/^✓/, '') + ':' + (t.dataset.current ?? ''))`);
+    const t1 = await tabs922();
+    expect(JSON.stringify(t1) === JSON.stringify(['BUTTON:Colour:', 'BUTTON:Size:', 'SPAN:Shape:true']), `fix 922: every tab but the current one a button, got ${JSON.stringify(t1)}`);
+    const title1 = await s.evalJs(`${q(cardSel + ' button.chat-ask-tab')}.title`);
+    expect(title1 === 'Sends ← to the session 2 times, back to this question', `fix 922: Colour's title, got ${JSON.stringify(title1)}`);
+    step('fix 922: an ask card draws every tab but the current one as a button');
+    await s.evalJs(`${q(cardSel + ' button.chat-ask-tab[data-state="answered"]')}.click()`);
+    await s.waitFor(`${q(cardSel + ' .chat-ask-question')}?.textContent === 'Which colour should the sample button be?' && !${q(cardSel + ' [data-sent]')}`, 'fix 922: the dialog on Colour, the card taking a press again', 10000);
+    const t2 = await tabs922();
+    expect(JSON.stringify(t2) === JSON.stringify(['SPAN:Colour:true', 'BUTTON:Size:', 'BUTTON:Shape:']), `fix 922: Colour current after the click, got ${JSON.stringify(t2)}`);
+    step('fix 922: a click on an earlier tab sends a Left per tab back, and the card reads that tab as current while the dialog draws its question');
+    await s.evalJs(`(() => { for (const b of document.querySelectorAll(${JSON.stringify(cardSel + ' button.chat-ask-tab')})) if (b.textContent.replace(/^✓/, '') === 'Size') { b.click(); return; } })()`);
+    await s.waitFor(`${q(cardSel + ' .chat-ask-question')}?.textContent === 'Which size should the sample button be?' && !${q(cardSel + ' [data-sent]')}`, 'fix 922: the dialog on Size, the card taking a press again', 10000);
+    const t3 = await tabs922();
+    expect(JSON.stringify(t3) === JSON.stringify(['BUTTON:Colour:', 'SPAN:Size:true', 'BUTTON:Shape:']), `fix 922: Size current after the click, got ${JSON.stringify(t3)}`);
+    step('fix 922: a click on a later tab from a visited one sends a Right, the card following it');
+    await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="2"]')}.click()`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('got LeftArrow LeftArrow RightArrow 2'), 'fix 922: the stub got two Lefts, a Right and the answer');
+    step('fix 922: the stub got two Lefts, a Right and the answer');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 922: the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 922: the card gone and the box back');
+  });
+
   await block('box', async () => {
     // M9 fix 779: a shell playing Claude draws Claude Code's suggested
     // prompt row with Write-Host (the first character inverse, the rest
@@ -3219,6 +3396,23 @@ try {
     step('fix 782 (b): a message with no prompt line reads Not seen yet after 15 s, and the next send clears it');
     fs.appendFileSync(sendFixture, userLine('echo next782', 40) + '\n');
     await s.waitFor(`!(${pendingOf('echo next782')})`, 'the next782 bubble gone with its line', 5000);
+
+    // M9 fix 921: a `!` send draws a pending bubble marked Running, since
+    // Claude Code writes the run's input line only when it ends; it gives
+    // way to the bash block. The stub's PowerShell answers `!echo` with an
+    // error, which nothing reads.
+    await typeInBox('!echo pend921');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`${pendingOf('!echo pend921')}?.dataset.pending === 'sending'`, 'the pend921 bubble marked sending', 2000);
+    const running921 = await markOf('!echo pend921');
+    expect(running921?.words === 'Running', `fix 921: a ! send reads Running, got ${JSON.stringify(running921)}`);
+    fs.appendFileSync(sendFixture, [userLine('<bash-input>echo pend921</bash-input>', 50), userLine('<bash-stdout>pend921</bash-stdout><bash-stderr></bash-stderr>', 52, { turnOrigin: 'human' })].join('\n') + '\n');
+    await s.waitFor(
+      `!(${pendingOf('!echo pend921')}) && [...document.querySelectorAll(${JSON.stringify(SP + ' .chat-bash-command')})].filter((e) => e.textContent === 'echo pend921').length === 1`,
+      'the pend921 bubble gone and its bash block drawn',
+      5000,
+    );
+    step('fix 921: a ! send shows a pending bubble marked Running until its bash block lands');
 
     // Fix 782 (c): the second of two quick sends waits behind the first's
     // Enter pause (fix 781's chain), finds the stub asking, and is refused:
@@ -4056,6 +4250,66 @@ try {
     await s.waitFor(`!!${q(paneSel(remotePane) + ' .pane-face-toggle')}`, 'the face button on the remote stub', 10000);
     await toChat(remotePane);
     const RP = paneSel(remotePane);
+    const chip889 = () => s.evalJs(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return c === null ? null : { word: c.querySelector('.chat-chip-word')?.textContent ?? null, state: c.dataset.state ?? null, title: c.title }; })()`);
+    const shown = async () => (await screen(remoteId)).rows.filter((r) => r.trim() !== '').slice(-6);
+    const waitChip = async (word, state, what) => {
+      try {
+        await s.waitFor(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return !!c && c.querySelector('.chat-chip-word')?.textContent === ${JSON.stringify(word)} && c.dataset.state === ${JSON.stringify(state)}; })()`, what, 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: chip ${JSON.stringify(await chip889())}, screen ${JSON.stringify(await shown())}`);
+      }
+    };
+
+    // (a2) M9 fix 923: before any connect line, the chip's click shows the
+    // terminal, and /remote-control with no pill on the screen brings the
+    // bar. One command in the stub: the pill until a key, then the mode row
+    // alone and a Read-Host for the send.
+    await typeRaw(
+      remoteId,
+      `$r = ('  ' + [char]0x23F8 + ' manual mode on (shift+tab to cycle)' + (' ' * 10)); cls; Write-Host ''; Write-Host ($r + '/rc active'); $null = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host $r; $x = Read-Host; cls; Write-Host ('got ' + $x); Read-Host | Out-Null\r`,
+    );
+    await waitChip('/rc active', 'active', 'fix 923: the chip reads /rc active');
+    expect((await chip889()).title === 'Remote Control; its link is in the terminal', `fix 923: no link read yet, the chip's title says it is in the terminal, got ${JSON.stringify(await chip889())}`);
+    await s.evalJs(`${q(RP + ' .chat-chip[data-chip="rc"]')}.click()`);
+    await s.waitFor(`${q(RP)}.dataset.face === undefined`, 'fix 923 (2): the chip with no link read shows the terminal', 5000);
+    await toChat(remotePane);
+    step("fix 923 (2): with no connect line read, the rc chip's click turns the pane to its terminal, where the link is");
+    await typeRaw(remoteId, ' ');
+    await s.waitFor(`!${q(RP + ' .chat-chip[data-chip="rc"]')}`, 'fix 923: the chip gone with the pill', 5000);
+    const boxA2 = RP + ' .chat-box';
+    await s.evalJs(`${q(boxA2)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(boxA2)}`, 'fix 923: the remote box holds the keyboard', 5000);
+    await s.type('/remote');
+    await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/remote-control'`, 'fix 923 (1): the menu on /remote-control', 5000);
+    await s.key('Enter', 'Enter', 13);
+    {
+      const until = Date.now() + 10000;
+      while (Date.now() < until && !(await screen(remoteId)).rows.some((r) => r.trim() === 'got /remote-control')) await sleep(200);
+      expect((await screen(remoteId)).rows.some((r) => r.trim() === 'got /remote-control'), `fix 923 (1): the stub got /remote-control, got ${JSON.stringify(await shown())}`);
+    }
+    try {
+      await s.waitFor(`!!${q(RP + ' .chat-fallback')}`, 'fix 923 (1): the bar', 3000);
+    } catch {
+      expect(false, 'fix 923 (1): /remote-control sent with no pill on the screen brings the fallback bar');
+    }
+    step("fix 923 (1): /remote-control sent with no pill on the screen brings the bar, for the terminal's one-time Enable Remote Control");
+    // The bar gone before (e) reads its own; then the command ends. A
+    // command's end at the prompt drops this stub's face (fix 360), while
+    // ask-once ends commands on its stub and stays on the chat face.
+    await s.evalJs(`${q(RP + ' .chat-fallback-show')}.click()`);
+    await s.waitFor(`${q(RP)}.dataset.face === undefined`, 'fix 923: the terminal face', 5000);
+    await toChat(remotePane);
+    await typeRaw(remoteId, '\r');
+    await waitRecord(remoteId, (r) => r.command?.state !== 'running', 'fix 923: the stub\'s command ended at the prompt', 10000);
+    await sleep(1000);
+    if (!(await s.evalJs(`!!${q(RP + ' .pane-face-toggle')}`))) {
+      console.log("[verify] fix 923: the command's end unbound the remote stub (fix 360); started again");
+      await startStub(postRemote, remoteId, 'turn on remote control');
+      await s.waitFor(`!!${q(RP + ' .pane-face-toggle')}`, 'fix 923: the face button back on the remote stub', 10000);
+    } else {
+      console.log("[verify] fix 923: the command's end kept the remote stub's face");
+    }
+    await toChat(remotePane);
 
     // (b) Remote control's connect line lands in the transcript ten minutes
     // after the reply: a divider in the turn with its link, the prompt row's
@@ -4105,15 +4359,6 @@ try {
 
     // (d) The rc chip through its states, all inside one command in the
     // stub, since the command's end at the prompt drops the face (fix 360).
-    const chip889 = () => s.evalJs(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return c === null ? null : { word: c.querySelector('.chat-chip-word')?.textContent ?? null, state: c.dataset.state ?? null, title: c.title }; })()`);
-    const shown = async () => (await screen(remoteId)).rows.filter((r) => r.trim() !== '').slice(-6);
-    const waitChip = async (word, state, what) => {
-      try {
-        await s.waitFor(`(() => { const c = ${q(RP + ' .chat-chip[data-chip="rc"]')}; return !!c && c.querySelector('.chat-chip-word')?.textContent === ${JSON.stringify(word)} && c.dataset.state === ${JSON.stringify(state)}; })()`, what, 5000);
-      } catch (err) {
-        throw new Error(`${err.message}: chip ${JSON.stringify(await chip889())}, screen ${JSON.stringify(await shown())}`);
-      }
-    };
     // The pane's terminal is about 80 columns (the harness pane is 678 px),
     // so the mode row is padded short of that and the pill stays on its row.
     await typeRaw(

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RING_PX, adoptFrames, frameRect, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
+import { RING_PX, adoptFrames, frameRect, navigationRefusal, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
 
 // M9 fix 669: which frame a browser pane gets across a layout change, and
 // where a frame sits over its slot.
@@ -113,4 +113,18 @@ test('a navigation keeps the root for a page from the disk and drops it for a we
   const other = 'emerald-file://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/x.html';
   assert.deepEqual(withPageUrl(v, other, seen), v);
   assert.deepEqual(withPageUrl(web, other, seen), web);
+});
+
+test('the error line refuses a page from the disk only when this frame has not shown it (M9 fix 933)', () => {
+  const id = '0b5c3a9e-1f2d-4c3b-8a7e-6d5c4b3a2f10';
+  const local = `emerald-file://${id}/site/page.html`;
+  const web = 'http://127.0.0.1:5000/two';
+  // Today's listener refused both; the second is the flash on Back.
+  assert.equal(navigationRefusal(local, web, new Set()), 'local');
+  assert.equal(navigationRefusal(local, web, new Set([local])), null);
+  // The exact URL, as main holds it.
+  assert.equal(navigationRefusal(`emerald-file://${id}/site/other.html`, web, new Set([local])), 'local');
+  assert.equal(navigationRefusal(`emerald-file://${id}/site/other.html`, local, new Set()), null);
+  assert.equal(navigationRefusal('file:///C:/x', web, new Set()), 'link');
+  assert.equal(navigationRefusal('http://127.0.0.1:5000/', web, new Set()), null);
 });

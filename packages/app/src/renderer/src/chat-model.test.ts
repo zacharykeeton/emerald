@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { effortFold, effortState } from '@emerald/shared';
 import type { Step, StepResult, StepTurn } from '@emerald/shared';
-import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle, continuedBubbles, imageOnlyPrompt } from './chat-model.ts';
+import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_CHOICES, MODE_CHOICES, PENDING_UNSEEN_MS, SENT_COMMANDS, TERMINAL_COMMANDS, agentChipText, askHeading, drawsPending, effortShown, landedCounts, pendingAfter, pendingItem, pendingKey, pendingWords, faceOf, fileHref, filterMention, filterSlash, foldText, freshImage, hintText, imageMarkers, isImageName, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, parseChatModes, parseChatPanes, pastedPath, promptRow, promptRowImages, quotedPath, relativeMention, serializeChatPanes, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, viewChipShown, placeholderFirstLine, slashRowTitle, imageOnlyPrompt, bashCut } from './chat-model.ts';
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
@@ -112,11 +112,10 @@ test('opensMenu: a picker command first in the box, case-sensitive', () => {
   assert.equal(opensMenu('/stats'), true);
   assert.equal(opensMenu('/btw why?'), true);
   assert.equal(opensMenu('/agents'), false);
-  // M9 fix 890: /remote-control (or /rc) while the rc chip reads active opens the Disconnect dialog.
-  assert.equal(opensMenu('/remote-control'), false);
-  assert.equal(opensMenu('/remote-control', true), true);
-  assert.equal(opensMenu('/rc', true), true);
-  assert.equal(opensMenu('/rename', true), false);
+  // M9 fixes 890 and 923: /remote-control (or /rc) opens a dialog of the terminal's in every state.
+  assert.equal(opensMenu('/remote-control'), true);
+  assert.equal(opensMenu('/rc'), true);
+  assert.equal(opensMenu('/remote-control my-phone'), true);
 });
 
 test('hintText: by the state', () => {
@@ -641,6 +640,17 @@ const promptTurn = (prompt: string, steps: Step[] = []): StepTurn => ({ prompt, 
 test('pendingKey strips the image markers and collapses whitespace (M9 fix 782)', () => {
   assert.equal(pendingKey('[Image #2]  fix\n  it '), 'fix it');
   assert.equal(pendingKey('fix it'), 'fix it');
+  // M9 fix 921: a bash-mode send keys as ! and the command trimmed.
+  assert.equal(pendingKey('! ls'), '!ls');
+  assert.equal(pendingKey('!ls'), '!ls');
+});
+
+test('landedCounts counts a bash run as its ! send, and the pending item gives way to it (M9 fix 921)', () => {
+  const run: Step = { kind: 'bash', command: 'ls', out: null, at: null };
+  const counts = landedCounts([promptTurn('', [run])], []);
+  assert.equal(counts.get('!ls'), 1);
+  const item = pendingItem(1, '! ls', 0, [], new Map());
+  assert.deepEqual(pendingAfter([item], counts), []);
 });
 
 test('pendingAfter matches a message by its landed prompt, an image marker and all (M9 fix 782)', () => {
@@ -670,9 +680,11 @@ test('a queued message, and later a queued step, each match (M9 fix 782)', () =>
   assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('go', [{ kind: 'queued', text: 'also this', at: null }])], [])), []);
 });
 
-test('drawsPending is false for a command, bash mode, the memory key and an empty text (M9 fix 782)', () => {
-  for (const text of ['/compact', '!ls', '# note', '   ', '']) assert.equal(drawsPending(text), false, JSON.stringify(text));
+test('drawsPending is false for a command, the memory key and an empty text (M9 fix 782)', () => {
+  for (const text of ['/compact', '# note', '   ', '']) assert.equal(drawsPending(text), false, JSON.stringify(text));
   assert.equal(drawsPending('fix the bug'), true);
+  // M9 fix 921: a bash-mode send draws one.
+  assert.equal(drawsPending('!ls'), true);
 });
 
 test('pendingWords: refused, Not seen yet at 15 s after the later of the send and the quiet, else Sending (M9 fix 782)', () => {
@@ -685,6 +697,10 @@ test('pendingWords: refused, Not seen yet at 15 s after the later of the send an
   assert.equal(pendingWords(item, 5000 + PENDING_UNSEEN_MS, 5000).state, 'unseen');
   // While the session works or asks, never unseen.
   assert.equal(pendingWords(item, 1000 + 10 * PENDING_UNSEEN_MS, null).state, 'sending');
+  // M9 fix 921: a bash run reads Running however long it runs; a refusal still wins.
+  const run = pendingItem(2, '!ls', 1000, [], new Map());
+  assert.deepEqual(pendingWords(run, 1000 + 10 * PENDING_UNSEEN_MS, 0), { state: 'sending', words: 'Running' });
+  assert.deepEqual(pendingWords({ ...run, refusal: 'Resume it first' }, 1000, 0), { state: 'refused', words: 'Resume it first' });
 });
 
 // M9 fix 778: the carry helper's read of Claude Code's input.
@@ -796,6 +812,25 @@ test('timelineItems: a command note between calls splits the fold', () => {
   assert.equal(viewChipShown([turnOf([note])]), false);
 });
 
+test('timelineItems: a bash run between calls splits the fold (M9 fix 921)', () => {
+  const run: Step = { kind: 'bash', command: 'ls', out: null, at: null };
+  assert.deepEqual(shape(timelineItems([tool('Bash', res({ exitCode: 0 })), run, tool('Bash', res({ exitCode: 0 }))], 'normal', false)), ['fold', 'bash', 'fold']);
+});
+
+test('bashCut: three lines, all four when one would be hidden, else three and the rest counted (M9 fix 921)', () => {
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `l${i + 1}`).join('\n');
+  assert.deepEqual(bashCut(''), { shown: [], hidden: 0 });
+  assert.deepEqual(bashCut(lines(3)), { shown: ['l1', 'l2', 'l3'], hidden: 0 });
+  assert.deepEqual(bashCut(lines(4)), { shown: ['l1', 'l2', 'l3', 'l4'], hidden: 0 });
+  assert.deepEqual(bashCut(lines(5)), { shown: ['l1', 'l2', 'l3'], hidden: 2 });
+  assert.deepEqual(bashCut(lines(40)), { shown: ['l1', 'l2', 'l3'], hidden: 37 });
+});
+
+test('timelineItems: a compaction between calls splits the fold (M9 fix 920)', () => {
+  const compact: Step = { kind: 'compact', text: 'Conversation compacted', summary: null, at: null };
+  assert.deepEqual(shape(timelineItems([tool('Bash', res({ exitCode: 0 })), compact, tool('Bash', res({ exitCode: 0 }))], 'normal', false)), ['fold', 'compact', 'fold']);
+});
+
 test('shellWords: a shell call\'s trimmed description, else null', () => {
   const withInput = (name: string, input: Record<string, unknown>) => ({ ...tool(name, null), input }) as ToolStep;
   assert.equal(shellWords(withInput('Bash', { command: 'ls', description: '  List the packages ' })), 'List the packages');
@@ -803,18 +838,6 @@ test('shellWords: a shell call\'s trimmed description, else null', () => {
   assert.equal(shellWords(withInput('Bash', { command: 'ls', description: '  ' })), null);
   assert.equal(shellWords(withInput('Bash', { command: 'ls' })), null);
   assert.equal(shellWords(withInput('Read', { file_path: 'a.ts', description: 'Read a' })), null);
-});
-
-const queuedStep: Step = { kind: 'queued', text: 'also', at: null };
-const continuedOf = (steps: Step[], hasPrompt: boolean) => [...continuedBubbles(timelineItems(steps, 'normal', false), hasPrompt)].sort();
-
-test('continuedBubbles: the near corner after a bubble of the same side, whatever rows lie between (M9 fix 891)', () => {
-  assert.deepEqual(continuedOf(stubSteps(), true), []);
-  // text, fold, text
-  assert.deepEqual(continuedOf([reply('a'), tool('Bash', res({ exitCode: 0 })), reply('b')], true), [2]);
-  assert.deepEqual(continuedOf([reply('a'), queuedStep, reply('b')], true), []);
-  assert.deepEqual(continuedOf([tool('Bash', res({ exitCode: 0 })), queuedStep], true), [1]);
-  assert.deepEqual(continuedOf([reply('a'), reply('b')], false), [1]);
 });
 
 test('imageOnlyPrompt: markers alone with images are bare, typed words or no images are not (M9 fix 891)', () => {

@@ -84,6 +84,8 @@
   --review-hover: rgba(232, 163, 61, 0.08);
   /* M9 fix 891: the sent chat bubble, the accent at 30 percent. */
   --bubble-sent: rgba(232, 163, 61, 0.3);
+  /* M9 fix 921: bash mode's pink in the chat view, Claude Code 2.1.304's dark-theme bashBorder. */
+  --bash-mode: #fd5db1;
   --review-comment: rgba(74, 144, 217, 0.1);
   --outside-line: #4a4a4a;
   --outside-ink: #6e6e6e;
@@ -180,6 +182,7 @@
   --history-glyph: #8a8a8a; /* = --muted, the history row's facts line (M9 fix 595) */
   --review-hover: rgba(62, 207, 142, 0.08);
   --bubble-sent: rgba(62, 207, 142, 0.3); /* the accent at 30 percent (M9 fix 891) */
+  --bash-mode: #fd5db1; /* = Classic, Claude Code's own bash pink (M9 fix 921) */
   --review-comment: rgba(74, 144, 217, 0.1); /* = Classic */
   --outside-line: #434d48;
   --outside-ink: #68736e;
@@ -10725,15 +10728,6 @@ body.dragging-tab .tab {
   pointer-events: none;
 }
 
-.commits-base-figure {
-  font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  fill: var(--muted);
-  dominant-baseline: central;
-  pointer-events: none;
-}
-
 /* M9 fix 338: the file header's Wrap button reads as on the way the
    view switch's active half does. */
 .file-wrap[data-active] {
@@ -11088,7 +11082,9 @@ button.files-root {
 }
 
 /* M9 fix 654: an agent's latest tool call under its box's line, indented
-   past the mark; gone in the dense tier, where the boxes are small. */
+   past the mark; gone in the dense tier, where the boxes are small. Since
+   fix 940 an agent's box draws it empty before its first call, so the box
+   keeps one height. */
 .pane-shade-member-activity {
   min-width: 0;
   padding-left: 18px;
@@ -11181,6 +11177,14 @@ button.files-root {
   /* M9 fix 654: a narrow lid that already folds its team is short of
      height, and the boxes come first there. */
   .pane-shade-face:has(.pane-shade-member-more[data-fold="narrow"]) .pane-shade-activity {
+    display: none;
+  }
+
+  /* M9 fix 940: the empty line an agent's box keeps before its first
+     call is dropped in a folded narrow lid, which has no height to
+     spare: the four shown boxes a line taller each put "and 3 more"
+     under the pane's bottom. A line with a phrase still shows. */
+  .pane-shade-face:has(.pane-shade-member-more[data-fold="narrow"]) .pane-shade-member-activity[data-empty] {
     display: none;
   }
 }
@@ -12323,7 +12327,6 @@ body.dragging-session .browser-frame {
   --chat-column: 760px;
   --chat-dock: 712px;
   --bubble-radius: 12px;
-  --bubble-radius-near: 4px;
   --bubble-cap: 80%;
   --chip-height: 20px;
   position: absolute;
@@ -12484,10 +12487,6 @@ body.dragging-session .browser-frame {
   border-radius: var(--bubble-radius);
   color: var(--fg);
   overflow-wrap: anywhere;
-}
-
-.chat-reply[data-continued] {
-  border-top-left-radius: var(--bubble-radius-near);
 }
 
 /* M9 fix 716: a reply's Markdown in the column's 13px, never the
@@ -13410,10 +13409,6 @@ body.dragging-session .browser-frame {
   overflow-wrap: anywhere;
 }
 
-.chat-queued-step[data-continued] .chat-queued-bubble {
-  border-top-right-radius: var(--bubble-radius-near);
-}
-
 .chat-queued-time {
   flex: none;
   color: var(--muted);
@@ -13520,6 +13515,35 @@ body.dragging-session .browser-frame {
 .chat-ask-tab-mark,
 .answer-popover-tab-mark {
   margin-right: 3px;
+}
+
+/* M9 fix 922: every tab but the current one is a button that moves the dialog to its question. */
+button.chat-ask-tab,
+button.answer-popover-tab {
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+button.chat-ask-tab:hover,
+button.answer-popover-tab:hover {
+  background: var(--row-hover);
+  border-color: var(--blocked);
+  color: var(--fg);
+}
+
+button.chat-ask-tab[data-sent="true"],
+button.answer-popover-tab[data-sent="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.chat-ask-tab[data-sent="true"]:hover,
+button.answer-popover-tab[data-sent="true"]:hover {
+  background: none;
+  border-color: var(--line-strong);
+  color: var(--muted);
 }
 
 .chat-ask-question,
@@ -14335,5 +14359,130 @@ body.dragging-session .browser-frame {
   font-family: 'Cascadia Mono', Consolas, monospace;
   font-size: 11px;
   font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* M9 fix 929: while the Files tree holds the keyboard, its selected row
+   draws a ring, as VS Code's explorer does, so the arrows' place shows.
+   On the row, not the list (fix 574's no-ring rule stays), and only while
+   the list itself has the keyboard, so a name box or the editor shows none. */
+.files-list:focus > .files-row[data-selected] {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+/* M9 fix 920: a compaction, the command note's centred divider with its size, and the summary as a closed fold under it in the thinking text's look. Static: no animation. */
+.chat-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-compact-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.chat-compact-note::before,
+.chat-compact-note::after {
+  content: '';
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.chat-compact-note-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-compact-fold {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-compact-fold:hover {
+  background: none;
+  color: var(--text-dim);
+}
+
+.chat-compact-summary {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* M9 fix 921: a bash-mode run in the CLI's shape, one block across the rail in the tool rows' mono face; the output plain in the text colour as the CLI draws it, the stderr in red. Static: no animation. */
+.chat-bash {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg);
+}
+
+.chat-bash-head {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-bash-mark {
+  color: var(--bash-mode);
+}
+
+.chat-bash-command {
+  color: var(--fg);
+}
+
+.chat-bash-out,
+.chat-bash-err,
+.chat-bash-empty {
+  padding-left: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-bash-out {
+  color: var(--fg);
+}
+
+.chat-bash-err {
+  color: var(--error);
+}
+
+.chat-bash-empty {
+  color: var(--muted);
+}
+
+.chat-bash-more {
+  margin-left: 12px;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.chat-bash-more:hover {
+  background: none;
   color: var(--text-dim);
 }

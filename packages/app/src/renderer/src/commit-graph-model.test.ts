@@ -556,6 +556,35 @@ test("sessionGraph (M9 fix 151): the session's row sits over the head of its bra
   assert.deepEqual(g8.dots.map((d) => `${d.kind}:${d.sessionId}:${d.lane}:${d.row}`), ['head:t:2:3']);
 });
 
+test("sessionGraph (M9 fix 937): the session's own commits on another branch, newer than the head of its branch, draw on a side lane of its block, so nothing of its own sits above its star on its line", () => {
+  // The user's picture of 2026-10-19 in small: a session in the main
+  // checkout (branch main) committed N1 to N5 in a worktree on another
+  // branch with `cd <worktree> && git commit`, so they are its own and
+  // newer than main's head.
+  const nLog = [c('N5', ['next'], null, ['N4']), c('N4', [], null, ['N3']), c('N3', [], null, ['N2']), c('N2', [], null, ['N1']), c('N1', [], null, ['Z'])];
+  const own = ['H', 'N1', 'N2', 'N3', 'N4', 'N5'];
+  const log1 = [...nLog, c('H', ['main'], null, ['Z']), c('Z')];
+  const s1 = claude({ id: 's', createdAt: 5, state: 'working', commits: claim(own), startHead: 'Z' });
+  const g1 = sessionGraph(log1, [s1], 'graph', ROOTS, 'main');
+  assert.deepEqual(picture(g1), ['N5@1', 'N4@1', 'N3@1', 'N2@1', 'N1@1', 'own:s@0', 'H@0', 'Z@2']);
+  assert.deepEqual(wires(g1), ['worktree:1:0-1', 'worktree:1:1-2', 'worktree:1:2-3', 'worktree:1:3-4', 'branch:1:4-7>0', 'session:0:6-7', 'pending:0:5-6~']);
+  assert.deepEqual(g1.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['start:0:7']);
+  // Main moves and the star follows.
+  const log2 = [...nLog, c('M1', ['main'], null, ['H']), c('H', [], null, ['Z']), c('Z')];
+  const g2 = sessionGraph(log2, [s1], 'graph', ROOTS, 'main');
+  assert.deepEqual(picture(g2), ['N5@1', 'N4@1', 'N3@1', 'N2@1', 'N1@1', 'own:s@0', 'M1@2', 'H@0', 'Z@2']);
+  assert.deepEqual(wires(g2), ['worktree:1:0-1', 'worktree:1:1-2', 'worktree:1:2-3', 'worktree:1:3-4', 'branch:1:4-8>0', 'session:0:7-8', 'pending:0:5-6~', 'pending:0:6-7', 'outside:2:6-8']);
+  assert.deepEqual(g2.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['head:0:6', 'start:0:8']);
+  // Guard: a session on b with five newer commits on main by nobody.
+  const log3 = [c('M5', ['main'], null, ['M4']), c('M4', [], null, ['M3']), c('M3', [], null, ['M2']), c('M2', [], null, ['M1']), c('M1', [], null, ['M0']), c('B1', ['b'], null, ['M0']), c('M0', [], null, ['Z']), c('Z')];
+  const g3 = sessionGraph(log3, [claude({ id: 's', branch: 'b', createdAt: 5, startHead: 'M0', commits: claim(['B1']) })], 'graph', ROOTS, 'main');
+  assert.deepEqual(picture(g3), ['M5@1', 'M4@1', 'M3@1', 'M2@1', 'M1@1', 'own:s@0', 'B1@0', 'M0@1', 'Z@1']);
+  // The list keeps one line.
+  const g4 = sessionGraph(log1, [s1], 'list', ROOTS, 'main');
+  assert.deepEqual(picture(g4), ['N5@0', 'N4@0', 'N3@0', 'N2@0', 'N1@0', 'own:s@0', 'H@0', 'Z@1']);
+  assert.deepEqual(wires(g4), ['session:0:0-7', 'pending:0:5-6~']);
+});
+
 test("sessionGraph (M9 fix 144): the trunk is never handed out as a free lane once its chain has left the block, and a merged branch keeps its lane down to its last commit in the block", () => {
   // The emerald log of 2026-09-14 in small: session y made T on top of its
   // merge M of branch b (b2, b1), whose first parent r2 is session r's;

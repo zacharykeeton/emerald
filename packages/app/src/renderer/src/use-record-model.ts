@@ -15,6 +15,7 @@ export const PANE_USE: Readonly<Record<PaneMenuRun, string>> = {
   'split-down': 'pane-split-down',
   zoom: 'pane-zoom',
   'text-reset': 'pane-text-reset',
+  'page-zoom-reset': 'pane-page-zoom-reset',
   'new-shell': 'pane-new-shell',
   'new-claude': 'pane-new-claude',
   rename: 'pane-rename',

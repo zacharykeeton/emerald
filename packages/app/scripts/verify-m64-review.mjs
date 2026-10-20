@@ -271,6 +271,16 @@ try {
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.changed === 'true' && !!${changedRow('keep.txt')} && ${changedRow('keep.txt')}.querySelector('.git-letter').textContent === 'M'`, 'the Changed list with keep.txt changed', 10000);
   const letterCells = await s.evalJs(`[...document.querySelectorAll('.files-changed-row')].map((r) => { const l = r.querySelector('.git-letter'); return r.querySelector('.files-name').textContent + ':' + l.textContent + ':' + (l.dataset.diff ?? '-') + ':' + (l.title || '-'); }).join(',')`);
   expect(letterCells === 'extra.txt::-:-,keep.txt:M:true:Show the diff,notes.txt:M:true:Show the diff', `the letters of changed files are targets with the tooltip, the untracked one is not: ${letterCells}`);
+  // M9 fix 943: a new folder's file is a row of its own in the review with
+  // its count, where the status's one row for the folder had none. After
+  // the rail's exact letter list above, which the folder would join.
+  fs.mkdirSync(path.join(repo, 'fresh'));
+  fs.writeFileSync(path.join(repo, 'fresh', 'one.txt'), 'first\nsecond\n');
+  await s.evalJs(`document.querySelector('.review-refresh').click()`);
+  await s.waitFor(`[...document.querySelectorAll('.review-file')].some(f => f.dataset.letter === 'A' && f.dataset.rel === 'fresh/one.txt')`, "the new folder's file listed as A");
+  const fresh943 = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.review-file')]; return { counts: rows.find((f) => f.dataset.rel === 'fresh/one.txt')?.querySelector('.review-file-counts')?.textContent ?? null, folderRow: rows.some((f) => f.dataset.rel === 'fresh') }; })()`);
+  expect(fresh943.counts === '+2 −0' && !fresh943.folderRow, `the new folder's file has its own row counting its two lines, and the folder no row (${JSON.stringify(fresh943)})`);
+  step("M9 fix 943: a new folder's file is a row of its own in the review, with its count");
   const reviewTabs = () => s.evalJs(`[...document.querySelectorAll('.tab-file')].filter((t) => t.querySelector('.tab-name')?.textContent.startsWith('Review ·')).length`);
   await s.evalJs(`${changedRow('notes.txt')}.querySelector('.git-letter').click()`);
   await s.waitFor(`document.querySelector('.review-tab')?.dataset.selected === 'notes.txt' && document.querySelector('.review-tab')?.dataset.sessionId === ${JSON.stringify(shell.id)} && document.querySelector('.review-diff')?.dataset.rel === 'notes.txt'`, "the session's review tab on the clicked file", 10000);

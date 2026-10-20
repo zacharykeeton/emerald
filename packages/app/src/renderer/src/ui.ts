@@ -34,6 +34,7 @@ import { parsePlan } from './plan-model.ts';
 import { FILE_TEXT_PREFIX } from './pane-text.ts';
 import type { PlanEntry } from './plan-model.ts';
 import type { ChatMode } from './chat-model.ts';
+import { onOtherWindowWrite } from './other-window.ts';
 
 // Renderer-only state that the daemon has no business knowing: which pane has
 // the session picker or the new-session dialog open, and how the sidebar is
@@ -654,7 +655,8 @@ export function toggleTeamUnfold(sessionId: string, listed: ReadonlySet<string>)
 // hand-pulled one waits for a click or a key.
 export function shadePane(paneId: string, auto = false): void {
   if (state.shadedPanes.has(paneId)) return;
-  const shadedPanes = new Set(state.shadedPanes).add(paneId);
+  // M9 fix 926: from what is stored, so another window's shades stay.
+  const shadedPanes = new Set(loadIds(SHADED_KEY)).add(paneId);
   const autoShaded = new Set(state.autoShaded);
   if (auto) autoShaded.add(paneId);
   else autoShaded.delete(paneId);
@@ -664,7 +666,7 @@ export function shadePane(paneId: string, auto = false): void {
 
 export function liftPane(paneId: string): void {
   if (!state.shadedPanes.has(paneId)) return;
-  const shadedPanes = new Set(state.shadedPanes);
+  const shadedPanes = new Set(loadIds(SHADED_KEY));
   shadedPanes.delete(paneId);
   const autoShaded = new Set(state.autoShaded);
   autoShaded.delete(paneId);
@@ -674,7 +676,7 @@ export function liftPane(paneId: string): void {
 
 // Shade all and Lift all on a layout tab: its panes at once.
 export function shadePanes(paneIds: Iterable<string>): void {
-  const shadedPanes = new Set(state.shadedPanes);
+  const shadedPanes = new Set(loadIds(SHADED_KEY));
   const autoShaded = new Set(state.autoShaded);
   for (const id of paneIds) {
     shadedPanes.add(id);
@@ -685,7 +687,7 @@ export function shadePanes(paneIds: Iterable<string>): void {
 }
 
 export function liftPanes(paneIds: Iterable<string>): void {
-  const shadedPanes = new Set(state.shadedPanes);
+  const shadedPanes = new Set(loadIds(SHADED_KEY));
   const autoShaded = new Set(state.autoShaded);
   for (const id of paneIds) {
     shadedPanes.delete(id);
@@ -699,7 +701,7 @@ export function liftPanes(paneIds: Iterable<string>): void {
 // storage for good (pruneFontSizes does the same for the sizes).
 export function pruneShaded(livePaneIds: ReadonlySet<string>): void {
   if ([...state.shadedPanes].every((id) => livePaneIds.has(id))) return;
-  const shadedPanes = new Set([...state.shadedPanes].filter((id) => livePaneIds.has(id)));
+  const shadedPanes = new Set([...loadIds(SHADED_KEY)].filter((id) => livePaneIds.has(id)));
   const autoShaded = new Set([...state.autoShaded].filter((id) => livePaneIds.has(id)));
   setState({ ...state, shadedPanes, autoShaded });
   saveShaded();
@@ -710,11 +712,12 @@ export function pruneShaded(livePaneIds: ReadonlySet<string>): void {
 export function setChatFace(paneId: string, sessionId: string, chat: boolean): void {
   const has = state.chatPanes.get(paneId) === sessionId;
   if (has === chat && (chat || !state.chatPanes.has(paneId))) return;
-  const chatPanes = new Map(state.chatPanes);
+  // M9 fix 926: from what is stored, so another window's faces stay.
+  const chatPanes = new Map(loadChatPanes());
   if (chat) chatPanes.set(paneId, sessionId);
   else chatPanes.delete(paneId);
   // A face turned on opens on Normal, and leaving it leaves the mode.
-  const chatModes = new Map(state.chatModes);
+  const chatModes = new Map(loadChatModes());
   chatModes.delete(paneId);
   setState({ ...state, chatPanes, chatModes });
   saveChatPanes();
@@ -723,18 +726,18 @@ export function setChatFace(paneId: string, sessionId: string, chat: boolean): v
 // M9 fix 714: a chat pane's view mode, kept as long as its face is.
 export function setChatMode(paneId: string, mode: ChatMode): void {
   if (!state.chatPanes.has(paneId) || (state.chatModes.get(paneId) ?? 'normal') === mode) return;
-  const chatModes = new Map(state.chatModes);
+  const chatModes = new Map(loadChatModes());
   if (mode === 'normal') chatModes.delete(paneId);
   else chatModes.set(paneId, mode);
-  setState({ ...state, chatModes });
+  setState({ ...state, chatPanes: loadChatPanes(), chatModes });
   saveChatPanes();
 }
 
 // A closed pane takes its face with it, as pruneShaded does the shade.
 export function pruneChatPanes(livePaneIds: ReadonlySet<string>): void {
   if ([...state.chatPanes.keys()].every((id) => livePaneIds.has(id))) return;
-  const chatPanes = new Map([...state.chatPanes].filter(([id]) => livePaneIds.has(id)));
-  const chatModes = new Map([...state.chatModes].filter(([id]) => livePaneIds.has(id)));
+  const chatPanes = new Map([...loadChatPanes()].filter(([id]) => livePaneIds.has(id)));
+  const chatModes = new Map([...loadChatModes()].filter(([id]) => livePaneIds.has(id)));
   setState({ ...state, chatPanes, chatModes });
   saveChatPanes();
 }
@@ -1586,21 +1589,24 @@ export function cycleAttentionSound(): void {
   setAttentionSound(nextSound(state.attentionSound));
 }
 
+// M9 fix 926: each setting is written over what is stored, so another
+// window's change to the other two stays.
 export function setAttentionSound(attentionSound: AttentionSound): void {
-  setState({ ...state, attentionSound });
+  setState({ ...state, ...loadAttentionSettings(), attentionSound });
   saveAttentionSettings();
 }
 
 export function setAttentionNotify(attentionNotify: boolean): void {
-  setState({ ...state, attentionNotify });
+  setState({ ...state, ...loadAttentionSettings(), attentionNotify });
   saveAttentionSettings();
 }
 
 export function setUsageRecord(usageRecord: boolean): void {
-  const changed = usageRecord !== state.usageRecord;
+  const stored = loadAttentionSettings();
+  const changed = usageRecord !== stored.usageRecord;
   // M9 fix 699: the switch's own line marks when the record was on, so the report can tell a feature nobody used from a record that was off. Sent while the record is on: after the flip turning on, before it turning off.
   if (changed && !usageRecord) window.emerald.useRecord.write({ ev: 'switch', on: false });
-  setState({ ...state, usageRecord });
+  setState({ ...state, ...stored, usageRecord });
   if (changed && usageRecord) window.emerald.useRecord.write({ ev: 'switch', on: true });
   saveAttentionSettings();
 }
@@ -1644,7 +1650,8 @@ export function fontSizeFor(paneId: string): number {
 export function setFontSize(paneId: string, px: number): void {
   const clamped = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(px)));
   if (clamped === fontSizeFor(paneId)) return;
-  const fontSizes = new Map(state.fontSizes);
+  // M9 fix 926: from what is stored, so another window's sizes stay.
+  const fontSizes = new Map(storedFontSizes());
   if (clamped === FONT_SIZE_DEFAULT) fontSizes.delete(paneId);
   else fontSizes.set(paneId, clamped);
   setState({ ...state, fontSizes });
@@ -1671,17 +1678,33 @@ export function inheritFontSize(fromPaneId: string, toPaneId: string): void {
 export function pruneFontSizes(livePaneIds: ReadonlySet<string>): void {
   const kept = (id: string): boolean => livePaneIds.has(id) || id.startsWith(FILE_TEXT_PREFIX);
   if ([...state.fontSizes.keys()].every(kept)) return;
-  const fontSizes = new Map([...state.fontSizes].filter(([id]) => kept(id)));
+  const fontSizes = new Map([...storedFontSizes()].filter(([id]) => kept(id)));
   setState({ ...state, fontSizes });
   saveFontSizes();
 }
 
 function loadFontSizes(): Map<string, number> {
-  const sizes = new Map<string, number>();
   try {
     // Fix 6 kept one size for every pane under this key.
     localStorage.removeItem('emerald.fontSize');
-    const raw = localStorage.getItem(FONT_SIZES_KEY);
+  } catch {
+    // Nothing to remove then.
+  }
+  return storedFontSizes();
+}
+
+// What is stored now (M9 fix 926), the base every write builds on.
+function storedFontSizes(): Map<string, number> {
+  try {
+    return parseFontSizes(localStorage.getItem(FONT_SIZES_KEY));
+  } catch {
+    return new Map();
+  }
+}
+
+function parseFontSizes(raw: string | null): Map<string, number> {
+  const sizes = new Map<string, number>();
+  try {
     if (raw === null) return sizes;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return sizes;
@@ -1730,14 +1753,16 @@ export function clearRevealConversation(seq: number): void {
 export interface RevealFile {
   path: string;
   seq: number;
+  // The reveal ends in the rail's rename of the row (M9 fix 930), for F2 in a file's editor.
+  rename?: true;
 }
 
 // Reveal in Files (M9 fix 652): the rail opens on the Files tab with the
 // file's folders opened and its row selected. The rail is shown if it was
 // collapsed; it takes the request once the row is in its tree, or says it
 // cannot, and clears it, so a second reveal of the same file counts again.
-export function revealInFiles(path: string): void {
-  setState({ ...state, filesCollapsed: false, railTab: 'files', revealFile: { path, seq: (state.revealFile?.seq ?? 0) + 1 } });
+export function revealInFiles(path: string, rename = false): void {
+  setState({ ...state, filesCollapsed: false, railTab: 'files', revealFile: { path, seq: (state.revealFile?.seq ?? 0) + 1, ...(rename ? { rename: true as const } : {}) } });
   saveFiles();
   try {
     localStorage.setItem(RAIL_TAB_KEY, 'files');
@@ -1750,3 +1775,18 @@ export function clearRevealFile(seq: number): void {
   if (state.revealFile?.seq !== seq) return;
   setState({ ...state, revealFile: null });
 }
+
+// Another window of the profile wrote it (M9 fix 926): this window takes
+// it as it lands, so it shows the same and its next write does not put the
+// old value back.
+onOtherWindowWrite(SHADED_KEY, () => {
+  const shadedPanes = loadIds(SHADED_KEY);
+  setState({ ...state, shadedPanes, autoShaded: new Set([...state.autoShaded].filter((id) => shadedPanes.has(id))) });
+});
+onOtherWindowWrite(CHAT_KEY, () => setState({ ...state, chatPanes: loadChatPanes(), chatModes: loadChatModes() }));
+onOtherWindowWrite(FONT_SIZES_KEY, () => setState({ ...state, fontSizes: storedFontSizes() }));
+onOtherWindowWrite(ATTENTION_KEY, () => setState({ ...state, ...loadAttentionSettings() }));
+onOtherWindowWrite(SHADE_AFTER_KEY, () => setState({ ...state, shadeAfter: loadShadeAfter() }));
+onOtherWindowWrite(COPY_ON_SELECT_KEY, () => setState({ ...state, copyOnSelect: loadCopyOnSelect() }));
+onOtherWindowWrite(SPLIT_KIND_KEY, () => setState({ ...state, splitKind: loadSplitKind() }));
+onOtherWindowWrite(WRAP_LINES_KEY, () => setState({ ...state, wrapLines: loadWrapLines() }));

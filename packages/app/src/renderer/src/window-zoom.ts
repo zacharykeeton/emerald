@@ -1,5 +1,6 @@
 import { parseZoomLevel, stepZoomLevel, zoomPercent } from '@emerald/shared';
 import { flashCornerNote } from './ui.ts';
+import { onOtherWindowWrite } from './other-window.ts';
 
 // M9 fix 900: the whole window's zoom, VS Code's Ctrl+= and Ctrl+-, one
 // page zoom set through the preload's webFrame. The level is kept in the
@@ -24,15 +25,13 @@ function writeLevel(level: number): void {
 // Set whatever the key reads, 0 included, so a zoom Chromium kept from
 // before is overruled by the key, and a harness on a fresh profile starts
 // at 100 percent, which every verify script's pixel reads assume. A change
-// made in another window of the profile (fix 867) is applied here too,
-// with no note.
+// made in another window of the profile (fix 867, through other-window.ts
+// since fix 925) is applied here too, with no note.
 export function startWindowZoom(): void {
   window.emerald.zoom.set(readLevel());
-  window.addEventListener('storage', (ev) => {
-    if (ev.key !== ZOOM_KEY) return;
-    window.emerald.zoom.set(parseZoomLevel(ev.newValue));
-  });
 }
+
+onOtherWindowWrite(ZOOM_KEY, (raw) => window.emerald.zoom.set(parseZoomLevel(raw)));
 
 function applyLevel(level: number): void {
   writeLevel(level);

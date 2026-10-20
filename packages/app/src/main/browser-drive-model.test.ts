@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_HOLD_IDLE_MS, BROWSER_OPTIONS_LISTED, EventLog, centre, downloadName, dragPath, eventLine, keySpec, parseRef, parseRegion, fillPlan, fromElectron, holdIdleMs, pageThrew, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode } from './browser-drive-model.ts';
+import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_HOLD_IDLE_MS, BROWSER_OPTIONS_LISTED, EventLog, centre, downloadName, dragPath, eventLine, FILL_HELD_FN, fillHeld, keySpec, parseRef, parseRegion, fillPlan, fromElectron, holdIdleMs, pageThrew, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode } from './browser-drive-model.ts';
 
 // M9 fix 673: the events, the download names and the pause rule.
 
@@ -283,6 +283,39 @@ test('fill\'s plan: a field types, a select picks by value then text, and a chec
   assert.equal(BROWSER_OPTIONS_LISTED, 20);
   const listed = Array.from({ length: 20 }, (_, i) => `o${i}`).join(', ');
   assert.deepEqual(fillPlan(many, 'none', '@e3', sd), { type: 'refuse', text: `no option "none" in @e3 combobox "Car"; its first 20 options are ${listed} and 5 more` });
+});
+
+test('a fill\'s read-back passes the text, a CRLF read as LF and a colour\'s case, and refuses another value or a text past maxlength (M9 fix 934)', () => {
+  assert.equal(fillHeld('abc', { value: 'abc', maxLength: -1 }), null);
+  assert.equal(fillHeld('#FF0000', { value: '#ff0000', maxLength: -1 }), null);
+  assert.equal(fillHeld('a\r\nb', { value: 'a\nb', maxLength: -1 }), null);
+  assert.equal(fillHeld('abc', { value: '', maxLength: -1 }), 'the field holds ""');
+  assert.equal(fillHeld('150', { value: '100', maxLength: -1 }), 'the field holds "100"');
+  assert.equal(fillHeld('red', { value: '#ff0000', maxLength: -1 }), 'the field holds "#ff0000"');
+  assert.equal(fillHeld('É', { value: 'é', maxLength: -1 }), 'the field holds "é"');
+  assert.equal(fillHeld('abcdef', { value: 'abcdef', maxLength: 3 }), 'the field takes at most 3 characters');
+  assert.equal(fillHeld('ab', { value: 'ab', maxLength: 1 }), 'the field takes at most 1 character');
+  assert.equal(fillHeld('abc', { value: 'abc', maxLength: 3 }), null);
+  assert.equal(fillHeld('x', undefined), 'the field holds ""');
+  assert.match(FILL_HELD_FN, /this\.value/);
+});
+
+test('a date, a time, a datetime and a colour input get refs under Chromium\'s own roles (M9 fix 934)', () => {
+  const nodes: AxNode[] = [
+    { nodeId: '1', role: v('RootWebArea'), name: v('Inputs'), childIds: ['2', '3', '4', '5'] },
+    { nodeId: '2', role: v('Date'), name: v('When'), backendDOMNodeId: 20 },
+    { nodeId: '3', role: v('InputTime'), name: v('T1'), backendDOMNodeId: 30 },
+    { nodeId: '4', role: v('DateTime'), name: v('T2'), backendDOMNodeId: 40 },
+    { nodeId: '5', role: v('ColorWell'), name: v('Tint'), value: v('#000000'), backendDOMNodeId: 50 },
+  ];
+  const snap = snapshotOf(nodes, { title: 'Inputs', url: 'http://127.0.0.1:9/' });
+  assert.equal(snap.text, [
+    'page "Inputs" http://127.0.0.1:9/',
+    '@e1 Date "When"',
+    '@e2 InputTime "T1"',
+    '@e3 DateTime "T2"',
+    '@e4 ColorWell "Tint" value="#000000"',
+  ].join('\n'));
 });
 
 test('the page threw: the first line of the exception, else its text, else nothing thrown', () => {

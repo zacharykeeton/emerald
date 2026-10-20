@@ -72,3 +72,9 @@ export function tabDropTarget(tabId: string | null, onAdd: boolean, currentTabId
   if (tabId !== null && tabId !== currentTabId) return { tabId };
   return null;
 }
+
+// The pointer is past the window's own edge (M9 fix 927), where a drag
+// goes to the window under it.
+export function pastEdge(p: Point, width: number, height: number): boolean {
+  return p.x < 0 || p.y < 0 || p.x >= width || p.y >= height;
+}

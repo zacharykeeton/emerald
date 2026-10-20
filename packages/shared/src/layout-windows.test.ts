@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout } from './layout.ts';
-import { addTab, closeTab, currentTab, renameTab, replaceTab, switchTab } from './layout-tabs.ts';
-import { FIRST_WINDOW_ID, closeWindow, fitWindows, frontWindow, mergeWindowView, openWindow, setFrontWindow, windowHolding, windowView, windowsOf } from './layout-windows.ts';
+import { addGroupTab, addTab, addTabHolding, closeTab, currentTab, freeTabName, nextTabName, renameTab, replaceTab, switchTab } from './layout-tabs.ts';
+import { FIRST_WINDOW_ID, claimLooseTabs, closeWindow, fitWindows, frontWindow, mergeWindowView, moveTabToWindow, openWindow, setFrontWindow, windowHolding, windowView, windowsOf } from './layout-windows.ts';
 import { LayoutError, defaultLayout, setPaneSession, validateLayout } from './tree.ts';
 
 function counter(prefix = 'n'): () => string {
@@ -160,6 +160,20 @@ test('openWindow with no tab makes an empty Panes N in a new window in front', (
   assert.deepEqual(opened.windows![0]!.tabIds, ['n2', 'n4', 'n6']);
 });
 
+test('a tab added in one window is named past every window\'s tabs (M9 fix 924)', () => {
+  const { layout } = twoWindows();
+  const view = windowView(layout, 'w2');
+  assert.equal(nextTabName(view), 'Panes 3', 'a caller with no whole counts the layout it has, as before');
+  assert.equal(nextTabName(view, layout), 'Panes 4');
+  assert.equal(addTab(view, counter('x'), layout).tabs.at(-1)!.name, 'Panes 4');
+  assert.equal(freeTabName(view, 'Panes 3', layout), 'Panes 3 2');
+  assert.equal(addGroupTab(view, 'Panes 3', [], counter('y'), layout).tabs.at(-1)!.name, 'Panes 3 2');
+  assert.equal(addTabHolding(view, 'Panes 3', { sessionId: 's1', view: null }, counter('z'), layout).tabs.at(-1)!.name, 'Panes 3 2');
+  const merged = mergeWindowView(layout, addTab(view, counter('x'), layout), 'w2');
+  assert.equal(merged.tabs.length, 4);
+  assert.equal(new Set(merged.tabs.map((t) => t.name)).size, 4);
+});
+
 test('closeWindow drops a window with its tabs, refuses the last, collapses back to no windows key, and is the same object for an unknown id', () => {
   const { layout } = twoWindows();
   const closed = closeWindow(layout, 'w2');
@@ -204,4 +218,35 @@ test('validateLayout keeps a good windows field whole and refuses each bad shape
   for (const [windows, message] of bad) {
     assert.throws(() => validateLayout({ ...JSON.parse(JSON.stringify(one)), windows }), message);
   }
+});
+
+// M9 fix 927: a tab dragged into another window.
+test('moveTabToWindow moves a tab into another window as its current, the source landing on its neighbour or going when it held only that tab', () => {
+  const { layout } = twoWindows();
+  const moved = moveTabToWindow(layout, 'n6', 'w2');
+  assert.deepEqual(moved.windows, [
+    { id: FIRST_WINDOW_ID, tabIds: ['n2'], currentTabId: 'n2' },
+    { id: 'w2', tabIds: ['n4', 'n6'], currentTabId: 'n6' },
+  ]);
+  assert.equal(moved.currentTabId, 'n6');
+  assert.deepEqual(moved.tabs.map((t) => t.id), ['n2', 'n4', 'n6']);
+  const back = moveTabToWindow(layout, 'n4', FIRST_WINDOW_ID);
+  assert.equal('windows' in back, false, 'the second window went with its only tab and the field collapsed');
+  assert.deepEqual(back.tabs.map((t) => t.id), ['n2', 'n6', 'n4']);
+  assert.equal(back.currentTabId, 'n4');
+  assert.throws(() => moveTabToWindow(layout, 'n6', 'nope'), LayoutError);
+  assert.throws(() => moveTabToWindow(layout, 'nope', 'w2'), LayoutError);
+  assert.equal(moveTabToWindow(layout, 'n4', 'w2'), layout, 'already in that window: the same object');
+});
+
+test('claimLooseTabs puts a tab a whole-layout edit made into the window named, and is the same object when nothing is loose', () => {
+  const { layout, ids } = twoWindows();
+  const added = addTab(layout, ids);
+  const made = added.tabs.find((t) => !layout.tabs.some((x) => x.id === t.id))!.id;
+  const claimed = claimLooseTabs(added, 'w2');
+  assert.deepEqual(claimed.windows!.find((w) => w.id === 'w2')!.tabIds, ['n4', made]);
+  assert.deepEqual(claimed.windows!.find((w) => w.id === FIRST_WINDOW_ID)!.tabIds, ['n2', 'n6']);
+  assert.equal(claimLooseTabs(layout, 'w2'), layout);
+  const { layout: one } = threeTabs();
+  assert.equal(claimLooseTabs(one, FIRST_WINDOW_ID), one);
 });

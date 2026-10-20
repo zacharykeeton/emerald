@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, editCounts, effortFold, effortOf, effortState, modRowLine, movesHead, parseSteps, parseTurns, resultText, saidFold, saidState, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, compactNoteText, editCounts, effortFold, effortOf, effortState, modRowLine, movesEnd, movesHead, parseSteps, parseTurns, resultText, saidFold, saidState, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
 import { Limits } from './limits.ts';
 import type { Step, StepTurn } from './transcript.ts';
 
@@ -238,9 +238,8 @@ test("parseSteps: the prompts are parseTurns' prompts", () => {
   const steps = parseFolded(text);
   const turns = parseTurns(text);
   assert.deepEqual(steps.map((t) => [t.prompt, t.at]), turns.map((t) => [t.prompt, t.at]));
-  // M9 fix 798: a command's printed line is a note that leaves the turn's
-  // endAt alone, where parseTurns counts it: /clear's `done` here.
-  assert.deepEqual(steps.map((t) => t.endAt), turns.map((t) => (t.prompt === '/clear' ? null : t.endAt)));
+  // The folds agree since fix 919: a command's printed line moves neither.
+  assert.deepEqual(steps.map((t) => t.endAt), turns.map((t) => t.endAt));
   assert.deepEqual(steps[1]!.steps, [{ kind: 'command', text: 'done', at: Date.parse('2026-09-13T09:20:01.000Z') }]);
 });
 
@@ -638,4 +637,178 @@ test('parseSteps: a non-empty thinking part with no thinkingDisplay stays thinki
   const text = [user('think', '2026-10-16T14:00:00.000Z'), turnLine([{ type: 'thinking', thinking: 'Found the cause.', signature: 's' }], '2026-10-16T14:00:01.000Z', { thinkingDurationMs: 12 })].join('\n');
   const t = parseFolded(text)[0]!;
   assert.deepEqual(t.steps.map((s) => s.kind), ['thinking']);
+});
+
+// M9 fix 919: a turn's length ends at its last work.
+test('movesEnd: Claude\'s line, a tool result, turn_duration and stop_hook_summary move a turn\'s end; nothing else does (M9 fix 919)', () => {
+  const o = (t: string): Record<string, unknown> => JSON.parse(t) as Record<string, unknown>;
+  const yes = [
+    turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:00.000Z'),
+    result('t1', 'ok', '2026-10-16T14:00:00.000Z'),
+    line({ type: 'system', subtype: 'turn_duration', durationMs: 3000, timestamp: '2026-10-16T14:00:00.000Z' }),
+    line({ type: 'system', subtype: 'stop_hook_summary', timestamp: '2026-10-16T14:00:00.000Z' }),
+  ];
+  const no = [
+    user('hello', '2026-10-16T14:00:00.000Z'),
+    line({ type: 'system', subtype: 'away_summary', content: 'Away.', timestamp: '2026-10-16T14:00:00.000Z' }),
+    line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: '2026-10-16T14:00:00.000Z' }),
+    line({ type: 'system', subtype: 'informational', content: 'Compacted while idle, before the prompt cache expired', timestamp: '2026-10-16T14:00:00.000Z' }),
+    sys('<local-command-stdout>done</local-command-stdout>', '2026-10-16T14:00:00.000Z'),
+    line({ type: 'system', subtype: 'bridge_status', content: '/remote-control is active', timestamp: '2026-10-16T14:00:00.000Z' }),
+    line({ type: 'queue-operation', operation: 'enqueue', content: 'next', timestamp: '2026-10-16T14:00:00.000Z' }),
+    line({ type: 'attachment', attachment: { type: 'hook_success' }, timestamp: '2026-10-16T14:00:00.000Z' }),
+  ];
+  for (const t of yes) assert.equal(movesEnd(o(t)), true, t);
+  for (const t of no) assert.equal(movesEnd(o(t)), false, t);
+});
+
+test('parseSteps and parseTurns: the next prompt\'s bookkeeping leaves a turn\'s end at its last work (M9 fix 919)', () => {
+  const text = [
+    user('check the length', '2026-10-16T14:00:00.000Z'),
+    turnLine([{ type: 'text', text: 'Checked.' }], '2026-10-16T14:00:05.000Z'),
+    line({ type: 'system', subtype: 'stop_hook_summary', timestamp: '2026-10-16T14:00:05.000Z' }),
+    line({ type: 'system', subtype: 'turn_duration', durationMs: 5000, timestamp: '2026-10-16T14:00:05.000Z' }),
+    line({ type: 'system', subtype: 'away_summary', content: 'We checked the length.', timestamp: '2026-10-16T14:03:00.000Z' }),
+    line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: '2026-10-16T14:05:00.000Z' }),
+    line({ type: 'system', subtype: 'informational', content: 'Compacted while idle, before the prompt cache expired', timestamp: '2026-10-16T14:05:00.000Z' }),
+    line({ type: 'queue-operation', operation: 'enqueue', content: 'next', timestamp: '2026-10-16T14:20:00.000Z' }),
+    line({ type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-16T14:20:00.000Z' }),
+    line({ type: 'attachment', attachment: { type: 'hook_success' }, timestamp: '2026-10-16T14:20:00.000Z' }),
+    user('next', '2026-10-16T14:20:00.000Z'),
+  ].join('\n');
+  const steps = parseFolded(text);
+  const turns = parseTurns(text);
+  assert.equal(steps[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+  assert.equal(steps[1]!.endAt, null);
+  assert.equal(turns[1]!.endAt, null);
+});
+
+// M9 fix 920: a compaction is a note with its summary folded under it, never a prompt.
+const boundary = (at: string, meta: Record<string, unknown> = { trigger: 'auto', preTokens: 410523 }) =>
+  line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', level: 'info', compactMetadata: meta, timestamp: at });
+const summaryText = 'This session is being continued from a previous conversation that ran out of context.\n\nSummary:\nThe tabs were fixed.';
+const summaryLine = (at: string) => user(summaryText, at, { isCompactSummary: true, isVisibleInTranscriptOnly: true, promptId: 'p920' });
+const attach = (type: string, at: string) => line({ type: 'attachment', attachment: { type }, timestamp: at });
+
+test('parseSteps: a compaction is a note in the turn, its summary folded under it, and no second turn (M9 fix 920)', () => {
+  const text = [
+    user('hello', '2026-10-16T14:00:00.000Z'),
+    turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'),
+    boundary('2026-10-16T14:10:00.000Z'),
+    attach('instructions', '2026-10-16T14:10:00.000Z'),
+    attach('date', '2026-10-16T14:10:00.000Z'),
+    summaryLine('2026-10-16T14:10:00.000Z'),
+    line({ type: 'system', subtype: 'informational', content: 'Compacted while idle, before the prompt cache expired', timestamp: '2026-10-16T14:10:01.000Z' }),
+  ].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['text', 'compact']);
+  assert.deepEqual(turns[0]!.steps[1], { kind: 'compact', text: 'Conversation compacted automatically · 411k tokens', summary: summaryText, at: Date.parse('2026-10-16T14:10:00.000Z') });
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+  assert.equal(parseTurns(text).length, 1);
+});
+
+test('parseSteps: a compaction mid-turn sits between the call and its result (M9 fix 920)', () => {
+  const text = [
+    user('go', '2026-10-16T14:00:00.000Z'),
+    turnLine([toolUse('c1', 'Bash', { command: 'ls' })], '2026-10-16T14:00:01.000Z'),
+    boundary('2026-10-16T14:00:02.000Z'),
+    summaryLine('2026-10-16T14:00:02.000Z'),
+    result('c1', 'ok', '2026-10-16T14:00:03.000Z'),
+    turnLine([{ type: 'text', text: 'Done.' }], '2026-10-16T14:00:04.000Z'),
+  ].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['tool', 'compact', 'text']);
+  assert.notEqual(toolOf(turns[0]!, 0).result, null, 'the call\'s result filled');
+});
+
+test('parseSteps: a compaction before any prompt opens a bare turn its summary fills (M9 fix 920)', () => {
+  const turns = parseFolded([boundary('2026-10-16T14:00:00.000Z', { trigger: 'manual', preTokens: 50988 }), summaryLine('2026-10-16T14:00:01.000Z')].join('\n'));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '');
+  assert.deepEqual(turns[0]!.steps, [{ kind: 'compact', text: 'Conversation compacted · 51k tokens', summary: summaryText, at: Date.parse('2026-10-16T14:00:00.000Z') }]);
+});
+
+test('parseSteps: a summary with no compaction open adds nothing (M9 fix 920)', () => {
+  const text = [user('hello', '2026-10-16T14:00:00.000Z'), turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'), summaryLine('2026-10-16T14:00:06.000Z')].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['text']);
+});
+
+test('compactNoteText: the trigger and the size to the nearest thousand (M9 fix 920)', () => {
+  assert.equal(compactNoteText({ trigger: 'manual', preTokens: 50988 }), 'Conversation compacted · 51k tokens');
+  assert.equal(compactNoteText({ trigger: 'auto', preTokens: 812 }), 'Conversation compacted automatically · 812 tokens');
+  assert.equal(compactNoteText({ trigger: 'auto' }), 'Conversation compacted automatically');
+  assert.equal(compactNoteText({ trigger: 'other', preTokens: 2000 }), 'Conversation compacted · 2k tokens');
+  assert.equal(compactNoteText(null), 'Conversation compacted');
+});
+
+// M9 fix 921: a bash-mode run is a bare turn of its own, its output filled in.
+const bashIn = (command: string, at: string, extra: Record<string, unknown> = {}) => user(`<bash-input>${command}</bash-input>`, at, extra);
+const bashOut = (stdout: string, stderr: string, at: string) => user(`<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`, at, { turnOrigin: 'human' });
+const bashText = () =>
+  [
+    user('hi', '2026-10-16T14:00:00.000Z'),
+    turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'),
+    bashIn(' echo hi', '2026-10-16T14:01:00.000Z'),
+    bashOut('one\r\ntwo\r\nthree\r\nfour\r\nfive &lt;b&gt;\r\n', 'warn', '2026-10-16T14:01:02.000Z'),
+    turnLine([{ type: 'text', text: 'It printed five lines.' }], '2026-10-16T14:01:04.000Z'),
+  ].join('\n');
+
+test('parseSteps: a bash run opens a bare turn holding its block, and Claude\'s answer is that turn\'s (M9 fix 921)', () => {
+  const turns = parseFolded(bashText());
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:05.000Z'));
+  assert.equal(turns[1]!.prompt, '');
+  assert.deepEqual(turns[1]!.steps.map((s) => s.kind), ['bash', 'text']);
+  assert.deepEqual(turns[1]!.steps[0], { kind: 'bash', command: 'echo hi', out: { stdout: 'one\ntwo\nthree\nfour\nfive <b>', stderr: 'warn' }, at: Date.parse('2026-10-16T14:01:00.000Z') });
+  assert.equal(turns[1]!.endAt, Date.parse('2026-10-16T14:01:04.000Z'));
+});
+
+test('parseSteps: a bash run before any prompt opens a bare turn; with no output yet its out is null (M9 fix 921)', () => {
+  const turns = parseFolded(bashIn('ls', '2026-10-16T14:00:00.000Z'));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '');
+  assert.deepEqual(turns[0]!.steps, [{ kind: 'bash', command: 'ls', out: null, at: Date.parse('2026-10-16T14:00:00.000Z') }]);
+});
+
+test('parseSteps: an output with no bash run open adds nothing (M9 fix 921)', () => {
+  const turns = parseFolded([user('hi', '2026-10-16T14:00:00.000Z'), bashOut('stray', '', '2026-10-16T14:00:01.000Z')].join('\n'));
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps, []);
+});
+
+test('parseSteps: a persisted output keeps its text as written, and colour codes are stripped (M9 fix 921)', () => {
+  const persisted = parseFolded([bashIn('big', '2026-10-16T14:00:00.000Z'), bashOut('<persisted-output>Output too large. Saved to C:/t/out.txt &lt;kept&gt;</persisted-output>', '', '2026-10-16T14:00:01.000Z')].join('\n'));
+  assert.deepEqual(persisted[0]!.steps[0], { kind: 'bash', command: 'big', out: { stdout: 'Output too large. Saved to C:/t/out.txt &lt;kept&gt;', stderr: '' }, at: Date.parse('2026-10-16T14:00:00.000Z') });
+  const coloured = parseFolded([bashIn('ls', '2026-10-16T14:00:00.000Z'), bashOut('\u001b[32mgreen\u001b[0m &amp; plain', '', '2026-10-16T14:00:01.000Z')].join('\n'));
+  const step = coloured[0]!.steps[0]!;
+  assert.equal(step.kind === 'bash' ? step.out?.stdout : null, 'green & plain');
+});
+
+test('parseSteps: the input and output as text parts (a mod row\'s shape) fold the same (M9 fix 921)', () => {
+  const text = [
+    user([{ type: 'text', text: '<bash-input>echo hi</bash-input>' }], '2026-10-16T14:00:00.000Z'),
+    user([{ type: 'text', text: '<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr>' }], '2026-10-16T14:00:01.000Z'),
+  ].join('\n');
+  assert.deepEqual(parseFolded(text)[0]!.steps, [{ kind: 'bash', command: 'echo hi', out: { stdout: 'hi', stderr: '' }, at: Date.parse('2026-10-16T14:00:00.000Z') }]);
+});
+
+test('parseTurns and queuedOf: a bash run is still no turn and no queued message (M9 fix 921)', () => {
+  assert.equal(parseTurns(bashText()).length, 1);
+  assert.deepEqual(queuedOf(bashText()), []);
+});
+
+test('stepFork: a bash output folded onto a fork fills the fork\'s run and leaves the file state\'s waiting (M9 fix 921)', () => {
+  const state = stepState();
+  stepFold(state, bashIn('echo hi', '2026-10-16T14:00:00.000Z', { uuid: 'b-in' }));
+  const fork = stepFork(state);
+  stepFoldEntry(fork, modRowLine({ type: 'user', role: 'user', content: [{ type: 'text', text: '<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr>' }] }, 'm-out', Date.parse('2026-10-16T14:00:01.000Z')));
+  const drawn = stepList(fork)[0]!.steps[0]!;
+  assert.deepEqual(drawn.kind === 'bash' ? drawn.out : undefined, { stdout: 'hi', stderr: '' });
+  const filed = stepList(state)[0]!.steps[0]!;
+  assert.equal(filed.kind === 'bash' ? filed.out : undefined, null);
 });

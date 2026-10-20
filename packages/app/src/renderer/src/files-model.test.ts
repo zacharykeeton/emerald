@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, walk, watchOrder, withPending } from './files-model.ts';
-import type { Row } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, walk, watchOrder, withPending } from './files-model.ts';
+import type { FilesModel, Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
 // The text of a row that is not an entry. Only a note carries one; a
@@ -172,6 +172,54 @@ test('walk: an error stands in for the children, a cap adds a count', () => {
     rows.map((r) => (r.type === 'entry' ? r.name : `${r.depth}:${rowText(r)}`)),
     ['locked', '1:Access denied', '0:3 more not shown'],
   );
+});
+
+test('moveSelection: Up, Down, Home and End over the entry rows, Right opens and steps in, Left folds or goes to the parent, other keys pass (M9 fix 929)', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['.claude', 'data', 'readme.md'], ['.claude', 'data']));
+  m = applyListing(m, 'C:\\repo\\data', list(['deep', 'a.json'], ['deep']));
+  m = applyListing(m, 'C:\\repo\\data\\deep', list(['b.json']));
+  m = toggleFolder(m, 'C:/repo/data');
+  const move = (from: FilesModel, key: string) => moveSelection(from, walk(from).rows, key);
+  const at = (p: string) => select(m, p);
+  const sel = (r: FilesModel | null) => r?.selected ?? null;
+  // No selection: End takes the last row, every other key the first.
+  assert.equal(sel(move(m, 'ArrowDown')), 'C:\\repo\\.claude');
+  assert.equal(sel(move(m, 'ArrowUp')), 'C:\\repo\\.claude');
+  assert.equal(sel(move(m, 'End')), 'C:\\repo\\readme.md');
+  // Up and Down step through the open folder's children in screen order.
+  assert.equal(sel(move(at('C:\\repo\\data'), 'ArrowDown')), 'C:\\repo\\data\\deep');
+  assert.equal(sel(move(at('C:\\repo\\data'), 'ArrowUp')), 'C:\\repo\\.claude');
+  // Nowhere to go: the same object back.
+  const top = at('C:\\repo\\.claude');
+  assert.equal(move(top, 'ArrowUp'), top);
+  const bottom = at('C:\\repo\\readme.md');
+  assert.equal(move(bottom, 'ArrowDown'), bottom);
+  assert.equal(move(bottom, 'End'), bottom);
+  assert.equal(sel(move(at('C:\\repo\\data\\a.json'), 'Home')), 'C:\\repo\\.claude');
+  // Right opens a closed folder in place, then steps to its first child.
+  const opened = move(at('C:\\repo\\data\\deep'), 'ArrowRight')!;
+  assert.equal(opened.selected, 'C:\\repo\\data\\deep');
+  assert.ok(opened.expanded.has('C:\\repo\\data\\deep'));
+  assert.equal(sel(move(opened, 'ArrowRight')), 'C:\\repo\\data\\deep\\b.json');
+  assert.equal(sel(move(at('C:\\repo\\data'), 'ArrowRight')), 'C:\\repo\\data\\deep');
+  const file = at('C:\\repo\\data\\a.json');
+  assert.equal(move(file, 'ArrowRight'), file);
+  // Left folds an open folder in place, else goes to the parent.
+  const folded = move(at('C:\\repo\\data'), 'ArrowLeft')!;
+  assert.equal(folded.selected, 'C:\\repo\\data');
+  assert.ok(!folded.expanded.has('C:\\repo\\data'));
+  assert.equal(sel(move(at('C:\\repo\\data\\a.json'), 'ArrowLeft')), 'C:\\repo\\data');
+  assert.equal(sel(move(at('C:\\repo\\data\\deep'), 'ArrowLeft')), 'C:\\repo\\data');
+  assert.equal(move(top, 'ArrowLeft'), top);
+  // A selection off screen counts as none.
+  assert.equal(sel(move(at('C:\\repo\\data\\deep\\b.json'), 'ArrowDown')), 'C:\\repo\\.claude');
+  // A note in place of a folder's children is stepped over.
+  const denied = applyListing(at('C:\\repo\\data'), 'C:\\repo\\data', { error: 'Access denied' });
+  assert.equal(sel(move(denied, 'ArrowDown')), 'C:\\repo\\readme.md');
+  assert.equal(move(denied, 'ArrowRight'), denied);
+  // Keys the walk does not take pass.
+  for (const key of ['Enter', 'F2', 'a', ' ', 'Delete']) assert.equal(move(m, key), null);
 });
 
 test('setRoot keeps the listings and the expanded set, drops the selection', () => {

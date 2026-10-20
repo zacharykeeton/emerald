@@ -118,7 +118,9 @@ export const PROTOCOL_VERSION = 1;
 //  74: M9 fix 896, a browser view's emerald-file: url and its root, a page from the disk served by the app from the folder the Files rail shows
 //  74: M9 fix 915, drag from a point x,y on browser.run, relayed to app windows at level 74 alone
 //  74: M9 fix 904, seq on a team member and teamSeq on SessionInfo, each subagent's handle number in spawn order (A3), kept when the members before it are dropped
-export const DAEMON_FEATURE_LEVEL = 74;
+//  75: M9 fix 935, click and hover from a point x,y on browser.run, relayed to app windows at level 75 alone
+//  75: M9 fix 936, browser on file.open and file.open.requested, an absolute .html or .htm path the window renders in a browser pane on emerald-file:, its root the Files rail's folder when the file is under it, else the file's own
+export const DAEMON_FEATURE_LEVEL = 75;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -323,7 +325,11 @@ export interface Requests {
   // the fix, and the CLI then says what it said before.
   // M9 fix 659: url says path holds a URL the browser pane takes, as
   // browserUrl writes it, opened in a pane and never with a scheme.
-  'file.open':      { req: { path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean }; res: { apps: number; known?: boolean; besideFound?: boolean; besidePane?: string; besideTab?: string; answered?: boolean } };
+  // M9 fix 936: browser says path is an absolute .html or .htm file the
+  // window renders in a browser pane on emerald-file:, its root the Files
+  // rail's folder when the file is under it, else the file's own folder;
+  // never with url or a scheme.
+  'file.open':      { req: { path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }; res: { apps: number; known?: boolean; besideFound?: boolean; besidePane?: string; besideTab?: string; answered?: boolean } };
   // The window's answer to a file.open.requested push that carried an
   // openId (M9 fix 375): whether the scheme named is on its list,
   // whether the session named by beside was on a pane (fix 376), and
@@ -419,7 +425,8 @@ export type ServerMessage =
   // with a scheme or a beside (M9 fix 375), or to windows at level 58
   // (M9 fix 582), the openId the window answers with.
   // M9 fix 659: url says path holds a URL the browser pane takes.
-  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean }
+  // M9 fix 936: browser says path is an .html file for a browser pane.
+  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.

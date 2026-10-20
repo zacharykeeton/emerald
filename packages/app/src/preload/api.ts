@@ -1,4 +1,4 @@
-import type { ClientMessage, DesignPick, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage, UseLineIn } from '@emerald/shared';
+import type { ClientMessage, DesignPick, PaneView, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage, UseLineIn } from '@emerald/shared';
 import type { GitFile, GitStatusResult } from '../renderer/src/git-status-model.ts';
 import type { TerminalScheme } from '../renderer/src/scheme-model.ts';
 import type { UpdateState } from '../renderer/src/update-model.ts';
@@ -313,6 +313,8 @@ export interface OpenExtra {
   beside?: string;
   // M9 fix 659: the path is a URL for a browser pane.
   url?: boolean;
+  // M9 fix 936: the path is an .html file for a browser pane.
+  browser?: boolean;
   // M9 fix 853: the path is a folder to open a new tab on, with a Claude or a shell.
   kind?: 'claude' | 'shell';
 }
@@ -767,6 +769,41 @@ export interface BrowserApi {
   tookFocus(token: number, ok: boolean): void;
 }
 
+// What a pane drag carries (M52; here since M9 fix 927, so main reads it
+// without importing renderer code): a session, from a row or a pane's
+// title, or a view, from the rail's Commits tab or a view pane's title.
+// A file view from a contents hit carries the hit's line and column (M9
+// fix 437), which the pane it lands on reveals.
+export type DragPayload = { kind: 'session'; sessionId: string } | { kind: 'view'; view: PaneView; line?: number; column?: number };
+
+// A drag carried across windows (M9 fix 927): a pane's (a title, a row or
+// a view; fromPaneId is the pane a title drag picked up) or a layout tab's.
+export type WindowDrag = { kind: 'pane'; payload: DragPayload; fromPaneId: string | null } | { kind: 'tab'; tabId: string };
+
+// How a release past the window's edge ended: on another window, which
+// makes the drop, or outside every window at a screen point.
+export type WindowDragEnd = { to: 'window' } | { to: 'none'; x: number; y: number };
+
+// What main tells the window under a drag from another one, at client
+// points of that window's page: the pointer is over it, it has gone, or
+// it was released there.
+export type WindowDragTarget = { type: 'over'; drag: WindowDrag; x: number; y: number } | { type: 'leave' } | { type: 'drop'; drag: WindowDrag; x: number; y: number };
+
+export interface WindowDragApi {
+  // The pointer past this window's edge, at a client point of this page.
+  move(drag: WindowDrag, x: number, y: number): void;
+  // The pointer came back in, or the drag was cancelled.
+  back(): void;
+  // The release past the edge, at a client point of this page; the
+  // answer's x and y, when it landed on no window, are a screen point.
+  end(x: number, y: number): Promise<WindowDragEnd>;
+  // This window as the target of another window's drag.
+  onTarget(handler: (msg: WindowDragTarget) => void): () => void;
+  // A layout tab to a window of its own whose title row is at this
+  // screen point (M9 fix 928).
+  open(tabId: string, x: number, y: number): Promise<void>;
+}
+
 // The window's page zoom (M9 fix 900), through webFrame in this preload, so main is not involved.
 export interface ZoomApi {
   set(level: number): void;
@@ -788,6 +825,7 @@ export interface EmeraldApi {
   design: DesignApi;
   whatsNew: WhatsNewApi;
   update: UpdateApi;
+  windowDrag: WindowDragApi;
   // Facts only the main process knows. The sandboxed preload has no os
   // module and no file access.
   // usageFloorMs: the least time between two usage requests (M9 fix

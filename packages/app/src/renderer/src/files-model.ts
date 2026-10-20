@@ -160,6 +160,52 @@ export function select(m: FilesModel, p: string | null): FilesModel {
   return next === m.selected ? m : { ...m, selected: next };
 }
 
+// The keys the Files tree walks by once it has the keyboard (M9 fix 929),
+// as VS Code's explorer does: Up and Down to the row above or below, Home
+// and End to the first and the last, Right opens a folder and on an open
+// one steps to its first child, Left folds an open folder and otherwise
+// goes to the row's parent. Only entry rows count; a note and a name box
+// are stepped over. With no selected row on screen, End selects the last
+// row and every other key the first. The model comes back unchanged, the
+// same object, where a key has nowhere to go, and null for a key that is
+// not one of these, so the rail lets that key pass.
+const TREE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']);
+
+export function moveSelection(m: FilesModel, rows: readonly Row[], key: string): FilesModel | null {
+  if (!TREE_KEYS.has(key)) return null;
+  const entries = rows.filter((r): r is Extract<Row, { type: 'entry' }> => r.type === 'entry');
+  if (entries.length === 0) return m;
+  const first = entries[0]!;
+  const last = entries[entries.length - 1]!;
+  const i = m.selected === null ? -1 : entries.findIndex((r) => r.path === m.selected);
+  if (i < 0) return select(m, (key === 'End' ? last : first).path);
+  const row = entries[i]!;
+  switch (key) {
+    case 'ArrowUp':
+      return i === 0 ? m : select(m, entries[i - 1]!.path);
+    case 'ArrowDown':
+      return i === entries.length - 1 ? m : select(m, entries[i + 1]!.path);
+    case 'Home':
+      return select(m, first.path);
+    case 'End':
+      return select(m, last.path);
+    case 'ArrowRight': {
+      if (row.kind !== 'dir') return m;
+      if (!row.expanded) return expandFolder(m, row.path);
+      const child = entries[i + 1];
+      return child !== undefined && child.depth === row.depth + 1 ? select(m, child.path) : m;
+    }
+    default: {
+      // ArrowLeft
+      if (row.kind === 'dir' && row.expanded) return toggleFolder(m, row.path);
+      for (let j = i - 1; j >= 0; j--) {
+        if (entries[j]!.depth < row.depth) return select(m, entries[j]!.path);
+      }
+      return m;
+    }
+  }
+}
+
 // The entry a listing of dir must keep past the cap (M9 fix 524): the
 // newest folder on the lift chain whose parent is dir, else none. Each
 // folder on a chain has one kept child, so one name per listing is enough.

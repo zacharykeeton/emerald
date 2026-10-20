@@ -27,6 +27,8 @@ export interface OpenRequest {
   beside?: string;
   // M9 fix 659: path holds a URL for a browser pane.
   url?: boolean;
+  // M9 fix 936: path is an .html or .htm file to render in a browser pane.
+  browser?: boolean;
   // M9 fix 700: a launch with a file (a double-click in Explorer, or a second launch handing its file over), never set by the daemon's push.
   launch?: true;
   // M9 fix 853: path is a folder from Explorer's Open in Emerald items, to open in a new tab with a Claude or a shell started there; a launch only, never set by the daemon's push.
@@ -34,12 +36,12 @@ export interface OpenRequest {
 }
 
 // What rides the open to the renderer beside the path and the pane flag.
-export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; launch?: boolean | undefined; kind?: 'claude' | 'shell' | undefined } {
-  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, launch: req.launch, kind: req.kind };
+export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; browser?: boolean | undefined; launch?: boolean | undefined; kind?: 'claude' | 'shell' | undefined } {
+  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, browser: req.browser, launch: req.launch, kind: req.kind };
 }
 
 export interface OpenRelayClient {
-  on(event: 'message', listener: (msg: { type: string; path?: string; pane?: boolean; scheme?: string | null; openId?: number; beside?: string; url?: boolean }) => void): unknown;
+  on(event: 'message', listener: (msg: { type: string; path?: string; pane?: boolean; scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean }) => void): unknown;
 }
 
 export interface OpenRelaySink {
@@ -69,7 +71,7 @@ export function wireFileOpenRelay(client: OpenRelayClient, sink: OpenRelaySink, 
       log(`open: ${req.path} held until the window is listening`);
       return;
     }
-    log(`open: ${req.path}${req.kind === undefined ? '' : `, a ${req.kind === 'claude' ? 'Claude' : 'shell'} in a new tab`}${req.pane ? ' in a pane' : ''}${req.beside === undefined ? '' : ` beside ${req.beside}`}${req.scheme === undefined ? '' : req.scheme === null ? ', its scheme cleared' : ` in ${req.scheme}`}`);
+    log(`open: ${req.path}${req.kind === undefined ? '' : `, a ${req.kind === 'claude' ? 'Claude' : 'shell'} in a new tab`}${req.pane ? ' in a pane' : ''}${req.browser === true ? ' as a page' : ''}${req.beside === undefined ? '' : ` beside ${req.beside}`}${req.scheme === undefined ? '' : req.scheme === null ? ', its scheme cleared' : ` in ${req.scheme}`}`);
     sink.lift();
   };
   client.on('message', (msg) => {
@@ -81,6 +83,7 @@ export function wireFileOpenRelay(client: OpenRelayClient, sink: OpenRelaySink, 
       ...(typeof msg.openId === 'number' ? { openId: msg.openId } : {}),
       ...(typeof msg.beside === 'string' ? { beside: msg.beside } : {}),
       ...(msg.url === true ? { url: true } : {}),
+      ...(msg.browser === true ? { browser: true } : {}),
     });
   });
   return {

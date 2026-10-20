@@ -77,24 +77,26 @@ export function replaceTab(layout: Layout, tab: LayoutTab): Layout {
 
 // Panes 2, Panes 3 and so on: the first number past the count that no
 // tab already has, so a rename to Panes 2 does not give two of them.
-export function nextTabName(layout: Layout): string {
-  const taken = new Set(layout.tabs.map((t) => t.name));
-  for (let n = layout.tabs.length + 1; ; n++) {
+// With the whole layout as well (M9 fix 924), every window's tabs count,
+// so two windows never hold a tab of the same name.
+export function nextTabName(layout: Layout, whole: Layout = layout): string {
+  const taken = new Set([...layout.tabs, ...whole.tabs].map((t) => t.name));
+  for (let n = Math.max(layout.tabs.length, whole.tabs.length) + 1; ; n++) {
     const name = `${FIRST_TAB_NAME} ${n}`;
     if (!taken.has(name)) return name;
   }
 }
 
 // An empty tab at the end of the strip, shown at once, as tmux's c does.
-export function addTab(layout: Layout, newId: IdGenerator = randomId): Layout {
-  const tab = newTab(nextTabName(layout), newId);
+export function addTab(layout: Layout, newId: IdGenerator = randomId, whole: Layout = layout): Layout {
+  const tab = newTab(nextTabName(layout, whole), newId);
   return { ...layout, tabs: [...layout.tabs, tab], currentTabId: tab.id };
 }
 
 // The name itself when no tab has it, else the first of name 2, name 3
 // and so on that none has: nextTabName's rule for any base.
-export function freeTabName(layout: Layout, name: string): string {
-  const taken = new Set(layout.tabs.map((t) => t.name));
+export function freeTabName(layout: Layout, name: string, whole: Layout = layout): string {
+  const taken = new Set([...layout.tabs, ...whole.tabs].map((t) => t.name));
   if (!taken.has(name)) return name;
   for (let n = 2; ; n++) {
     const numbered = `${name} ${n}`;
@@ -105,10 +107,10 @@ export function freeTabName(layout: Layout, name: string): string {
 // A tab named after a group holding one pane per session in a grid
 // (M50), at the end of the strip and shown at once. The sessions'
 // panes elsewhere are untouched: a session can be in several panes.
-export function addGroupTab(layout: Layout, name: string, sessionIds: readonly string[], newId: IdGenerator = randomId): Layout {
+export function addGroupTab(layout: Layout, name: string, sessionIds: readonly string[], newId: IdGenerator = randomId, whole: Layout = layout): Layout {
   const trimmed = name.trim();
   if (trimmed === '') throw new LayoutError('a tab name cannot be empty');
-  const tab: LayoutTab = { id: newId(), name: freeTabName(layout, trimmed), ...gridTree(sessionIds, newId) };
+  const tab: LayoutTab = { id: newId(), name: freeTabName(layout, trimmed, whole), ...gridTree(sessionIds, newId) };
   return { ...layout, tabs: [...layout.tabs, tab], currentTabId: tab.id };
 }
 
@@ -116,10 +118,10 @@ export function addGroupTab(layout: Layout, name: string, sessionIds: readonly s
 // fix 651, a pane or a row dropped on the +). Unlike addTab and
 // addGroupTab it is not shown: the window stays on the tab the drag
 // started from.
-export function addTabHolding(layout: Layout, name: string, content: PaneContent, newId: IdGenerator = randomId): Layout {
+export function addTabHolding(layout: Layout, name: string, content: PaneContent, newId: IdGenerator = randomId, whole: Layout = layout): Layout {
   const trimmed = name.trim();
   if (trimmed === '') throw new LayoutError('a tab name cannot be empty');
-  const tab = dropAtRight(newTab(freeTabName(layout, trimmed), newId), content, newId);
+  const tab = dropAtRight(newTab(freeTabName(layout, trimmed, whole), newId), content, newId);
   return { ...layout, tabs: [...layout.tabs, tab] };
 }
 

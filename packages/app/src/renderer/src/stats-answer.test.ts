@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ActivityTotals, ActivityTotalsPart } from '@emerald/shared';
 import type { GitProjectCounts } from '../../preload/api.ts';
-import { askDue, countAsk, keepAnswer, keptAnswer, resetStatsAnswers, statsCounts, statsSheet } from './stats-answer.ts';
+import { askDue, countAsk, keepAnswer, keptAnswer, noteAsk, onAnswer, resetStatsAnswers, statsCounts, statsSheet } from './stats-answer.ts';
 import type { StatsAnswer } from './stats-answer.ts';
 import { statsFigures } from './stats-model.ts';
 
@@ -36,6 +36,33 @@ test('askDue is 0 with no answer and the rest of the minute with one, the key fo
   assert.equal(askDue('C:\\x', 1_010_000), 50_000);
   assert.equal(askDue('C:\\x', 1_060_000), 0);
   assert.equal(keptAnswer('c:/X/'), a);
+});
+
+test('askDue counts from the later of the last ask started on the folder and the kept answer (M9 fix 942)', () => {
+  resetStatsAnswers();
+  keepAnswer('C:\\x', answer(1_000_000));
+  noteAsk('c:/X/', 1_040_000);
+  assert.equal(askDue('C:\\x', 1_061_000), 39_000);
+  assert.equal(askDue('C:\\x', 1_100_000), 0);
+  resetStatsAnswers();
+  noteAsk('C:\\x', 2_000_000);
+  assert.equal(askDue('C:\\x', 2_010_000), 50_000, 'an ask in flight with nothing kept yet');
+  assert.equal(askDue('C:\\y', 2_010_000), 0);
+});
+
+test('keepAnswer hands the answer to every listener on the folder until it unsubscribes (M9 fix 942)', () => {
+  resetStatsAnswers();
+  const heard: string[] = [];
+  const offA = onAnswer('C:\\x', (a) => heard.push(`a${a.at}`));
+  onAnswer('c:/X/', (a) => heard.push(`b${a.at}`));
+  onAnswer('C:\\y', (a) => heard.push(`y${a.at}`));
+  keepAnswer('C:\\x', answer(1));
+  offA();
+  keepAnswer('C:\\x', answer(2));
+  assert.deepEqual(heard, ['a1', 'b1', 'b2']);
+  resetStatsAnswers();
+  keepAnswer('C:\\x', answer(3));
+  assert.deepEqual(heard, ['a1', 'b1', 'b2'], 'a reset drops the listeners');
 });
 
 test('statsSheet computes once per answer and counts only a computation; asks count per folder (M9 fix 885)', () => {

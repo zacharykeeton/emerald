@@ -62,8 +62,8 @@ export function dragOffset(s: string): { dx: number; dy: number } | null {
   return m === null ? null : { dx: Number(m[1]), dy: Number(m[2]) };
 }
 
-// M9 fix 915: drag's start as x,y, CSS pixels from the viewport's top left, a decimal point allowed and no sign; null for anything else.
-export function dragPoint(s: string): { x: number; y: number } | null {
+// M9 fix 915: a point on the page as x,y, CSS pixels from the viewport's top left, a decimal point allowed and no sign; null for anything else. Drag's start, and since fix 935 click's and hover's point.
+export function pagePoint(s: string): { x: number; y: number } | null {
   const m = /^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$/.exec(s);
   return m === null ? null : { x: Number(m[1]), y: Number(m[2]) };
 }

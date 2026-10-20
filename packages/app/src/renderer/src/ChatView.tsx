@@ -3,7 +3,7 @@ import { contextWords, describeState, effortFold, effortState, folderName, forma
 import type { EffortState, QueueState, SessionInfo, SessionState, Step, StepState, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendCtrlC, sendPrompt, typeInto } from './actions.ts';
 import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
-import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, continuedBubbles, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
+import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
@@ -17,6 +17,7 @@ import type { SkillEntry, TailMark } from '../../preload/api.ts';
 import { parentPath } from './files-model.ts';
 import { ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
 import { openWebLink } from './ChatParts.tsx';
+import { ChatBash, ChatCompact } from './ChatParts.tsx';
 import { pendingEdit } from './chat-hunk.ts';
 import { LIVE_ROWS_CAP, dropTaken, liveTurns } from './chat-feed.ts';
 import type { LiveRow } from './chat-feed.ts';
@@ -30,6 +31,9 @@ import { answerOptions, askQuestion, askReview, ghostSuggestion, promptExcerpt }
 import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
 import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
+import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import type { AskTab, AskVisit } from './screen-prompt-model.ts';
+import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { SessionMark } from './session-mark.tsx';
 import { copyAndNote } from './actions.ts';
@@ -549,7 +553,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     setBox('');
     lastSent.current = Date.now();
     setChips([]);
-    const menu = opensMenu(prompt, rc?.state === 'active');
+    const menu = opensMenu(prompt);
     // M9 fix 782: a send drops the refused and unseen bubbles, then draws
     // its own unless it is a command or empty.
     const id = (nextPending.current += 1);
@@ -1425,7 +1429,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 onMouseDown={keepKeys}
                 title={rcUrl ?? 'Remote Control; its link is in the terminal'}
                 onClick={(ev) => {
+                  // M9 fix 923: with no connect line read (one past the read
+                  // cap, fix 770) the link is in the terminal, so the click
+                  // shows it there, as the title says.
                   if (rcUrl !== null) openWebLink(rcUrl, paneId, ev.ctrlKey);
+                  else setChatFace(paneId, session.id, false);
                 }}
               >
                 <span className="chat-chip-dot" data-state={rc.state} />
@@ -1499,6 +1507,9 @@ interface Screen {
 // question with its answer, its Submit answers and Cancel pressed by their
 // digits. Since fix 880 an ask answered elsewhere (the terminal face, the
 // sidebar's card) dims the card on what was asked, as its own press would.
+// Since fix 922 every tab but the current one is a button that moves the
+// dialog there, and the card keeps the tab it moved to as current while the
+// dialog draws its question.
 function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionInfo; screen: (Screen & { sentAt: number }) | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null }) {
   // M9 fix 717: a permission for the Edit the transcript wrote last is the
   // edit card, its file a path link like any other.
@@ -1530,6 +1541,15 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   }, [screen, pressed, session.stateSince]);
   const review = shown === null ? null : askReview(shown.rows);
   const ask = shown === null || review !== null ? null : askQuestion(shown.rows);
+  // M9 fix 922: the tab a click moved the dialog to, read against the live
+  // screen rather than the one a press holds, so it lands on the read that
+  // draws its question; the card draws it as current from there.
+  const [visit, setVisit] = useState<AskVisit | null>(null);
+  const liveVisit = visit === null || screen === null ? visit : visitAfter(visit, { question: askQuestion(screen.rows)?.question ?? null, dialog: dialogKey(screen.rows, screen.cursor) !== null, pressing: pressed !== null });
+  useEffect(() => {
+    if (liveVisit !== visit) setVisit(liveVisit);
+  }, [liveVisit, visit]);
+  const askTabs = ask === null ? [] : visitedTabs(ask.tabs, liveVisit);
   const editCard = edit !== null && session.needsInputReason === 'permission' && ask === null && review === null ? edit : null;
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1575,6 +1595,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   // card, the text kept in the input.
   const sendFree = () => {
     if (pressed !== null || free.trim() === '') return;
+    if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
     setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
     acknowledgeAttention(session.id);
     void ackIfDone(session.id);
@@ -1590,6 +1611,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   const submitShown = ask !== null && ask.multi && ask.submit !== null;
   const pressSubmit = () => {
     if (pressed !== null) return;
+    setVisit(visitAnswered(liveVisit));
     setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
     acknowledgeAttention(session.id);
     void ackIfDone(session.id);
@@ -1600,6 +1622,27 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
         setPressed(null);
       },
     );
+  };
+  // M9 fix 922: a tab's press, from the current tab (a landed visit's, else
+  // the inferred one; Submit on the review) to it, off the Type something
+  // field first (an Up, as optionKeys sends), where the arrows would move
+  // its caret.
+  const pressTab = (tabs: readonly AskTab[], to: number) => {
+    if (pressed !== null) return;
+    const moves = tabMoves(
+      tabs.findIndex((t) => t.current),
+      to,
+    );
+    if (moves === '') return;
+    setVisit({ index: to, from: ask?.question ?? null, question: null });
+    press((freeOpt?.pointer === true ? '\x1b[A' : '') + moves);
+  };
+  // An option's press; a single-select's answer moves the dialog on one
+  // tab, and a landed visit with it.
+  const pressOption = (key: string) => {
+    if (pressed !== null) return;
+    if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
+    press(optionKeys(ask, key));
   };
   // A question wants words, so its box takes the keyboard, as the
   // sidebar card's does.
@@ -1633,7 +1676,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
           freeRef.current?.focus();
         } else if (/^[1-9]$/.test(ev.key) && options.some((o) => o.key === ev.key)) {
           ev.preventDefault();
-          press(optionKeys(ask, ev.key));
+          pressOption(ev.key);
         }
       }}
     >
@@ -1643,18 +1686,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
         ) : review !== null ? (
           <>
             <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
-            {review.tabs.length > 0 && (
-              <div className="chat-ask-tabs">
-                {review.tabs
-                  .filter((t) => t.state !== 'submit')
-                  .map((t, i) => (
-                    <span key={i} className="chat-ask-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
-                      {t.state === 'answered' && <span className="chat-ask-tab-mark">✓</span>}
-                      {t.name}
-                    </span>
-                  ))}
-              </div>
-            )}
+            {review.tabs.length > 0 && <AskTabs tabs={review.tabs} prefix="chat-ask" sent={pressed !== null} onPress={(to) => pressTab(review.tabs, to)} />}
             <div className="chat-ask-question">Review your answers</div>
             {review.warning !== null && <div className="chat-ask-review-warning">{review.warning}</div>}
             <div className="chat-ask-review">
@@ -1669,18 +1701,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
         ) : ask !== null ? (
           <>
             <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
-            {ask.tabs.length > 0 && (
-              <div className="chat-ask-tabs">
-                {ask.tabs
-                  .filter((t) => t.state !== 'submit')
-                  .map((t, i) => (
-                    <span key={i} className="chat-ask-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
-                      {t.state === 'answered' && <span className="chat-ask-tab-mark">✓</span>}
-                      {t.name}
-                    </span>
-                  ))}
-              </div>
-            )}
+            {askTabs.length > 0 && <AskTabs tabs={askTabs} prefix="chat-ask" sent={pressed !== null} onPress={(to) => pressTab(askTabs, to)} />}
             <div className="chat-ask-question">{ask.question}</div>
           </>
         ) : (
@@ -1729,7 +1750,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                 />
               </div>
             ) : (
-              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(optionKeys(ask, o.key))}>
+              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => pressOption(o.key)}>
                 <span className="chat-ask-key">{o.key}</span>
                 <span className="chat-ask-text">
                   <span className="chat-ask-label">{o.label}</span>
@@ -1808,7 +1829,6 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
   const links = usePathLinks(paneId);
   const bare = imageOnlyPrompt(turn.prompt, turn.images);
   const items = timelineItems(turn.steps, mode, open);
-  const continued = continuedBubbles(items, turn.prompt !== '');
   return (
     <div className="chat-turn" data-turn-index={index} {...links.handlers}>
       {/* M9 fix 798: a bare turn holds a command's note made before the first prompt. */}
@@ -1836,7 +1856,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
               </Fragment>
             ) : (
               <Fragment key={i}>
-                <ChatStep step={item.step} paneId={paneId} session={session} continued={continued.has(i)} />
+                <ChatStep step={item.step} paneId={paneId} session={session} />
                 <ChatThumbRow step={item.step} />
               </Fragment>
             ),
@@ -1866,7 +1886,7 @@ function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) 
   );
 }
 
-function ChatStep({ step, paneId, session, continued }: { step: Step; paneId: string; session: SessionInfo; continued: boolean }) {
+function ChatStep({ step, paneId, session }: { step: Step; paneId: string; session: SessionInfo }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
@@ -1876,7 +1896,7 @@ function ChatStep({ step, paneId, session, continued }: { step: Step; paneId: st
     );
   }
   if (step.kind === 'text' || step.kind === 'update') {
-    return <ChatReply step={step} paneId={paneId} session={session} continued={continued} />;
+    return <ChatReply step={step} paneId={paneId} session={session} />;
   }
   if (step.kind === 'command') {
     // M9 fix 798: what a command printed, its first line as a centred
@@ -1912,6 +1932,8 @@ function ChatStep({ step, paneId, session, continued }: { step: Step; paneId: st
       </div>
     );
   }
+  if (step.kind === 'compact') return <ChatCompact step={step} />;
+  if (step.kind === 'bash') return <ChatBash step={step} />;
   if (step.kind === 'note') {
     return (
       <div className="chat-step chat-note" data-kind="note">
@@ -1923,7 +1945,7 @@ function ChatStep({ step, paneId, session, continued }: { step: Step; paneId: st
     // M9 fix 754: a message Claude read mid-turn, a small bubble in place.
     const when = timeOf(step.at);
     return (
-      <div className="chat-step chat-queued-step" data-kind="queued" data-continued={continued ? '' : undefined}>
+      <div className="chat-step chat-queued-step" data-kind="queued">
         <div className="chat-queued-bubble">{step.text}</div>
         <span className="chat-queued-time">{when === null ? 'sent mid-turn' : `sent mid-turn · ${when}`}</span>
       </div>

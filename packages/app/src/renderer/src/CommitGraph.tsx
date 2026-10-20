@@ -168,8 +168,7 @@ interface Props {
   // its node's leader draws at full strength.
   raisedHash?: string | null | undefined;
   // The conflict forecast (M9 fix 320): the ties to draw between two
-  // lanes' newest commit nodes and the base figures beside stale lanes'
-  // fork marks; null or empty draws nothing.
+  // lanes' newest commit nodes; null or empty draws nothing.
   forecast?: ConflictReading | null | undefined;
   // The rows that draw nothing (M9 fix 869): a replay's commits not landed yet and agents not out yet.
   hidden?: ReadonlySet<number> | undefined;
@@ -529,11 +528,10 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
   // however many ties end there; and a transparent hit path over the
   // slope that opens the lane card of the session whose head the
   // slope leaves (the newer) and raises the slope while the pointer is
-  // on it. No count anywhere on the graph; the card has the files. A
-  // stale lane's base figure sits beside its fork mark, 7px off the
-  // lane, in --muted: upright to the left of the lane, right aligned,
-  // on its side above the track. Nothing animates, and no pairs draws
-  // nothing at all.
+  // on it. No count anywhere on the graph; the card has the files.
+  // Nor is a stale lane's count drawn (M9 fix 938: its digit beside the
+  // fork mark read as a stray number); the card's base line says it.
+  // Nothing animates, and no pairs draws nothing at all.
   const ties: React.ReactNode[] = [];
   const halos: React.ReactNode[] = [];
   const haloAt = new Set<string>();
@@ -552,16 +550,6 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
         const [cx, cy] = xy(t(end.row), a(end.lane));
         halos.push(<circle key={`halo-${key}`} className="commits-tie-halo" cx={cx} cy={cy} r={6 * scale} data-session={end.id} data-row={end.row} data-lane={end.lane} />);
       }
-    }
-    for (const f of forecast.figures) {
-      const time = t(f.row);
-      const across = a(f.lane);
-      const [fx, fy] = xy(time, across - 7 * scale);
-      halos.push(
-        <text key={`base-${f.sessionId}`} className="commits-base-figure" x={fx} y={fy} textAnchor={horizontal ? 'middle' : 'end'} data-session={f.sessionId} data-behind={f.behind}>
-          {f.behind}
-        </text>,
-      );
     }
   }
   return (

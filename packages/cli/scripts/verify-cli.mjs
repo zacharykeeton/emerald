@@ -262,22 +262,29 @@ try {
   // relative one is refused the same way, and the usage lists the command.
   r = emerald('open', path.join(home, 'nothing.md'));
   expect(r.code === 69 && r.err.trim() === 'emmer: no window open; open the Emerald app', `open with no window: exit 69 and the line (${r.code}: ${JSON.stringify(r.err)})`);
+  // M9 fix 936: --browser on an .html file meets the same no-window line,
+  // and on another file is a usage error before the pipe.
+  r = emerald('open', path.join(home, 'page.html'), '--browser');
+  expect(r.code === 69 && r.err.trim() === 'emmer: no window open; open the Emerald app', `open --browser with no window: exit 69 and the line (${r.code}: ${JSON.stringify(r.err)})`);
+  r = emerald('open', path.join(home, 'notes.md'), '--browser');
+  expect(r.code === 64 && r.err.split('\n')[0] === `emmer: --browser opens an .html or .htm file; got ${JSON.stringify(path.join(home, 'notes.md'))}`, `open --browser on a .md file: exit 64 and the line (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('open');
   // The usage and the summary carry fix 375's --scheme, fix 376's
   // --beside and fix 404's rule for which of a session's panes it takes.
-  expect(r.code === 64 && /missing file/.test(r.err) && /usage: emmer open <path \| url> \[--pane \| --beside \[<session>\]\] \[--scheme <name> \| --clear-scheme\] \[--json\]/.test(r.err), 'open with no path: usage, exit 64');
+  expect(r.code === 64 && /missing file/.test(r.err) && /usage: emmer open <path \| url> \[--pane \| --beside \[<session>\]\] \[--scheme <name> \| --clear-scheme\] \[--browser\] \[--json\]/.test(r.err), 'open with no path: usage, exit 64');
   expect(/^--beside takes the session's pane on the tab in front, else its first in tab order, and the reply names the pane and the tab$/m.test(r.err), `the usage's second line states the rule --beside picks by (${JSON.stringify(r.err)})`);
   // M9 fix 659: the third line says what a URL does.
   expect(/^a url \(http:\/\/, https:\/\/ or host:port, such as localhost:3000\) opens in a browser pane, beside the focused one or beside --beside's session$/m.test(r.err), `the usage's third line says a url opens a browser pane (${JSON.stringify(r.err)})`);
+  expect(/^--browser renders an \.html or \.htm file in a browser pane, served from the Files rail's folder when the file is under it, else from its own folder$/m.test(r.err), `the usage's fourth line says what --browser does (${JSON.stringify(r.err)})`);
   r = emerald('help');
-  expect(r.code === 0 && /^  open +open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane \(the one on the tab in front, else the first in tab order\); --scheme picks the file's own colour scheme; a URL opens a browser pane$/m.test(r.out), 'help lists open with its summary');
+  expect(r.code === 0 && /^  open +open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane \(the one on the tab in front, else the first in tab order\); --scheme picks the file's own colour scheme; a URL opens a browser pane, and --browser renders an \.html file in one$/m.test(r.out), 'help lists open with its summary');
   log('M9 fix 341: emmer open answers exit 69 with no window, its usage on no path, and is listed by help');
   // M9 fix 672: emmer browser's usage on no verb, an unknown verb, no
   // browser pane on the tab and no such pane; none opens a pane, so no
   // later read of the layout moves.
   expect(/^  browser +drive the page in a browser pane: a snapshot of its controls, a click, a fill, a key, a screenshot \(emmer help browser lists the verbs\)$/m.test(r.out), 'help lists browser with its summary');
   r = emerald('browser');
-  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot \[--name <text>\] \[--within <ref>\]  the page's controls, each with a ref \(@e1\), its role, name, value and state, and its regions \(@r1\); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control$/m.test(r.err) && /^  drag <ref>\|<x>,<y> <ref>\|<dx>,<dy>  a press on the control or at x,y in the page's CSS pixels, a move in steps and a release on the second control, or dx,dy CSS pixels from the start \(a negative dx after --\)$/m.test(r.err) && /^  screenshot {2,}a PNG of the page under the emerald home; prints its path, the page's size in CSS pixels and the device pixels in one CSS pixel$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  expect(r.code === 64 && /missing verb/.test(r.err) && /^usage: emmer browser <verb> \[<args>\] \[--pane <id>\] \[--json\]$/m.test(r.err) && /^  snapshot \[--name <text>\] \[--within <ref>\]  the page's controls, each with a ref \(@e1\), its role, name, value and state, and its regions \(@r1\); --name keeps the rows whose name or value holds the text, --within the rows inside a region or a control$/m.test(r.err) && /^  drag <ref>\|<x>,<y> <ref>\|<dx>,<dy>  a press on the control or at x,y in the page's CSS pixels, a move in steps and a release on the second control, or dx,dy CSS pixels from the start \(a negative dx after --\)$/m.test(r.err) && /^  click <ref>\|<x>,<y> {2,}a click at the control's centre or at x,y in the page's CSS pixels$/m.test(r.err) && /^  hover <ref>\|<x>,<y> {2,}the pointer moved over the control or to x,y in the page's CSS pixels$/m.test(r.err) && /^  screenshot {2,}a PNG of the page under the emerald home; prints its path, the page's size in CSS pixels and the device pixels in one CSS pixel$/m.test(r.err), `browser with no verb: the usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'frob');
   expect(r.code === 64 && r.err.split('\n')[0] === 'emmer: unknown verb "frob"; emmer help browser lists them', `browser frob: unknown verb, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   r = emerald('browser', 'snapshot');

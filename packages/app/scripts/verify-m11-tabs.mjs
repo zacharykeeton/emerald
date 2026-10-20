@@ -1597,13 +1597,118 @@ try {
   expect(L867.windows[0].currentTabId === claudeIdle627.tabId && L867.windows[1].currentTabId === bare627.tabId, `each window on its own tab, got ${JSON.stringify(L867.windows)}`);
   expect((await currentIn867(s2)) === bare627.tabId, "the second window's current tab unchanged");
   const firstCount867 = (await stripIds867(s)).length;
+  const names924 = L867.tabs.map((t) => t.name);
   await s2.evalJs(`document.querySelector('.tab-add').click()`);
   await s2.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 2`, "+ in the second window adds a tab there", 5000);
   L867 = await getTabs(s);
   const plus867 = L867.windows[1].tabIds.find((id) => id !== bare627.tabId);
   expect(L867.windows[1].tabIds.length === 2 && L867.windows[1].currentTabId === plus867, `the second window holds the new tab, current, got ${JSON.stringify(L867.windows[1])}`);
   expect((await stripIds867(s)).length === firstCount867, "the first window's strip unchanged");
-  step('fix 867: a switch in one window leaves the other on its tab, and + in the second window adds its tab there alone');
+  const plusName924 = L867.tabs.find((t) => t.id === plus867).name;
+  let n924 = names924.length + 1;
+  while (names924.includes(`Panes ${n924}`)) n924++;
+  expect(plusName924 === `Panes ${n924}` && L867.tabs.filter((t) => t.name === plusName924).length === 1, `fix 924: the second window's new tab is named past every window's tabs, got ${plusName924} against ${JSON.stringify(names924)}`);
+  step("fix 867: a switch in one window leaves the other on its tab, and + in the second window adds its tab there alone, named past every window's tabs (fix 924)");
+
+  // M9 fix 925's probe: does a write in one window reach the other window's
+  // page? The first window is on claudeIdle627's tab, the second on
+  // plus867's and in front. The write is raw, so the first window's own
+  // zoom does not move (no page hears its own write). It does (2026-10-20:
+  // the event fires, the value is seen and fix 900's zoom follows), so the
+  // storage event carries fixes 925 and 926 and the reads are expects; the
+  // line stays, so the log keeps saying what Chromium does.
+  await s2.evalJs(`(() => { window.__probe925 = []; window.addEventListener('storage', (ev) => window.__probe925.push(ev.key)); return true; })()`);
+  await s.evalJs(`localStorage.setItem('emerald.zoom', '1')`);
+  let fired925 = true;
+  await until867(() => s2.evalJs(`window.__probe925.includes('emerald.zoom')`), 'the storage event in the second window', 3000).catch(() => {
+    fired925 = false;
+  });
+  const seen925 = await s2.evalJs(`localStorage.getItem('emerald.zoom') === '1'`);
+  const followed925 = await s2.evalJs(`Math.round(window.emerald.zoom.level()) === 1`);
+  const firstLevel925 = await s.evalJs(`Math.round(window.emerald.zoom.level())`);
+  console.log(`[verify] fix 925 probe: storage event across windows ${fired925 ? 'yes' : 'no'}, value seen ${seen925 ? 'yes' : 'no'}, second window's zoom followed ${followed925 ? 'yes' : 'no'}, first window's zoom ${firstLevel925}`);
+  // Every later pixel read and right-click box assumes 100 percent.
+  await s.evalJs(`localStorage.removeItem('emerald.zoom')`);
+  await s.evalJs(`window.emerald.zoom.set(0)`);
+  await s2.evalJs(`window.emerald.zoom.set(0)`);
+  expect((await s.evalJs(`window.emerald.zoom.factor()`)) === 1 && (await s2.evalJs(`window.emerald.zoom.factor()`)) === 1, 'both windows back at 100 percent after the probe');
+  expect(fired925, "fix 925: a write in one window fires the storage event in the other window's page");
+  expect(seen925, "fix 925: the other window's page reads the value written");
+  expect(followed925, "fix 925: the other window's zoom followed the write (fix 900's listener, through other-window.ts)");
+
+  // M9 fix 925: a skin flip in the first window reaches the second's page.
+  // Copied from verify-m9-skin.mjs's skinNow, openAppMenu and skinTo, the
+  // window a parameter. The harness runs Classic.
+  const skinNow925 = (w) => w.evalJs(`document.documentElement.dataset.skin ?? 'classic'`);
+  const openAppMenu925 = async (w) => {
+    const c = await w.evalJs(`(() => { const r = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await w.click(c.x, c.y);
+    await w.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu');
+  };
+  const skinTo925 = async (w, skin) => {
+    if ((await skinNow925(w)) === skin) return;
+    await openAppMenu925(w);
+    await w.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent.startsWith('Skin: ')).click()`);
+    await w.waitFor(`(document.documentElement.dataset.skin ?? 'classic') === ${JSON.stringify(skin)}`, `the app menu's Skin item put the window on ${skin}`, 5000);
+  };
+  await skinTo925(s, 'emerald');
+  await s2.waitFor(`document.documentElement.dataset.skin === 'emerald'`, "fix 925: the second window's page follows the flip", 5000);
+  const schemes925 = [await s.evalJs(`document.documentElement.dataset.scheme`), await s2.evalJs(`document.documentElement.dataset.scheme`)];
+  expect(schemes925[0] === schemes925[1], `fix 925: the second window wears the skin's default scheme with it, got ${JSON.stringify(schemes925)}`);
+  await skinTo925(s, 'classic');
+  await s2.waitFor(`document.documentElement.dataset.skin === undefined`, 'and back to Classic', 5000);
+  step("fix 925: a skin flip in one window reaches the other window's page with its default scheme, and back");
+
+  // M9 fix 926 (a): a shade made in each window is kept. tabMenu926 is
+  // moveToWindow867's right-click with the window a parameter.
+  const tabMenu926 = async (w, tabId, label) => {
+    const box = await w.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(tabId))}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await w.rightClick(box.x, box.y);
+    await w.waitFor(`document.querySelector('.layout-tab-menu')?.dataset.tabId === ${JSON.stringify(tabId)}`, `the layout tab menu for ${label}`);
+    await w.evalJs(`[...document.querySelectorAll('.layout-tab-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+  };
+  const shadedHas926 = (ids, has) => `(() => { const stored = JSON.parse(localStorage.getItem('emerald.shadedPanes') ?? '[]'); return ${JSON.stringify(ids)}.every((id) => stored.includes(id) === ${has}); })()`;
+  const loopPane926 = L867.tabs.find((t) => t.id === loop627.tabId).root.id;
+  await tabMenu926(s2, bare627.tabId, 'Shade all');
+  await s2.waitFor(shadedHas926([barePane867.id], true), "the second window's shade stored", 5000);
+  await tabMenu926(s, loop627.tabId, 'Shade all');
+  await s.waitFor(shadedHas926([barePane867.id, loopPane926], true), "the first window's shade stored beside the second's", 5000);
+  await tabMenu926(s2, bare627.tabId, 'Lift all');
+  await tabMenu926(s, loop627.tabId, 'Lift all');
+  await s.waitFor(shadedHas926([barePane867.id, loopPane926], false), 'both lifted', 5000);
+  step("fix 926: a shade made in each window is kept in the profile, neither window's write dropping the other's, and both lift");
+
+  // M9 fix 926 (b): a terminal scheme picked in one window is the other's.
+  // Copied from verify-m52-view.mjs's openPaneMenu, openWindowList and
+  // pickScheme, the window a parameter.
+  const paneSel926 = '.layout-tab:not([hidden]) .pane:not([data-view])';
+  const openPaneMenu926 = async (w) => {
+    await w.evalJs(`(() => { const t = document.querySelector(${JSON.stringify(paneSel926)} + ' .pane-title'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + r.height / 2 })); })()`);
+    await w.waitFor(`!!document.querySelector('.pane-menu')`, 'the pane menu');
+  };
+  const openWindowList926 = async (w) => {
+    if (await w.evalJs(`!!document.querySelector('.menu-sub[data-parent="The window"]')`)) return;
+    await w.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'The window').click()`);
+    await w.waitFor(`!!document.querySelector('.menu-sub[data-parent="The window"]')`, "the window's scheme list");
+  };
+  const pickScheme926 = async (w, name) => {
+    await openPaneMenu926(w);
+    await openWindowList926(w);
+    await w.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(name)}).click()`);
+    await w.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(name)}`, `the root names ${name}`);
+  };
+  const before926 = await s.evalJs(`document.documentElement.dataset.scheme`);
+  await openPaneMenu926(s);
+  await openWindowList926(s);
+  const other926 = await s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].map((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '')).find((l) => l !== ${JSON.stringify(before926)}) ?? null`);
+  expect(other926 !== null, `the window's list holds a scheme besides ${before926}`);
+  await s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(other926)}).click()`);
+  await s.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(other926)}`, `the first window on ${other926}`);
+  await s2.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(other926)}`, `fix 926: the second window follows the pick of ${other926}`, 5000);
+  await pickScheme926(s, before926);
+  await s2.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(before926)}`, `and back to ${before926}`, 5000);
+  step("fix 926: a terminal scheme picked in one window is the other window's at once, and back");
+  expect((await getTabs(s)).currentTabId === plus867, 'the second window still in front for emmer open');
 
   // (d) emmer open goes to the window in front, the second.
   const file867 = path.join(seed, 'window-867.md');
@@ -1671,6 +1776,145 @@ try {
   s3.close();
   await s.waitFor(windowCount867(0), 'the layout back to one window', 5000);
   step('fix 866: a restart opens every window of the layout again, each on its own tabs');
+
+  // (h) M9 fix 927: a drag carried from one window to another. One window
+  // again, its strip holding claudeIdle627's and loop627's tabs among the
+  // earlier steps'. CDP delivers the moves and the release past the
+  // viewport (fix 927's control read both at the source page), so the
+  // drags go by CDP alone: a point of the second window is driven on the
+  // first window's page at that point in the first window's client terms.
+  const move927 = (w, p) => w.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y, button: 'left', buttons: 1 });
+  const release927 = (w, p) => w.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+  const paneSel927 = (paneId) => `[data-pane-id=${JSON.stringify(paneId)}]`;
+  const zone927 = (w, paneId) => w.evalJs(`document.querySelector(${JSON.stringify(`${paneSel927(paneId)} .drop-overlay`)})?.dataset.dropZone ?? null`);
+  const boxIn927 = (w, sel) => w.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+  const rootOf927 = (layout, tabId) => layout.tabs.find((t) => t.id === tabId)?.root ?? null;
+  // (a) loop627's tab in a second window, and the offset between the two.
+  L867 = await moveToWindow867(loop627.tabId);
+  const W2 = L867.windows[1].id;
+  const s2_927 = await windowPage(s.port, W2);
+  const loopPane927 = rootOf927(L867, loop627.tabId).id;
+  await s2_927.waitFor(`!!document.querySelector(${JSON.stringify(`${paneSel927(loopPane927)} .term-host`)})`, "loop627's terminal in the second window", 10000);
+  const spots927 = mainLog867().split(/\r?\n/);
+  const firstSpot927 = spots927.filter((l) => /background window at \d+,\d+/.test(l)).at(-1)?.match(/at (-?\d+),(-?\d+)/);
+  const secondSpot927 = spots927.filter((l) => l.includes(`background window ${W2} at `)).at(-1)?.match(/at (-?\d+),(-?\d+)/);
+  const dx927 = Number(secondSpot927?.[1]) - Number(firstSpot927?.[1]);
+  const dy927 = Number(secondSpot927?.[2]) - Number(firstSpot927?.[2]);
+  expect(dx927 === 1300 && dy927 === 0, `the second window sits 1300 px right of the first, got ${dx927},${dy927}`);
+  const inFirst927 = (p) => ({ x: Math.round(p.x + dx927), y: Math.round(p.y + dy927) });
+  // (b) claudeIdle627's pane by its title onto the right of loop627's pane.
+  await s.evalJs(`document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).click()`);
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(claudeIdle627.tabId)}`, "the first window on claudeIdle627's tab", 5000);
+  const idlePane927 = rootOf927(await getTabs(s), claudeIdle627.tabId).id;
+  const title927 = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(`${paneSel927(idlePane927)} .pane-title`)}).getBoundingClientRect(); return { x: Math.round(r.x + 40), y: Math.round(r.y + r.height / 2) }; })()`);
+  const loopBox927 = await boxIn927(s2_927, paneSel927(loopPane927));
+  const right927 = inFirst927({ x: loopBox927.x + loopBox927.width * 0.9, y: loopBox927.y + loopBox927.height / 2 });
+  await s.mouse('mousePressed', title927.x, title927.y);
+  await move927(s, { x: title927.x + 10, y: title927.y });
+  await move927(s, right927);
+  await s2_927.waitFor(`document.querySelector(${JSON.stringify(`${paneSel927(loopPane927)} .drop-overlay`)})?.dataset.dropZone === 'right'`, "the right zone of loop627's pane lit in the second window", 5000);
+  expect(await s.evalJs(`document.querySelectorAll('.drop-overlay').length === 0 && document.body.classList.contains('dragging-session')`), 'the first window lights nothing past its edge and is still dragging');
+  await release927(s, right927);
+  await until867(async () => {
+    const l = await getTabs(s);
+    const loopRoot = rootOf927(l, loop627.tabId);
+    const idleRoot = rootOf927(l, claudeIdle627.tabId);
+    return loopRoot?.kind === 'split' && loopRoot.direction === 'row' && loopRoot.first.id === loopPane927 && loopRoot.second.kind === 'pane' && loopRoot.second.sessionId === claudeIdle627.sessionId && idleRoot?.kind === 'pane' && idleRoot.sessionId === null;
+  }, "claudeIdle627's pane moved beside loop627's in the second window", 5000);
+  const movedPane927 = rootOf927(await getTabs(s), loop627.tabId).second.id;
+  await s2_927.waitFor(`!!document.querySelector(${JSON.stringify(`${paneSel927(movedPane927)} .term-host`)})`, 'the moved pane draws its terminal in the second window', 10000);
+  expect((await s2_927.evalJs(`document.querySelectorAll('.drop-overlay').length`)) === 0, 'no zone left lit in the second window');
+  expect(!(await s.evalJs(`document.body.classList.contains('dragging-session')`)), 'the first window is no longer dragging');
+  expect(mainLog867().includes(`window drag: a pane from window first dropped on window ${W2}`), 'main.log says the pane went from the first window to the second');
+  step("fix 927: a pane dragged by its title past its window's edge lights the zone under the pointer in the other window, and the release moves it there");
+  // (c) claudeIdle627's strip tab onto the left edge of loop627's tab there.
+  const idleTab927 = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  const loopTabBox927 = await boxIn927(s2_927, tabSel867(loop627.tabId));
+  const tabPoint927 = inFirst927({ x: loopTabBox927.x + 4, y: loopTabBox927.y + loopTabBox927.height / 2 });
+  await s.mouse('mousePressed', idleTab927.x, idleTab927.y);
+  await move927(s, { x: idleTab927.x + 8, y: idleTab927.y });
+  await move927(s, tabPoint927);
+  await s2_927.waitFor(`document.querySelector(${JSON.stringify(tabSel867(loop627.tabId))})?.dataset.drop === 'before'`, "the line before loop627's tab in the second window's strip", 5000);
+  await release927(s, tabPoint927);
+  await until867(async () => {
+    const l = await getTabs(s);
+    const w2 = l.windows?.find((w) => w.id === W2);
+    return l.windows?.length === 2 && l.currentTabId === claudeIdle627.tabId && w2?.tabIds.includes(claudeIdle627.tabId) && w2.currentTabId === claudeIdle627.tabId && !l.windows[0].tabIds.includes(claudeIdle627.tabId);
+  }, "claudeIdle627's tab in the second window, on show there", 5000);
+  await s2_927.waitFor(`JSON.stringify([...document.querySelectorAll('.tab.tab-panes')].map((t) => t.dataset.tabId)) === ${JSON.stringify(JSON.stringify([claudeIdle627.tabId, loop627.tabId]))}`, "the second window's strip reads claudeIdle627's tab then loop627's", 5000);
+  expect(!(await stripIds867(s)).includes(claudeIdle627.tabId), "the first window's strip lost the tab");
+  expect((await s.evalJs(`document.querySelectorAll('.tab[data-drop]').length`)) === 0 && (await s2_927.evalJs(`document.querySelectorAll('.tab[data-drop]').length`)) === 0, 'no line left in either strip');
+  expect(!(await s.evalJs(`document.body.classList.contains('dragging-tab')`)), 'the first window is no longer dragging a tab');
+  expect(mainLog867().includes(`window drag: a tab from window first dropped on window ${W2}`), 'main.log says the tab went from the first window to the second');
+  step("fix 927: a layout tab dragged past its window's edge shows its line in the other window's strip and lands there, in front");
+  // M9 fix 928: a drop outside every window. The two harness windows end
+  // at y 850 (window-plan.ts), so a point 200 px below a window's own
+  // bottom is under no window. The second window holds claudeIdle627's
+  // tab (an empty pane, on show) and loop627's (the split).
+  const below928 = async (w) => {
+    const v = await w.evalJs(`({ w: innerWidth, h: innerHeight })`);
+    return { x: Math.round(v.w / 2), y: v.h + 200 };
+  };
+  const spotX928 = (id) => Number(mainLog867().split(/\r?\n/).filter((l) => l.includes(`background window ${id} at `)).at(-1)?.match(/at (-?\d+),/)?.[1]);
+  // (e) The moved pane by its title, from loop627's tab in the second
+  // window, released below both windows.
+  await s2_927.evalJs(`document.querySelector(${JSON.stringify(tabSel867(loop627.tabId))}).click()`);
+  await s2_927.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(loop627.tabId)}`, "the second window on loop627's tab", 5000);
+  const movedTitle928 = await s2_927.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(`${paneSel927(movedPane927)} .pane-title`)}).getBoundingClientRect(); return { x: Math.round(r.x + 40), y: Math.round(r.y + r.height / 2) }; })()`);
+  const out928 = await below928(s2_927);
+  await s2_927.mouse('mousePressed', movedTitle928.x, movedTitle928.y);
+  await move927(s2_927, { x: movedTitle928.x + 10, y: movedTitle928.y });
+  await move927(s2_927, out928);
+  await release927(s2_927, out928);
+  await s.waitFor(windowCount867(3), 'a third window opened by the drop', 5000);
+  L867 = await getTabs(s);
+  const W3 = L867.windows[2].id;
+  const w3Record928 = L867.windows[2];
+  const w3Root928 = w3Record928.tabIds.length === 1 ? rootOf927(L867, w3Record928.tabIds[0]) : null;
+  expect(w3Root928?.kind === 'pane' && w3Root928.sessionId === claudeIdle627.sessionId, `the third window holds one tab with a pane on claudeIdle627's session, got ${JSON.stringify(w3Record928)} ${JSON.stringify(w3Root928)}`);
+  const loopRoot928 = rootOf927(L867, loop627.tabId);
+  expect(loopRoot928?.kind === 'pane' && loopRoot928.sessionId === loop627.sessionId, `loop627's tab is back to its one pane, got ${JSON.stringify(loopRoot928)}`);
+  const s3_928 = await windowPage(s.port, W3);
+  await s3_928.waitFor(`!!document.querySelector(${JSON.stringify(`${paneSel927(w3Root928.id)} .term-host`)})`, 'the pane draws its terminal in the third window', 10000);
+  await until867(async () => mainLog867().includes(`background window ${W3} at `), "the third window's spot line", 5000);
+  const log928 = mainLog867();
+  expect(new RegExp(`window drag: a pane from window ${W2} released outside every window at -?\\d+,-?\\d+`).test(log928), 'main.log says the pane was released outside every window');
+  expect(new RegExp(`window drag: tab ${w3Record928.tabIds[0]} opens window ${W3} at -?\\d+,-?\\d+`).test(log928), "main.log says the pane's tab opens the third window");
+  expect(spotX928(W3) === Number(firstSpot927[1]) + 2600, `the third window at its background spot, 2600 px right of the first, got ${spotX928(W3)} against ${firstSpot927[1]}`);
+  step('fix 928: a pane dropped outside every window opens a third window holding a tab with it, the harness window still at its spot');
+  // (f) claudeIdle627's strip tab from the second window, released below.
+  const idleTab928 = await s2_927.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  await s2_927.mouse('mousePressed', idleTab928.x, idleTab928.y);
+  await move927(s2_927, { x: idleTab928.x + 8, y: idleTab928.y });
+  await move927(s2_927, out928);
+  await release927(s2_927, out928);
+  await s.waitFor(windowCount867(4), 'a fourth window opened by the tab dropped outside', 5000);
+  L867 = await getTabs(s);
+  const W4 = L867.windows[3].id;
+  expect(JSON.stringify(L867.windows[3].tabIds) === JSON.stringify([claudeIdle627.tabId]), `the fourth window holds claudeIdle627's tab alone, got ${JSON.stringify(L867.windows[3])}`);
+  expect(JSON.stringify(L867.windows.find((w) => w.id === W2)?.tabIds) === JSON.stringify([loop627.tabId]), `the second window holds loop627's tab alone, got ${JSON.stringify(L867.windows)}`);
+  await until867(async () => mainLog867().includes(`window drag: tab ${claudeIdle627.tabId} opens window ${W4} at`), "main.log says the tab opens the fourth window", 5000);
+  // (g') The fourth window's only tab, dragged out the same way, stays.
+  const s4_928 = await windowPage(s.port, W4);
+  await s4_928.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 1`, "the fourth window's strip", 10000);
+  const before928 = JSON.stringify((await getTabs(s)).windows);
+  const onlyTab928 = await s4_928.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  const out4928 = await below928(s4_928);
+  await s4_928.mouse('mousePressed', onlyTab928.x, onlyTab928.y);
+  await move927(s4_928, { x: onlyTab928.x + 8, y: onlyTab928.y });
+  await move927(s4_928, out4928);
+  await release927(s4_928, out4928);
+  await until867(async () => mainLog867().includes(`window drag: a new window for tab ${claudeIdle627.tabId} failed:`), "main.log says the only tab's new window was refused", 5000);
+  expect(await s.evalJs(windowCount867(4)), 'still four windows');
+  expect(JSON.stringify((await getTabs(s)).windows) === before928, 'the layout unchanged by the refused drop');
+  step("fix 928: a layout tab dropped outside every window opens a window holding it, and a window's only tab stays");
+  // The fourth, third and second windows closed; the script ends in one
+  // window as (g) left it.
+  for (const w of [s4_928, s3_928, s2_927]) {
+    await w.send('Page.close').catch(() => {});
+    w.close();
+  }
+  await s.waitFor(windowCount867(0), 'the layout back to one window after the drags', 5000);
 
   step('PASS');
 } catch (err) {

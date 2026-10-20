@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_FILTER_REF, BROWSER_VERBS, browserPartition, dragOffset, dragPoint, isBrowserAnswer, isBrowserPartition } from './browser-drive.ts';
+import { BROWSER_FILTER_REF, BROWSER_VERBS, browserPartition, dragOffset, pagePoint, isBrowserAnswer, isBrowserPartition } from './browser-drive.ts';
 
 test('the verbs are listed in the order the usage names them (M9 fixes 672 and 673)', () => {
   assert.deepEqual([...BROWSER_VERBS], ['snapshot', 'click', 'hover', 'drag', 'fill', 'key', 'eval', 'screenshot', 'wait', 'navigate', 'upload', 'events', 'resume']);
@@ -12,10 +12,10 @@ test('dragOffset takes dx,dy with a sign and a decimal point, nothing else (M9 f
   for (const s of ['', '1,2,3', 'a,b', ' 1,2', '1;2', '1,', '@e3']) assert.equal(dragOffset(s), null, JSON.stringify(s));
 });
 
-test('dragPoint takes x,y with a decimal point and no sign, nothing else (M9 fix 915)', () => {
-  assert.deepEqual(dragPoint('120,300'), { x: 120, y: 300 });
-  assert.deepEqual(dragPoint('0.5,2'), { x: 0.5, y: 2 });
-  for (const s of ['-1,2', '1,-2', '', '1,2,3', 'a,b', ' 1,2', '1,', '@e3']) assert.equal(dragPoint(s), null, JSON.stringify(s));
+test('pagePoint takes x,y with a decimal point and no sign, nothing else (M9 fixes 915 and 935)', () => {
+  assert.deepEqual(pagePoint('120,300'), { x: 120, y: 300 });
+  assert.deepEqual(pagePoint('0.5,2'), { x: 0.5, y: 2 });
+  for (const s of ['-1,2', '1,-2', '', '1,2,3', 'a,b', ' 1,2', '1,', '@e3']) assert.equal(pagePoint(s), null, JSON.stringify(s));
 });
 
 test('a snapshot filter\'s within is a region\'s or a control\'s ref (M9 fix 875)', () => {

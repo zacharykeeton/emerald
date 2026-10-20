@@ -34,6 +34,7 @@ g['window'] = {
 };
 
 const { SKIN_KEY, getSkin, loadSkin, setSkin, subscribeSkin } = await import('./skin.ts');
+const { otherWindowWrote } = await import('./other-window.ts');
 
 test('the stored skin is read at module load', () => {
   assert.equal(getSkin(), 'emerald');
@@ -86,4 +87,24 @@ test('setSkin puts the skin on <html>, stores it, tells main and calls subscribe
   setSkin('emerald');
   assert.equal(calls, 2, 'the remover stops the calls');
   setSkin('classic');
+});
+
+test('a skin another window stored is shown here without storing it or telling main (M9 fix 925)', () => {
+  setSkin('emerald');
+  sent.length = 0;
+  let calls = 0;
+  const remove = subscribeSkin(() => {
+    calls += 1;
+  });
+  store.set(SKIN_KEY, 'classic');
+  otherWindowWrote(SKIN_KEY, 'classic');
+  assert.equal(getSkin(), 'classic');
+  assert.ok(!('skin' in dataset), 'data-skin is gone under Classic');
+  assert.deepEqual(sent, [], 'main is not told again');
+  assert.equal(calls, 1);
+  otherWindowWrote(SKIN_KEY, 'pink');
+  otherWindowWrote(SKIN_KEY, null);
+  assert.equal(getSkin(), 'classic');
+  assert.equal(calls, 1, 'an unknown or removed value calls nobody');
+  remove();
 });

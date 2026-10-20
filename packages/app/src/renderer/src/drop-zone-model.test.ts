@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EDGE_BAND, tabDropTarget, zoneAt, zoneToSplit } from './drop-zone-model.ts';
+import { EDGE_BAND, pastEdge, tabDropTarget, zoneAt, zoneToSplit } from './drop-zone-model.ts';
 
 const box = { left: 100, top: 50, width: 400, height: 200 };
 
@@ -58,4 +58,15 @@ test('tabDropTarget: another tab, the +, and never the tab on show (M9 fix 651)'
   assert.equal(tabDropTarget('t2', false, null), null, 'no layout yet');
   assert.equal(tabDropTarget(null, true, null), null);
   assert.equal(tabDropTarget('t1', false, null), null);
+});
+
+test('pastEdge: the window\'s own box is in, from 0 to a pixel short of its size (M9 fix 927)', () => {
+  const width = 1200;
+  const height = 800;
+  assert.equal(pastEdge({ x: 0, y: 0 }, width, height), false);
+  assert.equal(pastEdge({ x: width - 1, y: height - 1 }, width, height), false);
+  assert.equal(pastEdge({ x: -1, y: 5 }, width, height), true);
+  assert.equal(pastEdge({ x: width, y: 5 }, width, height), true);
+  assert.equal(pastEdge({ x: 5, y: -1 }, width, height), true);
+  assert.equal(pastEdge({ x: 5, y: height }, width, height), true);
 });

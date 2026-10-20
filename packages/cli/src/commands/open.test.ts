@@ -31,7 +31,7 @@ const listed = [
   { id: '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'alpha', state: 'idle' },
   { id: '22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'beta', state: 'working' },
 ];
-const asked: Array<{ path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean }> = [];
+const asked: Array<{ path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }> = [];
 let server: net.Server;
 const sockets = new Set<net.Socket>();
 
@@ -42,12 +42,12 @@ before(async () => {
     const decoder = new JsonLinesDecoder();
     sock.on('data', (chunk: Buffer) => {
       for (const raw of decoder.push(chunk)) {
-        const msg = raw as { id?: number; type: string; path?: string; pane?: boolean; scheme?: string | null; beside?: string; url?: boolean };
+        const msg = raw as { id?: number; type: string; path?: string; pane?: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean };
         const reply = (result: unknown) => sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: true, result }));
         if (msg.type === 'hello') reply({ daemonPid: 1, daemonVersion: 'fake', featureLevel: level });
         else if (msg.type === 'session.list') reply({ sessions: listed });
         else if (msg.type === 'file.open') {
-          asked.push({ path: msg.path ?? '', pane: msg.pane === true, ...(msg.scheme === undefined ? {} : { scheme: msg.scheme }), ...(msg.beside === undefined ? {} : { beside: msg.beside }), ...(msg.url === undefined ? {} : { url: msg.url }) });
+          asked.push({ path: msg.path ?? '', pane: msg.pane === true, ...(msg.scheme === undefined ? {} : { scheme: msg.scheme }), ...(msg.beside === undefined ? {} : { beside: msg.beside }), ...(msg.url === undefined ? {} : { url: msg.url }), ...(msg.browser === undefined ? {} : { browser: msg.browser }) });
           reply({
             apps,
             ...(msg.scheme === undefined || known === undefined ? {} : { known }),
@@ -375,5 +375,49 @@ test('a URL needs level 62, takes no scheme and must be one the pane opens (M9 f
   const bad = await failure(runOpen(['https://a b']));
   assert.equal(bad.exitCode, EXIT.usage);
   assert.equal(bad.message, 'https://a b is not a URL the browser pane opens: http://, https:// or host:port');
+  assert.deepEqual(asked, []);
+});
+
+// M9 fix 936: --browser sends an .html path with browser set, in a pane
+// always; the window renders it from the rail's folder or the file's own.
+test('--browser rides file.open as an .html path in a pane with browser set (M9 fix 936)', async () => {
+  level = 75;
+  apps = 1;
+  answered = undefined;
+  besideFound = true;
+  besidePane = undefined;
+  besideTab = undefined;
+  asked.length = 0;
+  const lines = captureStdout();
+  try {
+    assert.equal(await runOpen(['site/page.html', '--browser']), EXIT.ok);
+    assert.equal(await runOpen(['C:\\x\\Index.HTM', '--browser', '--beside', 'beta']), EXIT.ok);
+  } finally {
+    lines.restore();
+  }
+  assert.deepEqual(asked, [
+    { path: path.resolve('site/page.html'), pane: true, browser: true },
+    { path: 'C:\\x\\Index.HTM', pane: true, beside: listed[1]!.id, browser: true },
+  ]);
+  assert.equal(lines.out[0], `opened ${path.resolve('site/page.html')} in a pane`);
+});
+
+test('--browser needs level 75 and an .html file, takes no URL or scheme, and an emerald-file: URL is refused (M9 fix 936)', async () => {
+  level = 74;
+  apps = 1;
+  asked.length = 0;
+  const old = await failure(runOpen(['page.html', '--browser']));
+  assert.match(old.message, /older than emmer open --browser \(level 74, needs 75\); restart it from the app's banner/);
+  level = 75;
+  for (const [argv, message] of [
+    [['notes.md', '--browser'], '--browser opens an .html or .htm file; got "notes.md"'],
+    [['localhost:3000', '--browser'], '--browser is for an .html or .htm file; a URL opens in a browser pane without it'],
+    [['page.html', '--browser', '--scheme', 'x'], '--scheme and --clear-scheme are for a file tab, not --browser'],
+    [['emerald-file://abc/page.html'], "an emerald-file: URL is the window's own; give the page's path with --browser"],
+  ] as const) {
+    const err = await failure(runOpen([...argv]));
+    assert.equal(err.exitCode, EXIT.usage, argv.join(' '));
+    assert.equal(err.message, message);
+  }
   assert.deepEqual(asked, []);
 });

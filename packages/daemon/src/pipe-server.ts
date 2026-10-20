@@ -1,7 +1,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, dragPoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -154,6 +154,8 @@ export const BROWSER_DRIVE_LEVEL = 63;
 export const BROWSER_DRAG_LEVEL = 72;
 // The first app level whose driver takes drag from a point x,y (M9 fix 915); a drag from a point to an older window is counted as no driver, since a window at 72 or 73 would refuse 120,300 as a bad ref.
 export const BROWSER_POINT_LEVEL = 74;
+// The first app level whose driver takes click and hover at a point x,y (M9 fix 935); one from a point to an older window is counted as no driver, since a window at 63 to 74 would refuse 120,300 as a bad ref.
+export const BROWSER_CLICK_POINT_LEVEL = 75;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -439,12 +441,12 @@ export class PipeServer {
   // on the topic said level 58 at hello, a plain open waits the same way
   // and the reply says whether the window answered.
   private requestFileOpen(req: FileOpenAsk): Promise<FileOpenAnswer> {
-    const { path, pane, scheme, beside, url } = req;
+    const { path, pane, scheme, beside, url, browser } = req;
     const apps = this.subscribedCount('app');
     const answering = this.appTopicAnswers();
-    const words = [pane ? 'for a pane' : '', scheme === undefined ? '' : scheme === null ? 'clearing its scheme' : `with scheme ${scheme}`, beside === undefined ? '' : `beside ${beside}`, url ? 'as a page' : ''].filter((w) => w !== '');
+    const words = [pane ? 'for a pane' : '', scheme === undefined ? '' : scheme === null ? 'clearing its scheme' : `with scheme ${scheme}`, beside === undefined ? '' : `beside ${beside}`, url ? 'as a page' : '', browser ? 'as a page from the disk' : ''].filter((w) => w !== '');
     this.opts.log.info(`file.open: ${path} relayed to the app${words.length > 0 ? ' ' + words.join(', ') : ''}`);
-    const extras = { ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside }), ...(url === true ? { url: true } : {}) };
+    const extras = { ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside }), ...(url === true ? { url: true } : {}), ...(browser === true ? { browser: true } : {}) };
     if (apps === 0 || (scheme === undefined && beside === undefined && !answering)) {
       this.broadcast('app', { type: 'file.open.requested', path, pane, ...extras });
       return Promise.resolve({ apps });
@@ -579,7 +581,8 @@ export class PipeServer {
     const { paneId, verb, args, by, timeoutMs, filter } = req;
     const apps = this.subscribedCount('app');
     if (apps === 0) return Promise.resolve({ apps: 0 });
-    const need = verb === 'drag' && dragPoint(args[0] ?? '') !== null ? BROWSER_POINT_LEVEL : verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
+    const pointed = (verb === 'drag' || verb === 'click' || verb === 'hover') && pagePoint(args[0] ?? '') !== null;
+    const need = pointed ? (verb === 'drag' ? BROWSER_POINT_LEVEL : BROWSER_CLICK_POINT_LEVEL) : verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
     const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= need);
     const short = paneId.slice(0, 8);
     if (drivers.length === 0) {
@@ -1003,6 +1006,15 @@ class ClientConnection {
           if (browserUrl(ask.path) !== ask.path) throw new SessionError('bad-request', 'url needs an http or https URL in path');
           if (ask.scheme !== undefined) throw new SessionError('bad-request', 'a url takes no scheme');
           ask.url = true;
+        }
+        // M9 fix 936: a page from the disk, the window picking its root;
+        // an emerald-file: URL is refused by the url check above, since
+        // only the window mints a root id.
+        if (req.browser !== undefined && expectBoolean(req, 'browser')) {
+          if (ask.url === true) throw new SessionError('bad-request', 'browser and url together');
+          if (!path.isAbsolute(ask.path) || !/\.html?$/i.test(ask.path)) throw new SessionError('bad-request', 'browser needs an absolute .html or .htm path');
+          if (ask.scheme !== undefined) throw new SessionError('bad-request', 'a browser page takes no scheme');
+          ask.browser = true;
         }
         return this.hooks.requestFileOpen(ask);
       }

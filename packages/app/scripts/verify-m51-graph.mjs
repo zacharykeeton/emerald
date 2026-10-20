@@ -2505,6 +2505,46 @@ try {
     await removeWorktree(git3, ffWt);
     step("M9 fix 151: the star sits over the head of its branch, its stretch bending onto a member's commit main was fast-forwarded to, and ending under a head bar when the head is someone else's");
 
+    // M9 fix 937: B, still in repo3 on main, commits N1 to N5 in a
+    // worktree on nx off H1 with `cd <worktree> && git commit`, the way a
+    // tech lead in the main checkout commits in a seat's worktree. The
+    // five are B's own and newer than main's head H1, and they draw on a
+    // side lane of B's block, with nothing of B's above its star on its
+    // line.
+    const nxShort = path.join(os.tmpdir(), 'emerald-verify', `m51-bars-nx-${process.pid}`);
+    fs.rmSync(nxShort, { recursive: true, force: true });
+    git3('worktree', 'add', '-q', '-b', 'nx', nxShort, H1b);
+    const nxWt = fs.realpathSync.native(nxShort);
+    const nxGit = gitIn(nxWt);
+    const nxHashes = [];
+    for (const name of ['N1', 'N2', 'N3', 'N4', 'N5']) {
+      const cmd = `cd '${nxWt}' && git commit -q -m ${name}`;
+      await post(sessB.id, { cwd: repo3, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd } });
+      await sleep(300);
+      fs.writeFileSync(path.join(nxWt, `${name}.txt`), name);
+      nxGit('add', `${name}.txt`);
+      nxGit('commit', '-q', '-m', name);
+      const hash = nxGit('rev-parse', 'HEAD').trim();
+      await post(sessB.id, { cwd: repo3, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: cmd } });
+      await owns(sessB.id, hash);
+      nxHashes.push(hash);
+    }
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(nodeSel(nxHashes[4]))})`, 'N5 is on the graph', 15000);
+    const bNow = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === sessB.id);
+    expect(bNow.branch === 'main', `B is still on main, its folder in repo3 (${bNow.branch})`);
+    const side937 = await s.evalJs(
+      `(() => { const b = ${JSON.stringify(sessB.id)}; const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const own = rows.findIndex((r) => r.dataset.session === b && !r.dataset.member); const mark = document.querySelector('.commits-agent-node[data-session=' + JSON.stringify(b) + ']:not([data-member])'); const starLane = mark ? mark.dataset.lane : null; const lanes = ${JSON.stringify(nxHashes)}.map((h) => document.querySelector('.commits-node[data-hash=' + JSON.stringify(h) + ']')?.dataset.lane ?? null); const above = rows.slice(0, own).filter((r) => r.dataset.hash !== undefined).filter((r) => document.querySelector('.commits-node[data-hash=' + JSON.stringify(r.dataset.hash) + ']')?.dataset.lane === starLane).map((r) => r.dataset.hash); return { own, starLane, lanes, above }; })()`,
+    );
+    expect(side937.own !== -1 && side937.starLane !== null && side937.lanes.every((l) => l !== null && l === side937.lanes[0] && l !== side937.starLane) && side937.above.length === 0, `B's five on a side lane of its block and nothing of B's above its star on its lane (${JSON.stringify(side937)})`);
+    const h1Row937 = await s.evalJs(`[...document.querySelectorAll('.commits-graph-rows .commits-row')].findIndex((r) => r.dataset.hash === ${JSON.stringify(H1b)})`);
+    ff = await ffProbe();
+    expect(ff.own !== -1 && ff.own < h1Row937 && ff.stretch !== null && ff.stretch.to === h1Row937 && ff.head !== null && ff.head.lane === ff.markLane, `the star is still over H1 with its head bar on B's lane (${JSON.stringify([ff.own, h1Row937, ff.stretch, ff.head])})`);
+    await s.screenshot('m9-fix937-own-commits-side-lane.png');
+    await removeWorktree(git3, nxWt);
+    git3('branch', '-D', 'nx');
+    await s.waitFor(`!document.querySelector(${JSON.stringify(nodeSel(nxHashes[4]))})`, 'the nx commits leave the graph with their branch', 15000);
+    step("M9 fix 937: a session's own commits on another branch, newer than its branch's head, draw on a side lane of its block, nothing of its own above its star on its line, and the star stays over the head");
+
     // M9 fix 185: a /clear in a Claude pane starts a new conversation, so
     // the work after it is a block of its own. What a real /clear posts
     // (Claude Code 2.1.272): SessionEnd reason=clear on the old id, then
@@ -4144,8 +4184,8 @@ try {
     };
     // 8: the base. main moves 39 commits on through the root shell (38 by
     // hand, the 39th credited so the daemon polls), and every lane is 39
-    // behind with no figure; the 40th puts the figure beside each stale
-    // lane's fork mark in --muted and turns the card's base line --error.
+    // behind; the 40th turns the card's base line --error, and the graph
+    // draws no figure at either (M9 fix 938).
     for (let i = 1; i <= 38; i += 1) {
       writeLines(cfRepo, `main-${i}.txt`, [`main ${i}`]);
       await gitCPatient('add', `main-${i}.txt`);
@@ -4182,18 +4222,13 @@ try {
     await cfCloseCard();
     await commitFiles('main-40', cfRepo, cfMain.id, { 'main-40.txt': ['main 40'] });
     await cfWaitBase(cfDaemonBehind(40), "the daemon's report has debt 40 behind", 75000);
-    await s.waitFor(`document.querySelectorAll('.files-rail .commits-base-figure').length === 5`, 'a figure beside each of the five lanes at 40 behind', 75000);
-    const cf40 = await cfGutter();
-    expect(cf40.texts.length === 5 && cf40.texts.every((t) => t.text === '40' && t.cls === 'commits-base-figure' && t.fill === rgb(cf.muted)), `five figures reading 40 in --muted (${JSON.stringify(cf40.texts)})`);
-    const cfForkOf = (name) => s.evalJs(`(() => { const svg = document.querySelector('.files-rail .commits-graph'); const centre = (el) => el.tagName === 'line' ? { cx: (+el.getAttribute('x1') + +el.getAttribute('x2')) / 2, cy: (+el.getAttribute('y1') + +el.getAttribute('y2')) / 2 } : { cx: +el.getAttribute('cx'), cy: +el.getAttribute('cy') }; const d = [...svg.querySelectorAll('.commits-node[data-session=' + ${JSON.stringify(JSON.stringify(cfId(name)))} + '][data-kind]:not([data-kind="head"])')].map((el) => ({ ...centre(el), kind: el.dataset.kind })).sort((p, q) => q.cy - p.cy)[0]; return d ?? null; })()`);
-    const debtFork = await cfForkOf('debt');
-    const debtFigure = cf40.texts.find((t) => t.session === cfId('debt'));
-    expect(debtFork !== null && debtFigure !== undefined && Math.abs(debtFigure.y - debtFork.cy) < 0.01 && Math.abs(debtFork.cx - 7 - debtFigure.x) < 0.01, `debt's figure sits on its fork mark's row, 7px left of the lane (${JSON.stringify([debtFigure, debtFork])})`);
     await cfHoverCard('debt', "debt's card for the base at 40");
     await cfWaitBase(cfCardBehind(40), "debt's card reads 40 behind", 10000);
     const cf40card = await s.evalJs(`(() => { const b = document.querySelector(${JSON.stringify(cfDebtCard + ' .lane-card-base')}); return { text: b.textContent, stale: 'stale' in b.dataset, color: getComputedStyle(b).color }; })()`);
     expect(/^1 ahead, 40 behind main/.test(cf40card.text) && cf40card.stale && cf40card.color === rgb(cf.error), `at 40 behind the card's base line is in --error (${JSON.stringify(cf40card)})`);
     await cfCloseCard();
+    const cf40 = await cfGutter();
+    expect(cf40.texts.length === 0, `at 40 behind no number is drawn on the graph; the card's base line has it (M9 fix 938) (${JSON.stringify(cf40.texts)})`);
     await s.screenshot('fix-320-stale.png');
     // 10: the exit. debt killed drops its two ties within one poll and
     // leaves pocket's tie with live, and every commit row, where it was.
@@ -4213,13 +4248,13 @@ try {
     const cfClear = await cfGutter();
     const cfMarksClear = await cfRows();
     expect(cfClear.ties.length === 0 && cfClear.halos.length === 0 && Object.values(cfMarksClear).every((m) => m === null), `zero ties, halos and row marks after the clearing poll (${JSON.stringify(cfMarksClear)})`);
-    expect((await s.evalJs(`[...document.querySelectorAll('.files-rail .commits-graph [class^="commits-tie"], .files-rail .commits-graph .commits-base-figure')].filter((el) => getComputedStyle(el).opacity === '0' || getComputedStyle(el).transitionDuration !== '0s').length`)) === 0, 'nothing of the forecast is left at zero opacity or mid transition');
+    expect((await s.evalJs(`[...document.querySelectorAll('.files-rail .commits-graph [class^="commits-tie"]')].filter((el) => getComputedStyle(el).opacity === '0' || getComputedStyle(el).transitionDuration !== '0s').length`)) === 0, 'nothing of the forecast is left at zero opacity or mid transition');
     // 12: nothing else moved: the lane widths, the dot radii, the row heights and the slab are what they were with the ties on.
     expect(cfClear.edgeWidths.join(',') === cf40.edgeWidths.join(',') && cfClear.radii.join(',') === cf40.radii.join(',') && cfClear.rowHeights.join(',') === cf40.rowHeights.join(','), `the lane widths, radii and row heights are the same with the forecast on and off (${JSON.stringify([cf40.edgeWidths, cfClear.edgeWidths, cf40.radii, cfClear.radii, cf40.rowHeights, cfClear.rowHeights])})`);
     // The pane hidden, so the focus and the rail go back where they were.
     await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(cfPane)}] .pane-hide').click()`);
     await s.waitFor(`document.querySelector('.pane.focused')?.dataset.paneId === ${JSON.stringify(cfPaneBefore)}`, 'the pane before is focused again', 10000);
-    step("M9 fix 320: the conflict forecast's ties run between the paired lanes' newest nodes under the lanes with a dotted halo on each end, one per pair with no count on the graph, the rows count pairs, the card names the other lane in its colour with the files cut to `and N more` and the base line under it, the figure appears beside the fork mark at forty behind, a killed session's ties drop and a clean merge clears the last, with nothing else on the graph moved");
+    step("M9 fix 320: the conflict forecast's ties run between the paired lanes' newest nodes under the lanes with a dotted halo on each end, one per pair with no count on the graph, the rows count pairs, the card names the other lane in its colour with the files cut to `and N more` and the base line under it, at forty behind the card's base line takes the tone and the graph draws no figure, a killed session's ties drop and a clean merge clears the last, with nothing else on the graph moved");
   });
 
   await block('fix-352', async () => {
@@ -4493,6 +4528,45 @@ try {
     await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 300 });
     await s.waitFor(`!document.querySelector('.commit-popover')`, 'the card goes with the pointer', 2000);
     step('M9 fix 906: no row card opens while a replay runs, and the row opens it again once Escape puts the live graph back');
+    // (f3) Fix 939: a hover timer started before the replay's gate closes
+    // opens nothing during the replay or after it. 400 is Popover.tsx's
+    // HOVER_DELAY_MS.
+    await inView(rpRowSel(R0));
+    await settled(rpRowSel(R0));
+    const f3Try = async () => {
+      await armSeek(0);
+      return s.evalJs(`(async () => {
+        const row = document.querySelector(${JSON.stringify(rpRowSel(R0))});
+        const t0 = performance.now();
+        row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }));
+        const r = row.getBoundingClientRect();
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }));
+        const until = async (f) => { for (let i = 0; i < 60; i++) { if (f()) return true; await new Promise((res) => setTimeout(res, 5)); } return false; };
+        await until(() => !!document.querySelector('.commits-menu'));
+        [...document.querySelectorAll('.commits-menu .menu-label')].find((l) => l.textContent.trim().endsWith('Replay from here'))?.click();
+        const on = await until(() => document.querySelector('.files-rail .commits-panel')?.dataset.replay === 'on');
+        return { on, ms: Math.round(performance.now() - t0) };
+      })()`);
+    };
+    let f3 = await f3Try();
+    if (!f3.on || f3.ms >= 400) {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'the void attempt ends', 5000);
+      await s.evalJs(`document.querySelector(${JSON.stringify(rpRowSel(R0))}).dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))`);
+      await sleep(800);
+      f3 = await f3Try();
+      expect(f3.on && f3.ms < 400, `could not start the replay inside the 400 ms hover delay (${JSON.stringify(f3)})`);
+    }
+    await s.waitFor(held(0), 'the replay is on and held at its start', 5000);
+    await sleep(800);
+    const f3During = await s.evalJs(`({ open: document.querySelector(${JSON.stringify(rpRowSel(R0))})?.dataset.popoverOpen ?? null, card: !!document.querySelector('.commit-popover') })`);
+    expect(f3During.open === null && !f3During.card, `the timer from before the replay opened nothing during it (${JSON.stringify(f3During)})`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Escape ends the replay again', 5000);
+    await sleep(800);
+    expect(await s.evalJs(`!document.querySelector('.commit-popover')`), 'and nothing once Escape puts the live graph back');
+    await s.evalJs(`document.querySelector(${JSON.stringify(rpRowSel(R0))}).dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))`);
+    step('M9 fix 939: a hover timer pending when a replay starts never opens its card, during the replay or after it');
     // (g) A start older than the record: the 25 years before R0 play as
     // one beat, and the strip says where the record starts.
     await replayFrom(R00);

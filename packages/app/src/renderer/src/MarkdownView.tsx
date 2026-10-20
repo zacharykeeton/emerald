@@ -13,6 +13,7 @@ import { installMermaidFence } from './markdown-mermaid.ts';
 import type { MermaidSide, MermaidTheme } from './markdown-mermaid.ts';
 import { drawMermaid, showSide } from './mermaid-draw.ts';
 import { getState } from './store.ts';
+import { treeKeepsKeys } from './focus.ts';
 
 // A markdown file rendered for reading. markdown-it with html off, so no
 // tag written in the file reaches the DOM and there is nothing to
@@ -127,7 +128,7 @@ export function MarkdownView({ path, text, foldOlder = false, diagramTheme = 'da
 
   useLayoutEffect(() => {
     const host = hostRef.current;
-    if (host !== null) host.focus();
+    if (host !== null && !treeKeepsKeys(path, host)) host.focus();
   }, [path]);
 
   const onScroll = () => {

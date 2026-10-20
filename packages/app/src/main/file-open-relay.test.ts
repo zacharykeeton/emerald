@@ -138,6 +138,20 @@ test('a page from emmer open rides the relay with url set (M9 fix 659)', () => {
   assert.equal('url' in delivered[1]!, false);
 });
 
+// M9 fix 936: browser, an .html file for a browser pane, rides as true
+// alone, as url does.
+test('a page from the disk rides the relay with browser set (M9 fix 936)', () => {
+  const { client, delivered, relay } = setup();
+  relay.ready();
+  client.emit('message', { type: 'file.open.requested', path: 'C:\\site\\page.html', pane: true, browser: true });
+  client.emit('message', { type: 'file.open.requested', path: 'C:\\site\\page.html', pane: true, browser: 'yes' });
+  assert.deepEqual(delivered, [
+    { path: 'C:\\site\\page.html', pane: true, browser: true },
+    { path: 'C:\\site\\page.html', pane: true },
+  ]);
+  assert.equal(openExtraOf(delivered[0]!).browser, true);
+});
+
 test('a folder from a launch rides with its kind, and a push never carries one (M9 fix 853)', () => {
   const { client, delivered, relay, log } = setup();
   relay.ready();

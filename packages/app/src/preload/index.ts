@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi } from './api.ts';
+import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, WindowDragTarget } from './api.ts';
 
 const api: EmeraldApi = {
   // M9 fix 900: the window's zoom, VS Code's Ctrl+= and Ctrl+-.
@@ -154,6 +154,18 @@ const api: EmeraldApi = {
   restartDaemon: () => ipcRenderer.invoke('emerald:daemon-restart'),
   daemonInfo: () => ipcRenderer.invoke('emerald:daemon-info'),
   windowId: () => ipcRenderer.invoke('emerald:window-id'),
+  // M9 fix 927: a drag carried across windows.
+  windowDrag: {
+    move: (drag, x, y) => ipcRenderer.send('emerald:window-drag-move', drag, x, y),
+    back: () => ipcRenderer.send('emerald:window-drag-back'),
+    end: (x, y) => ipcRenderer.invoke('emerald:window-drag-end', x, y),
+    onTarget: (handler) => {
+      const listener = (_e: IpcRendererEvent, msg: WindowDragTarget) => handler(msg);
+      ipcRenderer.on('emerald:window-drag-target', listener);
+      return () => ipcRenderer.off('emerald:window-drag-target', listener);
+    },
+    open: (tabId, x, y) => ipcRenderer.invoke('emerald:window-drag-open', tabId, x, y),
+  },
   daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
   dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),
   request: (type, body) => ipcRenderer.invoke('emerald:request', type, body),

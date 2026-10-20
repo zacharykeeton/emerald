@@ -261,6 +261,31 @@ test('drag starts at a ref or at x,y, a point needing level 74, and refuses a st
   assert.equal(err.message, 'the window is older than emmer browser drag from a point (it needs level 74); quit Emerald and open it again');
 });
 
+test('click and hover take a ref or x,y, a point needing level 75, and refuse an argument of neither form (M9 fix 935)', async () => {
+  level = 75;
+  await capture(() => runBrowser(['click', '120,300']));
+  assert.deepEqual(runs.at(-1)!['args'], ['120,300']);
+  await capture(() => runBrowser(['hover', '0.5,2']));
+  assert.deepEqual(runs.at(-1)!['args'], ['0.5,2']);
+  const sent = runs.length;
+  let err = await failure(runBrowser(['click', 'nowhere']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'click takes a ref or x,y in the page\'s CSS pixels, such as @e7 or 120,300; got "nowhere"');
+  err = await failure(runBrowser(['hover', '@r1']));
+  assert.equal(err.exitCode, EXIT.usage);
+  assert.equal(err.message, 'hover takes a ref or x,y in the page\'s CSS pixels, such as @e7 or 120,300; got "@r1"');
+  assert.equal(runs.length, sent);
+  level = 74;
+  err = await failure(runBrowser(['click', '120,300']));
+  assert.match(err.message, /^emmerd fake is older than emmer browser click from a point \(level 74, needs 75\); restart it from the app's banner$/);
+  assert.equal((await capture(() => runBrowser(['click', 'e1']))).code, EXIT.ok);
+  assert.equal((await capture(() => runBrowser(['drag', '120,300', '0,-60']))).code, EXIT.ok);
+  level = 75;
+  runReply = { apps: 1, drivers: 0 };
+  err = await failure(runBrowser(['hover', '120,300']));
+  assert.equal(err.message, 'the window is older than emmer browser hover from a point (it needs level 75); quit Emerald and open it again');
+});
+
 test('snapshot --name and --within send a filter at level 72, and a bare snapshot none (M9 fix 875)', async () => {
   level = 72;
   await capture(() => runBrowser(['snapshot', '--name', 'Save', '--within', '@r2']));

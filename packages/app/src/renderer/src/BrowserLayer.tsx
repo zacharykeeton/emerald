@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { allPanes, browserPartition, findPane, focusPane, guestNavigationAllowed, isLocalPageUrl, paneUrl, setPaneView } from '@emerald/shared';
 import type { BrowserPaneView } from '@emerald/shared';
-import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
+import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, navigationRefusal, paneOfWebContents, patchPageState, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
 import type { WebviewLike } from './browser-layer.ts';
 import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
@@ -187,9 +187,12 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
       if (!framePageState(frameId).ready) return;
       patchPageState(frameId, { back: page.canGoBack(), forward: page.canGoForward() });
     };
+    // M9 fix 933: the pages from the disk this frame has shown, for navigationRefusal.
+    const shownLocal = new Set<string>();
     const navigated = (ev: Event) => {
       const e = ev as NavigateEvent;
       if (e.isMainFrame === false) return;
+      if (isLocalPageUrl(e.url)) shownLocal.add(e.url);
       patchPageState(frameId, { error: null, url: e.url });
       nav();
       // M9 fix 896: a link inside a page from the disk moves the record
@@ -234,7 +237,8 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
           } catch {
             from = '';
           }
-          if (!guestNavigationAllowed(url, from)) patchPageState(frameId, { error: isLocalPageUrl(url) ? refusedLocal(url) : refusedLink(url) });
+          const refusal = navigationRefusal(url, from, shownLocal);
+          if (refusal !== null) patchPageState(frameId, { error: refusal === 'local' ? refusedLocal(url) : refusedLink(url) });
         },
       ],
       ['did-navigate', navigated],

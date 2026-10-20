@@ -189,7 +189,8 @@ export function countPrompts(text: string, complete = false): number {
 // meta line, not a tool result, and a slash command shows as the command.
 // Text is the first line, trimmed and capped, since a prompt can be pages.
 function promptText(o: Record<string, unknown>): string | null {
-  if (o['type'] !== 'user' || o['isMeta'] === true) return null;
+  // M9 fix 920: a compaction's summary is not a prompt.
+  if (o['type'] !== 'user' || o['isMeta'] === true || o['isCompactSummary'] === true) return null;
   const message = o['message'];
   if (!isObject(message)) return null;
   const content = message['content'];

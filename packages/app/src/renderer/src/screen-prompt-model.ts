@@ -224,7 +224,8 @@ function askTabs(row: string): AskTab[] {
   // The terminal marks the current tab by colour alone, which the plain
   // rows lose, so it is inferred: the first open tab, else Submit. An
   // answer moves the dialog on to the next tab (read on 2.1.301), which
-  // is what makes the first open one the current one.
+  // is what makes the first open one the current one. A card that moved
+  // the dialog itself knows better (fix 922, visitedTabs).
   const current = tabs.find((t) => t.state === 'open') ?? tabs.find((t) => t.state === 'submit');
   if (current !== undefined) current.current = true;
   return tabs;
@@ -476,4 +477,57 @@ export function pressOver(press: AskPress, read: { rows: readonly string[]; curs
   if (k === null) return false;
   if (k !== press.key) return true;
   return read.sentAt - press.at >= ASK_PRESS_RETRY_MS;
+}
+
+// M9 fix 922: a tab of an AskUserQuestion is a button to its question.
+// Claude Code moves between the tabs on Left and Right (its tabs:previous
+// and tabs:next, one tab per key, inactive while the Type something field
+// has the pointer; read in the 2.1.304 bundle), so a press sends one
+// arrow per tab between the current one and the tab pressed.
+export function tabMoves(from: number, to: number): string {
+  if (from < 0 || to < 0 || from === to) return '';
+  return (to < from ? '\x1b[D' : '\x1b[C').repeat(Math.abs(to - from));
+}
+
+// The tab a card moved the dialog to. The rows mark the current tab by
+// colour alone, so askTabs infers it as the first open one, which is wrong
+// once the dialog is back on an answered question; the card keeps the tab
+// it moved to as the current one while the dialog draws the question it
+// landed on. `from` is the question drawn when the moves were pressed
+// (null from the review), `question` the one drawn once they landed (null
+// until a read draws another).
+export interface AskVisit {
+  index: number;
+  from: string | null;
+  question: string | null;
+}
+
+// What a read does to a visit: one in flight is kept while its press is,
+// lands on the first read that draws another question, and goes when its
+// press ends with the dialog unmoved; one landed is kept while its
+// question is drawn (the pointer and a multi-select's ticks change the
+// dialog, not its question) or no dialog is (a read between redraws), and
+// goes on any other question or the review, the inference back.
+export function visitAfter(visit: AskVisit, read: { question: string | null; dialog: boolean; pressing: boolean }): AskVisit | null {
+  if (visit.question === null) {
+    if (read.question === null || read.question === visit.from) return read.pressing ? visit : null;
+    return { ...visit, question: read.question };
+  }
+  if (!read.dialog) return visit;
+  return read.question === visit.question ? visit : null;
+}
+
+// An answer on a landed visit: Claude Code moves on to the next tab (its
+// set-answer adds one to the question's index, read in the 2.1.304
+// bundle), not to the first open one, so the visit follows it there and
+// lands again. None without a landed visit.
+export function visitAnswered(visit: AskVisit | null): AskVisit | null {
+  if (visit === null || visit.question === null) return null;
+  return { index: visit.index + 1, from: visit.question, question: null };
+}
+
+// The tabs with a landed visit's tab current in place of the inferred one.
+export function visitedTabs(tabs: readonly AskTab[], visit: AskVisit | null): AskTab[] {
+  if (visit === null || visit.question === null || visit.index >= tabs.length) return [...tabs];
+  return tabs.map((t, i) => ({ ...t, current: i === visit.index }));
 }

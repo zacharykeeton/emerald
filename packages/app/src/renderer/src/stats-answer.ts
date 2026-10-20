@@ -34,6 +34,8 @@ export interface StatsSheet {
 
 const kept = new Map<string, StatsAnswer>();
 const asks = new Map<string, number>();
+const started = new Map<string, number>();
+const listeners = new Map<string, Set<(answer: StatsAnswer) => void>>();
 const sheets = new Map<string, number>();
 const sheetOf = new WeakMap<StatsAnswer, StatsSheet>();
 
@@ -46,19 +48,53 @@ export function keptAnswer(folder: string): StatsAnswer | null {
 }
 
 export function keepAnswer(folder: string, answer: StatsAnswer): void {
-  kept.set(keyOf(folder), answer);
+  const k = keyOf(folder);
+  kept.set(k, answer);
+  // Over a copy, so a listener that unsubscribes inside its call never
+  // skips a sibling.
+  for (const l of [...(listeners.get(k) ?? [])]) l(answer);
 }
 
-// The milliseconds until the next ask is due: none kept, now.
+// Every panel on a folder hears the one ask's answer the moment it is kept
+// (M9 fix 942), so a second panel waits for it rather than asking. Returns
+// the unsubscribe.
+export function onAnswer(folder: string, listener: (answer: StatsAnswer) => void): () => void {
+  const k = keyOf(folder);
+  let set = listeners.get(k);
+  if (set === undefined) {
+    set = new Set();
+    listeners.set(k, set);
+  }
+  set.add(listener);
+  return () => {
+    const now = listeners.get(k);
+    if (now === undefined) return;
+    now.delete(listener);
+    if (now.size === 0) listeners.delete(k);
+  };
+}
+
+// The milliseconds until the next ask is due, counted from the later of the
+// last ask's start on the folder by any panel and the kept answer's (M9 fix
+// 942): neither, now.
 export function askDue(folder: string, now: number): number {
-  const a = keptAnswer(folder);
-  if (a === null) return 0;
-  return Math.max(0, a.at + STATS_REFRESH_MS - now);
+  const k = keyOf(folder);
+  const a = kept.get(k);
+  const s = started.get(k);
+  if (a === undefined && s === undefined) return 0;
+  const last = Math.max(a?.at ?? 0, s ?? 0);
+  return Math.max(0, last + STATS_REFRESH_MS - now);
 }
 
 export function countAsk(folder: string): void {
   const k = keyOf(folder);
   asks.set(k, (asks.get(k) ?? 0) + 1);
+}
+
+// When the folder's last ask started, whichever panel sent it (M9 fix 942),
+// so a second panel's tick inside the minute asks nothing.
+export function noteAsk(folder: string, at: number): void {
+  started.set(keyOf(folder), at);
 }
 
 export function statsCounts(folder: string): { asks: number; sheets: number } {
@@ -102,4 +138,6 @@ export function resetStatsAnswers(): void {
   kept.clear();
   asks.clear();
   sheets.clear();
+  started.clear();
+  listeners.clear();
 }

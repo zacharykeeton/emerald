@@ -542,6 +542,57 @@ test('browser.run relays a drag from a point to a window at level 74 alone (M9 f
   }
 });
 
+test('browser.run relays a click or a hover from a point to a window at level 75 alone (M9 fix 935)', async () => {
+  const pipe = `${PIPE}-browser-click-point`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { paneId: 'pane-1234567890', verb: 'click' as const, args: ['120,300'], by: 'alpha', timeoutMs: 1000 };
+
+    // A window at 74 drives a click on a ref and a drag from a point, and is counted as no driver for a click or a hover at one.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 74 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 0 });
+    assert.deepEqual(await cli.request('browser.run', { ...ask, verb: 'hover' as const }), { apps: 1, drivers: 0 });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'browser.requested'), []);
+    for (const [verb, args] of [['click', ['e1']], ['drag', ['120,300', '0,-60']]] as const) {
+      const pushed = waitFor(old, (m) => m.type === 'browser.requested' && m.verb === verb);
+      const replied = cli.request('browser.run', { ...ask, verb, args: [...args] });
+      const push = (await pushed) as { runId: number; args: string[] };
+      assert.deepEqual(push.args, args);
+      await old.request('browser.done', { runId: push.runId, answer: { ok: true, text: `${verb} done` } });
+      assert.equal((await replied).answered, true);
+    }
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 75 });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', ask);
+    const push = await requested;
+    const runId = (push as { runId: number }).runId;
+    assert.deepEqual(push, { type: 'browser.requested', runId, paneId: 'pane-1234567890', verb: 'click', args: ['120,300'], by: 'alpha', timeoutMs: 1000 });
+    const answer = { ok: true, text: 'clicked at 120,300' };
+    await app.request('browser.done', { runId, answer });
+    assert.deepEqual(await reply, { apps: 1, drivers: 1, answered: true, answer });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
 // M9 fix 781: a channel answering each push as the mod does, posting its
 // word on the submit (the hook sink hands it to modSubmitAnswered); a drop
 // says the prompt did not enter. And a push read without its id.
@@ -697,6 +748,36 @@ test('file.open with url relays a page and refuses a path or a scheme (M9 fix 65
     await assert.rejects(cli.request('file.open', { path: 'C:\\notes.md', pane: true, url: true }), { code: 'bad-request', message: 'url needs an http or https URL in path' });
     await assert.rejects(cli.request('file.open', { path: 'localhost:3000', pane: true, url: true }), { code: 'bad-request' });
     await assert.rejects(cli.request('file.open', { path: 'http://localhost:3000/', pane: true, url: true, scheme: 'Dracula' }), { code: 'bad-request', message: 'a url takes no scheme' });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 936: browser says the path is an .html file the window renders
+// in a browser pane; the daemon holds it to an absolute .html or .htm
+// path with no url and no scheme, and an emerald-file: URL stays the
+// window's own.
+test('file.open with browser relays an .html path and refuses a relative path, another file, a url or a scheme (M9 fix 936)', async () => {
+  const pipe = `${PIPE}-open-browser`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'file.open.requested');
+    assert.deepEqual(await cli.request('file.open', { path: 'C:\\site\\page.html', pane: true, browser: true }), { apps: 1 });
+    assert.deepEqual(await requested, { type: 'file.open.requested', path: 'C:\\site\\page.html', pane: true, browser: true });
+    for (const p of ['page.html', 'C:\\notes.md']) {
+      await assert.rejects(cli.request('file.open', { path: p, pane: true, browser: true }), { code: 'bad-request', message: 'browser needs an absolute .html or .htm path' });
+    }
+    await assert.rejects(cli.request('file.open', { path: 'http://localhost:3000/', pane: true, url: true, browser: true }), { code: 'bad-request', message: 'browser and url together' });
+    await assert.rejects(cli.request('file.open', { path: 'C:\\a.html', pane: true, browser: true, scheme: 'Dracula' }), { code: 'bad-request', message: 'a browser page takes no scheme' });
+    await assert.rejects(cli.request('file.open', { path: 'emerald-file://abc/page.html', pane: true, url: true }), { code: 'bad-request', message: 'url needs an http or https URL in path' });
     app.close();
     cli.close();
   } finally {

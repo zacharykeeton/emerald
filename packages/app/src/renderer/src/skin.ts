@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { Skin } from '../../preload/api.ts';
+import { onOtherWindowWrite } from './other-window.ts';
 
 export type { Skin };
 
@@ -43,19 +44,32 @@ export function subscribeSkin(listener: () => void): () => void {
   };
 }
 
-export function setSkin(skin: Skin): void {
+// Puts the skin on this page alone (M9 fix 925): the module's skin,
+// data-skin on <html> and the subscribers. setSkin stores it and tells
+// main as well; a flip made in another window comes here, since that
+// window stored it and main has repainted every window's ground already,
+// so sending it back would loop.
+function showSkin(skin: Skin): void {
   current = skin;
+  if (skin === 'emerald') document.documentElement.dataset.skin = 'emerald';
+  else delete document.documentElement.dataset.skin;
+  for (const listener of listeners) listener();
+}
+
+export function setSkin(skin: Skin): void {
   try {
     localStorage.setItem(SKIN_KEY, skin);
   } catch {
     // The skin then lasts the session.
   }
-  if (skin === 'emerald') document.documentElement.dataset.skin = 'emerald';
-  else delete document.documentElement.dataset.skin;
   window.emerald.setSkin(skin);
-  for (const listener of listeners) listener();
+  showSkin(skin);
 }
 
 export function useSkin(): Skin {
   return useSyncExternalStore(subscribeSkin, getSkin);
 }
+
+onOtherWindowWrite(SKIN_KEY, (raw) => {
+  if ((raw === 'emerald' || raw === 'classic') && raw !== current) showSkin(raw);
+});

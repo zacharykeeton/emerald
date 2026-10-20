@@ -44,7 +44,7 @@ export const commands: CommandEntry[] = [
   {
     name: 'open',
     summary:
-      "open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane (the one on the tab in front, else the first in tab order); --scheme picks the file's own colour scheme; a URL opens a browser pane",
+      "open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane (the one on the tab in front, else the first in tab order); --scheme picks the file's own colour scheme; a URL opens a browser pane, and --browser renders an .html file in one",
     load: () => import('./open.ts').then((m) => m.default),
   },
   {

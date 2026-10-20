@@ -1,5 +1,7 @@
+import { pastEdge } from './drop-zone-model.ts';
 import { DRAG_THRESHOLD } from './pane-drag.ts';
-import { dropBefore } from './tab-order.ts';
+import { dropBefore, layoutTabOf } from './tab-order.ts';
+import { dropOutsideWindows } from './window-drop.ts';
 
 // Dragging a tab along the strip to reorder it (M9 fix 182), hand-rolled
 // on window mousemove and mouseup like pane-drag.ts: every tab's mousedown
@@ -19,11 +21,34 @@ import { dropBefore } from './tab-order.ts';
 // near the strip; once it has gone LEAVE_MARGIN below the strip's box the
 // reorder cancels and hands the pointer to onLeave, which starts the pane
 // drag from there. A drag along the strip never leaves it.
+//
+// A layout tab dragged past the window's own edge (M9 fix 927) goes to
+// main, which forwards it to the window under the pointer; that window
+// draws the same line in its strip (markDropAt) and the release moves the
+// tab there (window-drop.ts). A file tab never crosses as a tab: below
+// the strip it is already a pane drag, which crosses as one.
 
 const GHOST_OFFSET = 12;
 const LEAVE_MARGIN = 16;
 
 let active = false;
+
+// Where a tab dropped at x would land on the strip, and the tab that
+// draws the line: before that tab, or after the last for the end. A line
+// beside the dragged tab itself says nothing and is not drawn. The caller
+// clears the last mark first.
+export function markDropAt(strip: HTMLElement, x: number, dragged: HTMLElement | null): { before: string | null; marked: HTMLElement | null } {
+  const tabs = [...strip.querySelectorAll<HTMLElement>('.tab[data-key]')];
+  const slots = tabs.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { key: el.dataset['key']!, left: r.left, right: r.right };
+  });
+  const before = dropBefore(slots, x);
+  const target = before === null ? (tabs[tabs.length - 1] ?? null) : (tabs.find((el) => el.dataset['key'] === before) ?? null);
+  if (target === null || target === dragged) return { before, marked: null };
+  target.dataset['drop'] = before === null ? 'after' : 'before';
+  return { before, marked: target };
+}
 
 export function startTabDrag(strip: HTMLElement, tab: HTMLElement, key: string, name: string, press: MouseEvent, onDrop: (before: string | null) => void, onLeave?: (from: MouseEvent) => void): void {
   if (active || press.button !== 0) return;
@@ -34,6 +59,10 @@ export function startTabDrag(strip: HTMLElement, tab: HTMLElement, key: string, 
   let ghost: HTMLDivElement | null = null;
   let before: string | null = null;
   let marked: HTMLElement | null = null;
+  // The layout tab a drag past the edge carries (M9 fix 927), and whether
+  // the pointer is out there now.
+  const crossTabId = layoutTabOf(key);
+  let out = false;
 
   const clearMark = () => {
     if (marked !== null) delete marked.dataset['drop'];
@@ -50,6 +79,9 @@ export function startTabDrag(strip: HTMLElement, tab: HTMLElement, key: string, 
     clearMark();
     ghost?.remove();
     ghost = null;
+    // Escape or the blur ends the other window's line too.
+    if (out) window.emerald.windowDrag.back();
+    out = false;
     active = false;
   };
 
@@ -76,27 +108,39 @@ export function startTabDrag(strip: HTMLElement, tab: HTMLElement, key: string, 
       return;
     }
     if (ghost !== null) ghost.style.transform = `translate(${e.clientX + GHOST_OFFSET}px, ${e.clientY + GHOST_OFFSET}px)`;
-    const tabs = [...strip.querySelectorAll<HTMLElement>('.tab[data-key]')];
-    const slots = tabs.map((el) => {
-      const r = el.getBoundingClientRect();
-      return { key: el.dataset['key']!, left: r.left, right: r.right };
-    });
-    before = dropBefore(slots, e.clientX);
-    clearMark();
-    // The line sits before the target, or after the last tab for the end;
-    // a line beside the dragged tab itself says nothing and is not drawn.
-    const target = before === null ? (tabs[tabs.length - 1] ?? null) : (tabs.find((el) => el.dataset['key'] === before) ?? null);
-    if (target !== null && target !== tab) {
-      target.dataset['drop'] = before === null ? 'after' : 'before';
-      marked = target;
+    if (crossTabId !== null && pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
+      clearMark();
+      before = null;
+      out = true;
+      window.emerald.windowDrag.move({ kind: 'tab', tabId: crossTabId }, e.clientX, e.clientY);
+      return;
     }
+    if (out) {
+      window.emerald.windowDrag.back();
+      out = false;
+    }
+    clearMark();
+    ({ before, marked } = markDropAt(strip, e.clientX, tab));
   };
 
-  const onUp = () => {
+  const onUp = (e: MouseEvent) => {
     const dropped = dragging;
     const at = before;
+    const handed = out;
+    // Cleared first, so the teardown sends no back for a drag main is ending.
+    out = false;
     teardown();
     if (!dropped) return;
+    if (handed && crossTabId !== null) {
+      // Another window made the drop, or none was under the pointer and
+      // the tab opens a window of its own there (M9 fix 928).
+      const drag = { kind: 'tab', tabId: crossTabId } as const;
+      void window.emerald.windowDrag
+        .end(e.clientX, e.clientY)
+        .then((end) => (end.to === 'none' ? dropOutsideWindows(drag, end.x, end.y) : undefined))
+        .catch((err: unknown) => console.warn('[emerald] drop failed', err));
+      return;
+    }
     // The click the release fires, on the tab or on the strip when the
     // release was over another tab, is swallowed before it reaches
     // anything, so a moved tab is not also switched to; the guard goes

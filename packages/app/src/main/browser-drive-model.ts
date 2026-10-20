@@ -5,9 +5,12 @@
 
 // The roles a snapshot gives a ref, the controls a click or a fill can
 // act on; a heading is printed with no ref, as a landmark to read by.
+// M9 fix 934: and the roles Chromium gives a date, time and colour input,
+// which have no ARIA role of their own, so a fill reaches them.
 export const ACTIONABLE_ROLES: ReadonlySet<string> = new Set([
   'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox', 'listbox', 'option',
   'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'switch', 'slider', 'spinbutton', 'treeitem',
+  'Date', 'DateTime', 'InputTime', 'ColorWell',
 ]);
 // M9 fix 875: the roles a snapshot lists as a region with a ref of its own (@r1), for --within alone; the verbs take @e refs only.
 export const REGION_ROLES: ReadonlySet<string> = new Set(['dialog', 'alertdialog', 'menu', 'menubar', 'list', 'navigation', 'main', 'complementary', 'banner', 'contentinfo', 'form', 'search', 'region', 'toolbar', 'tablist', 'tree', 'grid', 'table']);
@@ -56,6 +59,23 @@ export function fillPlan(target: FillTarget, text: string, ref: string, describe
       return { type: 'refuse', text: `no option ${JSON.stringify(text)} in ${described}; ${listed}` };
     }
   }
+}
+
+// M9 fix 934: what a field holds after fill's setter fallback, read back.
+// Null when it holds the text, line breaks counted alike and the case of
+// ASCII letters aside (a colour input lowercases #FF0000); else the
+// refusal's tail: the field's maxlength when the text is longer (a value
+// set from script is not held to it, so the read-back alone would pass
+// it), else the value the field holds, which says what its sanitization
+// made of the text.
+export const FILL_HELD_FN = 'function () { return { value: this.value, maxLength: this.maxLength }; }';
+export function fillHeld(text: string, held: unknown): string | null {
+  const read = (typeof held === 'object' && held !== null ? held : {}) as { value?: unknown; maxLength?: unknown };
+  const same = (s: string) => s.replace(/\r\n?/g, '\n').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const max = read.maxLength;
+  if (typeof max === 'number' && max >= 0 && same(text).length > max) return `the field takes at most ${max} character${max === 1 ? '' : 's'}`;
+  const value = typeof read.value === 'string' ? read.value : '';
+  return same(value) === same(text) ? null : `the field holds ${JSON.stringify(value)}`;
 }
 
 // What a Runtime.callFunctionOn or Runtime.evaluate reply says the page threw, as the first line of it, or null when it threw nothing.

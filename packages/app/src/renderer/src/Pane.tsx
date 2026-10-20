@@ -1419,8 +1419,9 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
   if (session.team.length === 0) return <span className="pane-shade-alone">{session.state === 'done' || session.state === 'idle' || session.state === 'exited' ? 'worked alone' : 'working alone'}</span>;
   const now = Date.now();
   const shown = session.team.slice(0, SHOWN_MEMBERS);
+  const dense = session.team.length > 8;
   return (
-    <div className="pane-shade-team" data-count={session.team.length} data-dense={session.team.length > 8 || undefined}>
+    <div className="pane-shade-team" data-count={session.team.length} data-dense={dense || undefined}>
       {shown.map((m, i) => {
         const { kind, working, task, activity } = memberParts(m, now);
         const state = kind === 'agent' ? (working ? 'working' : 'returned') : working ? 'running' : 'finished';
@@ -1453,8 +1454,17 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
               </span>
             {/* M9 fix 654: the agent's latest tool call; a shell's box draws
                 none, since its command is its name, and a returned agent
-                keeps its last phrase. */}
-            {kind === 'agent' && activity !== null && <span className="pane-shade-member-activity">{activity}</span>}
+                keeps its last phrase. M9 fix 940: outside the dense tier an
+                agent's box draws the line before its first call too, a
+                no-break space marked data-empty, so the box is one height
+                before and after and its name never moves under a pointer;
+                the dense tier hides the line, so it draws none there until
+                a call, as before. */}
+            {kind === 'agent' && (activity !== null || !dense) && (
+              <span className="pane-shade-member-activity" data-empty={activity === null ? '' : undefined}>
+                {activity ?? ' '}
+              </span>
+            )}
             </ShadeMemberCard>
             <ShadeMemberRule session={session} agentId={m.id} />
           </div>

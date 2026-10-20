@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
+import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 
 // A permission dialog as Claude Code 2.1 draws it, the transcript above
 // it, the cursor on the dialog's last row.
@@ -139,6 +140,8 @@ const ASK_TABS_2 = [
   '',
   'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
 ];
+// M9 fix 922: the dialog back on Colour after an answer to it, as two Lefts from Size leave it: the tab row as ASK_TABS_2 draws it (Colour ticked), Colour's question; the options are left as Size's, since only the tabs and the question are read.
+const ASK_REVISIT = ASK_TABS_2.map((r) => (r === 'Which size should the sample button be?' ? 'Which colour should the sample button be?' : r));
 // A Bash permission under --permission-mode default; its footer is not
 // the select chord, and dashed dividers frame the command. The folder in
 // option 2 is put in place of the captured one, which named a home.
@@ -606,4 +609,54 @@ test("ghostSuggestion reads the row from the ghost's start, not the run's end (f
   const padded = [...SUGGESTED];
   padded[2] = '❯ Run the tests   ';
   assert.equal(ghostSuggestion({ rows: padded, ghost: { y: 2, x: 2, text: 'Run the tests' } }), 'Run the tests', 'trailing spaces');
+});
+
+test('M9 fix 922: tabMoves is one arrow per tab between the current one and the tab pressed', () => {
+  assert.equal(tabMoves(2, 0), '\x1b[D\x1b[D');
+  assert.equal(tabMoves(0, 1), '\x1b[C');
+  assert.equal(tabMoves(3, 0), '\x1b[D\x1b[D\x1b[D', 'from the review Submit');
+  assert.equal(tabMoves(1, 1), '');
+  assert.equal(tabMoves(-1, 0), '');
+});
+
+test('M9 fix 922: visitedTabs reads the tab a card moved to as current in place of the inferred one', () => {
+  const QUESTIONS: Record<string, string> = { Colour: 'Which colour should the sample button be?', Size: 'Which size should the sample button be?' };
+  const q = askQuestion(ASK_REVISIT)!;
+  const inferred = q.tabs.find((t) => t.current)!;
+  assert.equal(inferred.name, 'Size');
+  assert.notEqual(QUESTIONS[inferred.name], q.question, 'the inference alone names the wrong tab');
+  const landed = visitedTabs(q.tabs, { index: 0, from: QUESTIONS.Size!, question: q.question });
+  assert.deepEqual(
+    landed.map((t) => [t.name, t.current]),
+    [
+      ['Colour', true],
+      ['Size', false],
+      ['Shape', false],
+      ['Submit', false],
+    ],
+  );
+  assert.equal(QUESTIONS[landed.find((t) => t.current)!.name], q.question);
+  assert.equal(visitedTabs(q.tabs, { index: 0, from: QUESTIONS.Size!, question: null }).find((t) => t.current)!.name, 'Size', 'in flight');
+  assert.equal(visitedTabs(q.tabs, null).find((t) => t.current)!.name, 'Size', 'no visit');
+  assert.equal(visitedTabs(q.tabs, { index: 9, from: null, question: q.question }).find((t) => t.current)!.name, 'Size', 'past the list');
+});
+
+test('M9 fix 922: visitAfter keeps, lands and drops a visit by what the read draws', () => {
+  const flying = { index: 0, from: 'a', question: null };
+  assert.equal(visitAfter(flying, { question: 'a', dialog: true, pressing: true }), flying, 'own question, pressing');
+  assert.equal(visitAfter(flying, { question: 'a', dialog: true, pressing: false }), null, 'own question, press over');
+  assert.equal(visitAfter(flying, { question: null, dialog: false, pressing: true }), flying, 'no question, pressing');
+  assert.equal(visitAfter(flying, { question: null, dialog: false, pressing: false }), null, 'no question, press over');
+  assert.deepEqual(visitAfter(flying, { question: 'b', dialog: true, pressing: true }), { index: 0, from: 'a', question: 'b' }, 'another question lands it');
+  const landed = { index: 0, from: 'a', question: 'b' };
+  assert.equal(visitAfter(landed, { question: 'b', dialog: true, pressing: false }), landed, 'its question again');
+  assert.equal(visitAfter(landed, { question: null, dialog: false, pressing: false }), landed, 'no dialog');
+  assert.equal(visitAfter(landed, { question: 'c', dialog: true, pressing: false }), null, 'another question');
+  assert.equal(visitAfter(landed, { question: null, dialog: true, pressing: false }), null, 'the review');
+});
+
+test('M9 fix 922: visitAnswered follows a landed visit to the next tab', () => {
+  assert.equal(visitAnswered(null), null);
+  assert.equal(visitAnswered({ index: 0, from: 'a', question: null }), null);
+  assert.deepEqual(visitAnswered({ index: 0, from: 'a', question: 'b' }), { index: 1, from: 'b', question: null });
 });

@@ -600,6 +600,45 @@ try {
   expect(!('toolbar' in (await viewOf())), 'the shown row leaves no toolbar key on the record');
   step('(k) the browser pane comes back on its page after a renderer reload, its toolbar row still hidden until Show browser chrome brings it back (fix 839)');
 
+  // (k2) M9 fix 931: a page's own zoom is kept across a reload of the
+  // page, and the pane menu's Reset page zoom puts it back. The wheel goes
+  // through the tag's sendInputEvent, since a CDP mouseWheel carries no
+  // ticks and zooms nothing (fix 899's close-out).
+  const zoomPane = await s.evalJs(`document.querySelector(${JSON.stringify(browserPane)}).dataset.paneId`);
+  const zoomTag = `.browser-frame[data-browser-pane=${JSON.stringify(zoomPane)}] webview`;
+  const pageLevel = () => s.evalJs(`document.querySelector(${JSON.stringify(zoomTag)}).getZoomLevel()`);
+  const inPage = (code) => s.evalJs(`document.querySelector(${JSON.stringify(zoomTag)}).executeJavaScript(${JSON.stringify(code)})`);
+  const g0 = await pageLevel();
+  console.log(`[931] window level ${await s.evalJs('window.emerald.zoom.level()')}, page level ${g0}`);
+  await s.evalJs(`(() => { const w = document.querySelector(${JSON.stringify(zoomTag)}); const r = w.getBoundingClientRect(); w.sendInputEvent({ type: 'mouseWheel', x: Math.round(r.width / 2), y: Math.round(r.height / 2), deltaX: 0, deltaY: 120, wheelTicksX: 0, wheelTicksY: 1, canScroll: true, modifiers: ['control'] }); })()`);
+  until = Date.now() + 3000;
+  while (Math.abs((await pageLevel()) - g0) !== 1 && Date.now() < until) await sleep(100);
+  await sleep(300);
+  const stepped = await pageLevel();
+  expect(Math.abs(stepped - g0) === 1, `a Ctrl+wheel steps the page one level (${g0} then ${stepped})`);
+  await inPage('window.__mark931 = 1');
+  await s.evalJs(`document.querySelector(${JSON.stringify(browserPane + ' .browser-reload')}).click()`);
+  until = Date.now() + 10000;
+  while (!(await inPage('window.__mark931 === undefined && document.readyState === "complete"').catch(() => false)) && Date.now() < until) await sleep(100);
+  await sleep(1000);
+  const reloaded = await pageLevel();
+  expect(reloaded === stepped, `a reload keeps the page's zoom (${stepped} then ${reloaded})`);
+  const resetItem = () => s.evalJs(`(() => { const items = [...document.querySelectorAll('.pane-menu .menu-item')]; const at = items.findIndex((b) => b.querySelector('.menu-label')?.textContent === 'Reset page zoom'); if (at < 0) return null; const b = items[at]; return { before: items[at - 1]?.querySelector('.menu-label')?.textContent ?? null, disabled: b.disabled, title: b.title }; })()`);
+  await titleMenu();
+  const offItem = await resetItem();
+  expect(offItem !== null && !offItem.disabled && offItem.before === 'Focus', `Reset page zoom is enabled, after Focus (${JSON.stringify(offItem)})`);
+  await clickMenu('Reset page zoom');
+  until = Date.now() + 3000;
+  while ((await pageLevel()) !== g0 && Date.now() < until) await sleep(100);
+  expect((await pageLevel()) === g0, `Reset page zoom puts the page back at ${g0} (${await pageLevel()})`);
+  await s.waitFor(`!document.querySelector('.pane-menu')`, 'the menu closed after Reset page zoom');
+  await titleMenu();
+  const atItem = await resetItem();
+  expect(atItem !== null && atItem.disabled && atItem.title === 'Already at 100%', `Reset page zoom is disabled at the default with Already at 100% (${JSON.stringify(atItem)})`);
+  await s.evalJs(`document.querySelector('.pane-menu') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await s.waitFor(`!document.querySelector('.pane-menu')`, 'the pane menu closed');
+  step("(k2) M9 fix 931: a Ctrl+wheel steps the page one level, a reload of the page keeps it, and the pane menu's Reset page zoom, after Focus, puts it back and is then disabled with Already at 100%");
+
   // (l) emmer open <host:port>.
   let r = await cliOpen(`127.0.0.1:${port}/two`);
   expect(r.code === 0 && r.out.trim() === `opened ${origin}/two in a pane`, `emmer open host:port/two (${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)})`);
@@ -679,6 +718,8 @@ try {
   await s.evalJs(`document.querySelector('.file-view .file-browser').click()`);
   const localView = async () => leaves(await getLayout(s)).filter((p) => p.view?.kind === 'browser' && p.view.url.startsWith('emerald-file://')).map((p) => p.view);
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 2 && [...document.querySelectorAll(${JSON.stringify(browserPane)})].every((e) => e.getBoundingClientRect().width > 0)`, 'two browser panes on show');
+  await sleep(500);
+  expect((await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`)) === fx, "the Browser button kept the rail's Up lift (fix 932)");
   const firstLocal = (await localView())[0];
   expect(firstLocal !== undefined && /^emerald-file:\/\/[0-9a-f-]{36}\/site\/page\.html$/.test(firstLocal.url) && firstLocal.root === fx, `the new pane's record is the page on its root (${JSON.stringify(firstLocal)})`);
   const localUrl = firstLocal.url;
@@ -708,6 +749,30 @@ try {
   const localPaneSel = `.pane[data-view="browser"][data-url=${JSON.stringify(localUrl)}]`;
   await s.waitFor(`document.querySelector(${JSON.stringify(localPaneSel + ' .pane-name')})?.textContent === 'Local page one'`, 'the pane title names the local page');
   expect((await s.evalJs(`document.querySelector(${JSON.stringify(localPaneSel + ' .browser-address')})?.value`)) === 'site/page.html', 'the unfocused address reads site/page.html');
+  // M9 fix 933: every text the error line shows on a frame, kept from the
+  // observer's records, so a line drawn and cleared again before a read
+  // still counts.
+  const localPaneId = await s.evalJs(`document.querySelector(${JSON.stringify(localPaneSel)}).dataset.paneId`);
+  const watchErrors = (paneId, key) =>
+    s.evalJs(`(() => {
+      const frame = document.querySelector(${JSON.stringify(`.browser-frame[data-browser-pane=${JSON.stringify(paneId)}]`)});
+      const seen = (window[${JSON.stringify(key)}] = []);
+      const obs = new MutationObserver((records) => {
+        for (const r of records) {
+          if (r.type === 'characterData' && r.target.parentElement?.closest('.browser-error')) seen.push(r.target.textContent);
+          for (const n of r.addedNodes) {
+            if (n.nodeType === 3 && n.parentElement?.closest('.browser-error')) seen.push(n.textContent);
+            if (n.nodeType !== 1) continue;
+            const line = n.matches('.browser-error') ? n : n.querySelector('.browser-error');
+            if (line !== null) seen.push(line.textContent);
+          }
+        }
+      });
+      obs.observe(frame, { childList: true, subtree: true, characterData: true });
+      window[${JSON.stringify(key + 'Stop')}] = () => obs.disconnect();
+      return frame !== null;
+    })()`);
+  const stopWatch = (key) => s.evalJs(`(() => { window[${JSON.stringify(key + 'Stop')}](); return window[${JSON.stringify(key)}]; })()`);
   // Out to the web and Back.
   await localGesture(`document.getElementById('web').click()`);
   await local.waitFor(`location.href === ${JSON.stringify(`${origin}/two`)}`, 'the local page linked out to /two');
@@ -719,6 +784,7 @@ try {
     outView = await pageRecord();
   }
   expect(outView?.url === `${origin}/two` && !('root' in outView), `the record went to /two with no root (${JSON.stringify(outView)})`);
+  expect(await watchErrors(localPaneId, '__error933'), 'the local pane\'s frame to watch');
   await localGesture('history.back()');
   await local.waitFor(`document.title === 'Local page one'`, 'Back on the local page');
   const backDeadline = Date.now() + 5000;
@@ -728,22 +794,23 @@ try {
     backView = await pageRecord();
   }
   expect(backView?.url === localUrl && backView.root === fx, `the record back on the local page with its root (${JSON.stringify(backView)})`);
+  const backErrors = await stopWatch('__error933');
+  expect(!backErrors.some((t) => t.includes('a web page cannot open a page from the disk')), `Back onto the page from the disk flashed no refusal (fix 933) (${JSON.stringify(backErrors)})`);
   // The control: the web page cannot navigate into, fetch or embed it.
+  // Fix 933's observer is armed on the web page's frame too, as its
+  // control: this refusal does reach the error line.
+  const homePaneId = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(browserPane)})].find((e) => e.dataset.url === ${JSON.stringify(home)})?.dataset.paneId ?? null`);
+  expect(homePaneId !== null && (await watchErrors(homePaneId, '__error933home')), 'the web page\'s frame to watch');
   await gesture(`location.href = ${JSON.stringify(localUrl)}`).catch(() => {});
   await sleep(1500);
   expect((await guest.evalJs('location.href')) === home, 'the web page stayed on / (it cannot navigate into the disk)');
+  const homeErrors = await stopWatch('__error933home');
+  console.log(`[933] the web page's refusal reached the home frame's error line: ${homeErrors.some((t) => t.includes('a web page cannot open a page from the disk'))}`);
   console.log(`[896] the guard logged the local navigation: ${logText().includes('browser: navigation refused: emerald-file://')}`);
   expect((await guest.evalJs(`fetch(${JSON.stringify(localUrl)}).then(() => 'read', () => 'refused')`)) === 'refused', 'the web page cannot fetch the local page');
   const dotUrl = `emerald-file://${rootId}/site/dot.png`;
   expect((await guest.evalJs(`new Promise((res) => { const i = new Image(); i.onload = () => res('loaded'); i.onerror = () => res('error'); i.src = ${JSON.stringify(dotUrl)}; })`)) === 'error', 'the web page cannot embed a local image');
-  // The row's menu. The focus moving to the new browser pane can put the
-  // rail back on following (fix 332), so it goes Up once more if it has.
-  const railNow = await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`);
-  console.log(`[897] the rail's root before the row menu: ${railNow}`);
-  if (railNow !== fx) {
-    await s.evalJs(`document.querySelector('.files-up').click()`);
-    await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(fx)}`, 'the rail up on the fixture again');
-  }
+  // The row's menu.
   const pageRow = `.files-row[data-path=${JSON.stringify(pagePath)}]`;
   const styleRow = `.files-row[data-path=${JSON.stringify(path.join(site, 'style.css'))}]`;
   await s.waitFor(`!!document.querySelector(${JSON.stringify(pageRow)}) && !!document.querySelector(${JSON.stringify(styleRow)})`, 'the page.html and style.css rows under site');
@@ -767,6 +834,8 @@ try {
   await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(pagePath)}`, 'the page row menu again');
   await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Open in browser').click()`);
   await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 3`, 'a third browser pane');
+  await sleep(500);
+  expect((await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`)) === fx, "Open in browser kept the rail's Up lift (fix 932)");
   const locals = await localView();
   expect(locals.length === 2 && locals.every((v) => new URL(v.url).host === rootId && v.root === fx), `the newest pane shares the root id and its root (${JSON.stringify(locals)})`);
   step('(n) M9 fixes 896 and 897: an HTML file in a folder the rail shows opens rendered on emerald-file: from its tab\'s Browser button and its row\'s Open in browser, its stylesheet and a file a level up read, a junction out of the folder and a backslash path refused, a link out and Back, and a web page unable to navigate, fetch or embed it');
@@ -785,6 +854,43 @@ try {
   fs.writeFileSync(pagePath, pageHtml('Local page three'));
   await local.waitFor(`document.title === 'Local page three'`, 'the page back once the file is written again', 5000);
   step('(n2) M9 fix 898: a page from the disk reloads when its file or its stylesheet changes on disk, shows the not-there page when the file is deleted and comes back when it is written again');
+
+  // (n3) M9 fix 936: emmer open page.html --browser renders the page in a
+  // pane on the root the rail gives it, and a page outside the rail's
+  // folder on its own folder.
+  const railAt = await s.evalJs(`document.querySelector('.files-rail')?.dataset.root ?? null`);
+  console.log(`[936] the rail's root at the open: ${railAt}`);
+  const urlsBefore = (await localView()).map((v) => v.url);
+  r = await cliOpen(pagePath, '--browser');
+  expect(r.code === 0 && r.out.trim() === `opened ${pagePath} in a pane`, `emmer open page.html --browser (${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)})`);
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 4`, 'a fourth browser pane');
+  const localsSettled = async (done) => {
+    const deadline = Date.now() + 5000;
+    let views = await localView();
+    while (!done(views) && Date.now() < deadline) {
+      await sleep(150);
+      views = await localView();
+    }
+    return views;
+  };
+  if (railAt === fx) {
+    const views = await localsSettled((vs) => vs.filter((v) => v.url === localUrl).length === 3);
+    expect(views.filter((v) => v.url === localUrl && v.root === fx).length === 3, `the --browser page on the rail's folder shares the root id (${JSON.stringify(views)})`);
+  } else if (railAt === site) {
+    const views = await localsSettled((vs) => vs.some((v) => !urlsBefore.includes(v.url)));
+    const fresh = views.find((v) => !urlsBefore.includes(v.url));
+    expect(fresh !== undefined && fresh.root === site && /^emerald-file:\/\/[0-9a-f-]{36}\/page\.html$/.test(fresh.url) && new URL(fresh.url).host !== rootId, `the --browser page on the rail's folder site (${JSON.stringify(views)})`);
+  } else expect(false, `the rail's root at the open is ${railAt}, neither the fixture nor its site folder`);
+  const outside = fx + '-outside';
+  const alonePath = path.join(outside, 'alone.html');
+  fs.writeFileSync(alonePath, pageHtml('Alone page'));
+  r = await cliOpen(alonePath, '--browser');
+  expect(r.code === 0 && r.out.trim() === `opened ${alonePath} in a pane`, `emmer open alone.html --browser (${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)})`);
+  await s.waitFor(`document.querySelectorAll(${JSON.stringify(browserPane)}).length === 5`, 'a fifth browser pane');
+  const aloneViews = await localsSettled((vs) => vs.some((v) => v.root === outside));
+  const alone = aloneViews.find((v) => v.root === outside);
+  expect(alone !== undefined && /^emerald-file:\/\/[0-9a-f-]{36}\/alone\.html$/.test(alone.url) && new URL(alone.url).host !== rootId, `a page outside the rail's folder on its own folder (${JSON.stringify(aloneViews)})`);
+  step('(n3) M9 fix 936: emmer open page.html --browser renders the page in a browser pane on the rail\'s folder, and a page outside it on its own folder');
 
   // Anything the window's console said about a renderer that failed to
   // start, for the report.

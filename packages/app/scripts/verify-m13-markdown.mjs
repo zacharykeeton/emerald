@@ -278,7 +278,8 @@ try {
   const box0 = `document.querySelector('.markdown .md-mermaid[data-key="0"]')`;
   const box1 = `document.querySelector('.markdown .md-mermaid[data-key="1"]')`;
   await clickRow(s, diagramsMd);
-  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(diagramsMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && document.activeElement?.classList.contains('markdown-view') === true`, 'diagrams.md rendered with the keyboard', 5000);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(diagramsMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && !!document.querySelector('.markdown-view') && document.activeElement === document.querySelector('.files-list')`, 'diagrams.md rendered, the tree keeping the keyboard', 5000);
+  await s.evalJs(`document.querySelector('.markdown-view').focus()`);
   expect((await inArticle(s, '.md-mermaid')) === 2, `two mermaid boxes (${await inArticle(s, '.md-mermaid')})`);
   await s.waitFor(`!!document.querySelector('.markdown .md-mermaid[data-key="0"] .md-mermaid-diagram[data-state="drawn"] svg')`, 'box 0 drawn', 15000);
   expect((await s.evalJs(`${box0}.dataset.side`)) === 'diagram', 'box 0 opens on the diagram');

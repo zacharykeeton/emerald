@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { normalizePath, renamedPath } from './files-model.ts';
+import { onOtherWindowWrite } from './other-window.ts';
 
 // A file's own colour scheme (M9 fix 340): the document of a file tab or
 // a file pane takes the ground and the foreground of a scheme picked for
@@ -83,6 +84,17 @@ function load(): readonly FileSchemeEntry[] {
   }
 }
 
+// What is stored now (M9 fix 926), the base each pick builds on so another
+// window's picks stay; this window's own list when the read throws, so a
+// page with no storage keeps its picks for the session.
+function fresh(): readonly FileSchemeEntry[] {
+  try {
+    return parseFileSchemes(localStorage.getItem(FILE_SCHEMES_KEY));
+  } catch {
+    return entries;
+  }
+}
+
 function save(): void {
   try {
     if (entries.length === 0) localStorage.removeItem(FILE_SCHEMES_KEY);
@@ -99,8 +111,9 @@ export function getFileScheme(path: string): string | null {
 // A name sets the file's pick; null clears it (the menu's Window's
 // scheme).
 export function setFileScheme(path: string, scheme: string | null): void {
-  const next = withFileScheme(entries, path, scheme);
-  if (next === entries) return;
+  const base = fresh();
+  const next = withFileScheme(base, path, scheme);
+  if (next === base) return;
   entries = next;
   save();
   for (const l of listeners) l();
@@ -108,8 +121,9 @@ export function setFileScheme(path: string, scheme: string | null): void {
 
 // The rail's rename (M9 fix 574), in setFileScheme's shape.
 export function renameFileSchemes(from: string, to: string): void {
-  const next = renamedSchemes(entries, from, to);
-  if (next === entries) return;
+  const base = fresh();
+  const next = renamedSchemes(base, from, to);
+  if (next === base) return;
   entries = next;
   save();
   for (const l of listeners) l();
@@ -117,8 +131,9 @@ export function renameFileSchemes(from: string, to: string): void {
 
 // The rail's delete (M9 fix 617), in renameFileSchemes' shape.
 export function dropFileSchemes(path: string): void {
-  const next = deletedSchemes(entries, path);
-  if (next === entries) return;
+  const base = fresh();
+  const next = deletedSchemes(base, path);
+  if (next === base) return;
   entries = next;
   save();
   for (const l of listeners) l();
@@ -139,3 +154,11 @@ export function useFileScheme(path: string): string | null {
   const list = useSyncExternalStore(subscribeFileSchemes, snapshot);
   return fileSchemeOf(list, path);
 }
+
+// Another window of the profile wrote it (M9 fix 926): this window takes
+// it as it lands, so it shows the same and its next write does not put the
+// old value back.
+onOtherWindowWrite(FILE_SCHEMES_KEY, () => {
+  entries = load();
+  for (const l of listeners) l();
+});

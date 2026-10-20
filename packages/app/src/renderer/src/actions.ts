@@ -31,6 +31,7 @@ import {
   subtreeHas,
   switchTab,
   tabHolding,
+  windowView,
 } from '@emerald/shared';
 import type { Layout, LayoutTab, PaneContent, PaneView, ShellId, SplitDirection, SplitPlace } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
@@ -52,7 +53,7 @@ import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.t
 import type { ClosedSpot } from './close-countdown-model.ts';
 import { exitsToShell } from './exit-to-shell-model.ts';
 import { normalizePath } from './files-model.ts';
-import { localPageView } from './local-page-model.ts';
+import { isHtmlFile, localPageRoot, localPageView, railRoot } from './local-page-model.ts';
 import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
 import { flashCornerNote } from './ui.ts';
@@ -135,17 +136,21 @@ export function showSessionAuto(sessionId: string): Promise<unknown> {
 // be a sibling off the zoom path and so invisible until focus moved, and
 // the new pane takes the target's text size. A picker open on the pane
 // was asking what to show there, so a center drop closes it.
-export function dropSessionOn(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null = null): Promise<void> {
+// The drops' last parameter is the edit, this window's unless a drop
+// from another window names the whole layout's (M9 fix 927).
+type LayoutEdit = (fn: (layout: Layout) => Layout) => Promise<Layout>;
+
+export function dropSessionOn(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<void> {
   recordUse('drop-session');
-  return dropSessionOnUnrecorded(sessionId, paneId, zone, fromPaneId);
+  return dropSessionOnUnrecorded(sessionId, paneId, zone, fromPaneId, edit);
 }
 
 // The same unrecorded (M9 fix 676), for placeSession, which reaches it
 // after an await where the turn gate no longer holds.
-async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null): Promise<void> {
+async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null, edit: LayoutEdit = editLayout): Promise<void> {
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
-  const after = await editLayout((l) => {
+  const after = await edit((l) => {
     const tab = tabHolding(l, paneId);
     if (tab === null || fromPaneId === paneId) return l;
     const dropped = replaceTab(l, dropSession(tab, sessionId, paneId, split));
@@ -169,12 +174,12 @@ async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: 
 // text size, so a terminal put there later matches its neighbours.
 // It answers the pane the view landed on, or null when the drop changed
 // nothing (M9 fix 437: the drag of a contents hit reveals its line there).
-export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone, fromPaneId: string | null = null): Promise<string | null> {
+export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<string | null> {
   recordUse('drop-view');
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
   let landed: string | null = null;
-  const after = await editLayout((l) => {
+  const after = await edit((l) => {
     const tab = tabHolding(l, paneId);
     if (tab === null || fromPaneId === paneId) return l;
     const placed = dropView(tab, view, paneId, split);
@@ -198,7 +203,7 @@ export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone,
 // the tab on show, or on the tab the title already sits in, is nothing.
 // The window stays on its tab, so nothing is shown, zoomed or acked.
 // It answers the pane the content landed on, or null when the drop changed nothing (M9 fix 765: a contents hit's line is revealed there once the tab is shown).
-export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null): Promise<string | null> {
+export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<string | null> {
   recordUse('drop-on-layout-tab');
   let landed: string | null = null;
   await editTabs((l) => {
@@ -212,7 +217,7 @@ export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromP
     if (fromPaneId === null) return dropped;
     const from = tabHolding(dropped, fromPaneId);
     return from === null ? dropped : replaceTab(dropped, closePane(from, fromPaneId));
-  });
+  }, edit);
   return landed;
 }
 
@@ -222,7 +227,7 @@ export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromP
 // strip's kept order is written with the made tab's id (newGroupTab uses
 // currentTabId, which here stays the source tab).
 // It answers the pane the content landed on, or null when the drop changed nothing (M9 fix 765: a contents hit's line is revealed there once the tab is shown).
-export async function dropOnNewTab(content: PaneContent, fromPaneId: string | null = null): Promise<string | null> {
+export async function dropOnNewTab(content: PaneContent, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<string | null> {
   recordUse('drop-on-new-tab');
   let name: string;
   if (content.sessionId !== null) {
@@ -237,14 +242,16 @@ export async function dropOnNewTab(content: PaneContent, fromPaneId: string | nu
   let madeId: string | null = null;
   let landed: string | null = null;
   await editTabs((l) => {
-    oldLayoutTabIds = l.tabs.map((t) => t.id);
-    const added = addTabHolding(l, name, content);
+    // This window's ids: the view's own in a window edit, which has no
+    // windows field, and this window's in a whole one (M9 fix 927).
+    oldLayoutTabIds = windowView(l, getState().windowId).tabs.map((t) => t.id);
+    const added = addTabHolding(l, name, content, randomId, getState().allLayout ?? l);
     madeId = added.tabs[added.tabs.length - 1]!.id;
     landed = added.tabs[added.tabs.length - 1]!.focusedPaneId;
     if (fromPaneId === null) return added;
     const from = tabHolding(added, fromPaneId);
     return from === null ? added : replaceTab(added, closePane(from, fromPaneId));
-  });
+  }, edit);
   if (madeId !== null && oldLayoutTabIds !== null) placeNewTab(layoutTabKey(madeId), oldLayoutTabIds);
   return landed;
 }
@@ -259,8 +266,7 @@ export function openViewBeside(view: PaneView): Promise<void> {
 // The same unrecorded (M9 fix 676), for openFileFromOutside, whose call
 // is `emmer open`'s and comes after an await.
 async function openViewBesideUnrecorded(view: PaneView): Promise<void> {
-  const paneId = await roomBesideFocused();
-  await editTab((t) => setPaneView(t, paneId, view), paneId);
+  await roomBesideFocused(view);
 }
 
 // M9 fix 897: an HTML file rendered in a browser pane beside the focused pane, from the Files rail's folder, with the panes tab put in front so the page is on show.
@@ -268,8 +274,7 @@ export async function openLocalPage(file: string, root: string): Promise<void> {
   recordUse('open-view-beside');
   const view = localPageView(getState().layout, root, file);
   showTab(PANES);
-  const paneId = await roomBesideFocused();
-  await editTab((t) => setPaneView(t, paneId, view), paneId);
+  await roomBesideFocused(view);
 }
 
 // M9 fixes 863 and 864: a Ctrl+click on a link or a path opens it in a
@@ -288,9 +293,7 @@ export async function openBeside(view: PaneView, fromPaneId: string | null): Pro
   showTab(PANES);
   const layout = getState().layout;
   const besidePane = fromPaneId !== null && layout !== null && tabHolding(layout, fromPaneId) !== null;
-  const paneId = besidePane ? await roomBeside(fromPaneId) : await roomBesideFocused();
-  await editTab((t) => setPaneView(t, paneId, shown), paneId);
-  return paneId;
+  return besidePane ? await roomBeside(fromPaneId, shown) : await roomBesideFocused(shown);
 }
 
 // A file opened from outside the rail (M9 fix 341): the chooser, a drop
@@ -309,12 +312,19 @@ export async function openBeside(view: PaneView, fromPaneId: string | null): Pro
 // a session on several panes has one picked for it; the answer names the
 // pane and its tab so the CLI can say which. M9 fix 659: with url the
 // path is a page for a browser pane, never a tab and never normalized,
-// beside the named session's pane or the focused one.
-export async function openFileFromOutside(path: string, pane = false, extra: { scheme?: string | null; openId?: number; beside?: string; url?: boolean } = {}): Promise<void> {
+// beside the named session's pane or the focused one. M9 fix 936: with
+// browser the path is an .html file rendered in a browser pane on
+// emerald-file:.
+export async function openFileFromOutside(path: string, pane = false, extra: { scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean } = {}): Promise<void> {
   const page = extra.url === true;
   const p = page ? path : normalizePath(path);
-  const view: PaneView = page ? { kind: 'browser', url: p } : { kind: 'file', path: p };
-  if (page) pane = true;
+  const local = extra.browser === true && !page;
+  // M9 fix 936: --browser's page, built as the file tab's Browser button
+  // builds it (the rail's folder when the file is under it, else its
+  // own), and opened as any view from outside, so --beside works and the
+  // use is recorded once, as cli-open.
+  const view: PaneView = page ? { kind: 'browser', url: p } : local ? localPageView(getState().layout, localPageRoot(p, railRoot()), p) : { kind: 'file', path: p };
+  if (page || local) pane = true;
   let known = true;
   let besideFound = true;
   // Which of the session's panes paneShowingIn picked (M9 fix 404): a
@@ -334,6 +344,10 @@ export async function openFileFromOutside(path: string, pane = false, extra: { s
       console.warn('[emerald] open from outside: not a page URL');
       return;
     }
+    if (local && !isHtmlFile(p)) {
+      console.warn('[emerald] open from outside: --browser on a file that is not .html');
+      return;
+    }
     if (extra.beside !== undefined) {
       const layout = getState().layout;
       const shown = layout === null ? null : paneShowingIn(layout, extra.beside);
@@ -341,8 +355,7 @@ export async function openFileFromOutside(path: string, pane = false, extra: { s
         besidePane = shown.pane.id;
         besideTab = shown.tab.name;
         showTab(PANES);
-        const paneId = await roomBeside(shown.pane.id);
-        await editTab((t) => setPaneView(t, paneId, view), paneId);
+        await roomBeside(shown.pane.id, view);
         return;
       }
       besideFound = false;
@@ -1073,22 +1086,29 @@ export async function resumeTranscript(folder: string, claudeSessionId: string, 
 // even goes out: the daemon's own layout.changed push can otherwise reach
 // the store and mount the pane before an await here resumes, which raced
 // and lost every time (verify:m9 read it as the flash never arriving).
-export async function roomBesideFocused(): Promise<string> {
+// M9 fix 932: a view passed is set in the same edit as the split, so the
+// focused pane is never empty for a render and the Files rail keeps its lift.
+export async function roomBesideFocused(view?: PaneView): Promise<string> {
   const layout = getState().layout;
   if (layout === null) throw new Error('no layout yet');
   // The tab on show (M36): the heading was clicked there.
   const tab = currentTab(layout);
   const focused = findPane(tab, tab.focusedPaneId);
   const isEmpty = (p: { sessionId: string | null; view: unknown }) => p.sessionId === null && p.view === null;
-  if (focused !== null && isEmpty(focused)) return focused.id;
+  const taken = async (id: string): Promise<string> => {
+    if (view !== undefined) await editTab((t) => setPaneView(t, id, view), id);
+    return id;
+  };
+  if (focused !== null && isEmpty(focused)) return taken(focused.id);
   if (focused === null) {
     const empty = listPanes(tab).find(isEmpty);
-    if (empty !== undefined) return empty.id;
+    if (empty !== undefined) return taken(empty.id);
   }
   const from = focused?.id ?? firstPane(tab.root).id;
   clearZoom();
   const after = await editTab((t) => {
     const split = splitPane(t, from, 'row');
+    if (view !== undefined) return setPaneView(split, split.focusedPaneId, view);
     markFresh(split.focusedPaneId);
     return split;
   });
@@ -1101,21 +1121,24 @@ export async function roomBesideFocused(): Promise<string> {
 // one; the pane named holds a session or a view, so it is never taken as it is.
 // Resolves with the new pane. M9 fix 449: always a split, so always
 // flashed once it mounts; markFresh runs inside the edit, same reason as
-// roomBesideFocused's above.
-export async function roomBeside(paneId: string): Promise<string> {
+// roomBesideFocused's above. M9 fix 932: a view passed is set in the same
+// edit as the split, so the focused pane is never empty for a render and
+// the Files rail keeps its lift.
+export async function roomBeside(paneId: string, view?: PaneView): Promise<string> {
   let newId: string | null = null;
   clearZoom();
   await editLayout((l) => {
     const tab = tabHolding(l, paneId);
     if (tab === null) return l;
     const split = splitPane(tab, paneId, 'row');
-    newId = split.focusedPaneId;
-    markFresh(newId);
-    return switchTab(replaceTab(l, split), tab.id);
+    const id = split.focusedPaneId;
+    newId = id;
+    if (view === undefined) markFresh(id);
+    return switchTab(replaceTab(l, view === undefined ? split : setPaneView(split, id, view)), tab.id);
   });
   if (newId === null) throw new Error(`no pane ${paneId}`);
   inheritFontSize(paneId, newId);
-  markFresh(newId);
+  if (view === undefined) markFresh(newId);
   return newId;
 }
 
@@ -1244,8 +1267,8 @@ export async function pullPane(paneId: string, direction: SplitDirection, place:
 // The layout tabs (M36), from the strip and the prefix keys. Each is one
 // layout edit, so a stale revision re-applies it on the fresh layout. On
 // a daemon from before tabs the edit is left unmade (daemon-model.ts).
-function editTabs(fn: (layout: Layout) => Layout): Promise<Layout> {
-  return editLayout((l) => (tabsSupported(getState().daemon) ? fn(l) : l));
+function editTabs(fn: (layout: Layout) => Layout, edit: LayoutEdit = editLayout): Promise<Layout> {
+  return edit((l) => (tabsSupported(getState().daemon) ? fn(l) : l));
 }
 
 // An empty tab named Panes N at the end of the strip, shown at once. M9
@@ -1257,8 +1280,10 @@ export function newTab(name?: string): Promise<Layout> {
   let oldLayoutTabIds: readonly string[] | null = null;
   return editTabs((l) => {
     oldLayoutTabIds = l.tabs.map((t) => t.id);
-    const added = addTab(l);
-    return name === undefined || name.trim() === '' ? added : renameTab(added, added.currentTabId, freeTabName(l, name.trim()));
+    // M9 fix 924: named past every window's tabs, not this window's alone.
+    const whole = getState().allLayout ?? l;
+    const added = addTab(l, randomId, whole);
+    return name === undefined || name.trim() === '' ? added : renameTab(added, added.currentTabId, freeTabName(l, name.trim(), whole));
   }).then((next) => {
     if (oldLayoutTabIds !== null) placeNewTab(layoutTabKey(next.currentTabId), oldLayoutTabIds);
     return next;
@@ -1272,7 +1297,7 @@ export function newGroupTab(name: string, sessionIds: readonly string[]): Promis
   let oldLayoutTabIds: readonly string[] | null = null;
   return editTabs((l) => {
     oldLayoutTabIds = l.tabs.map((t) => t.id);
-    return addGroupTab(l, name, sessionIds);
+    return addGroupTab(l, name, sessionIds, randomId, getState().allLayout ?? l);
   }).then((next) => {
     if (oldLayoutTabIds !== null) placeNewTab(layoutTabKey(next.currentTabId), oldLayoutTabIds);
     return next;

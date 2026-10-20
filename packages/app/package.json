@@ -1,6 +1,6 @@
 {
   "name": "@emerald/app",
-  "version": "0.1.888",
+  "version": "0.1.918",
   "private": true,
   "description": "emerald desktop app: pixels and keystrokes only, the daemon owns the state",
   "license": "MIT",

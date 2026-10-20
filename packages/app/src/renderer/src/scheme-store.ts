@@ -4,11 +4,13 @@ import emeraldGemScheme from '../../../resources/schemes/emerald-gem.json';
 import { SCHEME_KEY, orderSchemes, pickScheme, schemeFromWindowsTerminal, storedPick, themeOf } from './scheme-model.ts';
 import type { SchemeSkin, TerminalScheme, XtermTheme } from './scheme-model.ts';
 import { getSkin, subscribeSkin } from './skin.ts';
+import { onOtherWindowWrite } from './other-window.ts';
 
 // The terminal's colour scheme for this window (M9 fix 225): the list
 // the main process read (the shipped ones, then the person's Windows
 // Terminal ones) and the pick, kept in localStorage under emerald.scheme
-// the way the text size is, one scheme per window. Every terminal reads
+// the way the text size is, one scheme for every window of the profile,
+// followed across windows since M9 fix 926. Every terminal reads
 // the theme through useScheme and sets term.options.theme when it
 // changes, and the pane's ground follows through --pane-bg on the root
 // (style.css, the .term-host rules), so a light scheme does not sit in a
@@ -149,4 +151,12 @@ subscribeSkin(() => {
   if (skin === state.skin) return;
   const schemes = orderSchemes(state.schemes, skin);
   setState({ ...state, skin, schemes, ...resolve(schemes, state.picked, skin) });
+});
+
+// Another window of the profile wrote it (M9 fix 926): this window takes
+// it as it lands, so it shows the same and its next write does not put the
+// old value back.
+onOtherWindowWrite(SCHEME_KEY, () => {
+  const picked = loadPicked();
+  if (picked !== state.picked) setState({ ...state, picked, ...resolve(state.schemes, picked, state.skin) });
 });

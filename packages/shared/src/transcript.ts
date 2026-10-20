@@ -124,7 +124,7 @@ export function parseTurns(text: string): Turn[] {
       continue;
     }
     if (turn === null) continue;
-    if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+    if (at !== null && movesEnd(o) && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
     if (o['type'] !== 'assistant') continue;
     const message = o['message'];
     if (!isObject(message) || !Array.isArray(message['content'])) continue;
@@ -174,7 +174,11 @@ export type Step =
   // Claude read mid-turn; `at` is its send time.
   | { kind: 'queued'; text: string; at: number | null }
   // M9 fix 805: a line Claude Code wrote for itself, a background task's end, an agent's report or another session's message, read as one line in the open turn.
-  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null };
+  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null }
+  // M9 fix 920: a compaction, its note's words (compactNoteText) and the summary Claude Code wrote after it, null until that line lands.
+  | { kind: 'compact'; text: string; summary: string | null; at: number | null }
+  // M9 fix 921: a bash-mode run (a `!` command), its output null until the output line lands.
+  | { kind: 'bash'; command: string; out: { stdout: string; stderr: string } | null; at: number | null };
 
 export interface StepResult {
   error: boolean;
@@ -400,23 +404,63 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     turn.steps.push(notice);
     return;
   }
+  // M9 fix 920: a compaction is a note in the turn it lands in, mid-turn
+  // or between turns. The summary is the next user line marked
+  // isCompactSummary, matched as the next one rather than by parentUuid,
+  // since an auto compaction writes attachments between the two; it fills
+  // the last compact step still waiting for one, replaced in the steps
+  // rather than changed, since stepFork shares a non-tool step with the
+  // file's state. Neither line moves endAt.
+  if (o['type'] === 'system' && o['subtype'] === 'compact_boundary') {
+    const step: Step = { kind: 'compact', text: compactNoteText(o['compactMetadata']), summary: null, at };
+    if (turn === null) openBareTurn(state, step, at);
+    else turn.steps.push(step);
+    return;
+  }
+  if (o['type'] === 'user' && o['isCompactSummary'] === true) {
+    if (turn === null) return;
+    const steps = turn.steps;
+    const i = steps.findLastIndex((s) => s.kind === 'compact' && s.summary === null);
+    const summary = userTextOf(o);
+    const step = steps[i];
+    if (step !== undefined && step.kind === 'compact' && summary !== null) steps[i] = { ...step, summary };
+    return;
+  }
+  // M9 fix 921: a bash-mode run. Claude Code writes the input line when
+  // the run ends, stamped with its start, then the output line, and Claude
+  // answers every run, so the input opens a bare turn of its own whose
+  // reply is that answer, and the turn before keeps its length. The output
+  // fills the open turn's last run still waiting for one, replaced in the
+  // steps rather than changed (stepFork shares it). Neither line moves
+  // endAt. promptOf still skips both, so the Turns view, the queue fold and
+  // the history never see them.
+  if (o['type'] === 'user' && o['isMeta'] !== true) {
+    const lead = (userTextOf(o) ?? '').trimStart();
+    if (lead.startsWith('<bash-input>')) {
+      const command = (/<bash-input>([\s\S]*?)<\/bash-input>/.exec(lead)?.[1] ?? '').trim();
+      openBareTurn(state, { kind: 'bash', command, out: null, at }, at);
+      state.promptId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+      state.promptUuid = typeof o['uuid'] === 'string' ? o['uuid'] : null;
+      return;
+    }
+    if (lead.startsWith('<bash-stdout') || lead.startsWith('<bash-stderr')) {
+      if (turn === null) return;
+      const steps = turn.steps;
+      const i = steps.findLastIndex((s) => s.kind === 'bash' && s.out === null);
+      const step = steps[i];
+      if (step !== undefined && step.kind === 'bash') steps[i] = { ...step, out: bashOutOf(lead) };
+      return;
+    }
+  }
   const said = commandNoteOf(o);
   if (said === 'drop') return;
   if (said !== null) {
     // The note does not move the turn's endAt, so a rename ten minutes
     // after a reply does not stretch the turn's length on its prompt row.
     const note: Step = { kind: 'command', text: said.text, at, ...(said.url === undefined ? {} : { url: said.url }) };
-    if (turn === null) {
-      // A command before the first prompt opens a bare turn of its own.
-      turn = { prompt: '', at, endAt: null, steps: [note], images: [] };
-      state.turn = turn;
-      state.tools = new Map();
-      state.promptId = null;
-      state.promptUuid = null;
-      state.turns.push(turn);
-    } else {
-      turn.steps.push(note);
-    }
+    // A command before the first prompt opens a bare turn of its own.
+    if (turn === null) openBareTurn(state, note, at);
+    else turn.steps.push(note);
     return;
   }
   const prompt = promptOf(o);
@@ -435,7 +479,7 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     const noIds = state.promptId === null || typeof o['promptId'] !== 'string';
     if (sameId || (noIds && state.promptUuid !== null && o['parentUuid'] === state.promptUuid)) turn.images.push(...imagesOf(o));
   }
-  if (at !== null && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
+  if (at !== null && movesEnd(o) && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
   // M9 fix 754: a message of the person's that Claude absorbed mid-turn
   // is an attachment line after the call it waited on; Claude Code's own
   // queued kinds (task notifications, peer messages) are skipped.
@@ -787,7 +831,8 @@ function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string
 }
 
 function promptOf(o: Record<string, unknown>): string | null {
-  if (o['type'] !== 'user' || o['isMeta'] === true) return null;
+  // M9 fix 920: a compaction's summary is Claude Code's, not the person's.
+  if (o['type'] !== 'user' || o['isMeta'] === true || o['isCompactSummary'] === true) return null;
   const message = o['message'];
   if (!isObject(message)) return null;
   const content = message['content'];
@@ -867,6 +912,71 @@ function taskNote(text: string, at: number | null): Step {
   const summary = field('summary');
   const shown = summary ?? (status !== null ? `Background task ${status}` : 'Background task finished');
   return { kind: 'notification', source: 'task', text: shown, tone: status === 'failed' || status === 'killed' ? 'error' : 'quiet', output: field('output-file'), title: shown, at };
+}
+
+// A turn with no prompt, opened by a line that lands before any prompt
+// (a command's note, a compaction).
+function openBareTurn(state: StepState, step: Step, at: number | null): StepTurn {
+  const turn: StepTurn = { prompt: '', at, endAt: null, steps: [step], images: [] };
+  state.turn = turn;
+  state.tools = new Map();
+  state.promptId = null;
+  state.promptUuid = null;
+  state.turns.push(turn);
+  return turn;
+}
+
+// A user line's text: its string content, else its first text part (the
+// shape a mod row takes).
+function userTextOf(o: Record<string, unknown>): string | null {
+  const message = o['message'];
+  if (!isObject(message)) return null;
+  const content = message['content'];
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const first = content.find((part): part is { type: 'text'; text: string } => isObject(part) && part['type'] === 'text' && typeof part['text'] === 'string');
+  return first === undefined ? null : first.text;
+}
+
+// M9 fix 921: a bash run's output line read as the CLI shows it. The
+// stdout and stderr come HTML-escaped (decoded in one pass, as Claude
+// Code's own reader does), with Windows line ends and any colour codes; a
+// long stdout is a <persisted-output> inside the tag, kept as written.
+function bashOutOf(text: string): { stdout: string; stderr: string } {
+  const tag = (name: string) => new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`).exec(text)?.[1] ?? '';
+  const decode = (s: string) => s.replace(/&(?:amp|lt|gt);/g, (m) => (m === '&amp;' ? '&' : m === '&lt;' ? '<' : '>'));
+  const clean = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r\n/g, '\n').trimEnd();
+  const stdout = tag('bash-stdout');
+  const persisted = /<persisted-output>([\s\S]*?)<\/persisted-output>/.exec(stdout);
+  return { stdout: clean(persisted !== null ? persisted[1]! : decode(stdout)), stderr: clean(decode(tag('bash-stderr'))) };
+}
+
+// M9 fix 920: a compaction note's words, off the boundary line's
+// compactMetadata. Claude Code writes the trigger as auto or manual alone
+// (an idle compaction is auto too); the size is rounded to the nearest
+// thousand, never formatTokens' one decimal.
+export function compactNoteText(meta: unknown): string {
+  const head = isObject(meta) && meta['trigger'] === 'auto' ? 'Conversation compacted automatically' : 'Conversation compacted';
+  const n = isObject(meta) ? meta['preTokens'] : undefined;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return head;
+  return `${head} · ${n >= 1000 ? `${Math.round(n / 1000)}k` : n} tokens`;
+}
+
+// M9 fix 919: whether a line moves its turn's end, read by both folds.
+// An allow list of the lines that are the turn's own work (Claude's line,
+// a tool's result, Claude Code's turn_duration and stop_hook_summary),
+// since every kind left off it has stretched the length in turn: fix 798's
+// command lines, fix 889's bridge line, then the queue lines, the hook
+// attachments and the away summaries the next prompt brings. A kind Claude
+// Code adds later stays off the length until it is named here.
+export function movesEnd(o: Record<string, unknown>): boolean {
+  const type = o['type'];
+  if (type === 'assistant') return true;
+  if (type === 'system') return o['subtype'] === 'turn_duration' || o['subtype'] === 'stop_hook_summary';
+  if (type !== 'user') return false;
+  const message = o['message'];
+  if (!isObject(message) || !Array.isArray(message['content'])) return false;
+  return message['content'].some((part) => isObject(part) && part['type'] === 'tool_result');
 }
 
 function lineTime(o: Record<string, unknown>): number | null {

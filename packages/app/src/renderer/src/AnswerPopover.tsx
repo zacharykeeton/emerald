@@ -6,6 +6,9 @@ import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
 import { answerOptions, askQuestion, askReview, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption, AskPress } from './screen-prompt-model.ts';
+import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import type { AskTab, AskVisit } from './screen-prompt-model.ts';
+import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown, askHeading } from './chat-model.ts';
 import { acknowledgeAttention } from './ui.ts';
 import { TrustPopover } from './TrustCard.tsx';
@@ -105,6 +108,14 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   // M9 fix 879: the Review your answers tab, as the chat view's card draws it.
   const review = shown === null ? null : askReview(shown.rows);
   const ask = shown === null || review !== null ? null : askQuestion(shown.rows);
+  // M9 fix 922: the tab a click moved the dialog to, as the chat view's
+  // card keeps it (AskTabs.tsx, screen-prompt-model.ts).
+  const [visit, setVisit] = useState<AskVisit | null>(null);
+  const liveVisit = visit === null || screen === null ? visit : visitAfter(visit, { question: askQuestion(screen.rows)?.question ?? null, dialog: dialogKey(screen.rows, screen.cursor) !== null, pressing: pressed !== null });
+  useEffect(() => {
+    if (liveVisit !== visit) setVisit(liveVisit);
+  }, [liveVisit, visit]);
+  const askTabs = ask === null ? [] : visitedTabs(ask.tabs, liveVisit);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
   const options: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
   // A dialog with a Cancel of its own draws no second one (fix 879).
@@ -135,6 +146,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   }, [shownKey, freeOpt]);
   const sendFree = () => {
     if (pressed !== null || free.trim() === '') return;
+    if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
     setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
     acknowledgeAttention(session.id);
     void ackIfDone(session.id);
@@ -150,6 +162,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   const submitShown = ask !== null && ask.multi && ask.submit !== null;
   const pressSubmit = () => {
     if (pressed !== null) return;
+    setVisit(visitAnswered(liveVisit));
     setPressed({ at: Number.POSITIVE_INFINITY, key: shownKey, screen: shown });
     acknowledgeAttention(session.id);
     void ackIfDone(session.id);
@@ -160,6 +173,22 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
         setPressed(null);
       },
     );
+  };
+  // M9 fix 922: a tab's press and an option's press, as the chat view's card.
+  const pressTab = (tabs: readonly AskTab[], to: number) => {
+    if (pressed !== null) return;
+    const moves = tabMoves(
+      tabs.findIndex((t) => t.current),
+      to,
+    );
+    if (moves === '') return;
+    setVisit({ index: to, from: ask?.question ?? null, question: null });
+    press((freeOpt?.pointer === true ? '\x1b[A' : '') + moves);
+  };
+  const pressOption = (key: string) => {
+    if (pressed !== null) return;
+    if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
+    press(optionKeys(ask, key));
   };
   const askText = askBoxShown({ reason: session.needsInputReason, recognised: ask !== null || review !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
   // A question wants words, so the box takes the keyboard as the card
@@ -172,18 +201,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
       <div className="answer-popover-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
       {review !== null ? (
         <>
-          {review.tabs.length > 0 && (
-            <div className="answer-popover-tabs">
-              {review.tabs
-                .filter((t) => t.state !== 'submit')
-                .map((t, i) => (
-                  <span key={i} className="answer-popover-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
-                    {t.state === 'answered' && <span className="answer-popover-tab-mark">✓</span>}
-                    {t.name}
-                  </span>
-                ))}
-            </div>
-          )}
+          {review.tabs.length > 0 && <AskTabs tabs={review.tabs} prefix="answer-popover" sent={pressed !== null} onPress={(to) => pressTab(review.tabs, to)} />}
           <div className="answer-popover-question">Review your answers</div>
           {review.warning !== null && <div className="answer-popover-review-warning">{review.warning}</div>}
           <div className="answer-popover-review">
@@ -197,18 +215,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
         </>
       ) : ask !== null ? (
         <>
-          {ask.tabs.length > 0 && (
-            <div className="answer-popover-tabs">
-              {ask.tabs
-                .filter((t) => t.state !== 'submit')
-                .map((t, i) => (
-                  <span key={i} className="answer-popover-tab" data-state={t.state} data-current={t.current ? 'true' : undefined}>
-                    {t.state === 'answered' && <span className="answer-popover-tab-mark">✓</span>}
-                    {t.name}
-                  </span>
-                ))}
-            </div>
-          )}
+          {askTabs.length > 0 && <AskTabs tabs={askTabs} prefix="answer-popover" sent={pressed !== null} onPress={(to) => pressTab(askTabs, to)} />}
           <div className="answer-popover-question">{ask.question}</div>
         </>
       ) : (
@@ -254,7 +261,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
               />
             </div>
           ) : (
-            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => press(optionKeys(ask, o.key))}>
+            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => pressOption(o.key)}>
               <span className="answer-popover-key">{o.key}</span>
               <span className="answer-popover-text">
                 <span className="answer-popover-label">{o.label}</span>

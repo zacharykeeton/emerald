@@ -967,7 +967,7 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
   const [raised, setRaised] = useState<string | null>(null);
   const onRaise = useCallback((hash: string, on: boolean) => setRaised((cur) => (on ? hash : cur === hash ? null : cur)), []);
   // The conflict forecast (M9 fix 320) against this graph: the ties
-  // between the pairs' newest nodes and the stale lanes' figures; the
+  // between the pairs' newest nodes; the
   // empty report reads as no ties, and a folder with no repository has
   // no branches to pair.
   const { conflicts, sessions: liveSessions } = useStore('conflicts', 'sessions');

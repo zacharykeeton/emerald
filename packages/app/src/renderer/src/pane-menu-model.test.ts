@@ -121,7 +121,7 @@ test('the Split items say an empty pane on the empty default', () => {
 
 test('a browser pane has no chrome item and no Open as a tab, and its close says the page goes (M9 fix 659)', () => {
   const page = viewPaneMenu({ kind: 'browser', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' });
-  assert.deepEqual(page.map((i) => i.label), ['Split right', 'Split down', 'Focus', 'Show a session here', 'Close pane']);
+  assert.deepEqual(page.map((i) => i.label), ['Split right', 'Split down', 'Focus', 'Reset page zoom', 'Show a session here', 'Close pane']);
   assert.equal(page.at(-1)!.title, 'Close this pane and its page');
 });
 
@@ -146,7 +146,7 @@ test('others add a New <shell> here item each after New shell here, none without
 test('a browser pane on a daemon at level 71 leads with Hide browser chrome, and Show once hidden (M9 fix 839)', () => {
   const facts = { kind: 'browser', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' } as const;
   const page = viewPaneMenu({ ...facts, toolbarKept: true });
-  assert.deepEqual(page.map((i) => i.label), ['Hide browser chrome', 'Split right', 'Split down', 'Focus', 'Show a session here', 'Close pane']);
+  assert.deepEqual(page.map((i) => i.label), ['Hide browser chrome', 'Split right', 'Split down', 'Focus', 'Reset page zoom', 'Show a session here', 'Close pane']);
   assert.equal(page[0]!.run, 'toggle-toolbar');
   assert.equal(page[0]!.title, "Hide the toolbar row (Back, Forward, Reload, the address and the rest); the pane's header stays");
   assert.ok(paneOnlyItems(page).some((i) => i.run === 'toggle-toolbar'));
@@ -155,4 +155,27 @@ test('a browser pane on a daemon at level 71 leads with Hide browser chrome, and
   assert.equal(hidden[0]!.title, 'The toolbar row back');
   const commits = viewPaneMenu({ kind: 'commits', folder: 'C:/r', zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell', toolbarKept: true });
   assert.equal(commits.some((i) => i.run === 'toggle-toolbar'), false);
+});
+
+test('a browser pane offers Reset page zoom after Focus, disabled at the default (M9 fix 931)', () => {
+  const facts = { kind: 'browser', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' } as const;
+  for (const atDefaultPageZoom of [undefined, true]) {
+    const items = viewPaneMenu({ ...facts, atDefaultPageZoom });
+    const reset = items[items.findIndex((i) => i.run === 'zoom') + 1];
+    assert.equal(reset?.run, 'page-zoom-reset');
+    assert.equal(reset?.disabled, true);
+    assert.equal(reset?.title, 'Already at 100%');
+    assert.ok(!paneOnlyItems(items).some((i) => i.run === 'page-zoom-reset'), `not in the palette at ${atDefaultPageZoom}`);
+  }
+  const off = viewPaneMenu({ ...facts, atDefaultPageZoom: false });
+  const reset = off[off.findIndex((i) => i.run === 'zoom') + 1];
+  assert.equal(reset?.run, 'page-zoom-reset');
+  assert.equal(reset?.label, 'Reset page zoom');
+  assert.equal(reset?.disabled, false);
+  assert.equal(reset?.title, undefined);
+  assert.ok(paneOnlyItems(off).some((i) => i.run === 'page-zoom-reset'));
+  for (const kind of ['commits', 'activity', 'file'] as const) {
+    const items = viewPaneMenu({ ...facts, kind, folder: kind === 'commits' ? 'C:/r' : null, atDefaultPageZoom: false });
+    assert.ok(!items.some((i) => i.run === 'page-zoom-reset'), `no Reset page zoom on a ${kind} pane`);
+  }
 });

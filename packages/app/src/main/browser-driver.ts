@@ -13,9 +13,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ipcMain, webContents, type DownloadItem, type WebContents } from 'electron';
-import { browserUrl, dragOffset, dragPoint, stepZoomLevel } from '@emerald/shared';
+import { browserUrl, dragOffset, pagePoint, stepZoomLevel, zoomKeptAcross } from '@emerald/shared';
 import type { BrowserAnswer, BrowserVerb, Requests, ServerMessage } from '@emerald/shared';
-import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, dragPath, FILL_TARGET_FN, fillPlan, fromElectron, holdIdleMs, keySpec, pageThrew, parseRef, parseRegion, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type FillTarget, type SnapshotFilter, type SnapshotRow } from './browser-drive-model.ts';
+import { BROWSER_DRAG_PAUSE_MS, BROWSER_DRAG_STEPS, BROWSER_MARK_LINGER_MS, BROWSER_WAIT_POLL_MS, EventLog, centre, downloadName, dragPath, FILL_TARGET_FN, FILL_HELD_FN, fillHeld, fillPlan, fromElectron, holdIdleMs, keySpec, pageThrew, parseRef, parseRegion, pauseFor, pngSize, screenshotLine, screenshotName, shotScale, snapshotOf, waitExpression, type AxNode, type BrowserEvent, type FillTarget, type SnapshotFilter, type SnapshotRow } from './browser-drive-model.ts';
 
 // The pane's driven mark, pushed to the window as emerald:browser-drive.
 export type DriveState = { by: string; running: boolean; paused: boolean } | null;
@@ -176,6 +176,22 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       if (now - lastZoomAt < 8) return;
       lastZoomAt = now;
       contents.setZoomLevel(stepZoomLevel(Math.round(contents.getZoomLevel()), direction === 'in' ? 1 : -1));
+    });
+    // M9 fix 931: a reload or a link within the site keeps the page's own
+    // zoom; Chromium puts a guest back at the window's level on each load.
+    // The level is read as the navigation starts, not kept from the wheel,
+    // so a Reset page zoom from the pane menu (the renderer's, on the tag)
+    // holds across the next reload with no word to main.
+    let zoomBefore: { url: string; level: number } | null = null;
+    contents.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      zoomBefore = { url: contents.getURL(), level: contents.getZoomLevel() };
+    });
+    contents.on('did-navigate', (_e, url) => {
+      const before = zoomBefore;
+      zoomBefore = null;
+      if (before === null || !zoomKeptAcross(before.url, url)) return;
+      if (contents.getZoomLevel() !== before.level) contents.setZoomLevel(before.level);
     });
     contents.on('console-message', (e) => {
       if (e.level !== 'error') return;
@@ -456,8 +472,11 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       }
       case 'click':
       case 'hover': {
-        const r = resolveRef(p, a);
-        const { x, y } = await boxCentre(send, r);
+        // M9 fix 935: or at a point x,y on the page, unscrolled, as drag's
+        // start since fix 915, for a canvas or a map with no rows.
+        const point = pagePoint(a);
+        const r = point === null ? resolveRef(p, a) : null;
+        const { x, y } = point ?? (await boxCentre(send, r!));
         // A click is a press and a release with no move first. The press
         // moves the pointer itself: verify-m9-browser-drive.mjs's (h3)
         // reads a control shown on hover clicked and a never-hovered button
@@ -466,11 +485,11 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
         // a guest answers one in milliseconds (fix 692's hover line).
         if (v === 'hover') {
           await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
-          return { ok: true, text: `hovering over ${described(r)}` };
+          return { ok: true, text: r === null ? `hovering at ${a}` : `hovering over ${described(r)}` };
         }
         await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
         await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
-        return { ok: true, text: `clicked ${described(r)}` };
+        return { ok: true, text: r === null ? `clicked at ${a}` : `clicked ${described(r)}` };
       }
       case 'fill': {
         const r = resolveRef(p, a);
@@ -504,7 +523,8 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
           // reset on the next render): the prototype's own setter and the
           // events a framework listens for. An element with no value setter
           // (a contenteditable) keeps what was typed, and a setter that
-          // throws fails the fill (M9 fix 877).
+          // throws fails the fill (M9 fix 877); since fix 934 the field is
+          // read back after it.
           const set = await send('Runtime.callFunctionOn', {
             objectId,
             functionDeclaration: "function (v) { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), 'value'); if (d === undefined || typeof d.set !== 'function') return false; d.set.call(this, v); this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); return true; }",
@@ -514,6 +534,14 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
           const threw = pageThrew(set);
           if (threw !== null) failed(`the page refused the text for ${described(r)}: ${threw}`);
           direct = (set['result'] as { value?: unknown } | undefined)?.value === true;
+          if (direct) {
+            // M9 fix 934: the field read back, so a text its sanitization
+            // dropped or a maxlength it passed is refused rather than
+            // answered as filled.
+            const back = await send('Runtime.callFunctionOn', { objectId, functionDeclaration: FILL_HELD_FN, returnByValue: true });
+            const why = fillHeld(b, (back['result'] as { value?: unknown } | undefined)?.value);
+            if (why !== null) failed(`the page refused the text for ${described(r)}: ${why}`);
+          }
         }
         return { ok: true, text: `filled ${described(r)} with ${b.length} characters${direct ? ' (set directly)' : ''}` };
       }
@@ -606,7 +634,7 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       case 'drag': {
         // M9 fix 874: a press, a move in steps and a release, the shape a drag-and-drop library such as dnd-kit takes as a drag (it starts past a few pixels of move).
         // M9 fix 915: or from a point x,y on the page, for a canvas or a map with no rows.
-        const point = dragPoint(a);
+        const point = pagePoint(a);
         const from = point === null ? resolveRef(p, a) : null;
         const offset = dragOffset(b);
         const onto = offset === null ? resolveRef(p, b) : null;

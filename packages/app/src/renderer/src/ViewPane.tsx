@@ -6,7 +6,7 @@ import { hidePaneHere, splitHere } from './actions.ts';
 import { readScope } from './activity-scope.ts';
 import { ActivityView } from './ActivityView.tsx';
 import { BrowserView } from './BrowserView.tsx';
-import { useBrowserPage, withPageUrl, withToolbar } from './browser-layer.ts';
+import { pageZoomAtDefault, resetPageZoom, useBrowserPage, withPageUrl, withToolbar } from './browser-layer.ts';
 import { driveMark, useBrowserDrive } from './browser-drive-store.ts';
 import { designTargetOf } from './design.ts';
 import { FileView } from './FileView.tsx';
@@ -198,18 +198,25 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         return hidePaneHere(paneId);
       case 'text-reset':
         return resetFontSize(paneId);
+      case 'page-zoom-reset':
+        return resetPageZoom(paneId);
       default:
         return;
     }
   };
-  const menuItems = viewPaneMenu({ kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar, toolbarKept, atDefaultFontSize: textPx === FONT_SIZE_DEFAULT });
-  const menuHandle = useRef({ menuItems, runMenuItem, name: viewName(view) });
-  menuHandle.current = { menuItems, runMenuItem, name: viewName(view) };
+  // M9 fix 931: the facts are read when the items are asked for, since a
+  // wheel over the page re-renders nothing and the palette reads the
+  // registry's items at its own render.
+  const menuFacts = { kind: view.kind, folder, zoomed, onlyPane, chrome, stateKept, splitKind, toolbar, toolbarKept, atDefaultFontSize: textPx === FONT_SIZE_DEFAULT };
+  const itemsNow = () => viewPaneMenu(view.kind === 'browser' ? { ...menuFacts, atDefaultPageZoom: pageZoomAtDefault(paneId) } : menuFacts);
+  const menuItems = itemsNow();
+  const menuHandle = useRef({ itemsNow, runMenuItem, name: viewName(view) });
+  menuHandle.current = { itemsNow, runMenuItem, name: viewName(view) };
   useEffect(
     () =>
       registerPaneMenu(paneId, {
         name: () => menuHandle.current.name,
-        items: () => menuHandle.current.menuItems,
+        items: () => menuHandle.current.itemsNow(),
         run: (run) => menuHandle.current.runMenuItem(run),
       }),
     [paneId],

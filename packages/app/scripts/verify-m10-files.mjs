@@ -1222,6 +1222,7 @@ try {
   const openEdited = async () => {
     await clickRow(s, edited);
     await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(edited)} && document.querySelector('.file-view')?.dataset.state === 'text' && !!${editorJs}.getModel()`, 'edited.txt open in a tab', 5000);
+    await s.evalJs(`${editorJs}.focus()`);
     await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
   };
   const typeAtEnd = async (text) => {
@@ -1586,7 +1587,8 @@ try {
   fs.writeFileSync(findMd, '# Find\n\nThe first needle is here.\n\n' + Array.from({ length: 80 }, (_, i) => `Line ${i + 1}.`).join('\n\n') + '\n\nThe last needle is at the end.\n');
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(findMd))})`, 'find.md listed', 5000);
   await clickRow(s, findMd);
-  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(findMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && document.activeElement?.classList.contains('markdown-view') === true`, 'find.md open rendered with the keyboard', 5000);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(findMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && !!document.querySelector('.markdown-view') && document.activeElement === document.querySelector('.files-list')`, 'find.md open rendered, the tree keeping the keyboard', 5000);
+  await s.evalJs(`document.querySelector('.markdown-view').focus()`);
   const findCountJs = `document.querySelector('.view-find-bar .find-count')?.textContent`;
   await s.key('f', 'KeyF', 70, CTRL);
   await s.waitFor(`!!document.activeElement?.closest('.view-find-bar') && document.activeElement?.classList.contains('find-input') === true`, 'Ctrl+F opens the view find bar with the keyboard in its box', 3000);
@@ -1626,7 +1628,8 @@ try {
   fs.writeFileSync(runsMd, '# Runs\n\nA nee**dle** half in bold.\n\nA word [link](https://example.com/emerald)ed across a link\'s edge.\n\nSome *ital*ic text and `co`de text.\n\nnee\n\ndle\n');
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(runsMd))})`, 'find-runs.md listed', 5000);
   await clickRow(s, runsMd);
-  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(runsMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && document.activeElement?.classList.contains('markdown-view') === true`, 'find-runs.md open rendered with the keyboard', 5000);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(runsMd)} && document.querySelector('.file-view')?.dataset.view === 'rendered' && !!document.querySelector('.markdown-view') && document.activeElement === document.querySelector('.files-list')`, 'find-runs.md open rendered, the tree keeping the keyboard', 5000);
+  await s.evalJs(`document.querySelector('.markdown-view').focus()`);
   await s.key('f', 'KeyF', 70, CTRL);
   await s.waitFor(`!!document.activeElement?.closest('.view-find-bar') && document.activeElement?.classList.contains('find-input') === true`, 'Ctrl+F opens the view find bar', 3000);
   for (const [q, name] of [
@@ -2137,6 +2140,7 @@ try {
   // (1) A dirty tab on ren-a.txt.
   await clickRow(s, renA);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(renA)} && !!${editorJs}.getModel()`, 'ren-a.txt open in a tab', 5000);
+  await s.evalJs(`${editorJs}.focus()`);
   await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
   await typeAtEnd('beta');
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'ren-a.txt dirty');
@@ -2187,16 +2191,17 @@ try {
   await s.waitFor(`!document.querySelector('.files-renaming') && !!document.querySelector(${JSON.stringify(rowSel(renB))})`, 'Escape drops the box');
   await s.key('w', 'KeyW', 87, CTRL);
   await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'Ctrl+W back to the panes after the rename');
-  // (6) A plain folder click leaves the keyboard where it was.
+  // (6) A plain folder click selects the folder and gives the tree the keyboard (M9 fix 929; fix 574 read the opposite).
   await s.evalJs('document.querySelector(".pane.focused .xterm-helper-textarea").focus(); window.__ae574 = document.activeElement; true');
   await clickRow(s, renDir);
   await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(renDir))})?.dataset.expanded === 'true'`, 'ren-dir expanded');
-  const plain = await s.evalJs(`({ same: document.activeElement === window.__ae574, selected: document.querySelector(${JSON.stringify(rowSel(renDir))}).dataset.selected ?? null })`);
-  expect(plain.same && plain.selected === null, `a plain click on a folder row expands it, selects nothing and leaves the keyboard in the terminal (${JSON.stringify(plain)})`);
+  const plain = await s.evalJs(`({ tree: ${treeHasKeys}, selected: document.querySelector(${JSON.stringify(rowSel(renDir))}).dataset.selected ?? null })`);
+  expect(plain.tree && plain.selected === 'true', `a plain click on a folder row expands it, selects it and gives the tree the keyboard, the reverse of fix 574's read (${JSON.stringify(plain)})`);
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(innerFile))})`, 'inner.txt listed', 5000);
   await clickRow(s, innerFile);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(innerFile)}`, 'inner.txt open in a tab', 5000);
   await s.waitFor(`${editorJs}.getModel()?.uri.path.endsWith('/ren-dir/inner.txt') === true`, 'inner.txt in the editor', 5000);
+  await s.evalJs(`${editorJs}.focus()`);
   await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor before the right-click', 3000);
   // F2 after a right-click on a folder.
   at = await centreOf(renDir);
@@ -2226,7 +2231,120 @@ try {
   fs.rmSync(renB, { force: true });
   fs.rmSync(takenFile, { force: true });
   await s.waitFor(`![${[renDir2, renB, takenFile].map((p) => JSON.stringify(rowSel(p))).join(', ')}].some((q) => document.querySelector(q))`, 'the rename fixture gone from the tree', 5000);
-  step("M9 fix 574: Rename on a file's menu renames in place with the stem selected and a dirty tab follows and keeps its edits, the save landing at the new path; F2 after a second click on a file and after a right-click on a folder renames too, a taken name is refused with the box kept, a plain folder click leaves the keyboard alone, and the open folder, its selection and the tab under it follow");
+  step("M9 fix 574: Rename on a file's menu renames in place with the stem selected and a dirty tab follows and keeps its edits, the save landing at the new path; F2 after a second click on a file and after a right-click on a folder renames too, a taken name is refused with the box kept, a plain folder click selects it and gives the tree the keyboard (fix 929), and the open folder, its selection and the tab under it follow");
+
+  // M9 fix 929: the Files tree takes the keyboard on a click, as VS Code's
+  // explorer does. A folder click selects the folder and gives the tree the
+  // keyboard; a file click previews the file with the tree keeping it; F2
+  // then renames; the arrows, Home and End walk the rows and open nothing;
+  // Enter pins the file and hands the keyboard to its editor. The selected
+  // row draws its ring only while the tree holds the keyboard.
+  const keysDir = path.join(repo, 'keys929');
+  const keysSub = path.join(keysDir, 'sub929');
+  const keysC = path.join(keysSub, 'c929.txt');
+  const keysA = path.join(keysDir, 'a929.txt');
+  const keysB = path.join(keysDir, 'b929.txt');
+  fs.mkdirSync(keysSub, { recursive: true });
+  fs.writeFileSync(keysC, 'c\n');
+  fs.writeFileSync(keysA, 'a\n');
+  fs.writeFileSync(keysB, 'b\n');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(keysDir))})`, 'keys929 listed', 5000);
+  const selJs = `(document.querySelector('.files-list .files-row[data-selected]')?.dataset.path ?? null)`;
+  const ringJs = `(() => { const r = document.querySelector('.files-list .files-row[data-selected]'); return r ? getComputedStyle(r).outlineStyle : null; })()`;
+  const keysTab = (p) => `document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(p)}]`)})`;
+  const walkTo = async (key, code, keyCode, want, what) => {
+    await s.key(key, code, keyCode);
+    await s.waitFor(`${selJs} === ${JSON.stringify(want)} && ${treeHasKeys}`, what, 3000);
+  };
+  // (1) A folder click.
+  await clickRow(s, keysDir);
+  await s.waitFor(
+    `(() => { const r = document.querySelector(${JSON.stringify(rowSel(keysDir))}); return r?.dataset.expanded === 'true' && r?.dataset.selected === 'true' && ${treeHasKeys}; })()`,
+    'a folder click opens it, selects it and gives the tree the keyboard (fix 574 read the opposite)',
+    3000,
+  );
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(keysA))}) && !!document.querySelector(${JSON.stringify(rowSel(keysSub))})`, "keys929's rows listed", 5000);
+  // (2) A first click on a file previews it and the tree keeps the keyboard.
+  await clickRow(s, keysA);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(keysA)} && ${editorJs}.getModel()?.uri.path.endsWith('/a929.txt') === true`, 'a929.txt in the editor', 5000);
+  // The read lands after the wait, so a late focus would show.
+  await sleep(300);
+  const firstClick = await s.evalJs(`({ tree: ${treeHasKeys}, preview: ${keysTab(keysA)}?.dataset.preview !== undefined, selected: ${selJs}, ring: ${ringJs} })`);
+  expect(
+    firstClick.tree && firstClick.preview && firstClick.selected === keysA && firstClick.ring === 'solid',
+    `a first click on a file previews it, the tree keeps the keyboard and its row draws the ring (${JSON.stringify(firstClick)})`,
+  );
+  // (3) F2 after a first click renames.
+  await s.key('F2', 'F2', 113);
+  await s.waitFor(`document.activeElement === document.querySelector(${JSON.stringify(renSel(keysA) + ' .files-rename')})`, 'F2 after a first click opens the rename box', 3000);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.files-renaming') && ${treeHasKeys}`, 'Escape drops the box and the tree keeps the keyboard', 3000);
+  // (4) The walk.
+  await walkTo('ArrowUp', 'ArrowUp', 38, keysSub, 'ArrowUp to sub929');
+  await s.key('ArrowRight', 'ArrowRight', 39);
+  await s.waitFor(
+    `!!document.querySelector(${JSON.stringify(rowSel(keysC))}) && document.querySelector(${JSON.stringify(rowSel(keysSub))})?.dataset.expanded === 'true' && ${selJs} === ${JSON.stringify(keysSub)} && ${treeHasKeys}`,
+    'ArrowRight opens sub929 in place',
+    5000,
+  );
+  await walkTo('ArrowRight', 'ArrowRight', 39, keysC, 'ArrowRight again steps into c929.txt');
+  await walkTo('ArrowLeft', 'ArrowLeft', 37, keysSub, 'ArrowLeft on a file goes to its parent');
+  await s.key('ArrowLeft', 'ArrowLeft', 37);
+  await s.waitFor(
+    `document.querySelector(${JSON.stringify(rowSel(keysSub))})?.dataset.expanded === undefined && ${selJs} === ${JSON.stringify(keysSub)} && ${treeHasKeys}`,
+    'ArrowLeft on an open folder folds it in place',
+    3000,
+  );
+  await walkTo('ArrowLeft', 'ArrowLeft', 37, keysDir, 'ArrowLeft on a closed folder goes to its parent');
+  await walkTo('ArrowDown', 'ArrowDown', 40, keysSub, 'ArrowDown to sub929');
+  await walkTo('ArrowDown', 'ArrowDown', 40, keysA, 'ArrowDown to a929.txt');
+  await walkTo('ArrowDown', 'ArrowDown', 40, keysB, 'ArrowDown to b929.txt');
+  await s.key('End', 'End', 35);
+  await s.waitFor(`${selJs} === [...document.querySelectorAll('.files-list > .files-row')].at(-1).dataset.path && ${treeHasKeys}`, 'End selects the last row', 3000);
+  const endRow = await s.evalJs(
+    `(() => { const r = [...document.querySelectorAll('.files-list > .files-row')].at(-1).getBoundingClientRect(); const l = document.querySelector('.files-list').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, listTop: l.top, listBottom: l.bottom }; })()`,
+  );
+  expect(endRow.top >= endRow.listTop - 1 && endRow.bottom <= endRow.listBottom + 1, `the last row is scrolled into the list (${JSON.stringify(endRow)})`);
+  await s.key('Home', 'Home', 36);
+  await s.waitFor(`${selJs} === document.querySelector('.files-list > .files-row').dataset.path && ${treeHasKeys}`, 'Home selects the first row', 3000);
+  expect(
+    (await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)) === keysA,
+    `the walk opened nothing (${await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)})`,
+  );
+  // (5) Enter pins the file and hands the keyboard to its editor.
+  await clickRow(s, keysB);
+  await s.waitFor(
+    `document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(keysB)} && ${editorJs}.getModel()?.uri.path.endsWith('/b929.txt') === true && ${treeHasKeys} && ${keysTab(keysB)}?.dataset.preview !== undefined`,
+    'b929.txt previewed in the tab a929.txt had, the tree keeping the keyboard',
+    5000,
+  );
+  await s.key('Enter', 'Enter', 13);
+  await s.waitFor(
+    `!!document.activeElement?.closest('.monaco-editor') && ${editorJs}.getModel().uri.path.endsWith('/b929.txt') && !!${keysTab(keysB)} && ${keysTab(keysB)}.dataset.preview === undefined`,
+    'Enter pins b929.txt and hands the keyboard to its editor',
+    3000,
+  );
+  const afterEnter = await s.evalJs(`({ text: ${editorJs}.getModel().getValue(), ring: ${ringJs} })`);
+  expect(afterEnter.text === 'b\n' && afterEnter.ring === 'none', `Enter typed nothing into the file and the ring went with the keyboard (${JSON.stringify(afterEnter)})`);
+  step('M9 fix 929: a click on a folder or a file gives the Files tree the keyboard and selects the row, a file previewing with the tree keeping it and its row ringed; F2 after a first click renames; Up, Down, Left, Right, Home and End walk, open, fold and go to the parent, opening nothing; Enter pins the file and hands the keyboard to its editor');
+  // M9 fix 930: F2 with the editor holding the keyboard renames the file
+  // from the rail, its folders opened for it. The collapse is a .click(),
+  // so the editor keeps the keyboard.
+  await s.evalJs(`document.querySelector('.files-button[title="Collapse all folders"]').click()`);
+  await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(keysB))})`, 'b929.txt folded away', 3000);
+  expect(await s.evalJs(`!!document.activeElement?.closest('.monaco-editor')`), 'the editor holds the keyboard before F2');
+  await s.key('F2', 'F2', 113);
+  await s.waitFor(`document.activeElement === document.querySelector(${JSON.stringify(renSel(keysB) + ' .files-rename')})`, 'F2 in the editor opens the rail\'s rename box on b929.txt, keys929 opened for it', 5000);
+  const renF2 = await renRead(keysB);
+  expect(renF2.value === 'b929.txt' && renF2.start === 0 && renF2.end === 4, `the box holds b929.txt with the stem selected (${JSON.stringify(renF2)})`);
+  expect((await s.evalJs(`${editorJs}.getModel().getValue()`)) === 'b\n', 'F2 typed nothing into the file');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.files-renaming') && ${treeHasKeys}`, 'Escape drops the box and gives the tree the keyboard', 3000);
+  step("M9 fix 930: F2 in a file's editor opens the Files rail's rename box on that file, its folders opened for it, and Escape gives the keyboard to the tree");
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'Ctrl+W back to the panes after the tree keys');
+  fs.rmSync(keysDir, { recursive: true, force: true });
+  await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(keysDir))})`, 'the keys fixture gone from the tree', 5000);
 
   // M9 fix 310: Revert changes on a changed row's menu asks once more,
   // then puts the committed version back and the letter goes; on an
@@ -2365,6 +2483,7 @@ try {
   await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(delA))})`, 'del-a.txt listed', 5000);
   await clickRow(s, delA);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(delA)} && !!${editorJs}.getModel()`, 'del-a.txt open in a tab', 5000);
+  await s.evalJs(`${editorJs}.focus()`);
   await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
   await typeAtEnd('x');
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'del-a.txt dirty');

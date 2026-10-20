@@ -1,5 +1,5 @@
 import { useRef, useSyncExternalStore } from 'react';
-import { currentTab, frontWindow, mergeWindowView, pushSample, replaceTab, tabHolding, windowView, windowsOf } from '@emerald/shared';
+import { FIRST_WINDOW_ID, claimLooseTabs, currentTab, frontWindow, mergeWindowView, pushSample, replaceTab, setFrontWindow, tabHolding, windowView, windowsOf } from '@emerald/shared';
 import { EMPTY_CONFLICTS } from '@emerald/shared';
 import type { ConflictReport, Layout, LayoutTab, SessionInfo } from '@emerald/shared';
 import type { DaemonCrash, DaemonInfo, RendererPush } from '../../preload/api.ts';
@@ -325,33 +325,44 @@ let editQueue: Promise<unknown> = Promise.resolve();
 // Resolves with the layout as the daemon saved it, so a caller that needs
 // something from the result (the id of a pane a split just made) has it.
 export function editLayout(fn: (layout: Layout) => Layout): Promise<Layout> {
-  const run = editQueue.then(() => applyEdit(fn));
+  const run = editQueue.then(() => applyEdit(fn, false));
   // Keep the chain alive after a failure so later edits still run.
   editQueue = run.catch(() => {});
   return run;
 }
 
-async function applyEdit(fn: (layout: Layout) => Layout): Promise<Layout> {
+// An edit across windows (M9 fix 927): fn runs on the whole layout, every
+// window's tabs; a tab it made joins this window and this window comes to
+// the front, as mergeWindowView makes the window of an edit the front one.
+export function editAllLayout(fn: (all: Layout) => Layout): Promise<Layout> {
+  const run = editQueue.then(() => applyEdit(fn, true));
+  editQueue = run.catch(() => {});
+  return run;
+}
+
+async function applyEdit(fn: (layout: Layout) => Layout, whole: boolean): Promise<Layout> {
   for (let attempt = 0; attempt < 2; attempt++) {
     // The edit runs on this window's view and is folded back into the
     // whole before it goes (M9 fix 867); with one window the view is the
-    // whole and the fold is the view itself.
-    let base = state.layout;
+    // whole and the fold is the view itself. A whole edit runs on the
+    // whole and answers it.
+    let base = whole ? state.allLayout : state.layout;
     if (base === null) {
       const patch = layoutPatch(normalizeLayout((await window.emerald.request('layout.get', {})).layout));
       setState(patch);
-      base = patch.layout!;
+      base = whole ? patch.allLayout! : patch.layout!;
     }
     const next = fn(base);
     if (next === base) return base;
     try {
       // The push carries the same layout, but the reply is what this edit
       // awaited on, so apply it here too and the next queued edit sees it.
-      const whole = mergeWindowView(state.allLayout ?? next, next, state.windowId);
-      const reply = await window.emerald.request('layout.set', { layout: layoutForWire(whole, state.daemon) });
+      const id = state.windowId ?? FIRST_WINDOW_ID;
+      const merged = whole ? setFrontWindow(claimLooseTabs(next, id), id) : mergeWindowView(state.allLayout ?? next, next, state.windowId);
+      const reply = await window.emerald.request('layout.set', { layout: layoutForWire(merged, state.daemon) });
       const patch = layoutPatch(normalizeLayout(reply.layout));
       if (state.allLayout === null || patch.allLayout!.revision > state.allLayout.revision) setState(patch);
-      return patch.layout!;
+      return whole ? patch.allLayout! : patch.layout!;
     } catch (err) {
       if ((err as { code?: string }).code !== 'stale-revision') throw err;
       const { layout } = await window.emerald.request('layout.get', {});

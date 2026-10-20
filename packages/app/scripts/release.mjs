@@ -6,16 +6,20 @@
 // there, and the tag lands on that commit), and runs `gh release create
 // v<version> --draft` with the two installers, their blockmaps, the merged
 // latest.yml and the batch's section of docs/WHATS-NEW.md as the notes.
-// Always a draft, which no updater sees; the user publishes it in GitHub.
+// A draft, which no updater sees, unless --publish: then the draft's five
+// assets are read back from GitHub, each name and size checked against the
+// local file, and only when all match is the draft published, since the user
+// handed the Publish click to the session at the install of fixes 888 to 917.
 //
 //   npm run release -w @emerald/app                 build, check, draft
 //   npm run release -w @emerald/app -- --no-build   use release/ and release-x64/ as they are
+//   npm run release -w @emerald/app -- --no-build --publish   draft, read back, publish
 //   npm run release -w @emerald/app -- --dry-run    build and upload nothing; print the plan
 //
 // --arm64-dir and --x64-dir point the checks at other folders, with
 // --no-build or --dry-run only (verify:release runs on fixtures that way).
 // The gh token stays in gh's keyring: this never reads it, never creates a
-// repo and never publishes or deletes a release.
+// repo and never deletes a release.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,6 +34,7 @@ const repoRoot = path.resolve(appDir, '..', '..');
 const argv = process.argv.slice(2);
 const dryRun = argv.includes('--dry-run');
 const noBuild = argv.includes('--no-build');
+const publish = argv.includes('--publish');
 const want = `github ${PUBLIC_RELEASES_REPO}`;
 
 class Refusal extends Error {}
@@ -152,11 +157,33 @@ function main() {
       console.log(`--- notes: ${notes.heading} (${lines} lines)`);
       console.log(`--- the code: v${version} tags ${PUBLIC_RELEASES_REPO}'s default branch, which node scripts/export-public.mjs --update and a push put at Emerald ${version} first`);
       console.log(`--- gh ${ghArgs.map(quoteArg).join(' ')}`);
+      if (publish) console.log(`--- then, once the draft's five assets read back with the local names and sizes: gh release edit v${version} --repo ${PUBLIC_RELEASES_REPO} --draft=false --latest`);
       return;
     }
     const r = spawnSync('gh', ghArgs, { stdio: 'inherit', windowsHide: true });
     if (r.status !== 0) refuse('gh release create failed; the release is not drafted');
-    console.log(`drafted v${version} on ${PUBLIC_RELEASES_REPO} with 5 files; publish it at https://github.com/${PUBLIC_RELEASES_REPO}/releases when you are ready, and no updater sees it until then`);
+    if (!publish) {
+      console.log(`drafted v${version} on ${PUBLIC_RELEASES_REPO} with 5 files; publish it at https://github.com/${PUBLIC_RELEASES_REPO}/releases when you are ready, and no updater sees it until then`);
+      return;
+    }
+    // Read the draft back before publishing: an upload cut short leaves a
+    // draft with a missing or short asset, and a published one would hand
+    // every friend's updater a broken installer.
+    const view = run('gh', ['release', 'view', `v${version}`, '--repo', PUBLIC_RELEASES_REPO, '--json', 'isDraft,assets']);
+    if (view.status !== 0) refuse(`could not read the draft v${version} back; it stays a draft`);
+    const got = JSON.parse(view.stdout);
+    if (got.isDraft !== true) refuse(`v${version} is not a draft any more; nothing published`);
+    const local = [arm64.installer, arm64.blockmap, x64.installer, x64.blockmap, latestFile].map((f) => ({ name: path.basename(f), size: fs.statSync(f).size }));
+    const remote = new Map(got.assets.map((a) => [a.name, a.size]));
+    for (const f of local) {
+      if (remote.get(f.name) !== f.size) refuse(`the draft's ${f.name} reads ${remote.get(f.name) ?? 'missing'}, the local file is ${f.size} bytes; it stays a draft`);
+    }
+    if (got.assets.length !== local.length) refuse(`the draft holds ${got.assets.length} assets, not ${local.length}; it stays a draft`);
+    console.log(`read back v${version}: ${local.length} assets, each name and size as local`);
+    const pub = spawnSync('gh', ['release', 'edit', `v${version}`, '--repo', PUBLIC_RELEASES_REPO, '--draft=false', '--latest'], { stdio: 'inherit', windowsHide: true });
+    if (pub.status !== 0) refuse(`gh release edit failed; v${version} stays a draft`);
+    const latest = run('gh', ['api', `repos/${PUBLIC_RELEASES_REPO}/releases/latest`, '--jq', '.tag_name + " " + .published_at']);
+    console.log(`published v${version} on ${PUBLIC_RELEASES_REPO}; releases/latest reads ${latest.stdout.trim()}`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { localPageOf } from '@emerald/shared';
+import { guestNavigationAllowed, isLocalPageUrl, localPageOf } from '@emerald/shared';
 import type { BrowserPaneView, PaneView } from '@emerald/shared';
 
 // The browser layer's model (M9 fix 669). Every browser pane's page lives
@@ -28,6 +28,8 @@ export interface WebviewLike extends HTMLElement {
   openDevTools(): void;
   closeDevTools(): void;
   isDevToolsOpened(): boolean;
+  getZoomLevel(): number;
+  setZoomLevel(level: number): void;
 }
 
 // The pane's focus ring is `.pane::after`'s 3px border (style.css), at
@@ -240,6 +242,31 @@ export function browserPage(paneId: string): WebviewLike | null {
   const frameId = paneFrames.get(paneId);
   if (frameId === undefined || !framePageState(frameId).ready) return null;
   return elements.get(frameId) ?? null;
+}
+
+// M9 fix 931: a page's own zoom against its default, the window's level,
+// since a guest follows its embedder's zoom; a page before dom-ready reads
+// as at the default, and its reset does nothing.
+export function pageZoomAtDefault(paneId: string): boolean {
+  const page = browserPage(paneId);
+  return page === null || Math.round(page.getZoomLevel()) === Math.round(window.emerald.zoom.level());
+}
+
+export function resetPageZoom(paneId: string): void {
+  browserPage(paneId)?.setZoomLevel(window.emerald.zoom.level());
+}
+
+// M9 fix 933: what the pane's error line says of a navigation, the rule
+// main's guard keeps (index.ts's will-navigate): the web and a page of the
+// same folder pass, and so does a page from the disk this frame has
+// already shown, exactly that URL, which is how a page's own Back onto it
+// reaches will-navigate. The set never shrinks while the history does, so
+// a link onto a URL the history has dropped can pass here and still be
+// refused by main, which logs it; the line then says nothing, rarer than
+// the flash this replaces.
+export function navigationRefusal(url: string, from: string, committed: ReadonlySet<string>): 'link' | 'local' | null {
+  if (guestNavigationAllowed(url, from)) return null;
+  return isLocalPageUrl(url) ? (committed.has(url) ? null : 'local') : 'link';
 }
 
 // The pane whose page is the guest with this web contents id (fix 670's

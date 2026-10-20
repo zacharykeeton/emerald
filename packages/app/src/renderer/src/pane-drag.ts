@@ -1,11 +1,13 @@
 import { currentTab, findPane } from '@emerald/shared';
-import type { PaneContent, PaneView } from '@emerald/shared';
+import type { Layout, PaneContent } from '@emerald/shared';
+import type { DragPayload } from '../../preload/api.ts';
 import { dropOnLayoutTab, dropOnNewTab, dropSessionOn, dropViewOn } from './actions.ts';
-import { tabDropTarget, zoneAt } from './drop-zone-model.ts';
+import { pastEdge, tabDropTarget, zoneAt } from './drop-zone-model.ts';
 import type { TabDropTarget } from './drop-zone-model.ts';
 import { viewName } from './show-model.ts';
-import { getState } from './store.ts';
+import { editLayout, getState } from './store.ts';
 import { beginSessionDrag, beginViewDrag, endSessionDrag, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
+import { dropOutsideWindows } from './window-drop.ts';
 import type { DropTarget } from './ui.ts';
 
 // Dragging a sidebar row, a pane by its title bar (M9 fix 73), or the
@@ -24,15 +26,18 @@ import type { DropTarget } from './ui.ts';
 // its far right, or over the +, which makes a tab of its own at the end
 // of the strip, the window staying where it was (M9 fix 651); anywhere
 // else, Escape or the window losing focus cancels.
+//
+// Past the window's own edge (M9 fix 927) nothing of this window stays
+// lit and each move goes to main, which forwards it to the window under
+// the pointer (window-drag.ts); that window draws its zones and makes the
+// drop on the release (window-drop.ts).
 
 // Pixels of movement before a press becomes a drag.
 export const DRAG_THRESHOLD = 4;
 
-// What a drag carries: a session, from a row or a pane's title, or a
-// view (M52), from the rail's Commits tab or a view pane's title.
-// A file view from a contents hit carries the hit's line and column (M9
-// fix 437), which the pane it lands on reveals.
-export type DragPayload = { kind: 'session'; sessionId: string } | { kind: 'view'; view: PaneView; line?: number; column?: number };
+// What a drag carries, in the preload's types since M9 fix 927 so main
+// reads it too.
+export type { DragPayload } from '../../preload/api.ts';
 
 const GHOST_OFFSET = 12;
 
@@ -54,6 +59,8 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
   const startY = press.clientY;
   let dragging = false;
   let ghost: HTMLDivElement | null = null;
+  // The pointer is past the window's edge, the drag handed to main (M9 fix 927).
+  let out = false;
 
   const teardown = () => {
     window.removeEventListener('mousemove', onMove);
@@ -64,6 +71,9 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
     ghost?.remove();
     ghost = null;
     endSessionDrag();
+    // Escape or the blur ends the other window's zones too.
+    if (out) window.emerald.windowDrag.back();
+    out = false;
     active = false;
   };
 
@@ -87,37 +97,41 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
       begin();
     }
     if (ghost !== null) ghost.style.transform = `translate(${e.clientX + GHOST_OFFSET}px, ${e.clientY + GHOST_OFFSET}px)`;
+    if (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
+      if (!out) setSessionDropTarget(null);
+      out = true;
+      window.emerald.windowDrag.move({ kind: 'pane', payload, fromPaneId }, e.clientX, e.clientY);
+      return;
+    }
+    if (out) {
+      window.emerald.windowDrag.back();
+      out = false;
+    }
     const tab = tabTargetAt(e.clientX, e.clientY);
     if (tab !== null) setTabDropTarget(tab);
     else setSessionDropTarget(targetFor(payload, targetAt(e.clientX, e.clientY)));
   };
 
-  const onUp = () => {
+  const onUp = (e: MouseEvent) => {
     const target = getUiState().sessionDrag?.target ?? null;
     const tabTarget = getUiState().sessionDrag?.tabTarget ?? null;
     const dropped = dragging;
+    const handed = out;
+    // Cleared first, so the teardown sends no back for a drag main is ending.
+    out = false;
     teardown();
-    if (dropped && tabTarget !== null) {
-      const content: PaneContent = payload.kind === 'session' ? { sessionId: payload.sessionId, view: null } : { sessionId: null, view: payload.view };
-      const drop = 'tabId' in tabTarget ? dropOnLayoutTab(content, tabTarget.tabId, fromPaneId) : dropOnNewTab(content, fromPaneId);
-      void drop
-        .then((landed) => {
-          if (landed !== null && payload.kind === 'view' && payload.line !== undefined && payload.view.kind === 'file') revealInPane(landed, payload.view.path, payload.line, payload.column);
-        })
+    if (dropped && handed) {
+      // Another window made the drop, or none was under the pointer and
+      // a window opens there (M9 fix 928).
+      const drag = { kind: 'pane', payload, fromPaneId } as const;
+      void window.emerald.windowDrag
+        .end(e.clientX, e.clientY)
+        .then((end) => (end.to === 'none' ? dropOutsideWindows(drag, end.x, end.y) : undefined))
         .catch((err: unknown) => console.warn('[emerald] drop failed', err));
       return;
     }
-    if (!dropped || target === null) return;
-    if (payload.kind === 'session') {
-      void dropSessionOn(payload.sessionId, target.paneId, target.zone, fromPaneId).catch((err: unknown) => console.warn('[emerald] drop failed', err));
-      return;
-    }
-    const { view, line, column } = payload;
-    void dropViewOn(view, target.paneId, target.zone, fromPaneId)
-      .then((landed) => {
-        if (landed !== null && line !== undefined && view.kind === 'file') revealInPane(landed, view.path, line, column);
-      })
-      .catch((err: unknown) => console.warn('[emerald] drop failed', err));
+    if (!dropped) return;
+    void dropPayload(payload, fromPaneId, target, tabTarget).catch((err: unknown) => console.warn('[emerald] drop failed', err));
   };
 
   const cancel = () => teardown();
@@ -133,11 +147,32 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
   window.addEventListener('mouseup', onUp);
 }
 
+// The drop a release makes on a layout tab, the + or a pane's zone, with
+// the edit of this window (editLayout) or, for a drag from another window,
+// the whole layout's (editAllLayout, M9 fix 927). Nothing under the
+// pointer is nothing.
+export async function dropPayload(payload: DragPayload, fromPaneId: string | null, target: DropTarget | null, tabTarget: TabDropTarget | null, edit: (fn: (l: Layout) => Layout) => Promise<Layout> = editLayout): Promise<void> {
+  if (tabTarget !== null) {
+    const content: PaneContent = payload.kind === 'session' ? { sessionId: payload.sessionId, view: null } : { sessionId: null, view: payload.view };
+    const landed = await ('tabId' in tabTarget ? dropOnLayoutTab(content, tabTarget.tabId, fromPaneId, edit) : dropOnNewTab(content, fromPaneId, edit));
+    if (landed !== null && payload.kind === 'view' && payload.line !== undefined && payload.view.kind === 'file') revealInPane(landed, payload.view.path, payload.line, payload.column);
+    return;
+  }
+  if (target === null) return;
+  if (payload.kind === 'session') {
+    await dropSessionOn(payload.sessionId, target.paneId, target.zone, fromPaneId, edit);
+    return;
+  }
+  const { view, line, column } = payload;
+  const landed = await dropViewOn(view, target.paneId, target.zone, fromPaneId, edit);
+  if (landed !== null && line !== undefined && view.kind === 'file') revealInPane(landed, view.path, line, column);
+}
+
 // A view dropped on the centre of a pane holding a session or a view
 // would take that off screen for a thing the rail already shows, so a
 // view offers only the edges there; an empty pane takes it whole. A
 // session's targets are as they were.
-function targetFor(payload: DragPayload, target: DropTarget | null): DropTarget | null {
+export function targetFor(payload: DragPayload, target: DropTarget | null): DropTarget | null {
   if (payload.kind !== 'view' || target === null || target.zone !== 'center') return target;
   const layout = getState().layout;
   const pane = layout === null ? null : findPane(currentTab(layout), target.paneId);
@@ -147,7 +182,7 @@ function targetFor(payload: DragPayload, target: DropTarget | null): DropTarget 
 // The pane under the point and the half of it the mouse is in. The overlay
 // and the ghost have pointer-events none, so they never hide the pane, and
 // a pane hidden by zoom is never under the point.
-function targetAt(x: number, y: number): DropTarget | null {
+export function targetAt(x: number, y: number): DropTarget | null {
   const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-pane-id]') ?? null;
   const paneId = el?.dataset['paneId'];
   if (el === null || paneId === undefined) return null;
@@ -158,7 +193,7 @@ function targetAt(x: number, y: number): DropTarget | null {
 // The layout tab or the + under the point (M9 fix 651). The strip's tab
 // is named by .tab-panes, since data-tab-id is also on the layout tab's
 // body and its split view.
-function tabTargetAt(x: number, y: number): TabDropTarget | null {
+export function tabTargetAt(x: number, y: number): TabDropTarget | null {
   const el = document.elementFromPoint(x, y);
   const tabId = el?.closest<HTMLElement>('.tab-panes[data-tab-id]')?.dataset['tabId'] ?? null;
   const onAdd = el?.closest('.tab-add') != null;
