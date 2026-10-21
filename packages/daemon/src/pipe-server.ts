@@ -1,7 +1,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -57,6 +57,10 @@ export interface PipeServerOptions {
   // daemon's shutdown, scheduled after the reply has gone out. A server
   // without one (tests) keeps the screens and stays up.
   onStop?: () => void;
+  // The PATH for a session the pipe starts (M9 fix 971), read from the
+  // registry at each spawn and resume; a server without one (the tests)
+  // starts every session on the daemon's.
+  spawnPath?: () => Promise<string | null>;
   // A presence edge (M9 fix 245): `away` when the last connection that
   // said hello as the app closes, `back` when the next one says hello,
   // and whichever the app posts through presence.away and presence.back
@@ -156,6 +160,8 @@ export const BROWSER_DRAG_LEVEL = 72;
 export const BROWSER_POINT_LEVEL = 74;
 // The first app level whose driver takes click and hover at a point x,y (M9 fix 935); one from a point to an older window is counted as no driver, since a window at 63 to 74 would refuse 120,300 as a bad ref.
 export const BROWSER_CLICK_POINT_LEVEL = 75;
+// The first app level whose driver takes upload with a CSS selector in place of a ref (M9 fix 970); one to an older window is counted as no driver, since a window at 63 to 75 would refuse #file as a bad ref.
+export const BROWSER_UPLOAD_SELECTOR_LEVEL = 76;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -582,7 +588,8 @@ export class PipeServer {
     const apps = this.subscribedCount('app');
     if (apps === 0) return Promise.resolve({ apps: 0 });
     const pointed = (verb === 'drag' || verb === 'click' || verb === 'hover') && pagePoint(args[0] ?? '') !== null;
-    const need = pointed ? (verb === 'drag' ? BROWSER_POINT_LEVEL : BROWSER_CLICK_POINT_LEVEL) : verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
+    const selected = verb === 'upload' && !BROWSER_ELEMENT_REF.test(args[0] ?? '');
+    const need = selected ? BROWSER_UPLOAD_SELECTOR_LEVEL : pointed ? (verb === 'drag' ? BROWSER_POINT_LEVEL : BROWSER_CLICK_POINT_LEVEL) : verb === 'drag' || filter !== undefined ? BROWSER_DRAG_LEVEL : BROWSER_DRIVE_LEVEL;
     const drivers = [...this.clients].filter((c) => c.subscribed('app') && c.appLevel >= need);
     const short = paneId.slice(0, 8);
     if (drivers.length === 0) {
@@ -855,6 +862,11 @@ class ClientConnection {
     return refuse('hello-first', 'say hello with the token from daemon.json first (M9 fix 612)', `dropping client: ${msg.type} before hello`);
   }
 
+  // The PATH for a session this pipe starts (M9 fix 971).
+  private spawnPath(): Promise<string | null> {
+    return this.opts.spawnPath?.() ?? Promise.resolve(null);
+  }
+
   private handle(req: Request): Requests[RequestType]['res'] | Promise<Requests[RequestType]['res']> {
     switch (req.type) {
       case 'hello': {
@@ -896,13 +908,19 @@ class ClientConnection {
           ...(req.args !== undefined ? { args: expectStringArray(req, 'args') } : {}),
           ...(req.shell !== undefined ? { shell: req.shell } : {}),
         };
-        return { session: this.manager.spawn(spawnReq) };
+        // Every check above runs before the read, so a bad request is
+        // refused without one (M9 fix 971).
+        return this.spawnPath().then((p) => ({ session: this.manager.spawn(spawnReq, p) }));
       }
       case 'session.kill':
         this.manager.kill(expectString(req, 'sessionId'), req.remove === undefined ? false : expectBoolean(req, 'remove'));
         return {};
-      case 'session.resume':
-        return { session: this.manager.resume(expectString(req, 'sessionId'), expectNumber(req, 'cols'), expectNumber(req, 'rows')) };
+      case 'session.resume': {
+        const sessionId = expectString(req, 'sessionId');
+        const cols = expectNumber(req, 'cols');
+        const rows = expectNumber(req, 'rows');
+        return this.spawnPath().then((p) => ({ session: this.manager.resume(sessionId, cols, rows, p) }));
+      }
       case 'session.remove':
         this.manager.remove(expectString(req, 'sessionId'));
         return {};

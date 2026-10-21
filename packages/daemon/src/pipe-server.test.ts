@@ -593,6 +593,54 @@ test('browser.run relays a click or a hover from a point to a window at level 75
   }
 });
 
+test('browser.run relays an upload by a CSS selector to a window at level 76 alone (M9 fix 970)', async () => {
+  const pipe = `${PIPE}-browser-upload-selector`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { paneId: 'pane-1234567890', verb: 'upload' as const, args: ['#hidden-up', 'C:\\f.txt'], by: 'alpha', timeoutMs: 1000 };
+
+    // A window at 75 drives an upload on a ref, and is counted as no driver for one by a selector.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 75 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    assert.deepEqual(await cli.request('browser.run', ask), { apps: 1, drivers: 0 });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'browser.requested'), []);
+    const pushedRef = waitFor(old, (m) => m.type === 'browser.requested' && m.verb === 'upload');
+    const repliedRef = cli.request('browser.run', { ...ask, args: ['e1', 'C:\\f.txt'] });
+    const pushRef = (await pushedRef) as { runId: number; args: string[] };
+    assert.deepEqual(pushRef.args, ['e1', 'C:\\f.txt']);
+    await old.request('browser.done', { runId: pushRef.runId, answer: { ok: true, text: 'set @e1 to C:\\f.txt' } });
+    assert.equal((await repliedRef).answered, true);
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 76 });
+    await app.request('subscribe', { topics: ['app'] });
+    const requested = waitFor(app, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', ask);
+    const push = await requested;
+    const runId = (push as { runId: number }).runId;
+    assert.deepEqual(push, { type: 'browser.requested', runId, paneId: 'pane-1234567890', verb: 'upload', args: ['#hidden-up', 'C:\\f.txt'], by: 'alpha', timeoutMs: 1000 });
+    const answer = { ok: true, text: 'set #hidden-up to C:\\f.txt' };
+    await app.request('browser.done', { runId, answer });
+    assert.deepEqual(await reply, { apps: 1, drivers: 1, answered: true, answer });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
 // M9 fix 781: a channel answering each push as the mod does, posting its
 // word on the submit (the hook sink hands it to modSubmitAnswered); a drop
 // says the prompt did not enter. And a push read without its id.
@@ -1294,6 +1342,42 @@ test('a row the mod kept goes to a level 66 window subscribed to sessions as tra
     assert.deepEqual(older.heard.filter((m) => m.type === 'transcript.row'), []);
   } finally {
     for (const c of clients) c.close();
+    await own.close();
+  }
+});
+
+test('session.spawn and session.resume wait on the server\'s spawnPath, and a refused spawn never asks it (M9 fix 971)', async () => {
+  const ownManager = new SessionManager(silentLogger);
+  const ownLayouts = new LayoutStore(path.join(mkTemp('emerald-pipe-971-'), 'state.json'), silentLogger);
+  ownLayouts.load();
+  let asked = 0;
+  const own = new PipeServer(ownManager, ownLayouts, {
+    pipePath: `${PIPE}-971`,
+    daemonVersion: 'test',
+    log: silentLogger,
+    spawnPath: () => {
+      asked++;
+      return Promise.resolve(null);
+    },
+  });
+  await own.listen();
+  const client = await PipeClient.connect(`${PIPE}-971`);
+  try {
+    await client.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const cwd = process.cwd();
+    await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'zsh' as never, cols: 80, rows: 24 }), { code: 'bad-request' });
+    assert.equal(asked, 0, 'a refused spawn reads no PATH');
+    const { session } = await client.request('session.spawn', { kind: 'shell', cwd, cols: 80, rows: 24 });
+    assert.equal(asked, 1);
+    const exited = once(ownManager, 'exit');
+    await client.request('session.kill', { sessionId: session.id });
+    await exited;
+    const resumed = await client.request('session.resume', { sessionId: session.id, cols: 80, rows: 24 });
+    assert.equal(asked, 2);
+    assert.equal(resumed.session.id, session.id);
+  } finally {
+    client.close();
+    ownManager.killAll();
     await own.close();
   }
 });

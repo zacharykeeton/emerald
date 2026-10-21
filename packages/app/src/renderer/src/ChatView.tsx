@@ -31,7 +31,7 @@ import { answerOptions, askQuestion, askReview, ghostSuggestion, promptExcerpt }
 import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
 import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
-import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab, AskVisit } from './screen-prompt-model.ts';
 import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
@@ -69,6 +69,17 @@ const freshFed = (): Fed => ({ mark: null, steps: stepState(), queue: queueState
 // The box grows from two rows to this many before it scrolls.
 const BOX_MAX_LINES = 8;
 const BOX_LINE_PX = 18;
+
+// Two rows growing to eight, from what the text needs. scrollHeight leaves
+// out the border a border-box height counts, so it is added back, or the box
+// is 2 px short and shows a scrollbar with nothing to scroll (M9 fix 846).
+// Only for a box that is laid out: hidden, every read is 0 and the write
+// would be 0px (M9 fix 957).
+function fitBox(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto';
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = `${Math.min(el.scrollHeight + border, BOX_MAX_LINES * BOX_LINE_PX + 14)}px`;
+}
 
 // One canvas context for measuring the placeholder's first line (M9 fix 810).
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -299,16 +310,12 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   useEffect(() => {
     if (FALLBACK_ON_GROWTH && fallback !== null && fed.size > fallback.size) setFallback(null);
   }, [fed, fallback]);
-  // Two rows growing to eight, from what the text needs. scrollHeight
-  // leaves out the border a border-box height counts, so it is added back,
-  // or the box is 2 px short and shows a scrollbar with nothing to scroll
-  // (M9 fix 846).
+  // Two rows growing to eight (fitBox); a box with no width is in a hidden
+  // layout tab and is sized when the observer sees it laid out (M9 fix 957).
   useLayoutEffect(() => {
     const el = boxRef.current;
-    if (el === null) return;
-    el.style.height = 'auto';
-    const border = el.offsetHeight - el.clientHeight;
-    el.style.height = `${Math.min(el.scrollHeight + border, BOX_MAX_LINES * BOX_LINE_PX + 14)}px`;
+    if (el === null || el.clientWidth === 0) return;
+    fitBox(el);
   }, [box]);
 
   // M9 fix 810: the placeholder's first line is cut with an ellipsis inside
@@ -322,8 +329,17 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const boxObserve = useCallback((el: HTMLTextAreaElement | null) => {
     boxRef.current = el;
     if (el === null) return;
+    // M9 fix 957: a box first laid out after its mount (its layout tab hidden at a restore) is sized when it is.
+    let laidOut = el.clientWidth > 0;
     const read = (): void => {
-      if (el.clientWidth === 0) return;
+      if (el.clientWidth === 0) {
+        laidOut = false;
+        return;
+      }
+      if (!laidOut) {
+        laidOut = true;
+        fitBox(el);
+      }
       const cs = getComputedStyle(el);
       const room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       setBoxGeom((prev) => (prev !== null && prev.room === room && prev.font === cs.font ? prev : { room, font: cs.font }));
@@ -1659,14 +1675,26 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
       tabIndex={-1}
       onKeyDown={(ev) => {
         if (ev.target !== ev.currentTarget) return;
+        // M9 fix 959: the tab keys, one tab per key, each prevented so a
+        // Tab never walks the focus out of the card. The review is the
+        // last tab: back is the Left it always sent (read on 2.1.302), on
+        // is nothing.
+        const tabStep = tabKeyStep(ev.key, ev.shiftKey);
+        if (tabStep !== 0 && review !== null) {
+          ev.preventDefault();
+          if (tabStep < 0) press('\x1b[D');
+          return;
+        }
+        if (tabStep !== 0 && ask !== null && askTabs.length > 0) {
+          ev.preventDefault();
+          const to = tabStepTo(askTabs, tabStep);
+          if (to !== null) pressTab(askTabs, to);
+          return;
+        }
         if (ev.key === 'Escape') {
           ev.preventDefault();
           ev.stopPropagation();
           press('\x1b');
-        } else if (ev.key === 'ArrowLeft' && review !== null) {
-          // The review's Left goes back to the questions (read on 2.1.302).
-          ev.preventDefault();
-          press('\x1b[D');
         } else if (ev.key === 'Enter' && submitShown) {
           ev.preventDefault();
           pressSubmit();
@@ -1826,6 +1854,9 @@ function foldAnchorIn(timeline: Element, turn: number): HTMLElement | null {
 function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void }) {
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
+  const stamp = when !== null || length !== null ? [when, length].filter((x) => x !== null).join(' · ') : null;
+  // M9 fix 958: a bash run stands where the prompt would, so its head shows the turn's time and length.
+  const bashStamp = turn.prompt === '' && turn.steps[0]?.kind === 'bash' ? stamp : null;
   const links = usePathLinks(paneId);
   const bare = imageOnlyPrompt(turn.prompt, turn.images);
   const items = timelineItems(turn.steps, mode, open);
@@ -1838,7 +1869,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
             {bare ? null : turn.prompt}
             <PromptImages images={turn.images} />
           </div>
-          {(when !== null || length !== null) && <span className="chat-prompt-time">{[when, length].filter((x) => x !== null).join(' · ')}</span>}
+          {stamp !== null && <span className="chat-prompt-time">{stamp}</span>}
         </div>
       )}
       {turn.steps.length > 0 && (
@@ -1856,7 +1887,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
               </Fragment>
             ) : (
               <Fragment key={i}>
-                <ChatStep step={item.step} paneId={paneId} session={session} />
+                <ChatStep step={item.step} paneId={paneId} session={session} time={item.step === turn.steps[0] ? bashStamp : null} />
                 <ChatThumbRow step={item.step} />
               </Fragment>
             ),
@@ -1886,7 +1917,7 @@ function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) 
   );
 }
 
-function ChatStep({ step, paneId, session }: { step: Step; paneId: string; session: SessionInfo }) {
+function ChatStep({ step, paneId, session, time }: { step: Step; paneId: string; session: SessionInfo; time: string | null }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
@@ -1933,7 +1964,7 @@ function ChatStep({ step, paneId, session }: { step: Step; paneId: string; sessi
     );
   }
   if (step.kind === 'compact') return <ChatCompact step={step} />;
-  if (step.kind === 'bash') return <ChatBash step={step} />;
+  if (step.kind === 'bash') return <ChatBash step={step} time={time} />;
   if (step.kind === 'note') {
     return (
       <div className="chat-step chat-note" data-kind="note">

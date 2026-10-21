@@ -2,15 +2,19 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
-import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, rowAfterRemoval, typeAhead, TYPE_AHEAD_PAUSE_MS, walk, watchOrder, withPending } from './files-model.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
+import { dropDirFor, hoverEffect } from './files-drop-model.ts';
+import type { RailDrop } from './files-drop-model.ts';
+import { dropIntoFolder } from './files-drop.ts';
+import { setRailDrop } from './explorer-drop.ts';
 import type { FilesModel, MenuFrom, Pending, Row, TouchedBy, TouchedIndex } from './files-model.ts';
 import { indexCodes, indexStatuses, letterAt, letterFor, statusAt } from './git-status-model.ts';
 import type { CodeIndex, GitFile, GitStatus, StatusIndex } from './git-status-model.ts';
 import { fileIcon } from './file-icons.ts';
-import { focusFileTab, focusTerminal, holdKeysInTree } from './focus.ts';
+import { focusFileTab, focusTerminal, holdKeysInTree, holdKeysInTreeOverClose } from './focus.ts';
 import { countsText, folderCounts, folderCountsTitle } from './git-changes-model.ts';
 import type { FolderCounts } from './git-changes-model.ts';
 import { useGitPoll } from './git-poll.ts';
@@ -426,6 +430,104 @@ export function FilesRail() {
     const timer = setTimeout(() => setFlashRow(null), REVEAL_FLASH_MS);
     return () => clearTimeout(timer);
   }, [flashRow]);
+  // M9 fix 953: a drop from Explorer on the rail moves or copies into the
+  // folder under the mouse. The object registered once reads this render's
+  // side through the ref, so it always sees the current model and tab. The
+  // light is set by hand, as explorer-drop.ts lights the strip, since a
+  // dragover every few hundred milliseconds should render nothing.
+  const railDrop = useRef<RailDrop | null>(null);
+  {
+    const sameDir = (a: string, b: string) => normalizePath(a).toLowerCase() === normalizePath(b).toLowerCase();
+    const clearLight = () => {
+      for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) delete el.dataset['dropInto'];
+      const listEl = listRef.current;
+      if (listEl !== null) {
+        delete listEl.dataset['dropDir'];
+        delete listEl.dataset['dropEffect'];
+      }
+    };
+    // The folder a drop at the point lands in and the element to light
+    // (its row, the list for the rail's own folder, else the row hovered),
+    // or null when no folder is in view.
+    const aim = (x: number, y: number): { dir: string; light: HTMLElement | null } | null => {
+      if (railTab !== 'files' || model.root === null) return null;
+      const hit = document.elementFromPoint(x, y)?.closest<HTMLElement>('.files-list .files-row[data-path][data-kind]') ?? null;
+      const path = hit?.dataset['path'];
+      const dir = dropDirFor(hit !== null && path !== undefined ? { path, kind: hit.dataset['kind'] === 'dir' ? 'dir' : 'file' } : null, model.root);
+      const listEl = listRef.current;
+      if (listEl === null) return { dir, light: null };
+      if (sameDir(dir, model.root)) return { dir, light: listEl };
+      const row = listEl.querySelector<HTMLElement>(`.files-row[data-kind="dir"][data-path="${CSS.escape(dir)}"]`);
+      return { dir, light: row ?? hit };
+    };
+    railDrop.current = {
+      over: (x, y, keys) => {
+        const a = aim(x, y);
+        if (a === null) {
+          clearLight();
+          return 'none';
+        }
+        const effect = hoverEffect(keys);
+        for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) if (el !== a.light) delete el.dataset['dropInto'];
+        if (a.light !== null) a.light.dataset['dropInto'] = '';
+        const listEl = listRef.current;
+        if (listEl !== null) {
+          listEl.dataset['dropDir'] = a.dir;
+          listEl.dataset['dropEffect'] = effect;
+        }
+        return effect;
+      },
+      leave: clearLight,
+      drop: (paths, x, y, keys) => {
+        const a = aim(x, y);
+        clearLight();
+        if (a === null) return;
+        const { dir } = a;
+        const atRoot = model.root !== null && sameDir(dir, model.root);
+        const listed = model.listings;
+        void dropIntoFolder(paths, dir, keys)
+          .then((outcomes) => {
+            const moved = outcomes.filter((o) => o.result === 'moved');
+            for (const o of moved) setModel((m) => renameInModel(m, o.from, o.to));
+            for (const o of moved) if (listed.has(parentPath(o.from))) list(parentPath(o.from));
+            const firstTo = outcomes.find((o) => o.result === 'moved' || o.result === 'copied')?.to;
+            if (firstTo === undefined) return;
+            setModel((m) => select(atRoot ? m : expandFolder(m, dir), firstTo));
+            list(dir);
+            setScrollToRow(firstTo);
+            setSearchTick((t) => t + 1);
+            setRefreshTick((t) => t + 1);
+          })
+          .catch((err: unknown) => console.warn('[emerald] explorer drop on the rail failed', err));
+      },
+    };
+  }
+  useEffect(() => {
+    setRailDrop({
+      over: (x, y, k) => railDrop.current?.over(x, y, k) ?? 'none',
+      leave: () => railDrop.current?.leave(),
+      drop: (p, x, y, k) => railDrop.current?.drop(p, x, y, k),
+    });
+    return () => setRailDrop(null);
+  }, []);
+
+  // The type-ahead's buffer and the time of its last key (M9 fix 951); a ref,
+  // since a key changes nothing on screen but the selection.
+  const typed = useRef({ text: '', at: 0 });
+  // M9 fix 952: hiding the rail (Ctrl+Shift+F, the header's hide button)
+  // with the keyboard in it unmounts what held it (the tree, the filter
+  // box, a name box) and leaves it on no element. It goes where Escape on
+  // the tree sends it, the focused terminal, or to the file tab on show,
+  // the choice App's tab effect makes; a keyboard already on another
+  // element is left there. The first render is left alone, as App's is.
+  const collapsedBefore = useRef(filesCollapsed);
+  useEffect(() => {
+    const was = collapsedBefore.current;
+    collapsedBefore.current = filesCollapsed;
+    if (was || !filesCollapsed || document.activeElement !== document.body) return;
+    if (isFileTab(tabs)) focusFileTab(tabs.active);
+    else focusTerminal();
+  }, [filesCollapsed]);
 
   if (filesCollapsed) {
     return (
@@ -522,8 +624,10 @@ export function FilesRail() {
   // one; read once when the menu renders. Moved or already gone, the
   // entry's scheme picks, tabs and file panes go and the tree, the hits
   // and the Changed list read again at once; a refusal says so in the
-  // corner and leaves everything where it was.
-  const trashOf = (p: string, kind: FileEntry['kind']): TrashItem => {
+  // corner and leaves everything where it was. Delete on the tree's selected
+  // row (M9 fix 950) runs the same move at once, with no second press, and
+  // hears it land through onMoved.
+  const trashOf = (p: string, kind: FileEntry['kind'], onMoved?: (gone: boolean) => void): TrashItem => {
     if (kind === 'dir' && sessionInFolder(p, getState().sessions.values())) return { reason: refusalWords('in-use', true), trash: null };
     if (kind === 'file' && isDirty(p)) return { reason: 'Unsaved edits in a tab: save or discard them first', trash: null };
     if (kind === 'dir' && [...dirtyFiles()].some((key) => renamedPath(key, p, p) !== null)) return { reason: 'A file under it has unsaved edits in a tab: save or discard them first', trash: null };
@@ -537,6 +641,7 @@ export function FilesRail() {
               flashCornerNote(`${folderName(p)} could not go to the recycle bin`);
               return;
             }
+            onMoved?.(!r.ok);
             dropFileSchemes(p);
             closeFileTabsUnder(p);
             void editLayout((l) => deletedFilePanes(l, p)).catch((err: unknown) => console.warn('[emerald] closing the file panes after a delete failed', err));
@@ -656,14 +761,41 @@ export function FilesRail() {
       });
   };
   // The tree's keys while it holds the keyboard and shows, with no box up
-  // (M9 fixes 574 and 929): F2 renames the selected row, Enter opens a file
-  // pinned with the keyboard in it or opens and folds a folder, and the
-  // arrows, Home and End walk the rows (moveSelection, files-model.ts). A
-  // key inside a name box stops there; Escape is the window listener's
-  // above.
+  // (M9 fixes 574, 929 and 950): F2 renames the selected row, Enter opens a
+  // file pinned with the keyboard in it or opens and folds a folder, Space
+  // previews a file with the keyboard kept here or opens and folds a folder,
+  // as a click does, Delete moves the row's file or folder to the recycle
+  // bin at once with a note in the corner, Explorer's way (the menu's Delete
+  // asks twice), and the arrows, Home and End walk the rows (moveSelection,
+  // files-model.ts); a printable key types ahead to the next row whose name
+  // starts with what was typed, a second's pause starting over (M9 fix 951,
+  // typeAhead, files-model.ts). A key inside a name box stops there; Escape is the
+  // window listener's above.
   const onTreeKey = (ev: React.KeyboardEvent) => {
-    if (ev.target !== ev.currentTarget || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
+    if (ev.target !== ev.currentTarget || ev.ctrlKey || ev.altKey || ev.metaKey) return;
     if (search !== null || filesChanged || pending !== null || renaming !== null) return;
+    // M9 fix 951: type-ahead, as VS Code's explorer does. A printable key,
+    // Shift allowed, adds to the buffer and selects the next row whose name
+    // starts with it (typeAhead, files-model.ts), opening nothing; a pause
+    // of TYPE_AHEAD_PAUSE_MS starts a new buffer. A Space joins a live
+    // buffer, since a name can hold one, and otherwise previews (below).
+    const now = Date.now();
+    const live = typed.current.text !== '' && now - typed.current.at < TYPE_AHEAD_PAUSE_MS;
+    if (ev.key.length === 1 && (ev.key !== ' ' || live)) {
+      ev.preventDefault();
+      const text = (live ? typed.current.text : '') + ev.key;
+      typed.current = { text, at: now };
+      const next = typeAhead(model, rows, text);
+      if (next !== model) {
+        setModel(next);
+        if (next.selected !== null) setScrollToRow(next.selected);
+      }
+      return;
+    }
+    // A lone Shift or Caps Lock, on its way to a capital, keeps the buffer;
+    // any other key ends it.
+    if (ev.key !== 'Shift' && ev.key !== 'CapsLock') typed.current = { text: '', at: 0 };
+    if (ev.shiftKey) return;
     const found = model.selected === null ? undefined : rows.find((r) => r.type === 'entry' && r.path === model.selected);
     const row = found !== undefined && found.type === 'entry' ? found : undefined;
     if (ev.key === 'F2') {
@@ -685,6 +817,30 @@ export function FilesRail() {
       }
       return;
     }
+    if (ev.key === ' ') {
+      if (row === undefined) return;
+      // A focused list would scroll on Space itself.
+      ev.preventDefault();
+      // As a click on the row does (M9 fix 929): a file previews with the
+      // keyboard kept on the tree, a folder opens or folds.
+      if (row.kind === 'file') holdKeysInTree(row.path);
+      onOpen(row.path, row.kind);
+      return;
+    }
+    if (ev.key === 'Delete') {
+      if (row === undefined) return;
+      ev.preventDefault();
+      const after = rowAfterRemoval(rows, row.path);
+      const closesFront = isFileTab(tabs) && !isDocument(tabs.active) && renamedPath(tabs.active, row.path, row.path) !== null;
+      const item = trashOf(row.path, row.kind, (gone) => {
+        if (closesFront) holdKeysInTreeOverClose();
+        setModel((m) => select(m, after));
+        if (!gone) flashCornerNote(`${folderName(row.path)} moved to the recycle bin`);
+      });
+      if (item.trash === null) flashCornerNote(item.reason ?? `${folderName(row.path)} could not go to the recycle bin`);
+      else item.trash();
+      return;
+    }
     const next = moveSelection(model, rows, ev.key);
     if (next === null) return;
     // A focused list would scroll on the arrows itself.
@@ -696,7 +852,7 @@ export function FilesRail() {
   return (
     <div className="files-rail" style={{ width: filesWidth }} data-root={model.root ?? undefined} data-tab={railTab} data-changed={filesChanged || undefined}>
       <FilesResizer width={filesWidth} />
-      <RailTabs active={railTab} changed={git.files.filter((f) => f.status !== 'ignored').length} dragFolder={viewsSupported(daemon) ? root : null} folder={root} />
+      <RailTabs active={railTab} changed={changes.files.length} dragFolder={viewsSupported(daemon) ? root : null} folder={root} />
       {railTab === 'history' && <HistoryPanel />}
       {railTab === 'stats' && <RailStats folder={root} />}
       {railTab === 'timeline' && <ActivitySection folder={root} scope={activityScope} onScope={setActivityScope} unit={activityUnit} onUnit={setActivityUnit} place="rail" />}

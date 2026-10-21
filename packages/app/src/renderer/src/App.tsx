@@ -14,7 +14,7 @@ import { FileView } from './FileView.tsx';
 import { ReviewTab } from './ReviewTab.tsx';
 import { reviewFolder, reviewSessionId } from './review-model.ts';
 import { useGitWatchRoots } from './git-watch.ts';
-import { focusTerminal } from './focus.ts';
+import { focusTerminal, treeKeepsKeysOnPanes } from './focus.ts';
 import { installFocusHistory } from './focus-history.ts';
 import { HooksBanner } from './HooksBanner.tsx';
 import { configurePrefix, installKeybindings } from './keys.ts';
@@ -22,6 +22,7 @@ import { installUseRecord, recordUse } from './use-record.ts';
 import { outsideOpenUse } from './use-record-model.ts';
 import { NewSessionDialog } from './NewSessionDialog.tsx';
 import { UnsavedDialog } from './UnsavedDialog.tsx';
+import { MoveClashDialog } from './MoveClashDialog.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { SplitView } from './SplitView.tsx';
 import { TabStrip } from './TabStrip.tsx';
@@ -104,14 +105,14 @@ export function App() {
   }, [windowId]);
 
   // Coming back to the panes puts the keyboard in the focused terminal;
-  // a file tab takes it itself (FileView). The first render is left
+  // a file tab takes it itself (FileView), and a Delete on the Files tree that closed the tab in front leaves it on the tree (M9 fix 950, focus.ts). The first render is left
   // alone so startup focus stays what it was.
   useEffect(() => {
     if (firstTab.current) {
       firstTab.current = false;
       return;
     }
-    if (fileTab === null) focusTerminal();
+    if (fileTab === null && !treeKeepsKeysOnPanes()) focusTerminal();
   }, [fileTab]);
 
   // The split view stays mounted under a file tab, hidden rather than
@@ -158,6 +159,7 @@ export function App() {
       </div>
       <NewSessionDialog />
       <UnsavedDialog />
+      <MoveClashDialog />
       <CheatSheet />
       <PrefixIndicator />
     </div>

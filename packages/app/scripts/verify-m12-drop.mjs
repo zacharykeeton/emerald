@@ -26,11 +26,11 @@ const { CTRL, SHIFT, clickNewShell, expect, focusedPaneIs, freshPort, getLayout,
 
 let app = null;
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 120 s');
+  console.error('[verify] WATCHDOG: run exceeded 180 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   setTimeout(() => process.exit(3), 500);
-}, 120000);
+}, 180000);
 
 // The seed: a folder to drop and a file in it to drop on a shell. The
 // file's name has a space so the typed path has to be quoted, and a .txt
@@ -45,6 +45,8 @@ const seedFile = path.join(seed, 'my note.txt');
 fs.writeFileSync(seedFile, 'not a folder\n');
 const seedUnknown = path.join(seed, 'untyped.emeraldtest');
 fs.writeFileSync(seedUnknown, 'a file with no registered type\n');
+// M9 fix 953's source folder, on the seed's drive so a drop moves.
+const src953Short = path.join(os.tmpdir(), 'emerald-verify', `m12-src-${process.pid}`);
 
 // Puts a path on a hidden file input through the devtools protocol, the
 // one way a page can hold a File that is backed by a real path (a File
@@ -67,14 +69,25 @@ async function setDropFile(s, p) {
 // DataTransfer made with the constructor, so only a real drag shows it.
 // A dragleave with no related target is how Chromium says the drag left
 // the window.
-const drag = (s, type, p) =>
+// Every File on the input goes in (M9 fix 953 drops several), and the
+// keys a drag from Explorer carries ride on the event (Ctrl copies, Shift
+// moves).
+const drag = (s, type, p, keys = {}) =>
   s.evalJs(
-    `(() => { const dt = new DataTransfer(); dt.items.add(document.getElementById('verify-drop').files[0]); const el = document.elementFromPoint(${p.x}, ${p.y}) ?? document.body; el.dispatchEvent(new DragEvent(${JSON.stringify(type)}, { dataTransfer: dt, clientX: ${p.x}, clientY: ${p.y}, bubbles: true, cancelable: true, relatedTarget: null })); })()`,
+    `(() => { const dt = new DataTransfer(); for (const f of document.getElementById('verify-drop').files) dt.items.add(f); const el = document.elementFromPoint(${p.x}, ${p.y}) ?? document.body; el.dispatchEvent(new DragEvent(${JSON.stringify(type)}, { dataTransfer: dt, clientX: ${p.x}, clientY: ${p.y}, ctrlKey: ${keys.ctrl === true}, shiftKey: ${keys.shift === true}, bubbles: true, cancelable: true, relatedTarget: null })); })()`,
   );
-const hover = async (s, p) => {
-  await drag(s, 'dragenter', p);
-  await drag(s, 'dragover', p);
+const hover = async (s, p, keys = {}) => {
+  await drag(s, 'dragenter', p, keys);
+  await drag(s, 'dragover', p, keys);
 };
+// Several paths on the input at once (M9 fix 953), setDropFile's shape.
+async function setDropFiles(s, paths) {
+  await s.evalJs(
+    `(() => { let i = document.getElementById('verify-drop'); if (i === null) { i = document.createElement('input'); i.type = 'file'; i.id = 'verify-drop'; i.style.display = 'none'; document.body.appendChild(i); } i.multiple = true; })()`,
+  );
+  const r = await s.send('Runtime.evaluate', { expression: `document.getElementById('verify-drop')` });
+  await s.send('DOM.setFileInputFiles', { files: paths, objectId: r.result.objectId });
+}
 const dragOn = (s) => s.evalJs(`document.body.classList.contains('dragging-session')`);
 const zoneOn = (s, paneId) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .drop-overlay')?.dataset.dropZone ?? null`);
 const overlays = (s) => s.evalJs(`document.querySelectorAll('.drop-overlay').length`);
@@ -503,11 +516,12 @@ try {
   expect((await sessionCount(s)) === sessionsBefore651, 'no session started or lost');
   step('fix 651: the panes back to one tab with the seed folder\'s shell in newPane');
 
-  // M9 fix 341: the seeded file dropped on the tab strip and on the files
-  // rail opens as a pinned tab (a hover lights the element it is over,
-  // and a drop on the strip with nothing lit from a pane still opens),
-  // and the folder dropped there does nothing. The rail is opened first
-  // when the profile has it collapsed.
+  // M9 fix 341: the seeded file dropped on the tab strip opens as a
+  // pinned tab (a hover lights the strip, and a drop on it with nothing
+  // lit from a pane still opens), and the folder dropped there does
+  // nothing. The strip alone opens a file: the Files rail moves or copies
+  // instead (fix 953's block below). The rail is opened first when the
+  // profile has it collapsed.
   expect((await setDropFile(s, seedFile)) === seedFile, 'the File to drop is the seeded file again');
   if (!(await s.evalJs(`!!document.querySelector('.files-rail')`))) {
     await s.key('F', 'KeyF', 70, CTRL | SHIFT);
@@ -516,7 +530,7 @@ try {
   const litOutside = () => s.evalJs(`[...document.querySelectorAll('[data-drop-target]')].map((e) => e.className.split(' ')[0])`);
   const fileTabs = () => s.evalJs(`[...document.querySelectorAll('.tab-file')].map((t) => ({ path: t.dataset.path ?? t.title ?? null, preview: t.dataset.preview !== undefined, active: t.dataset.active !== undefined }))`);
   await usage727.on();
-  for (const sel of ['.tab-strip', '.files-rail']) {
+  for (const sel of ['.tab-strip']) {
     const spot = await centerOf(s, sel);
     await hover(s, spot);
     expect((await dragOn(s)) && (await overlays(s)) === 0, `a file over ${sel} is a drag with no pane overlay`);
@@ -526,7 +540,7 @@ try {
     expect(JSON.stringify(await litOutside()) === '[]' && !(await dragOn(s)), `${sel} is unlit and the drag over after the drop`);
     const opened = await fileTabs();
     expect(opened.length === 1 && !opened[0].preview && opened[0].active, `one pinned active file tab, got ${JSON.stringify(opened)}`);
-    const want727 = sel === '.tab-strip' ? 1 : 2;
+    const want727 = 1;
     const tabDrops727 = (await usage727.actions('drop-file-tab', want727)).filter((l) => l.from === 'click');
     expect(tabDrops727.length === want727, `${want727} drop-file-tab from a click after the ${sel} drop, got ${tabDrops727.length}`);
     expect(await s.evalJs(`document.querySelector('.tab-file .tab-name')?.textContent === ${JSON.stringify(path.basename(seedFile))}`), 'the tab is named for the file');
@@ -565,10 +579,206 @@ try {
   await drag(s, 'drop', stripSpot);
   await sleep(800);
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === 0 && (await sessionCount(s)) === before + 1, 'a folder dropped on the strip opens no tab and starts no session');
-  const tabDrops727 = (await usage727.actions('drop-file-tab', 3)).filter((l) => l.from === 'click');
-  expect(tabDrops727.length === 3, `three drop-file-tab in all (strip, rail, the untyped file), the folder added none, got ${tabDrops727.length}`);
+  const tabDrops727 = (await usage727.actions('drop-file-tab', 2)).filter((l) => l.from === 'click');
+  expect(tabDrops727.length === 2, `two drop-file-tab in all (the strip, the untyped file), the folder added none, got ${tabDrops727.length}`);
   await usage727.off();
-  step('fix 341: a file dropped on the tab strip or the files rail opens as a pinned tab, lit on the way in; a folder there lights it too but opens nothing');
+  step('fix 341: a file dropped on the tab strip opens as a pinned tab, lit on the way in; a folder there lights it too but opens nothing');
+
+  // M9 fix 953: a drop from Explorer on the Files rail moves or copies
+  // into the folder under the mouse, Explorer's way: the folder's row lit
+  // on the way in (the list for the rail's own folder), a move on the same
+  // drive, Ctrl a copy, a name already there asked once for the drop, and
+  // what was open following a moved file. The source folder is on the
+  // seed's drive, so auto moves; a move across drives and the effect a
+  // real drag shows are read at the install.
+  fs.rmSync(path.join(process.env['EMERALD_HOME'], 'trash'), { recursive: true, force: true });
+  fs.rmSync(src953Short, { recursive: true, force: true });
+  fs.mkdirSync(path.join(src953Short, 'dir953'), { recursive: true });
+  const src953 = fs.realpathSync.native(src953Short);
+  const a953 = path.join(src953, 'a953.txt');
+  const b953 = path.join(src953, 'b953.txt');
+  const c953 = path.join(src953, 'c953.txt');
+  const clash953 = path.join(src953, 'clash953.txt');
+  const clash953b = path.join(src953, 'clash953b.txt');
+  const dir953 = path.join(src953, 'dir953');
+  fs.writeFileSync(a953, 'a');
+  fs.writeFileSync(b953, 'b');
+  fs.writeFileSync(c953, 'c');
+  fs.writeFileSync(clash953, 'new');
+  fs.writeFileSync(clash953b, 'new b');
+  fs.writeFileSync(path.join(dir953, 'inner.txt'), 'inner');
+  const into953 = path.join(seed, 'into953');
+  fs.mkdirSync(into953, { recursive: true });
+  fs.writeFileSync(path.join(into953, 'clash953.txt'), 'old');
+  fs.writeFileSync(path.join(into953, 'clash953b.txt'), 'old b');
+  const moveEffect953 = 'copy'; // files-drop-model.ts, fix 953's reading (none taken, the safe copy)
+  const read953 = (p) => {
+    try {
+      return fs.readFileSync(p, 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const rowSel953 = (p) => `.files-list .files-row[data-path=${JSON.stringify(p)}]`;
+  const lit953 = () => s.evalJs(`[...document.querySelectorAll('[data-drop-into]')].map((e) => e.dataset.path ?? 'list')`);
+  const drop953 = () => s.evalJs(`({ dir: document.querySelector('.files-list')?.dataset.dropDir ?? null, effect: document.querySelector('.files-list')?.dataset.dropEffect ?? null })`);
+  const note953 = async () => (await s.evalJs(`document.querySelector('.corner-note')?.textContent ?? ''`)) ?? '';
+  const noteIs953 = (text, what) => s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(text)}`, what, 5000);
+  const blank953 = async () => {
+    const p = await s.evalJs(`(() => { const r = document.querySelector('.files-list').getBoundingClientRect(); const x = r.x + r.width / 2; const y = r.bottom - 6; return { x, y, row: document.elementFromPoint(x, y)?.closest('.files-row') != null, list: document.elementFromPoint(x, y)?.closest('.files-list') != null }; })()`);
+    expect(!p.row && p.list, `the blank under the rows is on the list and on no row, got ${JSON.stringify(p)}`);
+    return { x: p.x, y: p.y };
+  };
+  const waitDisk953 = async (test, what) => {
+    const until = Date.now() + 5000;
+    while (!test()) {
+      if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+      await sleep(100);
+    }
+  };
+
+  // (a) The light and the effect while a drag hovers.
+  const term953 = await centerOf(s, `[data-pane-id=${JSON.stringify(newPane)}] .term-host`);
+  await s.click(term953.x, term953.y);
+  await s.waitFor(
+    `document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)} && document.querySelector(${JSON.stringify(rowSel953(into953))})?.dataset.kind === 'dir'`,
+    'the rail on the seed folder with into953 in it',
+    5000,
+  );
+  await setDropFiles(s, [a953]);
+  const into953Spot = await centerOf(s, rowSel953(into953));
+  await hover(s, into953Spot);
+  expect(JSON.stringify(await lit953()) === JSON.stringify([into953]), `into953's row is lit, got ${JSON.stringify(await lit953())}`);
+  let d953 = await drop953();
+  expect(d953.dir === into953 && d953.effect === moveEffect953, `the drop would land in into953 with ${moveEffect953}, got ${JSON.stringify(d953)}`);
+  expect((await overlays(s)) === 0 && (await s.evalJs(`document.querySelectorAll('[data-drop-target]').length`)) === 0, 'no pane overlay and no strip or rail lit whole');
+  await hover(s, into953Spot, { ctrl: true });
+  d953 = await drop953();
+  expect(d953.effect === 'copy', `Ctrl over the rail answers copy, got ${JSON.stringify(d953)}`);
+  await hover(s, await centerOf(s, rowSel953(seedFile)));
+  d953 = await drop953();
+  expect(JSON.stringify(await lit953()) === JSON.stringify(['list']) && d953.dir === seed, `a file row at the root lights the list for the seed, got ${JSON.stringify(await lit953())} ${JSON.stringify(d953)}`);
+  await drag(s, 'dragleave', await blank953());
+  d953 = await drop953();
+  expect(JSON.stringify(await lit953()) === '[]' && d953.dir === null && d953.effect === null, `the light is gone after the drag left, got ${JSON.stringify(await lit953())} ${JSON.stringify(d953)}`);
+  step('fix 953: a drag from Explorer over the Files rail lights the folder it would land in, a folder row itself and a file row its folder, the list for the root, and the effect follows Ctrl');
+
+  // (b) Two entries onto a folder row.
+  await setDropFiles(s, [a953, dir953]);
+  await hover(s, into953Spot);
+  await drag(s, 'drop', into953Spot);
+  await waitDisk953(
+    () => read953(path.join(into953, 'a953.txt')) === 'a' && read953(path.join(into953, 'dir953', 'inner.txt')) === 'inner' && !fs.existsSync(a953) && !fs.existsSync(dir953),
+    'a953.txt and dir953 moved into into953',
+  );
+  await noteIs953('Moved 2 items into into953', 'the note says two items moved');
+  await s.waitFor(
+    `document.querySelector(${JSON.stringify(rowSel953(into953))})?.dataset.expanded === 'true' && !!document.querySelector(${JSON.stringify(rowSel953(path.join(into953, 'dir953')))}) && document.querySelector(${JSON.stringify(rowSel953(path.join(into953, 'a953.txt')))})?.dataset.selected === 'true'`,
+    'into953 open on the moved entries, a953.txt selected',
+    5000,
+  );
+  const mainLog953 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  expect(mainLog953.includes(`files-move into ${into953} (auto): a953.txt moved, dir953 moved`), 'main.log has the move line');
+  expect(JSON.stringify(await lit953()) === '[]', `nothing lit after the drop, got ${JSON.stringify(await lit953())}`);
+  step('fix 953: two entries dropped on a folder row move into it on the same drive, the tree opens on them and the note says so');
+
+  // (c) A file open in a tab, dropped on the blank under the rows: the
+  // tab follows it.
+  await setDropFiles(s, [b953]);
+  const strip953 = await centerOf(s, '.tab-strip');
+  await hover(s, strip953);
+  await drag(s, 'drop', strip953);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(b953)}][data-active]`)}) && !document.querySelector('.tab-file[data-preview]')`, 'b953.txt open as a pinned, active tab', 5000);
+  const panesTab953 = await centerOf(s, '.tab-panes');
+  await s.click(panesTab953.x, panesTab953.y);
+  await s.waitFor(
+    `document.querySelector('.tab-strip')?.dataset.activeTab === 'panes' && document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(seed)}`,
+    'the panes in front and the rail on the seed again',
+    5000,
+  );
+  const blankSpot953 = await blank953();
+  await hover(s, blankSpot953);
+  await drag(s, 'drop', blankSpot953);
+  const seedB953 = path.join(seed, 'b953.txt');
+  await waitDisk953(() => read953(seedB953) === 'b' && !fs.existsSync(b953), 'b953.txt moved into the seed');
+  await noteIs953(`Moved b953.txt into ${path.basename(seed)}`, 'the note says b953.txt moved');
+  await s.waitFor(
+    `!!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(seedB953)}]`)}) && !document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(seedB953)}][data-preview]`)}) && !document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(b953)}]`)})`,
+    'the tab follows b953.txt into the seed, still pinned',
+    5000,
+  );
+  const tabSpot953 = await centerOf(s, `.tab-file[data-tab=${JSON.stringify(seedB953)}]`);
+  await s.click(tabSpot953.x, tabSpot953.y);
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelectorAll('.tab-file').length === 0`, 'Ctrl+W closed the moved file\'s tab', 5000);
+  step('fix 953: a file dropped on the blank under the rows moves into the rail\'s folder, and its open tab follows it, still pinned');
+
+  // (d) A name already in the folder.
+  const buttons953 = () => s.evalJs(`[...document.querySelectorAll('.move-clash-dialog .dialog-actions button')].map((b) => b.textContent)`);
+  await setDropFiles(s, [clash953]);
+  await hover(s, into953Spot);
+  await drag(s, 'drop', into953Spot);
+  await s.waitFor(`!!document.querySelector('.move-clash-dialog')`, 'the clash dialog', 5000);
+  const ask953 = await s.evalJs(
+    `({ title: document.querySelector('.move-clash-dialog .dialog-title')?.textContent ?? null, rows: document.querySelectorAll('.move-clash-row').length, row: !!document.querySelector('.move-clash-row[data-name="clash953.txt"]'), focus: document.activeElement?.dataset.choice ?? null })`,
+  );
+  expect(ask953.title === 'Replace clash953.txt in into953?' && ask953.rows === 1 && ask953.row && ask953.focus === 'skip', `one clash asked about, Skip focused, got ${JSON.stringify(ask953)}`);
+  expect(JSON.stringify(await buttons953()) === JSON.stringify(['Replace', 'Skip', 'Cancel']), `the buttons for one, got ${JSON.stringify(await buttons953())}`);
+  await s.evalJs(`document.querySelector('.move-clash-dialog [data-choice="skip"]').click()`);
+  await s.waitFor(`!document.querySelector('.move-clash-dialog')`, 'the dialog gone after Skip', 3000);
+  await noteIs953('Skipped clash953.txt: already in into953', 'the note says it was skipped');
+  expect(read953(path.join(into953, 'clash953.txt')) === 'old' && fs.existsSync(clash953), 'Skip left both files where they were');
+  await setDropFiles(s, [clash953, clash953b]);
+  await hover(s, into953Spot);
+  await drag(s, 'drop', into953Spot);
+  await s.waitFor(`document.querySelector('.move-clash-dialog')?.dataset.count === '2'`, 'the clash dialog for two', 5000);
+  const ask953b = await s.evalJs(`({ title: document.querySelector('.move-clash-dialog .dialog-title')?.textContent ?? null, rows: document.querySelectorAll('.move-clash-row').length })`);
+  expect(ask953b.title === '2 names are already in into953' && ask953b.rows === 2, `two clashes asked about, got ${JSON.stringify(ask953b)}`);
+  expect(JSON.stringify(await buttons953()) === JSON.stringify(['Replace all', 'Skip all', 'Cancel']), `the buttons for several, got ${JSON.stringify(await buttons953())}`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.move-clash-dialog')`, 'the dialog gone after Escape', 3000);
+  await sleep(500);
+  expect(
+    read953(path.join(into953, 'clash953.txt')) === 'old' && read953(path.join(into953, 'clash953b.txt')) === 'old b' && fs.existsSync(clash953) && fs.existsSync(clash953b),
+    'Escape cancelled the whole drop',
+  );
+  await setDropFiles(s, [clash953]);
+  await hover(s, into953Spot);
+  await drag(s, 'drop', into953Spot);
+  await s.waitFor(`!!document.querySelector('.move-clash-dialog')`, 'the clash dialog again', 5000);
+  await s.evalJs(`document.querySelector('.move-clash-dialog [data-choice="replace"]').click()`);
+  const trashed953 = path.join(process.env['EMERALD_HOME'], 'trash', '1-clash953.txt');
+  await waitDisk953(() => read953(path.join(into953, 'clash953.txt')) === 'new' && !fs.existsSync(clash953) && read953(trashed953) === 'old', 'the new clash953.txt in, the old one in the trash');
+  await noteIs953('Moved clash953.txt into into953', 'the note says the replace moved it');
+  step('fix 953: a name already in the folder asks once for the drop: Skip leaves it, Escape cancels the whole drop, Replace sends what was there to the recycle bin and moves the new one in');
+
+  // (e) Ctrl copies; a file already there and a folder onto itself.
+  await setDropFiles(s, [c953]);
+  await hover(s, into953Spot, { ctrl: true });
+  expect((await drop953()).effect === 'copy', 'Ctrl shows copy');
+  await drag(s, 'drop', into953Spot, { ctrl: true });
+  await waitDisk953(() => read953(path.join(into953, 'c953.txt')) === 'c' && fs.existsSync(c953), 'c953.txt copied, its source kept');
+  await noteIs953('Copied c953.txt into into953', 'the note says it was copied');
+  await setDropFiles(s, [seedFile]);
+  const blankSpot953e = await blank953();
+  await hover(s, blankSpot953e);
+  await drag(s, 'drop', blankSpot953e);
+  await noteIs953(`Already in ${path.basename(seed)}`, 'the note says the file is already there');
+  expect(fs.existsSync(seedFile), 'the seed file stays put');
+  await setDropFiles(s, [into953]);
+  const into953Again = await centerOf(s, rowSel953(into953));
+  await hover(s, into953Again);
+  await drag(s, 'drop', into953Again);
+  await noteIs953('into953 could not go: A folder cannot go into itself', 'the note says a folder cannot go into itself');
+  expect(fs.existsSync(into953), 'into953 still there');
+  expect(
+    JSON.stringify(await lit953()) === '[]' &&
+      (await s.evalJs(`document.querySelectorAll('[data-drop-target]').length`)) === 0 &&
+      (await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === 0 &&
+      !(await s.evalJs(`!!document.querySelector('.move-clash-dialog')`)),
+    `the block ends unlit with no file tab and no dialog, note ${await note953()}`,
+  );
+  step('fix 953: Ctrl copies, a file already in the folder stays put, and a folder dropped on itself is refused');
 
   step('PASS');
 } catch (err) {
@@ -583,6 +793,7 @@ try {
   stopDaemon();
   try {
     fs.rmSync(seed, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    fs.rmSync(src953Short, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   } catch {
     // Left for the next run.
   }

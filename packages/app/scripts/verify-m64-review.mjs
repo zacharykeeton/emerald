@@ -318,6 +318,40 @@ try {
   await s.screenshot('m9-fix199-folder-review.png');
   step("M9 fix 199: a changed row's letter opens the session's review on that file and moves it to the next; with no session the folder's own review opens, no Send");
 
+  // M9 fix 963: a nested repository is one row reading repository;
+  // selected, it shows the one line, and Review it › opens its own review.
+  // After fix 199's tab counts, which a third review tab would break. The
+  // nested repository needs a commit: one with none pins no base and its
+  // review lists nothing.
+  const nested = path.join(repo, 'nested');
+  fs.mkdirSync(nested);
+  const nestedGit = (...args) => execFileSync('git', args, { cwd: nested, stdio: ['ignore', 'pipe', 'pipe'] });
+  nestedGit('init', '-q', '-b', 'main');
+  nestedGit('config', 'user.name', 'verify');
+  nestedGit('config', 'user.email', 'verify@example.invalid');
+  nestedGit('config', 'commit.gpgsign', 'false');
+  fs.writeFileSync(path.join(nested, 'seed.txt'), 'seed\n');
+  nestedGit('add', '.');
+  nestedGit('commit', '-q', '-m', 'seed');
+  fs.writeFileSync(path.join(nested, 'inner.txt'), 'inner\n');
+  const outer = `document.querySelector(${JSON.stringify(`.review-tab[data-folder=${JSON.stringify(repo)}]`)})`;
+  const nestedRow = `[...${outer}.querySelectorAll('.review-file')].find((f) => f.dataset.rel === 'nested')`;
+  await s.evalJs(`${outer}.querySelector('.review-refresh').click()`);
+  await s.waitFor(`${nestedRow}?.dataset.repo === 'true'`, 'the nested repository row marked', 10000);
+  const nestedSub = await s.evalJs(`(() => { const r = ${nestedRow}; return { repo: r.querySelector('.review-file-repo')?.textContent ?? null, counts: !!r.querySelector('.review-file-counts') }; })()`);
+  expect(nestedSub.repo === 'repository' && !nestedSub.counts, `the nested row reads repository with no counts: ${JSON.stringify(nestedSub)}`);
+  await s.evalJs(`${nestedRow}.click()`);
+  await s.waitFor(`${outer}.dataset.selected === 'nested' && !!${outer}.querySelector('.review-nested-line')`, 'the nested line shown', 10000);
+  const nestedShown = await s.evalJs(`(() => { const t = ${outer}; return { line: t.querySelector('.review-nested-line').textContent, diff: !!t.querySelector('.review-diff'), button: t.querySelector('.review-nested-open')?.textContent ?? null }; })()`);
+  expect(nestedShown.line === 'nested is a repository of its own; its changes are reviewed in it' && !nestedShown.diff && nestedShown.button === 'Review it ›', `selected, the nested row shows the one line and the button, no diff: ${JSON.stringify(nestedShown)}`);
+  await s.evalJs(`${outer}.querySelector('.review-nested-open').click()`);
+  const inner = `document.querySelector(${JSON.stringify(`.review-tab[data-folder=${JSON.stringify(nested)}]`)})`;
+  await s.waitFor(`${inner}?.dataset.state === 'ready' && [...${inner}.querySelectorAll('.review-file')].some((f) => f.dataset.rel === 'inner.txt' && f.dataset.letter === 'A')`, "the nested repository's own review listing inner.txt", 10000);
+  expect((await reviewTabs()) === 3, 'a third review tab, the nested one');
+  const nestedTab = await s.evalJs(`document.querySelector('.tab-file[data-active] .tab-name')?.textContent ?? null`);
+  expect(nestedTab === 'Review · nested', `the strip names the nested review: ${nestedTab}`);
+  step('M9 fix 963: a nested repository reads repository in the review, selected it says it is a repository of its own, and Review it › opens its own review');
+
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

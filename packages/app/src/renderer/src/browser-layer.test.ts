@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RING_PX, adoptFrames, frameRect, navigationRefusal, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
+import { RING_PX, adoptFrames, frameRect, refusalLine, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
 
 // M9 fix 669: which frame a browser pane gets across a layout change, and
 // where a frame sits over its slot.
@@ -96,6 +96,10 @@ test("a navigation keeps the record's profile and toolbar, and the toolbar flag 
   const shown = withToolbar(v, true);
   assert.deepEqual(shown, { kind: 'browser', url: 'http://a/', profile: 'b' });
   assert.equal('toolbar' in shown, false);
+  // M9 fix 969: the opener rides through a navigation and the toolbar toggle, which emmer browser close reads.
+  const opened = { kind: 'browser', url: 'http://a/', openedBy: 'abc-1' } as const;
+  assert.deepEqual(withPageUrl(opened, 'http://b/'), { kind: 'browser', url: 'http://b/', openedBy: 'abc-1' });
+  assert.deepEqual(withToolbar(opened, false), { kind: 'browser', url: 'http://a/', openedBy: 'abc-1', toolbar: false });
 });
 
 test('a navigation keeps the root for a page from the disk and drops it for a web page (M9 fix 896)', () => {
@@ -115,16 +119,8 @@ test('a navigation keeps the root for a page from the disk and drops it for a we
   assert.deepEqual(withPageUrl(web, other, seen), web);
 });
 
-test('the error line refuses a page from the disk only when this frame has not shown it (M9 fix 933)', () => {
-  const id = '0b5c3a9e-1f2d-4c3b-8a7e-6d5c4b3a2f10';
-  const local = `emerald-file://${id}/site/page.html`;
-  const web = 'http://127.0.0.1:5000/two';
-  // Today's listener refused both; the second is the flash on Back.
-  assert.equal(navigationRefusal(local, web, new Set()), 'local');
-  assert.equal(navigationRefusal(local, web, new Set([local])), null);
-  // The exact URL, as main holds it.
-  assert.equal(navigationRefusal(`emerald-file://${id}/site/other.html`, web, new Set([local])), 'local');
-  assert.equal(navigationRefusal(`emerald-file://${id}/site/other.html`, local, new Set()), null);
-  assert.equal(navigationRefusal('file:///C:/x', web, new Set()), 'link');
-  assert.equal(navigationRefusal('http://127.0.0.1:5000/', web, new Set()), null);
+test("main's refusal reads as a page from the disk or a link off the web (M9 fix 967)", () => {
+  const local = 'emerald-file://0b5c3a9e-1f2d-4c3b-8a7e-6d5c4b3a2f10/site/page.html';
+  assert.equal(refusalLine(local), `This page tried to open ${local}; a web page cannot open a page from the disk`);
+  assert.equal(refusalLine('file:///C:/x'), 'This page tried to open file:///C:/x; a browser pane opens only http and https pages');
 });

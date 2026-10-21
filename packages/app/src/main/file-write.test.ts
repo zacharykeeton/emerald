@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createFile, describeWrite, detectEol, encodeText, fileStamp, heldTrash, makeFolder, renameEntry, requireAbsolute, trashEntry, writeFileText } from './file-write.ts';
+import { createFile, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, renameEntry, requireAbsolute, sameVolume, trashEntry, writeFileText } from './file-write.ts';
 
 const BOM = String.fromCharCode(0xfeff);
 // Any stamp, for a save refused before the stat.
@@ -285,4 +285,250 @@ test("heldTrash moves an entry into the home's trash under a numbered name and l
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// M9 fix 953: a drop from Explorer on the Files rail. The fake trasher
+// records what it was handed and moves it aside, as heldTrash does.
+function fakeTrash(dir: string): { handed: string[]; trash: (target: string) => Promise<void> } {
+  const handed: string[] = [];
+  return {
+    handed,
+    trash: async (target) => {
+      handed.push(target);
+      fs.renameSync(target, path.join(dir, `trashed-${path.basename(target)}`));
+    },
+  };
+}
+
+test('moveEntries moves two files and a folder into a sibling folder on the same drive', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'src');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+    fs.mkdirSync(into);
+    fs.writeFileSync(path.join(src, 'a.txt'), 'a');
+    fs.writeFileSync(path.join(src, 'b.txt'), 'b');
+    fs.writeFileSync(path.join(src, 'sub', 'inner.txt'), 'inner');
+    const t = fakeTrash(dir);
+    const froms = ['a.txt', 'b.txt', 'sub'].map((n) => path.join(src, n));
+    const answer = await moveEntries(froms, into, 'auto', null, { trash: t.trash });
+    assert.deepEqual(answer, { done: froms.map((from) => ({ from, to: path.join(into, path.basename(from)), result: 'moved' })) });
+    assert.equal(fs.readFileSync(path.join(into, 'a.txt'), 'utf8'), 'a');
+    assert.equal(fs.readFileSync(path.join(into, 'b.txt'), 'utf8'), 'b');
+    assert.equal(fs.readFileSync(path.join(into, 'sub', 'inner.txt'), 'utf8'), 'inner');
+    for (const f of froms) assert.equal(fs.existsSync(f), false);
+    assert.deepEqual(t.handed, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries asks about a taken name first, then replaces it through the trash or skips it', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'src');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(src);
+    fs.mkdirSync(into);
+    const a = path.join(src, 'a.txt');
+    const b = path.join(src, 'b.txt');
+    const seed = () => {
+      fs.writeFileSync(a, 'new a');
+      fs.writeFileSync(b, 'b');
+      fs.rmSync(path.join(into, 'b.txt'), { force: true });
+      fs.writeFileSync(path.join(into, 'a.txt'), 'old a');
+    };
+    seed();
+    const lines: string[] = [];
+    const t = fakeTrash(dir);
+    const first = await moveEntries([a, b], into, 'auto', null, { trash: t.trash, log: (m) => lines.push(m) });
+    assert.deepEqual(first, { clashes: [{ from: a, to: path.join(into, 'a.txt'), kind: 'file', there: 'file' }] });
+    assert.equal(fs.existsSync(a), true);
+    assert.equal(fs.existsSync(b), true);
+    assert.equal(fs.existsSync(path.join(into, 'b.txt')), false);
+    assert.deepEqual(lines, [`files-move into ${into} (auto): 1 clashes, asking`]);
+
+    const replaced = await moveEntries([a, b], into, 'auto', [a], { trash: t.trash });
+    assert.deepEqual(replaced, {
+      done: [
+        { from: a, to: path.join(into, 'a.txt'), result: 'moved', replaced: true },
+        { from: b, to: path.join(into, 'b.txt'), result: 'moved' },
+      ],
+    });
+    assert.deepEqual(t.handed, [path.join(into, 'a.txt')]);
+    assert.equal(fs.readFileSync(path.join(dir, 'trashed-a.txt'), 'utf8'), 'old a');
+    assert.equal(fs.readFileSync(path.join(into, 'a.txt'), 'utf8'), 'new a');
+
+    seed();
+    lines.length = 0;
+    const skipped = await moveEntries([a, b], into, 'auto', [], { trash: t.trash, log: (m) => lines.push(m) });
+    assert.deepEqual(skipped, {
+      done: [
+        { from: a, to: path.join(into, 'a.txt'), result: 'skipped' },
+        { from: b, to: path.join(into, 'b.txt'), result: 'moved' },
+      ],
+    });
+    assert.equal(fs.readFileSync(path.join(into, 'a.txt'), 'utf8'), 'old a');
+    assert.equal(fs.existsSync(a), true);
+    assert.deepEqual(lines, [`files-move into ${into} (auto): a.txt skipped, b.txt moved`]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries leaves a file already in the folder and refuses a folder into itself or its child', async () => {
+  const dir = tempDir();
+  try {
+    const into = path.join(dir, 'into');
+    const child = path.join(into, 'child');
+    fs.mkdirSync(child, { recursive: true });
+    const f = path.join(into, 'here.txt');
+    fs.writeFileSync(f, 'h');
+    const t = fakeTrash(dir);
+    assert.deepEqual(await moveEntries([f], into, 'auto', null, { trash: t.trash }), { done: [{ from: f, to: f, result: 'here' }] });
+    if (process.platform === 'win32') {
+      assert.deepEqual(await moveEntries([f], into.toUpperCase(), 'auto', null, { trash: t.trash }), {
+        done: [{ from: f, to: path.join(into.toUpperCase(), 'here.txt'), result: 'here' }],
+      });
+    }
+    const why = 'A folder cannot go into itself';
+    assert.deepEqual(await moveEntries([into], into, 'auto', null, { trash: t.trash }), { done: [{ from: into, to: path.join(into, 'into'), result: 'inside', why }] });
+    assert.deepEqual(await moveEntries([into], child, 'auto', null, { trash: t.trash }), { done: [{ from: into, to: path.join(child, 'into'), result: 'inside', why }] });
+    assert.equal(fs.readFileSync(f, 'utf8'), 'h');
+    assert.ok(fs.existsSync(child));
+    assert.deepEqual(t.handed, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries copies with copy, keeping the source, a folder whole', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'src');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+    fs.mkdirSync(into);
+    const a = path.join(src, 'a.txt');
+    const sub = path.join(src, 'sub');
+    fs.writeFileSync(a, 'bytes');
+    fs.writeFileSync(path.join(sub, 'inner.txt'), 'inner');
+    const t = fakeTrash(dir);
+    assert.deepEqual(await moveEntries([a, sub], into, 'copy', null, { trash: t.trash }), {
+      done: [
+        { from: a, to: path.join(into, 'a.txt'), result: 'copied' },
+        { from: sub, to: path.join(into, 'sub'), result: 'copied' },
+      ],
+    });
+    assert.equal(fs.readFileSync(a, 'utf8'), 'bytes');
+    assert.equal(fs.readFileSync(path.join(into, 'a.txt'), 'utf8'), 'bytes');
+    assert.equal(fs.readFileSync(path.join(sub, 'inner.txt'), 'utf8'), 'inner');
+    assert.equal(fs.readFileSync(path.join(into, 'sub', 'inner.txt'), 'utf8'), 'inner');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries moves across drives by a copy and then the source removed', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'src');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(path.join(src, 'sub'), { recursive: true });
+    fs.mkdirSync(into);
+    const sub = path.join(src, 'sub');
+    fs.writeFileSync(path.join(sub, 'inner.txt'), 'inner');
+    const t = fakeTrash(dir);
+    const rename = async () => {
+      throw Object.assign(new Error('cross'), { code: 'EXDEV' });
+    };
+    assert.deepEqual(await moveEntries([sub], into, 'move', null, { trash: t.trash, rename }), { done: [{ from: sub, to: path.join(into, 'sub'), result: 'moved' }] });
+    assert.equal(fs.existsSync(sub), false);
+    assert.equal(fs.readFileSync(path.join(into, 'sub', 'inner.txt'), 'utf8'), 'inner');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries refuses an entry whose clash cannot go to the recycle bin, leaving both', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'src');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(src);
+    fs.mkdirSync(into);
+    const a = path.join(src, 'a.txt');
+    fs.writeFileSync(a, 'new');
+    fs.writeFileSync(path.join(into, 'a.txt'), 'old');
+    const trash = async () => {
+      throw new Error('no recycle bin');
+    };
+    assert.deepEqual(await moveEntries([a], into, 'auto', [a], { trash }), {
+      done: [{ from: a, to: path.join(into, 'a.txt'), result: 'refused', why: 'What is there could not go to the recycle bin' }],
+    });
+    assert.equal(fs.readFileSync(a, 'utf8'), 'new');
+    assert.equal(fs.readFileSync(path.join(into, 'a.txt'), 'utf8'), 'old');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries refuses a missing folder, a relative source and a missing source', async () => {
+  const dir = tempDir();
+  try {
+    const t = fakeTrash(dir);
+    assert.deepEqual(await moveEntries([path.join(dir, 'x.txt')], path.join(dir, 'nowhere'), 'auto', null, { trash: t.trash }), { refused: 'Folder not found' });
+    const gone = path.join(dir, 'gone.txt');
+    assert.deepEqual(await moveEntries(['rel.txt', gone], dir, 'auto', null, { trash: t.trash }), {
+      done: [
+        { from: 'rel.txt', to: path.join(dir, 'rel.txt'), result: 'refused', why: 'Not an absolute path' },
+        { from: gone, to: path.join(dir, 'gone.txt'), result: 'refused', why: 'Not found' },
+      ],
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries answers busy for a folder a process stands in', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows only');
+    return;
+  }
+  const dir = tempDir();
+  const folder = path.join(dir, 'held');
+  const into = path.join(dir, 'into');
+  fs.mkdirSync(folder);
+  fs.mkdirSync(into);
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { cwd: folder, stdio: 'ignore' });
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const answer = await moveEntries([folder], into, 'move', null, { trash: fakeTrash(dir).trash });
+    assert.ok('done' in answer);
+    const [o] = answer.done;
+    assert.equal(o?.result, 'refused');
+    assert.equal(o?.busy, true);
+    assert.equal(fs.existsSync(folder), true);
+  } finally {
+    child.kill();
+    await exited;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sameVolume and entryMode read the drive as Explorer does', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows only');
+    return;
+  }
+  assert.equal(sameVolume('C:\\a', 'c:\\b'), true);
+  assert.equal(sameVolume('C:\\a', 'D:\\a'), false);
+  assert.equal(sameVolume('\\\\srv\\share\\a', '\\\\srv\\share\\b'), true);
+  assert.equal(sameVolume('\\\\srv\\share\\a', '\\\\srv\\other\\b'), false);
+  assert.equal(entryMode('auto', 'D:\\x.txt', 'C:\\y'), 'copy');
+  assert.equal(entryMode('auto', 'C:\\x.txt', 'C:\\y'), 'move');
+  assert.equal(entryMode('move', 'D:\\x.txt', 'C:\\y'), 'move');
+  assert.equal(entryMode('copy', 'C:\\x.txt', 'C:\\y'), 'copy');
 });

@@ -8,7 +8,7 @@ import type { FileStamp, ReadMark } from './appended-read.ts';
 import type { AgentsRunning, ConversationUsage, HistoryScan, HistorySession, TranscriptCost, TranscriptTurns } from '../preload/api.ts';
 import { READ_CAP, readCapped } from './read-cap.ts';
 import { watchFolder } from './watch-folder.ts';
-import { CHUNK_BYTES, COUNT_CAP_BYTES, RECENT_CAP, buildSession, countPrompts, indexHistory, parseTranscriptHead, parseTranscriptTail, remoteIdsIn, sortNewest, transcriptsOf } from '../renderer/src/history-model.ts';
+import { CHUNK_BYTES, COUNT_CAP_BYTES, RECENT_CAP, buildSession, countPrompts, indexHistory, nameOf, parseTranscriptHead, parseTranscriptTail, remoteIdsIn, sortNewest, transcriptsOf } from '../renderer/src/history-model.ts';
 
 // The scan behind the History panel: every Claude Code conversation on
 // the machine, read from the files Claude Code keeps under ~/.claude (the
@@ -103,7 +103,7 @@ export async function readTurns(file: string, log: HistoryLog): Promise<Transcri
   }
   const head = parseTranscriptHead(text, true);
   const tail = parseTranscriptTail(text, true);
-  return { title: head.title, cwd: head.cwd, branch: head.branch, model: tail.model, startedAt: head.startedAt, lastAt: tail.lastAt, turns: parseTurns(text) };
+  return { title: nameOf(head, tail), cwd: head.cwd, branch: head.branch, model: tail.model, startedAt: head.startedAt, lastAt: tail.lastAt, turns: parseTurns(text) };
 }
 
 // Every <sessionId>.jsonl one level under projects/. A subfolder named

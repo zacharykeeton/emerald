@@ -444,9 +444,9 @@ function HistoryRow({ session: s, own, now, unfolded, turns, onToggle, onAct, on
 function TurnLines({ turn, whole }: { turn: Turn; whole: boolean }) {
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   return (
-    <div className="history-turn" data-whole={whole || undefined}>
+    <div className="history-turn" data-whole={whole || undefined} data-bash={turn.bash || undefined}>
       <div className="history-turn-prompt" title={turn.prompt}>
-        <span className="history-turn-mark">›</span>
+        <span className="history-turn-mark">{turn.bash ? '!' : '›'}</span>
         <span className="history-turn-text">{firstLine(turn.prompt)}</span>
         {length !== null && <span className="history-turn-length">{length}</span>}
       </div>

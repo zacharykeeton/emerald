@@ -7,7 +7,9 @@ import {
   focusedProject,
   groupByProject,
   indexHistory,
+  isBareCommand,
   matches,
+  nameOf,
   parseHistoryLine,
   parseTranscriptHead,
   parseTranscriptTail,
@@ -57,8 +59,8 @@ test('indexHistory groups prompts by session with the first prompt, the count an
     .map(line)
     .join('');
   const index = indexHistory(text);
-  assert.deepEqual(index.get('s1'), { prompts: 2, firstPrompt: 'first', firstAt: T0, lastAt: T0 + 1000, project: 'C:\\a\\sub' });
-  assert.deepEqual(index.get('s2'), { prompts: 1, firstPrompt: 'other', firstAt: T0 + 500, lastAt: T0 + 500, project: 'C:\\b' });
+  assert.deepEqual(index.get('s1'), { prompts: 2, firstPrompt: 'first', firstAt: T0, lastAt: T0 + 1000, project: 'C:\\a\\sub', firstAsk: 'first', firstAskAt: T0 });
+  assert.deepEqual(index.get('s2'), { prompts: 1, firstPrompt: 'other', firstAt: T0 + 500, lastAt: T0 + 500, project: 'C:\\b', firstAsk: 'other', firstAskAt: T0 + 500 });
 });
 
 test('parseTranscriptHead takes the ai-title, the cwd, the branch, the first real prompt and the start time', () => {
@@ -71,7 +73,7 @@ test('parseTranscriptHead takes the ai-title, the cwd, the branch, the first rea
     user('Read docs/PLAN.md first.\nThen build it.', T0 + 300) +
     assistant([{ type: 'text', text: 'On it.' }], T0 + 400);
   const head = parseTranscriptHead(text, true);
-  assert.deepEqual(head, { title: 'Emerald M19 history', cwd: 'C:\\code\\emerald', branch: 'main', firstPrompt: '/clear', startedAt: T0, remoteIds: [] });
+  assert.deepEqual(head, { title: 'Emerald M19 history', cwd: 'C:\\code\\emerald', branch: 'main', name: null, firstAsk: 'Read docs/PLAN.md first.', firstPrompt: '/clear', startedAt: T0, remoteIds: [] });
 });
 
 test('parseTranscriptHead without a title or a slash command uses the first typed prompt, and drops a cut last line', () => {
@@ -101,7 +103,7 @@ test('parseTranscriptTail finds the model, the last time and the last message, p
     line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] }, cwd: 'C:\\x', timestamp: iso(T0 + 2000) }) +
     assistant([{ type: 'text', text: 'Done.\nTwo files changed.' }], T0 + 3000, 'claude-fable-5-1') +
     line({ type: 'system', timestamp: iso(T0 + 4000) });
-  assert.deepEqual(parseTranscriptTail(replyLast, true), { model: 'claude-fable-5-1', lastAt: T0 + 4000, preview: { who: 'agent', text: 'Done.' }, remoteIds: [] });
+  assert.deepEqual(parseTranscriptTail(replyLast, true), { name: null, model: 'claude-fable-5-1', lastAt: T0 + 4000, preview: { who: 'agent', text: 'Done.' }, remoteIds: [] });
   const promptLast = assistant([{ type: 'text', text: 'Done.' }], T0) + user('now the tests', T0 + 1000);
   assert.deepEqual(parseTranscriptTail(promptLast, true).preview, { who: 'you', text: 'now the tests' });
 });
@@ -133,10 +135,23 @@ test('parseTranscriptHead, parseTranscriptTail and countPrompts skip a compactio
   assert.equal(countPrompts(user('one', T0) + compactSummary(T0 + 1000), true), 1);
 });
 
+test('countPrompts counts a typed /compact once (M9 fix 956)', () => {
+  const p = { promptId: 'p956' };
+  const text =
+    user('hello', T0) +
+    user('/compact', T0 + 1000, p) +
+    compactBoundary(T0 + 1500) +
+    compactSummary(T0 + 1600) +
+    user('<local-command-caveat>Caveat: the messages below</local-command-caveat>', T0 + 1005, { isMeta: true, ...p }) +
+    user('<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>', T0 + 1005, p) +
+    user('<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>', T0 + 1900, p);
+  assert.equal(countPrompts(text, true), 3 - 1);
+});
+
 test('buildSession prefers the history index for counts and times and the transcript for the rest', () => {
-  const head = { title: 'A title', cwd: 'C:\\code\\emerald', branch: 'main', firstPrompt: 'from transcript', startedAt: T0 + 5, remoteIds: ['session_a'] };
-  const tail = { model: 'claude-opus-5', lastAt: T0 + 100, preview: { who: 'agent' as const, text: 'Done.' }, remoteIds: ['session_c', 'session_a'] };
-  const s = buildSession('abc', 'C:\\claude\\projects\\x\\abc.jsonl', { prompts: 7, firstPrompt: 'from index', firstAt: T0, lastAt: T0 + 900, project: 'C:\\code' }, head, tail, 3);
+  const head = { title: 'A title', name: null, firstAsk: null, cwd: 'C:\\code\\emerald', branch: 'main', firstPrompt: 'from transcript', startedAt: T0 + 5, remoteIds: ['session_a'] };
+  const tail = { name: null, model: 'claude-opus-5', lastAt: T0 + 100, preview: { who: 'agent' as const, text: 'Done.' }, remoteIds: ['session_c', 'session_a'] };
+  const s = buildSession('abc', 'C:\\claude\\projects\\x\\abc.jsonl', { prompts: 7, firstPrompt: 'from index', firstAt: T0, lastAt: T0 + 900, project: 'C:\\code', firstAsk: null, firstAskAt: null }, head, tail, 3);
   assert.equal(s!.title, 'A title');
   assert.equal(s!.prompts, 7);
   assert.equal(s!.startedAt, T0);
@@ -147,7 +162,7 @@ test('buildSession prefers the history index for counts and times and the transc
   assert.deepEqual(buildSession('abc', 'p', undefined, head, tail, 3, ['session_b', 'session_a'])!.remoteIds, ['session_a', 'session_b', 'session_c']);
   // No index: the transcript's own count and times, the first prompt as
   // the title, and the first prompt as the preview when the tail had none.
-  const bare = buildSession('abc', 'p', undefined, { ...head, title: null }, { model: null, lastAt: T0 + 50, preview: null, remoteIds: [] }, 3);
+  const bare = buildSession('abc', 'p', undefined, { ...head, title: null }, { name: null, model: null, lastAt: T0 + 50, preview: null, remoteIds: [] }, 3);
   assert.equal(bare!.title, 'from transcript');
   assert.equal(bare!.prompts, 3);
   assert.equal(bare!.startedAt, T0 + 5);
@@ -238,10 +253,12 @@ test('restoreOpenedFolds takes the stored opened groups back out of the collapse
 });
 
 test('promptsText: one per turn, singular for one (M9 fix 97)', () => {
-  const turn = { prompt: 'x', at: null, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0 };
+  const turn = { prompt: 'x', at: null, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0, bash: false };
   assert.equal(promptsText([]), '0 prompts');
   assert.equal(promptsText([turn]), '1 prompt');
   assert.equal(promptsText([turn, turn, turn]), '3 prompts');
+  // M9 fix 955: a bash run is a turn but not a prompt.
+  assert.equal(promptsText([turn, { ...turn, bash: true }]), '1 prompt');
 });
 
 // M9 fix 354: the cost store publishes nothing for a re-ask answered
@@ -254,4 +271,53 @@ test('sameTranscriptCost: equal prices, a changed part, and the first answer', (
   assert.equal(sameTranscriptCost(cost, { ...cost, tokens: { ...cost.tokens }, agents: { ...cost.agents } }), true);
   assert.equal(sameTranscriptCost(cost, { ...cost, usd: 1.6 }), false);
   assert.equal(sameTranscriptCost(cost, { ...cost, agents: { ...cost.agents, skipped: 1 } }), false);
+});
+
+// M9 fix 954.
+test('isBareCommand: a slash command with nothing after it, or a setting command with its argument, is not an ask', () => {
+  for (const t of ['/model', '/model opus[1m]', ' /effort medium ', '/rename Install the routine from ATK', '/clear', '/compact']) assert.equal(isBareCommand(t), true, t);
+  for (const t of ['/backlog file this', '/c/Users/x/notes.md read this', 'fix the tabs']) assert.equal(isBareCommand(t), false, t);
+});
+
+test('parseTranscriptTail and parseTranscriptHead read the last /rename, skipping an empty one (M9 fix 954)', () => {
+  const titles = line({ type: 'custom-title', customTitle: 'First name', sessionId: 'abc' }) + line({ type: 'custom-title', customTitle: ' Second name ', sessionId: 'abc' }) + line({ type: 'custom-title', customTitle: '  ', sessionId: 'abc' });
+  assert.equal(parseTranscriptTail(titles, true).name, 'Second name');
+  assert.equal(parseTranscriptHead(titles, true).name, 'Second name');
+});
+
+test('parseTranscriptHead: a /model opening is the first prompt, the real ask after it is the first ask (M9 fix 954)', () => {
+  const text =
+    user('<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus[1m]</command-args>', T0) +
+    user('<local-command-stdout>Set model to Opus</local-command-stdout>', T0 + 100) +
+    user('<local-command-caveat>Caveat: the messages below</local-command-caveat>', T0 + 100, { isMeta: true }) +
+    user('let us plan a batch', T0 + 200);
+  const head = parseTranscriptHead(text, true);
+  assert.equal(head.firstPrompt, '/model opus[1m]');
+  assert.equal(head.firstAsk, 'let us plan a batch');
+});
+
+test('indexHistory: a session opening on /model has the next display as its first ask (M9 fix 954)', () => {
+  const text = [
+    { display: '/model opus', timestamp: T0, project: 'C:\\a', sessionId: 's1' },
+    { display: 'fix it', timestamp: T0 + 10, project: 'C:\\a', sessionId: 's1' },
+  ]
+    .map(line)
+    .join('');
+  const have = indexHistory(text).get('s1')!;
+  assert.equal(have.firstPrompt, '/model opus');
+  assert.equal(have.firstAsk, 'fix it');
+  assert.equal(have.firstAskAt, T0 + 10);
+});
+
+test('buildSession titles a row by the /rename, then the ai-title, then the first ask, then the first prompt (M9 fix 954)', () => {
+  const head = { title: 'Claude title', name: null as string | null, firstAsk: null as string | null, cwd: 'C:\\code', branch: null, firstPrompt: '/model opus', startedAt: T0, remoteIds: [] };
+  const tail = { name: null as string | null, model: null, lastAt: T0, preview: null, remoteIds: [] };
+  const idx = (firstAsk: string | null) => ({ prompts: 2, firstPrompt: '/model opus', firstAt: T0, lastAt: T0, project: 'C:\\code', firstAsk, firstAskAt: firstAsk === null ? null : T0 });
+  assert.equal(nameOf(head, { ...tail, name: 'Tail name' }), 'Tail name');
+  assert.equal(buildSession('a', 'p', undefined, { ...head, name: 'Head name' }, { ...tail, name: 'Tail name' }, 1)!.title, 'Tail name');
+  assert.equal(buildSession('a', 'p', undefined, { ...head, name: 'Head name' }, tail, 1)!.title, 'Head name');
+  assert.equal(buildSession('a', 'p', idx('fix it'), head, tail, 1)!.title, 'Claude title');
+  assert.equal(buildSession('a', 'p', idx('fix it'), { ...head, title: null }, tail, 1)!.title, 'fix it');
+  assert.equal(buildSession('a', 'p', undefined, { ...head, title: null }, tail, 1)!.title, '/model opus');
+  assert.equal(buildSession('a', 'p', undefined, { ...head, title: null, firstPrompt: null }, tail, 1)!.title, '(no prompt yet)');
 });

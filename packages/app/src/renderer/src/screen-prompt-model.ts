@@ -489,6 +489,24 @@ export function tabMoves(from: number, to: number): string {
   return (to < from ? '\x1b[D' : '\x1b[C').repeat(Math.abs(to - from));
 }
 
+// M9 fix 959: the keys Claude Code's AskUserQuestion dialog walks its tabs
+// by (its Tabs bindings, read on 2.1.305): Left and Shift+Tab one back,
+// Right and Tab one on; 0 for any other key.
+export function tabKeyStep(key: string, shift: boolean): -1 | 0 | 1 {
+  if (key === 'ArrowLeft' || (key === 'Tab' && shift)) return -1;
+  if (key === 'ArrowRight' || key === 'Tab') return 1;
+  return 0;
+}
+
+// The tab a step lands on from the current one, clamped at the ends as the
+// dialog is (on from the last question is Submit, the review); null with no
+// current tab.
+export function tabStepTo(tabs: readonly AskTab[], step: -1 | 1): number | null {
+  const cur = tabs.findIndex((t) => t.current);
+  if (cur < 0) return null;
+  return Math.min(tabs.length - 1, Math.max(0, cur + step));
+}
+
 // The tab a card moved the dialog to. The rows mark the current tab by
 // colour alone, so askTabs infers it as the first open one, which is wrong
 // once the dialog is back on an answered question; the card keeps the tab

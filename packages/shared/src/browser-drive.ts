@@ -28,6 +28,9 @@ const REASONS = new Set(['paused', 'timeout', 'failed']);
 // shared one.
 export const BROWSER_PROFILE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
+// M9 fix 969: a browser view's openedBy, a session id as the daemon makes them (a UUID), held to a safe shape.
+export const BROWSER_OPENER = /^[A-Za-z0-9-]{1,64}$/;
+
 export function browserPartition(profile?: string): string {
   return profile === undefined ? BROWSER_PARTITION : `${BROWSER_PARTITION}-${profile}`;
 }
@@ -75,3 +78,5 @@ export interface BrowserFilter {
 }
 export const BROWSER_FILTER_CHARS = 200;
 export const BROWSER_FILTER_REF = /^@?[er]\d{1,9}$/;
+// M9 fix 970: a control's ref as the driver's parseRef takes it; upload's first argument is a CSS selector when it is not this shape.
+export const BROWSER_ELEMENT_REF = /^@?e\d+$/;

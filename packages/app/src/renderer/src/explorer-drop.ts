@@ -3,6 +3,7 @@ import type { LayoutTab } from '@emerald/shared';
 import { dropFileOn, dropFolderOn, openFileFromOutside, typeInto } from './actions.ts';
 import { isImageName, pastedPath } from './chat-model.ts';
 import { fileViewSupported } from './daemon-model.ts';
+import type { DropKeys, RailDrop } from './files-drop-model.ts';
 import { zoneAt } from './drop-zone-model.ts';
 import { getState } from './store.ts';
 import { recordUse } from './use-record.ts';
@@ -37,16 +38,17 @@ import type { DropTarget } from './ui.ts';
 // drop, so nothing else is readable while it hovers, and an empty type
 // reads as unknown rather than folder (M9 fix 388). The preview then
 // lights what either a folder or a file would take, the pane's zones and
-// the strip or the rail, and the drop stats the path to pick between
-// them, as it already does; no outcome changes, and a folder now lights
-// the strip or the rail on the way in even though dropping it there does
-// nothing.
+// the strip, and the drop stats the path to pick between them, as it
+// already does; no outcome changes, and a folder lights the strip on the
+// way in even though dropping it there does nothing.
 //
-// M9 fix 341: a file dropped on the tab strip or the files rail opens
-// as a pinned tab, the way Explorer's own drop on an editor opens the
-// file rather than typing its name; a folder there does nothing. The
-// element under the mouse wears data-drop-target while a file hovers,
-// so the strip or the rail lights the way a pane does.
+// M9 fix 341: a file dropped on the tab strip opens as a pinned tab, the
+// way Explorer's own drop on an editor opens the file rather than typing
+// its name; a folder there does nothing. The strip wears
+// data-drop-target while a file hovers, so it lights the way a pane does.
+// The Files rail is no longer an opener (M9 fix 953): a drop there moves
+// or copies into the folder under the mouse, the rail's own side
+// (setRailDrop) lighting that folder and answering the effect.
 
 // Chromium repeats dragover every few hundred milliseconds while a drag
 // hovers, so a drag that ended without a dragleave (a cancelled one, say)
@@ -55,9 +57,19 @@ const QUIET_MS = 1000;
 
 let active = false;
 let quiet: ReturnType<typeof setTimeout> | null = null;
-// The strip or the rail lit for a file or an unknown drag (fix 341, fix
-// 388), or null.
+// The strip lit for a file or an unknown drag (fix 341, fix 388), or
+// null.
 let outside: HTMLElement | null = null;
+// The Files rail's side of a drop (M9 fix 953), while the rail is up.
+let rail: RailDrop | null = null;
+
+export function setRailDrop(r: RailDrop | null): void {
+  rail?.leave();
+  rail = r;
+}
+
+const railAt = (x: number, y: number): boolean => document.elementFromPoint(x, y)?.closest('.files-rail') != null;
+const keysOf = (e: DragEvent): DropKeys => ({ ctrl: e.ctrlKey, shift: e.shiftKey });
 
 type DragKind = 'file' | 'folder' | 'unknown';
 
@@ -85,17 +97,17 @@ function end(): void {
   if (quiet !== null) clearTimeout(quiet);
   quiet = null;
   setOutside(null);
+  rail?.leave();
   if (!active) return;
   active = false;
   document.body.classList.remove('dragging-session');
   endSessionDrag();
 }
 
-// The strip or the rail under the point (fix 341); an opener for a file,
-// nothing for a folder. The rail collapsed is its narrow bar, which is
-// not it.
-function outsideAt(x: number, y: number): HTMLElement | null {
-  return document.elementFromPoint(x, y)?.closest<HTMLElement>('.tab-strip, .files-rail') ?? null;
+// The strip under the point (fix 341); an opener for a file, nothing for
+// a folder. The rail moves instead (fix 953).
+function stripAt(x: number, y: number): HTMLElement | null {
+  return document.elementFromPoint(x, y)?.closest<HTMLElement>('.tab-strip') ?? null;
 }
 
 function setOutside(el: HTMLElement | null): void {
@@ -126,6 +138,15 @@ function onOver(e: DragEvent): void {
   e.preventDefault();
   begin();
   touch();
+  // The Files rail (fix 953): its folder under the mouse lights, and the
+  // effect is the rail's answer; no pane and no strip is a target.
+  if (rail !== null && railAt(e.clientX, e.clientY)) {
+    setSessionDropTarget(null);
+    setOutside(null);
+    e.dataTransfer.dropEffect = rail.over(e.clientX, e.clientY, keysOf(e));
+    return;
+  }
+  rail?.leave();
   const kind = dragKindOf(e);
   setSessionDragFile(kind === 'file');
   let target = targetAt(e.clientX, e.clientY);
@@ -135,10 +156,10 @@ function onOver(e: DragEvent): void {
   // might be a folder) keeps its target on any daemon.
   if (kind === 'file' && target !== null && !paneHasSession(target.paneId) && !fileViewSupported(getState().daemon)) target = null;
   setSessionDropTarget(target);
-  // The strip or the rail lights for anything that might be a file (fix
-  // 341, fix 388): a definite file, or a drag whose kind is only known
-  // once the drop stats it.
-  const over = outsideAt(e.clientX, e.clientY);
+  // The strip lights for anything that might be a file (fix 341, fix
+  // 388): a definite file, or a drag whose kind is only known once the
+  // drop stats it.
+  const over = stripAt(e.clientX, e.clientY);
   setOutside(over);
   e.dataTransfer.dropEffect = target === null && over === null ? 'none' : 'copy';
 }
@@ -161,8 +182,17 @@ function onDrop(e: DragEvent): void {
     return;
   }
   e.preventDefault();
+  // The Files rail (fix 953): every path is read now, since the drag data
+  // store is protected again once this handler returns.
+  if (rail !== null && railAt(e.clientX, e.clientY)) {
+    const paths = [...(e.dataTransfer?.files ?? [])].map((f) => window.emerald.files.pathFor(f)).filter((p) => p !== '');
+    const r = rail;
+    end();
+    r.drop(paths, e.clientX, e.clientY, keysOf(e));
+    return;
+  }
   const target = getUiState().sessionDrag?.target ?? targetAt(e.clientX, e.clientY);
-  const over = outsideAt(e.clientX, e.clientY);
+  const over = stripAt(e.clientX, e.clientY);
   const file = e.dataTransfer?.files[0];
   end();
   if (file === undefined) return;
@@ -170,9 +200,8 @@ function onDrop(e: DragEvent): void {
     void dropFile(file, target).catch((err: unknown) => console.warn('[emerald] explorer drop failed', err));
     return;
   }
-  // The strip or the rail (fix 341): the drop is read off the point
-  // rather than the hover's guess, since a .md looks like a folder until
-  // it is stat'ed.
+  // The strip (fix 341): the drop is read off the point rather than the
+  // hover's guess, since a .md looks like a folder until it is stat'ed.
   if (over !== null) void dropOutside(file).catch((err: unknown) => console.warn('[emerald] explorer drop failed', err));
 }
 

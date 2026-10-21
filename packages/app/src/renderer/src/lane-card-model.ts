@@ -223,21 +223,19 @@ export function historyCommitsLine(model: HistoryCardModel): string {
 // is where its meaning lives: a start bar marks the commit HEAD was on
 // when the session spawned (M9 fix 117), a fork bar ends a lane forked
 // from a commit another block owns, at that commit's row (M9 fix 145),
-// or on the session's own line where such a fork lands (M9 fix 374),
-// and a head bar sits under the session's row on the head of the branch
-// it is on when that commit is another block's (M9 fix 151). The hash
-// is the row's commit, newest first as the log runs. `landing` (M9 fix
-// 399) tells the two fork bars apart: true where a fork lands on this
-// session's own line, unset where the bar ends a lane at the commit it
-// came from.
+// or on the session's own line where such a fork lands (M9 fix 374).
+// The head bar of M9 fix 151 went with M9 fix 945, a commit nobody made
+// on the line being the session's square. The hash is the row's commit,
+// newest first as the log runs. `landing` (M9 fix 399) tells the two
+// fork bars apart: true where a fork lands on this session's own line,
+// unset where the bar ends a lane at the commit it came from.
 export interface CardBar {
-  kind: 'start' | 'fork' | 'head';
+  kind: 'start' | 'fork';
   hash: string;
   landing?: boolean;
 }
 
 export interface BarLines {
-  head: string | null;
   start: string | null;
   // The two kinds of fork bar (M9 fix 399), landings first: a line for
   // each kind that has a bar, so a block with both draws two lines
@@ -258,13 +256,11 @@ function hashesOf(bars: readonly CardBar[]): string {
 }
 
 export function barLines(bars: readonly CardBar[]): BarLines {
-  const head = bars.find((b) => b.kind === 'head');
   const start = bars.find((b) => b.kind === 'start');
   const forks = bars.filter((b) => b.kind === 'fork');
   const landings = forks.filter((b) => b.landing === true);
   const endings = forks.filter((b) => b.landing !== true);
   return {
-    head: head === undefined ? null : `bar at ${head.hash.slice(0, 7)}: the head of the branch this session is on, a commit on another lane`,
     start: start === undefined ? null : `bar at ${start.hash.slice(0, 7)}: the commit HEAD was on when this session started`,
     landing: landings.length === 0 ? null : `${landings.length} bar${landings.length === 1 ? '' : 's'} where a fork lands on this line (${hashesOf(landings)})`,
     ending: endings.length === 0 ? null : `${endings.length} bar${endings.length === 1 ? '' : 's'} ending a lane at the commit it came from (${hashesOf(endings)})`,

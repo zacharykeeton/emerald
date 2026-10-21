@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { folderName, formatDuration, parseTurns } from '@emerald/shared';
 import type { Turn } from '@emerald/shared';
 import { resumeSession, resumeTranscript, showSession } from './actions.ts';
-import { parseTranscriptHead, parseTranscriptTail, promptsText } from './history-model.ts';
+import { nameOf, parseTranscriptHead, parseTranscriptTail, promptsText } from './history-model.ts';
 import { useStore } from './store.ts';
 import { setTabTitle } from './ui.ts';
 import { treeKeepsKeys } from './focus.ts';
@@ -52,12 +52,13 @@ export function TranscriptView({ path, text }: { path: string; text: string }) {
   }, [path]);
 
   const { head, tail, turns } = read;
-  // The tab is named by the conversation (M9 fix 96): Claude's title, or
-  // the first prompt's opening while there is none yet.
+  // The tab is named by the conversation (M9 fix 96): the /rename, else
+  // Claude's title, else the first ask's opening (fix 954).
+  const ask = head.firstAsk ?? head.firstPrompt;
+  const title = nameOf(head, tail) ?? (ask === null ? null : ask.replace(/\s+/g, ' ').trim().slice(0, 48));
   useEffect(() => {
-    const title = head.title ?? (head.firstPrompt === null ? null : head.firstPrompt.replace(/\s+/g, ' ').trim().slice(0, 48));
     if (title !== null && title !== '') setTabTitle(path, title);
-  }, [path, head.title, head.firstPrompt]);
+  }, [path, title]);
   const facts = [
     head.cwd === null ? null : folderName(head.cwd),
     head.branch,
@@ -100,9 +101,9 @@ function TurnBlock({ turn, whole, onOpen }: { turn: Turn; whole: boolean; onOpen
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   const did = didText(turn);
   return (
-    <div className="transcript-turn">
+    <div className="transcript-turn" data-bash={turn.bash || undefined}>
       <div className="transcript-prompt">
-        <span className="transcript-mark">›</span>
+        <span className="transcript-mark">{turn.bash ? '!' : '›'}</span>
         <span className="transcript-prompt-text">{turn.prompt.trim()}</span>
         {(when !== null || length !== null) && <span className="transcript-when">{[when, length].filter((x) => x !== null).join(' · ')}</span>}
       </div>

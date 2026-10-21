@@ -16,7 +16,10 @@
 // Replay from here replays a batch from a commit, the rows dimming and
 // coming back in order and the forks' marks on only inside their
 // recorded spans, paused, scrubbed and played on from its strip and
-// Space (fix 905) (fix 869).
+// Space (fix 905) (fix 869); and one batch's whole life on a repository
+// of its own, a lead and three seats from the plan commit to the sweep,
+// framed at twelve stages into docs/design/graph-through-a-batch/built
+// and read against the design pass's proposed boards (fixes 944 to 946).
 // Uses a private home and pipe unless the environment already
 // names them.
 // Run: npm run verify:graph -w @emerald/app
@@ -30,7 +33,7 @@ import { COLOR_FLOOR, SESSION_COLORS, clockTime, dayKey, formatUsd, hueOf, oklab
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm51-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m51';
-const { blockRunner, busyProfile, expect, freshPort, getLayout, hoverForCard, imageOf, killTree, launch, leaves, processGone, removeWorktree, settled: settledIn, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { blockRunner, busyProfile, expect, freshPort, getLayout, hoverForCard, imageOf, killTree, launch, leaves, processGone, removeWorktree, repoRoot, settled: settledIn, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 // M9 fix 426: the script's steps after the first repository's are
 // blocks, each a closure a run can skip. Everything before the first
@@ -61,6 +64,7 @@ const BLOCKS = [
   { name: 'fix-352', fixes: ['fix-352', 'fix-354'], needs: ['fix-325'] },
   { name: 'fix-353', fixes: ['fix-353'], needs: [] },
   { name: 'fix-869', fixes: ['fix-869', 'fix-868', 'fix-905', 'fix-906', 'fix-907'], needs: [] },
+  { name: 'fix-944', fixes: ['fix-944', 'fix-945', 'fix-946'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
 
@@ -74,8 +78,9 @@ const scriptStartedAt = Date.now();
 // fixes 450 to 493; at the batch of fixes 494 to 541 a whole run alone
 // hit 600 s in the fix 320 block, 86 step lines in. 780 s for a whole
 // run. A run under --only keeps 600 s, which the close-out's --only runs
-// of three and five blocks passed inside at 369 and 345 s.
-const watchdogMs = partial ? 600000 : 780000;
+// of three and five blocks passed inside at 369 and 345 s. 900 s since
+// the fix 944 block, about two minutes of a batch's twelve frames.
+const watchdogMs = partial ? 600000 : 900000;
 setTimeout(() => {
   console.error(`[verify] WATCHDOG: run exceeded ${watchdogMs / 1000} s${partial ? ' (--only)' : ''}`);
   if (app !== null) killTree(app.child);
@@ -197,8 +202,10 @@ const nodeSel = (hash) => `.commits-node[data-hash=${JSON.stringify(hash)}]`;
 // A mark's centre (M9 fix 145): a session's start and a lane's end are
 // bars, lines across the lane, where a commit is a circle; both are
 // read by one pair, rounded so a bar's midpoint matches a path's end.
-const centreJs = `(el) => { const r = (v) => Math.round(v * 1000) / 1000; return el.tagName === 'line' ? { cx: r((+el.getAttribute('x1') + +el.getAttribute('x2')) / 2), cy: r((+el.getAttribute('y1') + +el.getAttribute('y2')) / 2) } : { cx: r(+el.getAttribute('cx')), cy: r(+el.getAttribute('cy')) }; }`;
-const nodeOf = (hash) => s.evalJs(`(() => { const n = document.querySelector(${JSON.stringify(nodeSel(hash))}); return n ? { cx: +n.getAttribute('cx'), cy: +n.getAttribute('cy'), lane: n.dataset.lane, session: n.dataset.session ?? null, member: n.dataset.member ?? null, hollow: 'hollow' in n.dataset, outside: 'outside' in n.dataset, gone: 'gone' in n.dataset, fill: getComputedStyle(n).fill } : null; })()`);
+// A square (M9 fix 945, a commit made outside the session on its line) is
+// a rect of the dot's size, its centre its middle.
+const centreJs = `(el) => { const r = (v) => Math.round(v * 1000) / 1000; return el.tagName === 'line' ? { cx: r((+el.getAttribute('x1') + +el.getAttribute('x2')) / 2), cy: r((+el.getAttribute('y1') + +el.getAttribute('y2')) / 2) } : el.tagName === 'rect' ? { cx: r(+el.getAttribute('x') + +el.getAttribute('width') / 2), cy: r(+el.getAttribute('y') + +el.getAttribute('height') / 2) } : { cx: r(+el.getAttribute('cx')), cy: r(+el.getAttribute('cy')) }; }`;
+const nodeOf = (hash) => s.evalJs(`(() => { const n = document.querySelector(${JSON.stringify(nodeSel(hash))}); if (!n) return null; const c = (${centreJs})(n); return { cx: c.cx, cy: c.cy, lane: n.dataset.lane, session: n.dataset.session ?? null, member: n.dataset.member ?? null, hollow: 'hollow' in n.dataset, outside: 'outside' in n.dataset, foreign: 'foreign' in n.dataset, gone: 'gone' in n.dataset, fill: getComputedStyle(n).fill }; })()`);
 // The picture in one read: the nodes and how many are in the grey block
 // (and how many hollow, none since M68), the lanes
 // and blocks, the lines as kind:from-to (b for the bottom), the rows and
@@ -363,6 +370,13 @@ try {
     await zreq(s, 'session.kill', { sessionId: id, remove: true });
     await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return !r.sessions.some(x => x.id === ${JSON.stringify(id)}); })()`, 'the session left the list', 10000);
     if (image !== null && !(await processGone(pid, image))) console.log(`[verify] note: ${image} ${pid} of the removed session is still up after 5 s`);
+  };
+  // The live Claude sessions grouped in a folder on a branch, earliest
+  // started first: a commit by hand there above their start commits is
+  // the first's square (M9 fix 945, open question 1).
+  const liveClaudeOn = async (dir, branch) => {
+    const norm = (p) => (p ?? '').replace(/\\/g, '/').toLowerCase();
+    return (await zreq(s, 'session.list', {})).sessions.filter((x) => x.branch === branch && norm(x.groupCwd || x.spawnCwd).startsWith(norm(dir)) && x.state !== 'exited' && (x.removedAt === null || x.removedAt === undefined) && x.claudeSessionId !== null && x.startHead !== null).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   };
   const fresh = await spawnIn(repo);
   const freshNow = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === fresh.id);
@@ -922,7 +936,11 @@ try {
   await s.waitFor(`document.querySelector(${JSON.stringify(rowSel + ' .commits-pill')})?.dataset.pending !== undefined`, 'the row becomes a commit-less worktree', 8000);
   ag = await agentProbe();
   const aRow = await s.evalJs(`[...document.querySelectorAll('.commits-graph-rows .commits-row')].findIndex(r => r.dataset.hash === ${JSON.stringify(A)})`);
-  expect(ag.lane === '2' && ag.row === aRow - 1, `the row keeps its lane in the worker's block and moves right above A (${JSON.stringify([ag.lane, ag.row, aRow])})`);
+  // M9 fix 944: A is older than the worker's head, so the row stays in the
+  // members' block above the worker's own row (the seats stack above
+  // main's row), its fork running down to A's row; it used to move right
+  // above A.
+  expect(ag.lane === '2' && ag.row === 2 && ag.below === `own:${worker.id}` && aRow > ag.row, `the row keeps its lane in the worker's block and stays above the worker's own row (${JSON.stringify([ag.lane, ag.row, ag.below, aRow])})`);
   expect(ag.pill === 'agent' && ag.pillDashed === 'dashed', `the branch as a dashed pill at the right (${ag.pill}, ${ag.pillDashed})`);
   // M68: the dashed pill is the agent row's alone; a pill on a commit
   // row is solid whoever is on the branch (the open pill here, and the
@@ -1114,19 +1132,24 @@ try {
   const MA = git('rev-parse', 'HEAD').trim();
   await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(MA))}) !== null`, 'the merge lands', 8000);
   const ma = await nodeOf(MA);
-  expect(ma.outside && !ma.hollow && ma.lane === '3', `the merge, made outside emerald, is a filled node on the grey trunk (${JSON.stringify(ma)})`);
+  // M9 fix 945: MA by hand on main lies above the start commit of the
+  // live sessions on main here, so it is the square of the earliest
+  // started of them (open question 1), on its line in its colour, where it
+  // used to be a grey node on the grey trunk.
+  const maOwners = await liveClaudeOn(repo, 'main');
+  console.log(`[verify] note: fix 945, the live Claude sessions on main at MA: ${maOwners.map((x) => `${x.id === worker.id ? 'worker' : x.name} ${x.createdAt} ${x.startHead?.slice(0, 7)}`).join('; ')}`);
+  expect(ma.foreign && !ma.outside && !ma.hollow && ma.session === maOwners[0]?.id, `the merge, made outside emerald, is a square of the earliest live session on main (${JSON.stringify([ma, maOwners.map((x) => x.id)])})`);
   // MA's parents are the shell's B2 and the agent's G2, in other blocks.
   // M68 drew no edge into it; since M9 fix 145 the merged branch is a
-  // grey side lane from MA down to G2's row, where it ends under a grey
-  // bar, since G2 is not on the trunk's ancestry (B2 is, and the trunk
-  // runs through B2's row with nothing drawn); the grey trunk still runs
-  // whole from MA to A.
-  const maEdges = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const row = (h) => rows.findIndex(r => r.dataset.hash === h); const ma = row(${JSON.stringify(MA)}); const a = row(${JSON.stringify(A)}); const g2 = row(${JSON.stringify(G2)}); const es = [...document.querySelectorAll('.commits-edge[data-outside]')].map(e => e.dataset.kind + ':' + e.dataset.from + '-' + e.dataset.to); const g2Node = document.querySelector(${JSON.stringify(nodeSel(G2))}); const bars = [...document.querySelectorAll('.commits-node[data-shape="bar"][data-outside]')].map(b => ({ y: (+b.getAttribute('y1') + +b.getAttribute('y2')) / 2, stroke: getComputedStyle(b).stroke, lane: b.dataset.lane })); return { toMa: es.filter(x => x.endsWith('-' + ma)), trunk: es.includes('outside:' + ma + '-' + a), bars, g2Y: +g2Node.getAttribute('cy'), g2Lane: g2Node.dataset.lane }; })()`);
-  expect(maEdges.toMa.length === 1 && maEdges.toMa[0] === 'merge:' + (await rowIndexOf(G2)) + '-' + (await rowIndexOf(MA)) && maEdges.trunk, `the merged branch is one grey merge edge from G2's row into MA, and the grey trunk spans MA to A (${JSON.stringify(maEdges)})`);
-  expect(maEdges.bars.length === 1 && maEdges.bars[0].y === maEdges.g2Y && maEdges.bars[0].lane !== maEdges.g2Lane && maEdges.bars[0].stroke === 'rgb(110, 110, 110)', `the grey lane ends under a grey bar at G2's row, on a lane of the grey block's (${JSON.stringify(maEdges)})`);
+  // side lane from MA down to G2's row, where it ends under a bar, since
+  // G2 is not on the line's ancestry; both are the square's session's now.
+  const maEdges = await s.evalJs(`(() => { const sid = ${JSON.stringify(ma.session)}; const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const row = (h) => rows.findIndex(r => r.dataset.hash === h); const ma = row(${JSON.stringify(MA)}); const es = [...document.querySelectorAll('.commits-edge[data-session=' + JSON.stringify(sid) + ']')].map(e => e.dataset.kind + ':' + e.dataset.from + '-' + e.dataset.to); const g2Node = document.querySelector(${JSON.stringify(nodeSel(G2))}); const bars = [...document.querySelectorAll('.commits-node[data-shape="bar"][data-kind="fork"][data-session=' + JSON.stringify(sid) + ']')].map(b => ({ y: (+b.getAttribute('y1') + +b.getAttribute('y2')) / 2, lane: b.dataset.lane })); return { toMa: es.filter(x => x.endsWith('-' + ma)), bars, g2Y: +g2Node.getAttribute('cy'), g2Lane: g2Node.dataset.lane }; })()`);
+  const maMerges = maEdges.toMa.filter((x) => x.startsWith('merge:'));
+  expect(maMerges.length === 1 && maMerges[0] === 'merge:' + (await rowIndexOf(G2)) + '-' + (await rowIndexOf(MA)), `the merged branch is one merge edge from G2's row into MA, in the square's block (${JSON.stringify(maEdges)})`);
+  expect(maEdges.bars.some((b) => b.y === maEdges.g2Y && b.lane !== maEdges.g2Lane), `that lane ends under a bar at G2's row, on a lane of the square's block (${JSON.stringify(maEdges)})`);
   expect((await s.evalJs(`document.querySelector('.commits-pill[data-branch="agent"]')?.dataset.merged ?? null`)) === 'true', "the agent branch's pill reads merged");
   await s.screenshot('m65-agent-merged.png');
-  step('M65: a merge made outside emerald is a grey node in the outside block; the agent lane stays');
+  step("M65: a merge made by hand on main is a square on the line of the earliest live session there (M9 fix 945); the agent lane stays");
 
   // M9 fix 138: the next prompt a person types drops the returned member
   // from the team, and its commits used to fall out of the block with it
@@ -1134,6 +1157,9 @@ try {
   // daemon folds them into the record with the agent on them now, so
   // G2 and G1 keep the member's lane and the agent pill, with no agent
   // row above them since the agent is gone.
+  // The member's lane as it stands: MA is the first shell's square now
+  // (M9 fix 945), so that block leads and the worker's lanes sit after it.
+  const memberLaneNow = (await nodeOf(G2)).lane;
   await post(worker.id, { hook_event_name: 'UserPromptSubmit', prompt: 'and now the next thing' });
   await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const w = r.sessions.find(x => x.id === ${JSON.stringify(worker.id)}); return w.team.length === 0; })()`, 'the prompt drops the returned member', 8000);
   const folded = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === worker.id).commits;
@@ -1142,10 +1168,10 @@ try {
   await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel)})`, "the agent's row is gone with the member", 8000);
   const g2Folded = await nodeOf(G2);
   const g1Folded = await nodeOf(G1);
-  expect(g2Folded.member === 'ag1' && g2Folded.lane === agentLane && g2Folded.session === worker.id && g1Folded.lane === agentLane && g1Folded.member === 'ag1', `G2 and G1 stay on the member's lane in the worker's block (${JSON.stringify([g2Folded, g1Folded])})`);
+  expect(g2Folded.member === 'ag1' && g2Folded.lane === memberLaneNow && g2Folded.session === worker.id && g1Folded.lane === memberLaneNow && g1Folded.member === 'ag1', `G2 and G1 stay on the member's lane in the worker's block (${JSON.stringify([g2Folded, g1Folded])})`);
   const foldedPill = await s.evalJs(`(() => { const p = document.querySelector('.commits-row[data-hash=${JSON.stringify(G2)}] .commits-pill[data-branch="agent"]'); return p ? { anchor: p.dataset.popoverFor ?? null, dashed: getComputedStyle(p).borderTopStyle } : null; })()`);
   expect(foldedPill !== null && foldedPill.anchor === `lane:${worker.id}:ag1` && foldedPill.dashed === 'solid', `the agent pill on G2's row still anchors the member's card (${JSON.stringify(foldedPill)})`);
-  const foldedLines = await s.evalJs(`[...document.querySelectorAll('.commits-edge[data-lane=' + ${JSON.stringify(JSON.stringify(agentLane))} + ']')].map(e => e.dataset.kind).join(',')`);
+  const foldedLines = await s.evalJs(`[...document.querySelectorAll('.commits-edge[data-lane=' + ${JSON.stringify(JSON.stringify(memberLaneNow))} + ']')].map(e => e.dataset.kind).join(',')`);
   expect(foldedLines.startsWith('worktree') && !foldedLines.includes('pending'), `the worktree line stands, the pending stretch gone with the row (${foldedLines})`);
   step("M9 fix 138: a member's commits stay on its lane in the block once the next prompt drops it from the team");
 
@@ -1160,7 +1186,7 @@ try {
   expect((await ownProbe(worker.id, O2)) === null, "the removed session's own row is gone (M68)");
   // M9 fix 138: and the member's lane with it.
   const g2Removed = await nodeOf(G2);
-  expect(g2Removed.member === 'ag1' && g2Removed.lane === agentLane && g2Removed.gone, `the removed session's block keeps its agent's lane (${JSON.stringify(g2Removed)})`);
+  expect(g2Removed.member === 'ag1' && g2Removed.lane === memberLaneNow && g2Removed.gone, `the removed session's block keeps its agent's lane (${JSON.stringify(g2Removed)})`);
   step('M57: a session cleared from the list keeps its colour on its block');
 
   // M9 fix 98: a forty-character branch name on a tip row in a 260px
@@ -1249,7 +1275,17 @@ try {
   // K1's parent MA is grey and on the merger's ancestry (MK sits on
   // it), so the member's lane also curves into the merger's line at
   // MA's row (M9 fix 145).
-  expect(merged.kinds === `branch:${merged.k1Row}-${await rowIndexOf(MA)},merge:${merged.k1Row}-${merged.mkRow},pending:${+merged.k1Row - 1}-${merged.k1Row}`, `the member's lane carries the merge, the bend into the merger's line at MA's row and its row's pending stretch (${merged.kinds})`);
+  // M9 fix 944: the member's head K1 is under MK, the merger's head, so
+  // its row is lifted above the merger's own row (the seats stack above
+  // main's row, a merged one too) and its stretch runs down from there.
+  const mgRows = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; return { member: rows.indexOf(document.querySelector('.commits-agent-row[data-member="mg1"]')), own: rows.indexOf(document.querySelector(${JSON.stringify(ownRowSel(merger.id))})) }; })()`);
+  expect(mgRows.member !== -1 && mgRows.member < mgRows.own, `the merged member's row above the merger's own (${JSON.stringify(mgRows)})`);
+  // M9 fix 946: the merge line comes up the member's lane past the rows of
+  // that stretch, so the member's star sits on a side lane right after its
+  // lane, its stretch a dashed fork down it bending into K1.
+  expect(merged.kinds === `branch:${merged.k1Row}-${await rowIndexOf(MA)},merge:${merged.k1Row}-${merged.mkRow}`, `the member's lane carries the merge and the bend into the merger's line at MA's row, and no stretch of its row (${merged.kinds})`);
+  const mgSide = await s.evalJs(`(() => { const a = document.querySelector('.commits-agent-node[data-member="mg1"]'); const es = [...document.querySelectorAll('.commits-edge[data-lane=' + JSON.stringify(a?.dataset.lane ?? '') + '][data-session=' + JSON.stringify(${JSON.stringify(merger.id)}) + ']')].map(e => e.dataset.kind + ':' + e.dataset.from + '-' + e.dataset.to + ('dashed' in e.dataset ? '~' : '') + ('side' in e.dataset ? 's' : '')); return { lane: a?.dataset.lane ?? null, side: a !== null && 'side' in a.dataset, es: es.join(',') }; })()`);
+  expect(mgSide.side && mgSide.lane === '2' && mgSide.es === `fork:${mgRows.member}-${merged.k1Row}~s`, `the merged member's star beside its lane, one dashed fork down to K1 (${JSON.stringify(mgSide)})`);
   await s.screenshot('m68-member-merged.png');
   step("M68: a session's own merge commit takes the member's lane into it, as a traditional graph draws a merge");
 
@@ -1534,7 +1570,9 @@ try {
   expect(activeState.historyNodes === 0 && activeState.historyEdges === 0 && activeState.outsideNodes === 0 && activeState.outsideEdges === 0, `the history and outside blocks draw no lines under active (${JSON.stringify(activeState)})`);
   expect(activeState.rows === allState.rows && activeState.hashes === allState.hashes && activeState.hashes === allState.hashes, `every row and every hash is still there (${activeState.rows} rows against ${allState.rows})`);
   expect(activeState.columns < allState.columns && activeState.drawn < allState.drawn && activeState.chips === 'all,active*', `the gutter narrows by the undrawn blocks (${activeState.columns} against ${allState.columns} columns, ${activeState.drawn} of ${activeState.blocks} blocks drawn)`);
-  const hiddenExpected = await s.evalJs(`(() => { const live = new Set([...document.querySelectorAll('.sidebar-row[data-session-id]')].map((r) => r.dataset.sessionId)); return [...document.querySelectorAll('.commits-graph-rows .commits-row[data-hash]')].filter((r) => !live.has(r.dataset.owner)).length; })()`);
+  // A square (M9 fix 945) reads nobody's on its row but draws on a live
+  // session's line, so its row is not hidden.
+  const hiddenExpected = await s.evalJs(`(() => { const live = new Set([...document.querySelectorAll('.sidebar-row[data-session-id]')].map((r) => r.dataset.sessionId)); return [...document.querySelectorAll('.commits-graph-rows .commits-row[data-hash]')].filter((r) => !live.has(r.dataset.owner) && document.querySelector('.commits-node[data-foreign][data-hash=' + JSON.stringify(r.dataset.hash) + ']') === null).length; })()`);
   expect(activeState.hidden === hiddenExpected && activeState.hidden > 0, `the rows of the undrawn blocks say so (${activeState.hidden} hidden, ${hiddenExpected} not a sidebar session's)`);
   await s.screenshot('m72-active.png');
   step("M72: active draws lanes for the sidebar's sessions alone, every row staying");
@@ -1674,8 +1712,10 @@ try {
   const railNodeY = (hash) => s.evalJs(`(() => { const n = document.querySelector('.files-rail ' + ${JSON.stringify(nodeSel(hash))}); return n ? Math.round(n.getBoundingClientRect().top * 10) / 10 : null; })()`);
   // A node roughly in the middle of the rail's view, so a zoom does not
   // push it off either end; its centre is where the wheel lands.
-  const midNode = await s.evalJs(`(() => { const v = document.querySelector('.files-rail .commits-graph-view'); const vr = v.getBoundingClientRect(); const nodes = [...v.querySelectorAll('.commits-node[data-hash]')].map((n) => ({ hash: n.dataset.hash, r: n.getBoundingClientRect() })).filter((n) => n.r.top > vr.top + 40 && n.r.bottom < vr.bottom - 40); const pick = nodes[Math.floor(nodes.length / 2)]; return pick ? { hash: pick.hash, x: pick.r.left + pick.r.width / 2, y: pick.r.top + pick.r.height / 2 } : null; })()`);
+  const midNode = await s.evalJs(`(() => { const v = document.querySelector('.files-rail .commits-graph-view'); const vr = v.getBoundingClientRect(); const nodes = [...v.querySelectorAll('.commits-node[data-hash]')].map((n) => ({ hash: n.dataset.hash, r: n.getBoundingClientRect() })).filter((n) => n.r.top > vr.top + 40 && n.r.bottom < vr.bottom - 40 && n.r.left >= vr.left && n.r.right <= vr.right); const pick = nodes[Math.floor(nodes.length / 2)]; return pick ? { hash: pick.hash, x: pick.r.left + pick.r.width / 2, y: pick.r.top + pick.r.height / 2 } : null; })()`);
   expect(midNode !== null, 'a node in the middle of the rail view to zoom around');
+  const underWheel = await s.evalJs(`(() => { const e = document.elementFromPoint(${midNode.x}, ${midNode.y}); return e === null ? null : { tag: e.tagName, inView: e.closest('.files-rail .commits-graph-view') !== null, cls: String(e.className?.baseVal ?? e.className) }; })()`);
+  expect(underWheel !== null && underWheel.inView, `the wheel lands inside the rail's graph view (${JSON.stringify([midNode, underWheel])})`);
   const scale0 = await scaleProbe();
   expect(scale0.scale === 1 && scale0.pitch === 22, `the rail graph starts at scale 1, pitch 22 (${JSON.stringify(scale0)})`);
   const y0 = await railNodeY(midNode.hash);
@@ -2011,29 +2051,41 @@ try {
     // the cluster of every live session's row there; the block alone
     // again, so the cluster does not push the mark a view's width from
     // its members.
-    commit('V1');
+    const V1 = commit('V1');
     const V2 = commit('V2');
     // The logs watch pushes the commits; when a push is wasted the rail's
     // 5 s poll (GIT_POLL_MS, git-poll.ts) is the fallback, and under load
     // that poll's gits ride behind others (M9 fix 531).
-    await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(V2))})?.dataset.outside !== undefined`, 'two outside commits newer than the session', 15000, { quietMs: 0 });
+    // M9 fix 945: V1 and V2 by hand on main sit above the start commit of
+    // every live session on main, so they are the squares of the earliest
+    // started of them (open question 1), on its line, never grey.
+    await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(V2))})?.dataset.foreign !== undefined`, 'two commits by hand newer than the session, squares on a live line', 15000, { quietMs: 0 });
+    const inRepoDir = (dir) => (dir ?? '').replace(/\\/g, '/').toLowerCase().startsWith(repo.replace(/\\/g, '/').toLowerCase());
+    const liveOnMain = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.branch === 'main' && inRepoDir(x.groupCwd || x.spawnCwd) && x.state !== 'exited' && (x.removedAt === null || x.removedAt === undefined) && x.claudeSessionId !== null && x.startHead !== null).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    console.log(`[verify] note: fix 945, the live Claude sessions on main at V2: ${liveOnMain.map((x) => `${x.id === trunk.id ? 'trunk' : x.name} ${x.createdAt} ${x.startHead?.slice(0, 7)}`).join('; ')}`);
+    const v2Square = await nodeOf(V2);
+    const v1Square = await nodeOf(V1);
+    expect(v2Square.foreign && v1Square.foreign && v2Square.session === v1Square.session && v2Square.session === liveOnMain[0]?.id, `V1 and V2 are the squares of the earliest started live session on main (${JSON.stringify([v1Square, v2Square, liveOnMain.map((x) => x.id)])})`);
+    const v2Owner = v2Square.session;
     await away();
     await s.evalJs(`document.querySelector(${JSON.stringify(nodeSel(P1))}).scrollIntoView({ block: 'center' })`);
     await hoverForAction(nodeSel(P1), 'solo', "the session's card offers Show only this again");
     await s.evalJs(`document.querySelector('.lane-popover .lane-card-action[data-action="solo"]').click()`);
     await s.waitFor(`document.querySelector('.commits-panel')?.dataset.draw === 'some' && document.querySelector('.commits-panel')?.dataset.drawn === '1'`, "the session's block alone again", 5000);
     await away();
-    const headRow = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const own = rows.findIndex((r) => r.dataset.session === ${JSON.stringify(trunk.id)} && !r.dataset.member); return { own, v2: rows.findIndex((r) => r.dataset.hash === ${JSON.stringify(V2)}), head: document.querySelector('.commits-bar[data-kind="head"][data-session=${JSON.stringify(trunk.id)}]') !== null }; })()`);
-    expect(headRow.own === headRow.v2 - 1 && headRow.head, `the session's row sits right over V2, main's head, with a head bar under it (M9 fix 151) (${JSON.stringify(headRow)})`);
-    // M9 fix 176: the stretch from the star down to the head bar is
-    // dashed, the air the next commit falls through; from the head bar on
-    // down to the session's newest own commit it is solid, since that
-    // part has landed, the same weight as the line below.
+    const headRow = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const own = rows.findIndex((r) => r.dataset.session === ${JSON.stringify(trunk.id)} && !r.dataset.member); return { own, v2: rows.findIndex((r) => r.dataset.hash === ${JSON.stringify(V2)}), head: document.querySelector('.commits-graph [data-kind="head"]') !== null }; })()`);
+    expect(headRow.own !== -1 && headRow.own < headRow.v2 && !headRow.head, `the session's row sits over V2, main's head, with no head bar (M9 fix 151, M9 fix 945) (${JSON.stringify(headRow)})`);
+    // M9 fix 176: the stretch from the star down to V2's row is dashed, the
+    // air the next commit falls through. When V2 is the session's own
+    // square (M9 fix 945) its line runs on solid from there; when it is
+    // another session's, the stretch goes on down solid to the session's
+    // newest own commit, as under the head bar it replaced.
     const headDash = await s.evalJs(
-      `(() => { const own = ${headRow.own}; const v2 = ${headRow.v2}; const edges = [...document.querySelectorAll('.commits-edge[data-kind="pending"][data-session=${JSON.stringify(trunk.id)}]:not([data-member])')].map((e) => ({ from: +e.dataset.from, to: +e.dataset.to, dashed: 'dashed' in e.dataset, dash: getComputedStyle(e).strokeDasharray !== 'none' })); return { above: edges.find((e) => e.from === own && e.to === v2) ?? null, below: edges.find((e) => e.from === v2) ?? null }; })()`,
+      `(() => { const own = ${headRow.own}; const v2 = ${headRow.v2}; const edges = [...document.querySelectorAll('.commits-edge[data-kind="pending"][data-session=${JSON.stringify(trunk.id)}]:not([data-member])')].map((e) => ({ from: +e.dataset.from, to: +e.dataset.to, dashed: 'dashed' in e.dataset, dash: getComputedStyle(e).strokeDasharray !== 'none' })); const line = [...document.querySelectorAll('.commits-edge[data-kind="session"][data-session=${JSON.stringify(trunk.id)}]')].map((e) => ({ from: +e.dataset.from, to: e.dataset.to })); return { above: edges.find((e) => e.from === own && e.to === v2) ?? null, below: edges.find((e) => e.from === v2) ?? null, line }; })()`,
     );
-    expect(headDash.above !== null && headDash.above.dashed && headDash.above.dash, `the stretch from the star to the head bar is dashed (${JSON.stringify(headDash)})`);
-    expect(headDash.below !== null && headDash.below.to > headRow.v2 && !headDash.below.dashed && !headDash.below.dash, `the stretch from the head bar down to the session's newest own commit is solid (M9 fix 176) (${JSON.stringify(headDash)})`);
+    expect(headDash.above !== null && headDash.above.dashed && headDash.above.dash, `the stretch from the star to V2's row is dashed (${JSON.stringify(headDash)})`);
+    if (v2Owner === trunk.id) expect(headDash.below === null && headDash.line.some((l) => l.from === headRow.v2), `V2 is the session's own square, so its line runs on from there (${JSON.stringify(headDash)})`);
+    else expect(headDash.below !== null && headDash.below.to > headRow.v2 && !headDash.below.dashed && !headDash.below.dash, `the stretch from V2's row down to the session's newest own commit is solid (M9 fix 176) (${JSON.stringify(headDash)})`);
     await s.evalJs(`document.querySelector('.commits-orient').click()`);
     await s.waitFor(`document.querySelector('.commits-graph')?.dataset.orientation === 'horizontal'`, 'on its side');
     const sideView = await s.evalJs(
@@ -2092,9 +2144,9 @@ try {
     const mkBar = barAt(far.bars, far.ownLane, far.mkY);
     expect(mkBar !== null && mkBar.cx === far.ownX, `the landing on the session's own line at MK's row wears a fork bar (M9 fix 374; ${JSON.stringify([far.bars, far.ownLane, far.mkY])})`);
     expect(far.bars.every((b) => b.lane === far.ownLane || b.lane === far.fy2.lane), `every fork bar of the session's is on its line or on fy2's lane (${JSON.stringify(far.bars)})`);
-    // The session's row sits over V2, main's head and nobody's (M9 fix
-    // 151): a head bar on the session's own lane at V2's row.
-    expect(far.headBar !== null && far.headBar.lane === far.ownLane && far.headBar.cx === far.ownX && far.headBar.cy === far.headBar.v2Y, `the head bar on the session's own lane at V2's row (${JSON.stringify([far.headBar, far.ownLane, far.ownX])})`);
+    // The session's row sits over V2, main's head (M9 fix 151), with no
+    // head bar under it since M9 fix 945: V2 is a square.
+    expect(far.headBar === null, `no head bar at V2's row (${JSON.stringify(far.headBar)})`);
     expect(far.ownNodesOnRows.join(',') === '0,0', "no node of the session's on MK's or G2's row");
     expect(far.line.split(',').some((seg) => +seg.split('-')[0] <= far.p0Row && +seg.split('-')[1] >= far.mkRow), `the session's line runs from P0 down to MK's row (${far.line}, P0 at ${far.p0Row}, MK at ${far.mkRow})`);
     await s.screenshot('m9-fix145-forks-elsewhere.png');
@@ -2411,9 +2463,9 @@ try {
     expect(joined.BM.session === sessB.id && joined.B0.lane === joined.BM.lane && joined.X1.lane === joined.X2.lane && joined.X1.lane !== joined.BM.lane && joined.A1.session === sessA.id && joined.A1.lane !== joined.BM.lane && joined.A1.lane !== joined.X1.lane, `BM and B0 on B's lane, X1 and X2 on B's side lane, A1 on A's own lane (${JSON.stringify([joined.BM, joined.B0, joined.X1, joined.X2, joined.A1])})`);
     expect(joined.branch !== null && joined.branch.from === joined.x1Row && joined.branch.to === joined.a1Row && joined.branch.endX === joined.BM.x && joined.branch.endY === joined.A1.y && joined.branch.curve, `the branch's line runs from X1 and curves into B's lane 0 at A1's row (${JSON.stringify([joined.branch, joined.BM.x, joined.A1.y])})`);
     expect(joined.bOnA1Row === 0 && joined.bars === 0, "no node of B's on A1's row and no fork bar, since A1 is on B's ancestry");
-    // A sits at main's head BM, B's commit (M9 fix 151): A's row over BM
-    // with a head bar on A's lane at BM's row.
-    expect(joined.aHead !== null && joined.aHead.lane === joined.A1.lane && joined.aHead.y === joined.BM.y, `A's head bar on A's lane at BM's row (${JSON.stringify([joined.aHead, joined.A1, joined.BM])})`);
+    // A sits at main's head BM, B's commit (M9 fix 151): A's row over BM,
+    // with no head bar on A's lane there since M9 fix 945.
+    expect(joined.aHead === null, `no head bar on A's lane at BM's row (${JSON.stringify([joined.aHead, joined.A1, joined.BM])})`);
     expect(joined.lines.split(',').some((l) => l.startsWith(`session:${joined.BM.lane}:${joined.bmRow}-`) && +l.split('-')[1] >= joined.a1Row), `B's line runs from BM down to A1's row (${joined.lines})`);
     await s.screenshot('m9-fix145-forked-and-merged.png');
     step("M9 fix 145: a branch forked from another session's commit and merged curves into the session's own line at that commit's row, no node of the session's there and nothing of its on the other's lane");
@@ -2496,14 +2548,17 @@ try {
     git3('add', 'H1.txt');
     git3('commit', '-q', '-m', 'H1');
     const H1b = git3('rev-parse', 'HEAD').trim();
-    await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(H1b))})?.dataset.outside !== undefined`, 'H1 lands as an outside commit on main', 15000);
+    // M9 fix 945: H1 by hand on main lies above both A's start (Z0) and
+    // B's (A1) on main's first-parent chain, so it is the square of the
+    // earlier started, A (open question 1), on A's line.
+    await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(H1b))})?.dataset.foreign !== undefined && document.querySelector(${JSON.stringify(nodeSel(H1b))})?.dataset.session === ${JSON.stringify(sessA.id)}`, "H1 lands on main as A's square", 15000);
     ff = await ffProbe();
     const h1Row = await s.evalJs(`[...document.querySelectorAll('.commits-graph-rows .commits-row')].findIndex((r) => r.dataset.hash === ${JSON.stringify(H1b)})`);
     expect(ff.own !== -1 && ff.own < h1Row && ff.stretch !== null && ff.stretch.to === h1Row && !ff.stretch.curve, `B's row moves over H1 and its stretch runs straight down to H1's row (${JSON.stringify([ff.own, h1Row, ff.stretch])})`);
-    expect(ff.head !== null && ff.head.lane === ff.markLane && ff.head.cx === ff.stretch.endX && ff.head.cy === ff.stretch.endY, `the stretch ends under a head bar on B's own lane (${JSON.stringify([ff.head, ff.stretch])})`);
+    expect(ff.head === null, `the stretch ends at H1's row with no head bar (${JSON.stringify([ff.head, ff.stretch])})`);
     await s.screenshot('m9-fix151-star-over-head-bar.png');
     await removeWorktree(git3, ffWt);
-    step("M9 fix 151: the star sits over the head of its branch, its stretch bending onto a member's commit main was fast-forwarded to, and ending under a head bar when the head is someone else's");
+    step("M9 fix 151: the star sits over the head of its branch, its stretch bending onto a member's commit main was fast-forwarded to, and ending at the head's row when the head is someone else's, with no head bar since M9 fix 945");
 
     // M9 fix 937: B, still in repo3 on main, commits N1 to N5 in a
     // worktree on nx off H1 with `cd <worktree> && git commit`, the way a
@@ -2538,7 +2593,7 @@ try {
     expect(side937.own !== -1 && side937.starLane !== null && side937.lanes.every((l) => l !== null && l === side937.lanes[0] && l !== side937.starLane) && side937.above.length === 0, `B's five on a side lane of its block and nothing of B's above its star on its lane (${JSON.stringify(side937)})`);
     const h1Row937 = await s.evalJs(`[...document.querySelectorAll('.commits-graph-rows .commits-row')].findIndex((r) => r.dataset.hash === ${JSON.stringify(H1b)})`);
     ff = await ffProbe();
-    expect(ff.own !== -1 && ff.own < h1Row937 && ff.stretch !== null && ff.stretch.to === h1Row937 && ff.head !== null && ff.head.lane === ff.markLane, `the star is still over H1 with its head bar on B's lane (${JSON.stringify([ff.own, h1Row937, ff.stretch, ff.head])})`);
+    expect(ff.own !== -1 && ff.own < h1Row937 && ff.stretch !== null && ff.stretch.to === h1Row937 && ff.head === null, `the star is still over H1, no head bar (${JSON.stringify([ff.own, h1Row937, ff.stretch, ff.head])})`);
     await s.screenshot('m9-fix937-own-commits-side-lane.png');
     await removeWorktree(git3, nxWt);
     git3('branch', '-D', 'nx');
@@ -2591,14 +2646,16 @@ try {
     const spanC1 = `${sessC.id}#span1`;
     await s.waitFor(`document.querySelector(${JSON.stringify(nodeSel(C2))})?.dataset.session === ${JSON.stringify(sessC.id)} && document.querySelector(${JSON.stringify(nodeSel(C1))})?.dataset.session === ${JSON.stringify(spanC1)}`, "C2 is the live block's and C1 the earlier span's", 15000);
     const cleared = await s.evalJs(
-      `(() => { const id = ${JSON.stringify(sessC.id)}; const span = ${JSON.stringify(spanC1)}; const grp = (k) => document.querySelector('.commits-lane-group[data-session=' + JSON.stringify(k) + ']'); const bars = (k) => [...document.querySelectorAll('.commits-node[data-shape="bar"][data-kind="start"][data-session=' + JSON.stringify(k) + ']')].map((b) => +b.getAttribute('y1')); const n = (h) => document.querySelector('.commits-node[data-hash=' + JSON.stringify(h) + ']'); const c0 = n(${JSON.stringify(C0)}); const c1 = n(${JSON.stringify(C1)}); const c2 = n(${JSON.stringify(C2)}); const cp = n(${JSON.stringify(CP)}); const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const ownRows = rows.filter((r) => r.dataset.session === id && !r.dataset.member).length; return { live: grp(id) ? { span: grp(id).dataset.span ?? null, bars: bars(id) } : null, earlier: grp(span) ? { span: grp(span).dataset.span ?? null, bars: bars(span) } : null, c0: c0 ? { session: c0.dataset.session ?? null, cy: +c0.getAttribute('cy') } : null, c1: { lane: c1.dataset.lane, fill: getComputedStyle(c1).fill, cy: +c1.getAttribute('cy') }, c2: { lane: c2.dataset.lane, fill: getComputedStyle(c2).fill }, cp: cp ? { session: cp.dataset.session ?? null, lane: cp.dataset.lane, cy: +cp.getAttribute('cy') } : null, ownRows }; })()`,
+      `(() => { const id = ${JSON.stringify(sessC.id)}; const span = ${JSON.stringify(spanC1)}; const grp = (k) => document.querySelector('.commits-lane-group[data-session=' + JSON.stringify(k) + ']'); const bars = (k) => [...document.querySelectorAll('.commits-node[data-shape="bar"][data-kind="start"][data-session=' + JSON.stringify(k) + ']')].map((b) => +b.getAttribute('y1')); const n = (h) => document.querySelector('.commits-node[data-hash=' + JSON.stringify(h) + ']'); const c0 = n(${JSON.stringify(C0)}); const c1 = n(${JSON.stringify(C1)}); const c2 = n(${JSON.stringify(C2)}); const cp = n(${JSON.stringify(CP)}); const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; const ownRows = rows.filter((r) => r.dataset.session === id && !r.dataset.member).length; return { live: grp(id) ? { span: grp(id).dataset.span ?? null, bars: bars(id) } : null, earlier: grp(span) ? { span: grp(span).dataset.span ?? null, bars: bars(span) } : null, c0: c0 ? { session: c0.dataset.session ?? null, foreign: 'foreign' in c0.dataset, cy: (${centreJs})(c0).cy } : null, c1: { lane: c1.dataset.lane, fill: getComputedStyle(c1).fill, cy: +c1.getAttribute('cy') }, c2: { lane: c2.dataset.lane, fill: getComputedStyle(c2).fill }, cp: cp ? { session: cp.dataset.session ?? null, lane: cp.dataset.lane, cy: +cp.getAttribute('cy') } : null, ownRows }; })()`,
     );
     expect(cleared.live !== null && cleared.earlier !== null && cleared.live.span === null && cleared.earlier.span === '1', `a lane group for the live block and one for the earlier span, the span's numbered (${JSON.stringify(cleared)})`);
     expect(cleared.c1.fill === rgb(cSpans.color) && cleared.c2.fill === rgb(cSpans.color) && cleared.c1.lane !== cleared.c2.lane, `both blocks in the session's colour on lanes of their own (${JSON.stringify([cleared.c1, cleared.c2, cSpans.color])})`);
     expect(cleared.live.bars.length === 1 && cleared.live.bars[0] === cleared.c1.cy && cleared.earlier.bars.length === 1 && cleared.earlier.bars[0] > cleared.c1.cy, `a start bar each, the live block's on C1's row and the earlier span's below it (${JSON.stringify([cleared.live.bars, cleared.earlier.bars, cleared.c1.cy])})`);
     // M9 fix 378: the earlier span's bar is on C0's row, HEAD when Claude
-    // started, and C0 itself is nobody's, outside the block.
-    expect(cleared.c0 !== null && cleared.c0.session === null && cleared.earlier.bars[0] === cleared.c0.cy, `the earlier span's bar sits on C0's row and C0, the hand commit before claude, is outside the block (${JSON.stringify([cleared.c0, cleared.earlier.bars])})`);
+    // started, and C0 itself is nobody's, outside C's blocks. Since M9 fix
+    // 945 it is the square of A, the earliest live session on main whose
+    // span covers it, rather than a grey node.
+    expect(cleared.c0 !== null && cleared.c0.session === sessA.id && cleared.c0.foreign && cleared.earlier.bars[0] === cleared.c0.cy, `the earlier span's bar sits on C0's row and C0, the hand commit before claude, is outside C's blocks, A's square (${JSON.stringify([cleared.c0, cleared.earlier.bars])})`);
     // M9 fix 400: CP, claimed before the first conversation opened, is on
     // the record's own live block and on its lane, below the live block's
     // start bar, which has not moved off C1.
@@ -3424,7 +3481,7 @@ try {
     // at full strength. Read on the rail's upright graph, rows on.
     const leaderProbe = () =>
       s.evalJs(
-        `(() => { const svg = document.querySelector('.files-rail .commits-graph'); const op = (el) => parseFloat(getComputedStyle(el).opacity); const nodes = [...svg.querySelectorAll('.commits-node[data-hash]')]; const leaders = [...svg.querySelectorAll('.commits-leader[data-hash]')]; const agent = svg.querySelector('.commits-leader[data-session]:not([data-hash])'); const firstEdge = svg.querySelector('.commits-edge'); const bad = leaders.filter((l) => { const n = svg.querySelector('.commits-node[data-hash=' + JSON.stringify(l.dataset.hash) + ']'); if (!n) return true; const cx = +n.getAttribute('cx'); const r = +n.getAttribute('r'); return Math.abs(+l.getAttribute('x1') - (cx + r)) > 0.01 || +l.getAttribute('y1') !== +n.getAttribute('cy') || +l.getAttribute('y2') !== +n.getAttribute('cy') || +l.getAttribute('x2') <= +l.getAttribute('x1'); }); return { nodes: nodes.length, leaders: leaders.length, missing: nodes.filter((n) => !svg.querySelector('.commits-leader[data-hash=' + JSON.stringify(n.dataset.hash) + ']')).length, bad: bad.length, ends: [...new Set(leaders.map((l) => l.getAttribute('x2')))], agentEnd: agent?.getAttribute('x2') ?? null, opacity: [...new Set(leaders.filter((l) => l.dataset.raised === undefined).map((l) => op(l)))], agentOpacity: agent ? op(agent) : null, agentDash: agent ? getComputedStyle(agent).strokeDasharray : null, dash: [...new Set(leaders.map((l) => getComputedStyle(l).strokeDasharray))], underEdges: firstEdge ? leaders.every((l) => l.compareDocumentPosition(firstEdge) & Node.DOCUMENT_POSITION_FOLLOWING) : null, raised: leaders.filter((l) => l.dataset.raised !== undefined).map((l) => ({ hash: l.dataset.hash, opacity: op(l) })) }; })()`,
+        `(() => { const svg = document.querySelector('.files-rail .commits-graph'); const op = (el) => parseFloat(getComputedStyle(el).opacity); const nodes = [...svg.querySelectorAll('.commits-node[data-hash]')]; const leaders = [...svg.querySelectorAll('.commits-leader[data-hash]')]; const agent = svg.querySelector('.commits-leader[data-session]:not([data-hash])'); const firstEdge = svg.querySelector('.commits-edge'); const bad = leaders.filter((l) => { const n = svg.querySelector('.commits-node[data-hash=' + JSON.stringify(l.dataset.hash) + ']'); if (!n) return true; const c = (${centreJs})(n); const r = n.tagName === 'rect' ? +n.getAttribute('width') / 2 : +n.getAttribute('r'); return Math.abs(+l.getAttribute('x1') - (c.cx + r)) > 0.01 || Math.abs(+l.getAttribute('y1') - c.cy) > 0.01 || Math.abs(+l.getAttribute('y2') - c.cy) > 0.01 || +l.getAttribute('x2') <= +l.getAttribute('x1'); }); return { nodes: nodes.length, leaders: leaders.length, missing: nodes.filter((n) => !svg.querySelector('.commits-leader[data-hash=' + JSON.stringify(n.dataset.hash) + ']')).length, bad: bad.length, ends: [...new Set(leaders.map((l) => l.getAttribute('x2')))], agentEnd: agent?.getAttribute('x2') ?? null, opacity: [...new Set(leaders.filter((l) => l.dataset.raised === undefined).map((l) => op(l)))], agentOpacity: agent ? op(agent) : null, agentDash: agent ? getComputedStyle(agent).strokeDasharray : null, dash: [...new Set(leaders.map((l) => getComputedStyle(l).strokeDasharray))], underEdges: firstEdge ? leaders.every((l) => l.compareDocumentPosition(firstEdge) & Node.DOCUMENT_POSITION_FOLLOWING) : null, raised: leaders.filter((l) => l.dataset.raised !== undefined).map((l) => ({ hash: l.dataset.hash, opacity: op(l) })) }; })()`,
       );
     const lead = await leaderProbe();
     expect(lead.nodes > 3 && lead.leaders === lead.nodes && lead.missing === 0, `one leader per commit node on the rail, by hash (${JSON.stringify(lead)})`);
@@ -4037,7 +4094,7 @@ try {
     const cfAt = (n, text) => twenty.map((l, i) => (i === n - 1 ? text : l));
     const cfGutter = () =>
       s.evalJs(
-        `(() => { const p = document.querySelector('.files-rail .commits-panel'); const svg = p.querySelector('.commits-graph'); const all = [...svg.querySelectorAll('*')]; const idx = (el) => all.indexOf(el); const num = (v) => parseFloat(String(v).replace('calc(', '')); const ties = [...svg.querySelectorAll('.commits-tie')].map((t) => { const g = t.parentElement; return { from: t.dataset.from, to: t.dataset.to, a: g.dataset.a, b: g.dataset.b, files: g.dataset.files, chevrons: (t.getAttribute('d').match(/M/g) ?? []).length, width: num(getComputedStyle(t).strokeWidth), stroke: getComputedStyle(t).stroke, dash: getComputedStyle(t).strokeDasharray, filter: getComputedStyle(t).filter, index: idx(t), hit: (() => { const h = g.querySelector('.commits-tie-hit'); return { width: num(getComputedStyle(h).strokeWidth), stroke: getComputedStyle(h).stroke, events: getComputedStyle(h).pointerEvents, d: h.getAttribute('d') }; })() }; }); const halos = [...svg.querySelectorAll('.commits-tie-halo')].map((h) => ({ session: h.dataset.session, cx: +h.getAttribute('cx'), cy: +h.getAttribute('cy'), r: +h.getAttribute('r'), width: num(getComputedStyle(h).strokeWidth), stroke: getComputedStyle(h).stroke, dash: getComputedStyle(h).strokeDasharray, filter: getComputedStyle(h).filter, index: idx(h) })); const nodeOf = (sid) => { const n = [...svg.querySelectorAll('.commits-node[data-hash][data-session=' + JSON.stringify(sid) + ']:not([data-member])')][0]; return n ? { cx: +n.getAttribute('cx'), cy: +n.getAttribute('cy'), index: idx(n) } : null; }; return { ties, halos, edgeMin: Math.min(...[...svg.querySelectorAll('.commits-edge')].map(idx)), nodeMax: Math.max(...[...svg.querySelectorAll('.commits-node')].map(idx)), texts: [...svg.querySelectorAll('text')].filter((t) => !t.classList.contains('commits-label')).map((t) => ({ cls: t.className.baseVal, text: t.textContent, session: t.dataset.session ?? null, fill: getComputedStyle(t).fill, x: +t.getAttribute('x'), y: +t.getAttribute('y') })), elements: all.length, nodes: Object.fromEntries(${JSON.stringify(cfNames)}.map((n) => [n, nodeOf(${JSON.stringify(Object.fromEntries(cfNames.map((n) => [n, cfSess[n].id])))}[n])])), error: getComputedStyle(document.documentElement).getPropertyValue('--error').trim(), muted: getComputedStyle(document.documentElement).getPropertyValue('--muted').trim(), edgeWidths: [...new Set([...svg.querySelectorAll('.commits-edge')].map((e) => num(getComputedStyle(e).strokeWidth)))].sort(), radii: [...new Set([...svg.querySelectorAll('circle.commits-node')].map((n) => n.getAttribute('r')))].sort(), rowHeights: [...new Set([...p.querySelectorAll('.commits-graph-rows .commits-row')].map((r) => Math.round(r.getBoundingClientRect().height)))], slab: (() => { const sl = svg.querySelector('.commits-focus-slab'); return sl ? [sl.getAttribute('x'), sl.getAttribute('y'), sl.getAttribute('width'), sl.getAttribute('height')].join(' ') : null; })() }; })()`,
+        `(() => { const p = document.querySelector('.files-rail .commits-panel'); const svg = p.querySelector('.commits-graph'); const all = [...svg.querySelectorAll('*')]; const idx = (el) => all.indexOf(el); const num = (v) => parseFloat(String(v).replace('calc(', '')); const ties = [...svg.querySelectorAll('.commits-tie')].map((t) => { const g = t.parentElement; return { from: t.dataset.from, to: t.dataset.to, a: g.dataset.a, b: g.dataset.b, files: g.dataset.files, chevrons: (t.getAttribute('d').match(/M/g) ?? []).length, width: num(getComputedStyle(t).strokeWidth), stroke: getComputedStyle(t).stroke, dash: getComputedStyle(t).strokeDasharray, filter: getComputedStyle(t).filter, index: idx(t), hit: (() => { const h = g.querySelector('.commits-tie-hit'); return { width: num(getComputedStyle(h).strokeWidth), stroke: getComputedStyle(h).stroke, events: getComputedStyle(h).pointerEvents, d: h.getAttribute('d') }; })() }; }); const halos = [...svg.querySelectorAll('.commits-tie-halo')].map((h) => ({ session: h.dataset.session, cx: +h.getAttribute('cx'), cy: +h.getAttribute('cy'), r: +h.getAttribute('r'), width: num(getComputedStyle(h).strokeWidth), stroke: getComputedStyle(h).stroke, dash: getComputedStyle(h).strokeDasharray, filter: getComputedStyle(h).filter, index: idx(h) })); const nodeOf = (sid) => { const n = [...svg.querySelectorAll('.commits-node[data-hash][data-session=' + JSON.stringify(sid) + ']:not([data-member])')][0]; return n ? { ...(${centreJs})(n), index: idx(n) } : null; }; return { ties, halos, edgeMin: Math.min(...[...svg.querySelectorAll('.commits-edge')].map(idx)), nodeMax: Math.max(...[...svg.querySelectorAll('.commits-node')].map(idx)), texts: [...svg.querySelectorAll('text')].filter((t) => !t.classList.contains('commits-label')).map((t) => ({ cls: t.className.baseVal, text: t.textContent, session: t.dataset.session ?? null, fill: getComputedStyle(t).fill, x: +t.getAttribute('x'), y: +t.getAttribute('y') })), elements: all.length, nodes: Object.fromEntries(${JSON.stringify(cfNames)}.map((n) => [n, nodeOf(${JSON.stringify(Object.fromEntries(cfNames.map((n) => [n, cfSess[n].id])))}[n])])), error: getComputedStyle(document.documentElement).getPropertyValue('--error').trim(), muted: getComputedStyle(document.documentElement).getPropertyValue('--muted').trim(), edgeWidths: [...new Set([...svg.querySelectorAll('.commits-edge')].map((e) => num(getComputedStyle(e).strokeWidth)))].sort(), radii: [...new Set([...svg.querySelectorAll('circle.commits-node')].map((n) => n.getAttribute('r')))].sort(), rowHeights: [...new Set([...p.querySelectorAll('.commits-graph-rows .commits-row')].map((r) => Math.round(r.getBoundingClientRect().height)))], slab: (() => { const sl = svg.querySelector('.commits-focus-slab'); return sl ? [sl.getAttribute('x'), sl.getAttribute('y'), sl.getAttribute('width'), sl.getAttribute('height')].join(' ') : null; })() }; })()`,
       );
     const cfRows = () =>
       s.evalJs(
@@ -4607,6 +4664,352 @@ try {
     await s.waitFor(`document.querySelector('.files-rail .commits-panel')?.dataset.replay === undefined`, 'Space plays the replay on to its end and the end puts the live graph back', 5000);
     step("M9 fix 905: the strip's button plays a held replay, Space pauses it and plays it on, kept from a terminal, and a drag on its slider holds it at a commit's landing");
     step("M9 fixes 868 and 869: Replay from here dims the later rows, lands each commit in order at its replay time, gives a finished batch's forks their rows back with their marks on only inside their recorded spans, overlapping where they overlapped, puts the live graph back on Escape, and says where the record starts for a start before it");
+  });
+
+  await block('fix-944', async () => {
+    // M9 fixes 944 to 946: the commit graph through a batch, the design
+    // pass of fix 937 (docs/design/graph-through-a-batch.md) recreated on
+    // the dev build from emerald-wt/ct-918.mjs's 937-frames step. A
+    // repository of the block's own; a lead that is a Claude session (a
+    // SessionStart bound, so it has a row before any commit) in the main
+    // checkout on main; three forked seats in worktrees on m9-seat-a, -b
+    // and -c off the plan commit; the lead's own fix-up committed in
+    // seat-b's worktree with its folder moved there for the call, as Claude
+    // Code reports a `cd` that sticks (claim 1); a by-hand commit on main;
+    // three merges, the docs commit, the sweep and one more by-hand commit.
+    // Twelve frames under the draw chip's `active` (the user's rail draws
+    // no grey trunk), written to docs/design/graph-through-a-batch/built/
+    // beside today/, each read against the proposed board's rows.
+    const btShort = path.join(os.tmpdir(), 'emerald-verify', `m51-batch-${process.pid}`);
+    fs.rmSync(btShort, { recursive: true, force: true });
+    fs.mkdirSync(btShort, { recursive: true });
+    const btRepo = fs.realpathSync.native(btShort);
+    fixDirs.push(btRepo);
+    const gitBt = gitIn(btRepo);
+    gitBt('init', '-q', '-b', 'main');
+    gitBt('config', 'user.name', 'verify');
+    gitBt('config', 'user.email', 'verify@example.invalid');
+    gitBt('config', 'commit.gpgsign', 'false');
+    const commitIn = (gitFn, dir, name, msg) => {
+      fs.writeFileSync(path.join(dir, `${name}.txt`), name);
+      gitFn('add', `${name}.txt`);
+      gitFn('commit', '-q', '-m', msg);
+      return gitFn('rev-parse', 'HEAD').trim();
+    };
+    const names = {};
+    const named = (name, hash) => {
+      names[hash] = name;
+      return hash;
+    };
+    for (const [n, m] of [['Z1', 'fix 916: the old work'], ['Z2', 'fix 917: more old work'], ['D0', 'docs: fixes 888 to 917 done']]) named(n, commitIn(gitBt, btRepo, n, m));
+    const lead = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: btRepo, name: 'Batch 918 lead', cols: 100, rows: 24 })).session;
+    const leadRecord = () => zreq(s, 'session.list', {}).then((r) => r.sessions.find((x) => x.id === lead.id));
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return r.sessions.find(x => x.id === ${JSON.stringify(lead.id)})?.branch === 'main'; })()`, 'the daemon reads the lead on main', 8000);
+    await post(lead.id, { cwd: btRepo, hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find(x => x.id === ${JSON.stringify(lead.id)}); return x?.startHead !== null && x?.claudeSessionId !== null; })()`, 'the lead knows its start commit and its conversation', 8000);
+    // The rail wide enough for the lanes and the subjects, then on the lead.
+    await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 560 }))`);
+    await s.send('Page.reload');
+    await s.waitFor(`!!document.querySelector('.app-body') && Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 560) < 3`, 'the app back with the rail at 560px', 20000);
+    await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(lead.id)}]`)})`, "the lead's sidebar row", 10000);
+    await s.evalJs(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(lead.id)}]').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`);
+    await s.evalJs(`document.querySelector('.files-rail .rail-tab[data-tab="timeline"]')?.click()`);
+    const btPanel = '.files-rail .commits-panel';
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.folder === ${JSON.stringify(btRepo)} && document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, "the rail follows the lead to the batch's repository", 15000);
+    if (await s.evalJs(`document.querySelector(${JSON.stringify(btPanel)}).dataset.rows !== 'on'`)) {
+      await s.evalJs(`document.querySelector('.files-rail .commits-panel .commits-rows')?.click()`);
+      await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.rows === 'on'`, 'the rows on', 5000);
+    }
+    // The draw chip on `active` (slip 2 of the handoff): the grey block's
+    // commits keep their rows and draw nothing.
+    if (await s.evalJs(`!!document.querySelector('.files-rail .commits-draw [data-draw="some"]')`)) await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="some"]').click()`);
+    await s.waitFor(`!!document.querySelector('.files-rail .commits-draw [data-draw="active"]')`, 'the draw chips', 5000);
+    await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="active"]').click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.draw === 'active'`, 'the graph draws the active blocks alone', 5000);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(ownRowSel(lead.id))})`, "the lead's row before any commit", 10000);
+
+    const owns = (hash, member = null) => s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find(x => x.id === ${JSON.stringify(lead.id)}); return ${member === null ? `x?.commits.some(c => c.hash === ${JSON.stringify(hash)})` : `x?.team.find(m => m.id === ${JSON.stringify(member)})?.commits.some(c => c.hash === ${JSON.stringify(hash)})`}; })()`, `the lead owns ${hash.slice(0, 7)}`, 10000);
+    // A commit the lead or a member makes, its hooks posted around it.
+    const via = async (gitFn, dir, name, msg, { member = null, command = `git commit -q -m "${msg}"`, preCwd = dir, postCwd = dir } = {}) => {
+      const extra = member === null ? {} : { agent_id: member };
+      await post(lead.id, { cwd: preCwd, ...extra, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+      await sleep(300);
+      const hash = named(name, commitIn(gitFn, dir, name, msg));
+      await post(lead.id, { cwd: postCwd, ...extra, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command } });
+      await owns(hash, member);
+      return hash;
+    };
+    const merge = async (branch, name, msg) => {
+      const command = `git merge --no-ff -m "${msg}" ${branch}`;
+      await post(lead.id, { cwd: btRepo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+      await sleep(300);
+      gitBt('merge', '-q', '--no-ff', '-m', msg, branch);
+      const hash = named(name, gitBt('rev-parse', 'HEAD').trim());
+      await post(lead.id, { cwd: btRepo, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command } });
+      await owns(hash);
+      return hash;
+    };
+
+    // The frames, as ct-918 took them, and one read of the rows per frame:
+    // a commit row by its name with its node's lane, a session row as
+    // `lead`, a member row by its member id with its mark's lane.
+    const builtDir = path.join(repoRoot, 'docs', 'design', 'graph-through-a-batch', 'built');
+    fs.mkdirSync(builtDir, { recursive: true });
+    const reads = [];
+    const readRail = () =>
+      s.evalJs(`(() => {
+        const rail = document.querySelector('.files-rail');
+        const p = rail.querySelector('.commits-panel');
+        const names = ${JSON.stringify(names)};
+        const rows = [...rail.querySelectorAll('.commits-graph-rows .commits-row')].map((row, i) => {
+          const h = row.dataset.hash;
+          if (h) {
+            const n = rail.querySelector('.commits-node[data-hash=' + JSON.stringify(h) + ']');
+            return { id: names[h] ?? h.slice(0, 7), row: i, lane: n?.dataset.lane ?? null, tag: n?.tagName ?? null, foreign: n !== null && 'foreign' in n.dataset, outside: n !== null && 'outside' in n.dataset, member: n?.dataset.member ?? null, tint: n?.dataset.tint ?? null, fill: n === null ? null : getComputedStyle(n).fill, owner: row.dataset.owner ?? null, cy: n === null ? null : (${centreJs})(n).cy };
+          }
+          const sid = row.dataset.session;
+          const mid = row.dataset.member ?? null;
+          const a = rail.querySelector('.commits-agent-node[data-session=' + JSON.stringify(sid) + ']' + (mid === null ? ':not([data-member])' : '[data-member=' + JSON.stringify(mid) + ']'));
+          return { id: mid ?? (sid === ${JSON.stringify(lead.id)} ? 'lead' : 'session ' + sid), row: i, session: sid, lane: a?.dataset.lane ?? null, working: a !== null && 'working' in a.dataset, side: a !== null && 'side' in a.dataset };
+        });
+        const bars = [...rail.querySelectorAll('.commits-node[data-shape="bar"]')].map((b) => ({ kind: b.dataset.kind ?? null, lane: b.dataset.lane ?? null, session: b.dataset.session ?? null, y: +b.getAttribute('y1') }));
+        const edges = [...rail.querySelectorAll('.commits-edge')].map((e) => ({ kind: e.dataset.kind, lane: e.dataset.lane, session: e.dataset.session ?? null, from: +e.dataset.from, to: e.dataset.to === 'b' ? 1e9 : +e.dataset.to, dashed: 'dashed' in e.dataset, side: 'side' in e.dataset, tint: e.dataset.tint ?? null, stroke: getComputedStyle(e).stroke }));
+        return { rows, edges, columns: p.dataset.columns, draw: p.dataset.draw, bars, heads: rail.querySelectorAll('.commits-graph [data-kind="head"]').length, pitch: +(rail.querySelector('.commits-graph')?.dataset.pitch ?? 0) };
+      })()`);
+    const frame = async (n, slug, words, want = null) => {
+      if (want !== null) await s.waitFor(`!!document.querySelector(${JSON.stringify(`.files-rail .commits-graph-rows .commits-row[data-hash=${JSON.stringify(want)}]`)})`, `${slug}'s last commit on the graph`, 15000);
+      await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, `the graph read for ${slug}`, 10000);
+      await sleep(1500);
+      const name = `f${String(n).padStart(2, '0')}-${slug}.png`;
+      const { x, y, width, height } = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(btPanel)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      const shot = await s.send('Page.captureScreenshot', { format: 'png', clip: { x, y, width, height: Math.min(height, 640), scale: 2 } });
+      fs.writeFileSync(path.join(builtDir, name), Buffer.from(shot.data, 'base64'));
+      const read = await readRail();
+      reads.push({ n, slug, words, ...read });
+      console.log(`[verify] fix-944 frame ${name}: ${read.rows.map((r) => `${r.id}@${r.lane}`).join(' ')} columns ${read.columns}`);
+      return read;
+    };
+    // The proposed board's rows per stage (P02 to P12, F01 the default in
+    // Proposed.dc.html), each a member row, `lead`, or a commit and the
+    // line its board colour lane names: `lead`, `a`, `b` or `c` for the
+    // lead's and the seats' lines, `o` for a commit nobody here made.
+    // From F07, the first stage where main has moved past every seat's
+    // head, the seats stack above the lead's row (the user's amendment to
+    // rule 2 of 2026-10-20, backlog entry "A batch's seats always stack
+    // above main's row", option (a): a merged seat still there too), in
+    // the order they started.
+    const old = ['D0:o', 'Z2:o', 'Z1:o'];
+    const seatsDone = ['seat-b', 'B2:b', 'seat-a', 'A2:a', 'seat-c', 'C1:c', 'B1:b', 'A1:a'];
+    const seatsAbove = ['seat-a', 'seat-b', 'seat-c'];
+    const seatWork = ['B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a'];
+    const merged = ['MC:lead', 'MB:lead', 'MA:lead', 'X1:o'];
+    const board = {
+      1: ['lead', ...old],
+      2: ['lead', 'P:lead', ...old],
+      3: ['seat-a', 'seat-b', 'seat-c', 'lead', 'P:lead', ...old],
+      4: ['seat-a', 'A2:a', 'seat-c', 'C1:c', 'seat-b', 'B1:b', 'A1:a', 'lead', 'P:lead', ...old],
+      5: [...seatsDone, 'lead', 'P:lead', ...old],
+      6: [...seatsDone, 'lead', 'P:lead', ...old],
+      7: [...seatsAbove, 'lead', 'X1:o', ...seatWork, 'P:lead', ...old],
+      8: [...seatsAbove, 'lead', 'MA:lead', 'X1:o', ...seatWork, 'P:lead', ...old],
+      9: [...seatsAbove, 'lead', ...merged, ...seatWork, 'P:lead', ...old],
+      10: [...seatsAbove, 'lead', 'D1:lead', ...merged, ...seatWork, 'P:lead', ...old],
+      11: ['lead', 'D1:lead', ...merged, 'B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a', 'P:lead', ...old],
+      12: ['lead', 'X2:o', 'D1:lead', ...merged, 'B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a', 'P:lead', ...old],
+    };
+    // The lines by identity, never by column: the lead's is its star's
+    // lane, a seat's the lane of its first commit's node (A1, B1, C1), or
+    // its star's before it has one.
+    const linesOf = (read) => {
+      const lane = (id) => read.rows.find((r) => r.id === id)?.lane ?? null;
+      return { lead: lane('lead'), a: lane('A1') ?? lane('seat-a'), b: lane('B1') ?? lane('seat-b'), c: lane('C1') ?? lane('seat-c') };
+    };
+    const ids = (read) => read.rows.map((r) => r.id);
+    const want = (n) => board[n].map((x) => x.split(':')[0]);
+    const offLine = (n, read, only = null) => {
+      const lines = linesOf(read);
+      return board[n].filter((x) => x.includes(':') && !x.endsWith(':o') && (only === null || only.includes(x.split(':')[0]))).filter((x) => {
+        const [id, line] = x.split(':');
+        return read.rows.find((r) => r.id === id)?.lane !== lines[line];
+      });
+    };
+    // Fix 944 (rules 1 to 4): F01 to F07 the board's rows in its order and
+    // every commit on the line the board names; F08 to F12 the fix-up and
+    // seat-b's commit on seat-b's line and the lead's row right above
+    // main's head on the lead's line.
+    const check944 = (n, read, head) => {
+      if (n <= 7) {
+        expect(ids(read).join(' ') === want(n).join(' '), `F${n}: the board's rows in its order (${ids(read).join(' ')}; want ${want(n).join(' ')})`);
+        const off = offLine(n, read);
+        expect(off.length === 0, `F${n}: every commit on the line the board names (off: ${off.join(', ')}; ${JSON.stringify(linesOf(read))} ${read.rows.map((r) => `${r.id}@${r.lane}`).join(' ')})`);
+        const lines = linesOf(read);
+        const strayStars = ['a', 'b', 'c'].filter((x) => read.rows.some((r) => r.id === `seat-${x}`) && read.rows.find((r) => r.id === `seat-${x}`).lane !== lines[x]);
+        expect(strayStars.length === 0, `F${n}: every seat's star on its own line, lifted or not (off: ${strayStars.join(', ')})`);
+        if (n === 2) expect(read.columns === '1', `F2: one column under active, the grey block drawing nothing (${read.columns})`);
+        if (n >= 3) expect(read.columns === '4', `F${n}: four columns, the lead's line and three seats' (${read.columns})`);
+      } else {
+        const off = offLine(n, read, ['B2', 'B1', 'P']);
+        expect(off.length === 0, `F${n}: the fix-up and seat-b's commit on seat-b's line, the plan commit on the lead's (off: ${off.join(', ')}; ${read.rows.map((r) => `${r.id}@${r.lane}`).join(' ')})`);
+      }
+      if (head !== null) {
+        const at = ids(read).indexOf(head);
+        expect(at > 0 && ids(read)[at - 1] === 'lead' && read.rows[at - 1].lane === linesOf(read).lead, `F${n}: the lead's row right above main's head ${head} on its own line (${ids(read).join(' ')})`);
+      }
+    };
+    // Fix 945 (rules 5, 6 and 8), every frame: a commit the board marks
+    // nobody's above the start commit (X1, X2) is a square on the lead's
+    // line in the lead's colour; D0 and the old commits below it draw no
+    // node under active; the start bar sits alone on D0's row on the
+    // lead's line; and no head bar anywhere.
+    const check945 = (n, read) => {
+      const lines = linesOf(read);
+      const row = (id) => read.rows.find((r) => r.id === id);
+      const leadFill = row('P')?.fill ?? null;
+      const squares = board[n].filter((x) => x === 'X1:o' || x === 'X2:o').map((x) => x.split(':')[0]);
+      const badSquares = squares.filter((id) => { const r = row(id); return r === undefined || r.tag !== 'rect' || !r.foreign || r.outside || r.lane !== lines.lead || (leadFill !== null && r.fill !== leadFill); });
+      expect(badSquares.length === 0, `F${n}: the commits nobody made above the start are squares on the lead's line in its colour (off: ${badSquares.join(', ')}; ${JSON.stringify(squares.map((id) => row(id)))})`);
+      const drawnOld = ['D0', 'Z2', 'Z1'].filter((id) => row(id)?.tag !== null);
+      expect(drawnOld.length === 0, `F${n}: the start commit and the commits below it draw no node under active (drawn: ${drawnOld.join(', ')})`);
+      const startBars = read.bars.filter((b) => b.kind === 'start' && b.session === lead.id);
+      const all = read.rows.map((r) => r.id);
+      const anchorRow = read.rows.findIndex((r) => r.cy !== null && r.cy !== undefined);
+      const d0Y = anchorRow === -1 ? null : read.rows[anchorRow].cy + (all.indexOf('D0') - anchorRow) * read.pitch;
+      expect(startBars.length === 1 && startBars[0].lane === lines.lead && (d0Y === null || Math.abs(startBars[0].y - d0Y) < 0.5), `F${n}: the lead's start bar alone at D0's row on its line (${JSON.stringify([startBars, d0Y, lines.lead])})`);
+      expect(read.heads === 0, `F${n}: no head bar (${read.heads})`);
+    };
+    // Fix 946 (rules 7, 9 and 10): F06 to F10 the seats resting; a merged
+    // seat that still exists has its star on a side lane right after its
+    // line (F08 seat-a, F09 and F10 all three), the lanes to its right
+    // moved over; after the sweep no member rows; from F08 the board's
+    // rows in its order; and at every frame no other line on a star's lane
+    // shares the rows of its own stretch, and the member lanes' tints are
+    // one to three in slot order, a side lane's stretch in its line's
+    // colour. (The plan's "each seat's tint the same as at F07" cannot
+    // hold: the walk reorders the seats' lanes at the first merge, today's
+    // order too, and the tint follows the slot.)
+    const check946 = (n, read) => {
+      const seatRows = read.rows.filter((r) => r.id.startsWith('seat-'));
+      const lines = linesOf(read);
+      if (n >= 6 && n <= 10) expect(seatRows.length === 3 && seatRows.every((r) => !r.working), `F${n}: the three seats drawn resting (${JSON.stringify(seatRows)})`);
+      if (n >= 8) expect(ids(read).join(' ') === want(n).join(' '), `F${n}: the board's rows in its order (${ids(read).join(' ')}; want ${want(n).join(' ')})`);
+      const besideWanted = n === 8 ? ['a'] : n === 9 || n === 10 ? ['a', 'b', 'c'] : [];
+      for (const x of ['a', 'b', 'c']) {
+        const r = read.rows.find((y) => y.id === `seat-${x}`);
+        if (r === undefined) continue;
+        if (besideWanted.includes(x)) {
+          expect(r.side && +r.lane === +lines[x] + 1, `F${n}: seat-${x}'s star on the side lane right after its line (${JSON.stringify([r, lines[x]])})`);
+          const fork = read.edges.filter((e) => e.lane === r.lane && e.session === r.session);
+          const first = read.rows.find((y) => y.id === `${x.toUpperCase()}1`);
+          expect(fork.length === 1 && fork[0].kind === 'fork' && fork[0].dashed && fork[0].side && fork[0].from === r.row && first !== undefined && fork[0].stroke === first.fill, `F${n}: seat-${x}'s side lane holds its dashed fork alone, in its line's colour (${JSON.stringify([fork, first?.fill])})`);
+        } else expect(!r.side && r.lane === lines[x], `F${n}: seat-${x}'s star on its own line (${JSON.stringify([r, lines[x]])})`);
+      }
+      if (n === 8) expect(read.columns === '5', `F8: five columns, seat-a's side lane added (${read.columns})`);
+      if (n === 9 || n === 10) expect(read.columns === '7', `F${n}: seven columns, three side lanes (${read.columns})`);
+      if (n >= 11) expect(seatRows.length === 0 && read.columns === '4', `F${n}: the seats gone with their worktrees have no rows, four columns (${JSON.stringify(seatRows)} ${read.columns})`);
+      // No line runs through a star: on each agent's lane, no line of its
+      // session but its own stretch shares the stretch's rows.
+      const crossed = [];
+      for (const r of read.rows.filter((y) => y.session !== undefined && y.lane !== null)) {
+        const onLane = read.edges.filter((e) => e.lane === r.lane && e.session === r.session);
+        const own = onLane.filter((e) => e.from === r.row);
+        if (own.length === 0) continue;
+        const hi = Math.max(...own.map((e) => e.to));
+        for (const e of onLane) {
+          if (own.includes(e)) continue;
+          if (Math.max(Math.min(e.from, e.to), r.row) < Math.min(Math.max(e.from, e.to), hi)) crossed.push(`${r.id} by ${e.kind} ${e.from}-${e.to}`);
+        }
+      }
+      expect(crossed.length === 0, `F${n}: no line runs through a star (${crossed.join(', ')})`);
+      const tints = ['A1', 'B1', 'C1'].map((id) => read.rows.find((y) => y.id === id)).filter((y) => y !== undefined && y.tint !== null);
+      if (tints.length === 3) {
+        const bySlot = [...tints].sort((p, q) => +p.lane - +q.lane).map((y) => y.tint).join(',');
+        expect(bySlot === '1,2,3', `F${n}: the seats' lines tinted one to three in slot order, no side lane counted (${JSON.stringify(tints.map((y) => [y.id, y.lane, y.tint]))})`);
+      }
+    };
+    const stage = async (n, slug, words, lastHash, head) => {
+      const read = await frame(n, slug, words, lastHash);
+      check944(n, read, head);
+      check945(n, read);
+      check946(n, read);
+      return read;
+    };
+
+    const f1 = await stage(1, 'lead-opens', "The lead opens in the main checkout on main, at D0, the last batch's docs commit.", null, null);
+    // Rule 3 on a session that binds a conversation: its row and its start
+    // bar on D0's row before any commit.
+    expect(f1.bars.some((b) => b.kind === 'start' && b.session === lead.id), `F1: the lead's start bar before any commit (${JSON.stringify(f1.bars)})`);
+    await clockBehindWall();
+    const P = await via(gitBt, btRepo, 'P', 'docs: plan fixes 918 to 943');
+    await stage(2, 'plan-commit', 'The lead writes the plan commit P on main.', P, 'P');
+    const seats = ['seat-a', 'seat-b', 'seat-c'];
+    const wts = {};
+    for (const seat of seats) {
+      const short = path.join(os.tmpdir(), 'emerald-verify', `m51-batch-${seat}-${process.pid}`);
+      fs.rmSync(short, { recursive: true, force: true });
+      gitBt('worktree', 'add', '-q', '-b', `m9-${seat}`, short, P);
+      wts[seat] = fs.realpathSync.native(short);
+      fixDirs.push(wts[seat]);
+      await post(lead.id, { cwd: btRepo, hook_event_name: 'SubagentStart', agent_id: seat, agent_type: 'fork' });
+      await post(lead.id, { cwd: btRepo, hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: seat, subagent_type: 'fork' }, tool_response: { agentId: seat, description: seat, status: 'async_launched' } });
+    }
+    await s.waitFor(`document.querySelectorAll('.files-rail .commits-agent-row[data-member]').length === 3`, 'three seat rows', 10000);
+    await stage(3, 'seats-forked', 'Three worktrees on m9-seat-a, -b and -c off P, one forked seat in each; nobody has committed yet.', null, 'P');
+    await via(gitIn(wts['seat-a']), wts['seat-a'], 'A1', 'fix 918: the corners', { member: 'seat-a' });
+    await via(gitIn(wts['seat-b']), wts['seat-b'], 'B1', 'fix 920: the compaction note', { member: 'seat-b' });
+    await via(gitIn(wts['seat-c']), wts['seat-c'], 'C1', 'fix 929: the tree keys', { member: 'seat-c' });
+    const A2 = await via(gitIn(wts['seat-a']), wts['seat-a'], 'A2', 'fix 919: the turn length', { member: 'seat-a' });
+    await stage(4, 'seats-commit', 'The seats commit their fixes in their worktrees: A1 and A2 on seat-a, B1 on seat-b, C1 on seat-c.', A2, 'P');
+    // F05: the lead's fix-up in seat-b's worktree. Claude Code reports the
+    // `cd` that sticks, so the PostToolUse carries seat-b's worktree as its
+    // folder and the lead's cwd and branch move there for the moment.
+    const B2 = await via(gitIn(wts['seat-b']), wts['seat-b'], 'B2', "fix 920: the lead's fix-up", { command: `cd '${wts['seat-b']}' && git commit -q -m "fix 920: the lead's fix-up"`, preCwd: btRepo, postCwd: wts['seat-b'] });
+    const norm = (p) => (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find(x => x.id === ${JSON.stringify(lead.id)}); return x?.branch === 'm9-seat-b'; })()`, "the lead's branch read in seat-b's worktree", 10000);
+    const moved = await leadRecord();
+    expect(norm(moved.cwd) === norm(wts['seat-b']) && moved.branch === 'm9-seat-b' && norm(moved.groupCwd) === norm(btRepo), `the lead's folder is seat-b's worktree for the moment, its group still the main checkout (${JSON.stringify([moved.cwd, moved.branch, moved.groupCwd])})`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready' && !!document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(B2)}`)})`, "the fix-up's node", 15000);
+    await stage(5, 'lead-commits-in-a-seat', "The lead itself commits B2 in seat-b's worktree with cd <worktree> && git commit; its folder moves there for the call and its star stays on main.", B2, 'P');
+    await post(lead.id, { cwd: btRepo, hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: path.join(btRepo, 'P.txt') } });
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find(x => x.id === ${JSON.stringify(lead.id)}); return x?.branch === 'main'; })()`, 'the lead back home on main', 10000);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.folder === ${JSON.stringify(btRepo)}`, 'the rail back on the main checkout', 10000);
+    for (const seat of seats) await post(lead.id, { cwd: btRepo, hook_event_name: 'SubagentStop', agent_id: seat, agent_type: 'fork' });
+    await s.waitFor(`document.querySelectorAll('.files-rail .commits-agent-node[data-member][data-working]').length === 0`, 'the seats at rest', 10000);
+    await stage(6, 'seats-done', 'The three seats report and stop; their worktrees and branches are still there.', null, 'P');
+    const X1 = named('X1', commitIn(gitBt, btRepo, 'X1', 'backlog: an entry from another session'));
+    await stage(7, 'commit-on-main-from-elsewhere', "Another session (or the person, by hand) commits X1 on main; main's head moves past where the lead last saw it.", X1, 'X1');
+    const MA = await merge('m9-seat-a', 'MA', 'Merge m9-seat-a');
+    await stage(8, 'first-merge', 'The lead merges m9-seat-a into main: MA.', MA, 'MA');
+    await merge('m9-seat-b', 'MB', 'Merge m9-seat-b');
+    const MC = await merge('m9-seat-c', 'MC', 'Merge m9-seat-c');
+    await stage(9, 'all-merged', 'The lead merges seat-b (with its own B2 in it) and seat-c: MB and MC.', MC, 'MC');
+    const D1 = await via(gitBt, btRepo, 'D1', 'docs: fixes 918 to 943 done');
+    await stage(10, 'docs-commit', 'The lead writes the docs commit D1 on main.', D1, 'D1');
+    for (const seat of seats) {
+      gitBt('worktree', 'remove', '--force', wts[seat]);
+      gitBt('branch', '-D', `m9-${seat}`);
+    }
+    await s.waitFor(`![...document.querySelectorAll('.files-rail .commits-pill')].some((p) => (p.dataset.branch ?? '').startsWith('m9-seat-'))`, "the seats' branches gone from the graph", 15000);
+    await stage(11, 'after-the-sweep', 'The sweep removes the three worktrees and deletes their branches.', null, 'D1');
+    const X2 = named('X2', commitIn(gitBt, btRepo, 'X2', 'backlog: a later entry by hand'));
+    await stage(12, 'next-commit-on-main', 'A later commit X2 on main by hand, the lead still open and idle.', X2, 'X2');
+    // Open question 2 (fix 945): under `all` the grey block draws the start
+    // commit and the old ones on the grey lane, as today, and the squares
+    // stay squares on the lead's line.
+    await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]').click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.draw === 'all' && !!document.querySelector(${JSON.stringify(`.files-rail ${nodeSel(Object.keys(names).find((h) => names[h] === 'D0'))}`)})`, 'the grey block drawn under all', 10000);
+    const fAll = await frame(12, 'next-commit-on-main-all', 'The same stage under the all chip: the grey block drawn.', null);
+    const rowAll = (id) => fAll.rows.find((r) => r.id === id);
+    const greyLanes = new Set(['D0', 'Z2', 'Z1'].map((id) => rowAll(id)?.lane));
+    expect(['D0', 'Z2', 'Z1'].every((id) => rowAll(id)?.outside === true) && greyLanes.size === 1 && !greyLanes.has(linesOf(fAll).lead), `under all the start commit and the old ones are grey nodes on the grey lane (${JSON.stringify(['D0', 'Z2', 'Z1'].map((id) => rowAll(id)))})`);
+    expect(['X1', 'X2'].every((id) => rowAll(id)?.tag === 'rect' && rowAll(id)?.foreign && rowAll(id)?.lane === linesOf(fAll).lead), `under all the squares stay squares on the lead's line (${JSON.stringify(['X1', 'X2'].map((id) => rowAll(id)))})`);
+    step("M9 fix 945: a commit made outside the session on its line is a square in the session's colour, the head bar is gone, the start bar stands alone on the start commit, and under active nothing draws below it");
+    step('M9 fix 946: the seats rest once they report, a merged seat that still exists has its star on a side lane beside its line so no line runs through a star, the lanes after it moved over and every tint kept, and the seats gone with their worktrees have no rows');
+    fs.writeFileSync(path.join(builtDir, 'frames.json'), JSON.stringify({ hashes: Object.fromEntries(Object.entries(names).map(([h, n]) => [n, h])), reads }, null, 1));
+    step("M9 fix 944: a session's line is its folder's branch: the lead's star stays over main's head while its folder is in a seat's worktree, the seats' stars sit over their branches' heads, the lead's fix-up draws on seat-b's line, and a commit on main from elsewhere leaves seat-b's work on seat-b's line (twelve frames in docs/design/graph-through-a-batch/built)");
+    await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]')?.click()`);
+    await s.evalJs(`localStorage.removeItem('emerald.files')`);
+    await removeSession(lead.id);
   });
 
   step(blocksRun());

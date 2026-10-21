@@ -623,6 +623,18 @@ try {
   await sleep(1000);
   const reloaded = await pageLevel();
   expect(reloaded === stepped, `a reload keeps the page's zoom (${stepped} then ${reloaded})`);
+  // M9 fix 966: a reload of the window keeps it too; main reads the level
+  // as the window starts to reload and gives it to the new guest.
+  await s.send('Page.reload');
+  await s.waitFor(`!!document.querySelector('.app-body')`, 'app after reload (966)');
+  await s.waitFor(`document.querySelector(${JSON.stringify(browserPane)})?.dataset.url === ${JSON.stringify(home)}`, 'the browser pane back on / (966)');
+  await s.waitFor(`document.querySelector(${JSON.stringify(browserPane + ' .pane-name')})?.textContent === 'Emerald fixture one'`, 'titled one again (966)', 15000);
+  await waitLog(`browser: pane ${zoomPane.slice(0, 8)} keeps zoom ${stepped} across the window's reload`, 'main read the page zoom as the window reloaded (fix 966)');
+  until = Date.now() + 10000;
+  while (!(await inPage('document.readyState === "complete"').catch(() => false)) && Date.now() < until) await sleep(100);
+  await sleep(1000);
+  const windowReloaded = await pageLevel();
+  expect(windowReloaded === stepped, `a reload of the window keeps the page's zoom (fix 966) (${stepped} then ${windowReloaded})`);
   const resetItem = () => s.evalJs(`(() => { const items = [...document.querySelectorAll('.pane-menu .menu-item')]; const at = items.findIndex((b) => b.querySelector('.menu-label')?.textContent === 'Reset page zoom'); if (at < 0) return null; const b = items[at]; return { before: items[at - 1]?.querySelector('.menu-label')?.textContent ?? null, disabled: b.disabled, title: b.title }; })()`);
   await titleMenu();
   const offItem = await resetItem();
@@ -637,7 +649,7 @@ try {
   expect(atItem !== null && atItem.disabled && atItem.title === 'Already at 100%', `Reset page zoom is disabled at the default with Already at 100% (${JSON.stringify(atItem)})`);
   await s.evalJs(`document.querySelector('.pane-menu') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await s.waitFor(`!document.querySelector('.pane-menu')`, 'the pane menu closed');
-  step("(k2) M9 fix 931: a Ctrl+wheel steps the page one level, a reload of the page keeps it, and the pane menu's Reset page zoom, after Focus, puts it back and is then disabled with Already at 100%");
+  step("(k2) M9 fixes 931 and 966: a Ctrl+wheel steps the page one level, a reload of the page and a reload of the window keep it, and the pane menu's Reset page zoom, after Focus, puts it back and is then disabled with Already at 100%");
 
   // (l) emmer open <host:port>.
   let r = await cliOpen(`127.0.0.1:${port}/two`);
@@ -805,8 +817,8 @@ try {
   await sleep(1500);
   expect((await guest.evalJs('location.href')) === home, 'the web page stayed on / (it cannot navigate into the disk)');
   const homeErrors = await stopWatch('__error933home');
-  console.log(`[933] the web page's refusal reached the home frame's error line: ${homeErrors.some((t) => t.includes('a web page cannot open a page from the disk'))}`);
-  console.log(`[896] the guard logged the local navigation: ${logText().includes('browser: navigation refused: emerald-file://')}`);
+  expect(homeErrors.some((t) => t.includes('a web page cannot open a page from the disk')), `the web page's refusal reached the home frame's error line, from main's guard (fix 967) (${JSON.stringify(homeErrors)})`);
+  await waitLog('browser: navigation refused: emerald-file://', 'the guard refused the local navigation (fix 896)');
   expect((await guest.evalJs(`fetch(${JSON.stringify(localUrl)}).then(() => 'read', () => 'refused')`)) === 'refused', 'the web page cannot fetch the local page');
   const dotUrl = `emerald-file://${rootId}/site/dot.png`;
   expect((await guest.evalJs(`new Promise((res) => { const i = new Image(); i.onload = () => res('loaded'); i.onerror = () => res('error'); i.src = ${JSON.stringify(dotUrl)}; })`)) === 'error', 'the web page cannot embed a local image');
@@ -891,6 +903,25 @@ try {
   const alone = aloneViews.find((v) => v.root === outside);
   expect(alone !== undefined && /^emerald-file:\/\/[0-9a-f-]{36}\/alone\.html$/.test(alone.url) && new URL(alone.url).host !== rootId, `a page outside the rail's folder on its own folder (${JSON.stringify(aloneViews)})`);
   step('(n3) M9 fix 936: emmer open page.html --browser renders the page in a browser pane on the rail\'s folder, and a page outside it on its own folder');
+
+  // (n4) M9 fix 967: once the local pane's history has dropped the page
+  // from the disk, a link back onto it is refused by main's guard, and the
+  // pane's error line says so from main's word rather than the renderer's
+  // guess, which still counted the page as shown.
+  const localTag = `.browser-frame[data-browser-pane=${JSON.stringify(localPaneId)}] webview`;
+  await localGesture(`document.getElementById('web').click()`);
+  await local.waitFor(`location.href === ${JSON.stringify(`${origin}/two`)}`, 'the local pane out on /two (967)');
+  await s.evalJs(`document.querySelector(${JSON.stringify(localTag)}).clearHistory()`);
+  await s.waitFor(`!document.querySelector(${JSON.stringify(localTag)}).canGoBack()`, "the local pane's history cleared");
+  const refusedBefore = logText().split(`browser: navigation refused: ${localUrl}`).length;
+  expect(await watchErrors(localPaneId, '__error967'), "the local pane's frame to watch (967)");
+  await localGesture(`location.href = ${JSON.stringify(localUrl)}`).catch(() => {});
+  await sleep(1500);
+  expect((await local.evalJs('location.href')) === `${origin}/two`, 'the page stayed on /two (main refused the page from the disk)');
+  const droppedErrors = await stopWatch('__error967');
+  expect(droppedErrors.some((t) => t === `This page tried to open ${localUrl}; a web page cannot open a page from the disk`), `the error line names a page from the disk the history dropped (fix 967) (${JSON.stringify(droppedErrors)})`);
+  expect(logText().split(`browser: navigation refused: ${localUrl}`).length === refusedBefore + 1, 'main logged the refusal once');
+  step('(n4) M9 fix 967: a link onto a page from the disk the history has dropped is refused by main, and the pane\'s error line says so');
 
   // Anything the window's console said about a renderer that failed to
   // start, for the report.

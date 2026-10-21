@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FileMade, FileRenamed, FileSaved, FileStamp, FileTrashed, TextFormat } from '../preload/api.ts';
+import type { FileClash, FileMade, FileRenamed, FileSaved, FilesMoved, FileStamp, FileTrashed, MoveMode, MoveOutcome, TextFormat } from '../preload/api.ts';
 
 // The file service's one write (M9 fix 248): the editor's text back onto
 // the file it came from. Kept apart from files.ts, which imports electron's
@@ -206,6 +206,174 @@ export async function trashEntry(p: string, trash: (target: string) => Promise<v
     log?.(`files-trash refused ${target}: ${err instanceof Error ? err.message : String(err)}`);
     return { ok: false, reason: 'refused' };
   }
+}
+
+// A drop from Explorer on the Files rail (M9 fix 953): every dropped
+// entry into one folder, moved or copied by Explorer's rule. Two passes
+// when a name is taken: the first (replace null) finds the clashes and
+// touches nothing, the second replaces the ones the person chose and
+// skips the rest. Each entry stands alone: one that fails is reported and
+// the rest still go, and nothing done is rolled back. A replaced entry
+// goes to the trasher first, so fix 617's no fs.rm holds for what was
+// there; a move across drives is a copy and then the source removed
+// outright, as Explorer's own is.
+export function sameVolume(a: string, b: string): boolean {
+  const ra = path.parse(path.resolve(a)).root;
+  const rb = path.parse(path.resolve(b)).root;
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+export function entryMode(mode: MoveMode, from: string, dir: string): 'move' | 'copy' {
+  if (mode !== 'auto') return mode;
+  return sameVolume(from, dir) ? 'move' : 'copy';
+}
+
+export interface MoveDeps {
+  trash: (target: string) => Promise<void>;
+  rename?: (from: string, to: string) => Promise<void>;
+  log?: (msg: string) => void;
+}
+
+// An entry the drop can act on, or the outcome that stops it before
+// anything is touched.
+type Planned = { src: string; to: string; kind: 'dir' | 'file' } | { outcome: MoveOutcome };
+
+const errCode = (err: unknown): string | undefined => (err as NodeJS.ErrnoException).code;
+
+export async function moveEntries(paths: readonly string[], dir: string, mode: MoveMode, replace: readonly string[] | null, deps: MoveDeps): Promise<FilesMoved> {
+  const win32 = process.platform === 'win32';
+  const same = (a: string, b: string) => (win32 ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const under = (child: string, parent: string) => {
+    const prefix = parent.endsWith(path.sep) ? parent : parent + path.sep;
+    return win32 ? child.toLowerCase().startsWith(prefix.toLowerCase()) : child.startsWith(prefix);
+  };
+  let into: string;
+  try {
+    into = path.resolve(requireAbsolute(dir));
+  } catch {
+    return { refused: 'Folder not found' };
+  }
+  try {
+    if (!(await fs.promises.stat(into)).isDirectory()) return { refused: 'Folder not found' };
+  } catch (err) {
+    return { refused: errCode(err) === 'ENOENT' ? 'Folder not found' : describeWrite(err) };
+  }
+  const rename = deps.rename ?? ((a: string, b: string) => fs.promises.rename(a, b));
+
+  const plan = async (p: string): Promise<Planned> => {
+    const to = path.join(into, path.basename(p));
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return { outcome: { from: p, to, result: 'refused', why: 'Not an absolute path' } };
+    const src = path.resolve(p);
+    const landing = path.join(into, path.basename(src));
+    if (path.parse(src).root === src) return { outcome: { from: src, to: landing, result: 'refused', why: 'A whole drive is not moved' } };
+    let st: fs.Stats;
+    try {
+      st = await fs.promises.lstat(src);
+    } catch (err) {
+      return { outcome: { from: src, to: landing, result: 'refused', why: errCode(err) === 'ENOENT' ? 'Not found' : describeWrite(err) } };
+    }
+    if (same(path.dirname(src), into)) return { outcome: { from: src, to: landing, result: 'here' } };
+    if (same(into, src) || under(into, src)) return { outcome: { from: src, to: landing, result: 'inside', why: 'A folder cannot go into itself' } };
+    return { src, to: landing, kind: st.isDirectory() ? 'dir' : 'file' };
+  };
+  const thereAt = async (to: string): Promise<'dir' | 'file' | null> => {
+    try {
+      return (await fs.promises.lstat(to)).isDirectory() ? 'dir' : 'file';
+    } catch {
+      return null;
+    }
+  };
+
+  const planned: Planned[] = [];
+  for (const p of paths) planned.push(await plan(p));
+
+  if (replace === null) {
+    const clashes: FileClash[] = [];
+    for (const e of planned) {
+      if ('outcome' in e) continue;
+      const there = await thereAt(e.to);
+      if (there !== null) clashes.push({ from: e.src, to: e.to, kind: e.kind, there });
+    }
+    if (clashes.length > 0) {
+      deps.log?.(`files-move into ${into} (${mode}): ${clashes.length} clashes, asking`);
+      return { clashes };
+    }
+  }
+  const chosen = replace ?? [];
+
+  const copyInto = async (src: string, to: string): Promise<unknown> => {
+    try {
+      await fs.promises.cp(src, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+      return null;
+    } catch (err) {
+      // The check before found nothing at `to`, so a partial copy is ours
+      // to take back; an exists code means someone else's entry is there.
+      const code = errCode(err);
+      if (code !== 'ERR_FS_CP_EEXIST' && code !== 'EEXIST') {
+        try {
+          await fs.promises.rm(to, { recursive: true, force: true });
+        } catch {
+          // Left as it is; the outcome says the copy was refused.
+        }
+      }
+      return err;
+    }
+  };
+
+  const done: MoveOutcome[] = [];
+  for (const e of planned) {
+    if ('outcome' in e) {
+      done.push(e.outcome);
+      continue;
+    }
+    const { src, to } = e;
+    let replaced = false;
+    if ((await thereAt(to)) !== null) {
+      if (!chosen.some((c) => path.isAbsolute(c) && same(path.resolve(c), src))) {
+        done.push({ from: src, to, result: 'skipped' });
+        continue;
+      }
+      try {
+        await deps.trash(to);
+      } catch {
+        done.push({ from: src, to, result: 'refused', why: 'What is there could not go to the recycle bin' });
+        continue;
+      }
+      replaced = true;
+    }
+    const extra = replaced ? { replaced: true as const } : {};
+    if (entryMode(mode, src, into) === 'copy') {
+      const err = await copyInto(src, to);
+      done.push(err === null ? { from: src, to, result: 'copied', ...extra } : { from: src, to, result: 'refused', ...extra, why: describeWrite(err) });
+      continue;
+    }
+    try {
+      await rename(src, to);
+      done.push({ from: src, to, result: 'moved', ...extra });
+    } catch (err) {
+      const code = errCode(err);
+      if (code === 'EXDEV') {
+        const copyErr = await copyInto(src, to);
+        if (copyErr !== null) {
+          done.push({ from: src, to, result: 'refused', ...extra, why: describeWrite(copyErr) });
+          continue;
+        }
+        try {
+          await fs.promises.rm(src, { recursive: true });
+          done.push({ from: src, to, result: 'moved', ...extra });
+        } catch (rmErr) {
+          done.push({ from: src, to, result: 'copied', ...extra, sourceKept: true, why: describeWrite(rmErr) });
+        }
+      } else if (code === 'EBUSY' || code === 'EPERM') {
+        done.push({ from: src, to, result: 'refused', ...extra, busy: true, why: describeWrite(err) });
+      } else {
+        done.push({ from: src, to, result: 'refused', ...extra, why: describeWrite(err) });
+      }
+    }
+  }
+  const words = done.map((o) => `${path.basename(o.from)} ${o.result}${o.replaced === true ? ' replaced' : ''}${o.sourceKept === true ? ' source kept' : ''}`);
+  deps.log?.(`files-move into ${into} (${mode}): ${words.join(', ')}`);
+  return { done };
 }
 
 // The trasher under a private EMERALD_HOME or EMERALD_OPEN_LOG (M9 fix

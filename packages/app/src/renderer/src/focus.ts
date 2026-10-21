@@ -18,16 +18,32 @@ export function focusTerminal(): void {
 // so a file opened beside from the row's menu or by a drag still takes the
 // keyboard. The rail clears the note on Enter and on a double click, which
 // hand the keyboard to the file, and when the tree loses the keyboard; the
-// file view clears it on a pick of its view.
+// file view clears it on a pick of its view. Delete on a row whose tab is in
+// front holds the tree for whatever comes to the front when the tab closes,
+// a file's view or the panes (M9 fix 950), as TREE_HOLD_ANY.
 let treeHold: string | null = null;
+const TREE_HOLD_ANY = '*';
+
+export function holdKeysInTreeOverClose(): void {
+  treeHold = TREE_HOLD_ANY;
+}
 
 export function holdKeysInTree(path: string | null): void {
   treeHold = path === null ? null : normalizePath(path);
 }
 
 export function treeKeepsKeys(path: string, el: Element | null): boolean {
-  if (treeHold === null || treeHold !== normalizePath(path)) return false;
+  if (treeHold === null || (treeHold !== TREE_HOLD_ANY && treeHold !== normalizePath(path))) return false;
   if ((el?.closest('.file-view[data-place="pane"]') ?? null) !== null) return false;
+  treeHold = null;
+  return document.activeElement?.classList.contains('files-list') === true;
+}
+
+// M9 fix 950: App's tab effect asks this before it puts the keyboard in the
+// terminal; a Delete on the tree that closed the tab in front keeps it on the
+// tree, once.
+export function treeKeepsKeysOnPanes(): boolean {
+  if (treeHold !== TREE_HOLD_ANY) return false;
   treeHold = null;
   return document.activeElement?.classList.contains('files-list') === true;
 }

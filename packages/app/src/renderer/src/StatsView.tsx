@@ -5,7 +5,7 @@ import { statsSupported } from './daemon-model.ts';
 import { folderName } from './files-model.ts';
 import { PLAN_KINDS, PLAN_PRICES, PLAN_PRICES_READ, paidOver, paidShare, paidText, paidTitle, planEntryText, withPlanEntry, withoutPlanEntry } from './plan-model.ts';
 import type { PlanKind } from './plan-model.ts';
-import { askDue, countAsk, keepAnswer, keptAnswer, noteAsk, onAnswer, statsCounts, statsSheet } from './stats-answer.ts';
+import { askDue, countAsk, keepAnswer, keepFailure, keptAnswer, keptFailure, noteAsk, onAnswer, statsCounts, statsSheet } from './stats-answer.ts';
 import type { StatsAnswer, StatsSheet } from './stats-answer.ts';
 import { STATS_OLD_TEXT, STATS_REFRESH_MS, countText, historyDay, monthName, spanDays, startsBeforeHistory, tokensText, usdText } from './stats-model.ts';
 import { useStore } from './store.ts';
@@ -30,18 +30,24 @@ export function StatsView({ path }: { path: string }) {
 // The answer to a folder and the ask for it: it starts on the kept answer,
 // so one draws at once however old; the first ask waits until the folder's
 // last ask, by any panel, is a minute old (M9 fix 942), and every panel on
-// the folder takes the answer the moment it is kept.
+// the folder takes the answer the moment it is kept. A failed ask is kept
+// beside the answer while the folder has none (M9 fix 964), so a panel with
+// nothing to draw shows it.
 function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | null; failed: string | null } {
   const [answer, setAnswer] = useState<StatsAnswer | null>(() => keptAnswer(folder));
-  const [failed, setFailed] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(() => keptFailure(folder));
   useEffect(() => {
     if (!live) return;
     let gone = false;
     let timer: ReturnType<typeof setTimeout>;
-    const off = onAnswer(folder, (a) => {
-      setAnswer(a);
-      setFailed(null);
-    });
+    const off = onAnswer(
+      folder,
+      (a) => {
+        setAnswer(a);
+        setFailed(null);
+      },
+      (message) => setFailed(message),
+    );
     const tick = () => {
       // Another panel on this folder asked under a minute ago (M9 fix 942):
       // its answer reaches this one through onAnswer, so wait for the minute
@@ -66,7 +72,12 @@ function useStatsAnswer(folder: string, live: boolean): { answer: StatsAnswer | 
           keepAnswer(folder, a);
         })
         .catch((err: unknown) => {
-          if (!gone) setFailed(err instanceof Error ? err.message : String(err));
+          // Kept for every panel on the folder with nothing to draw, this one
+          // included, mounted now or inside the minute (M9 fix 964); the panel
+          // that asked still shows it over an old answer, as before.
+          const message = err instanceof Error ? err.message : String(err);
+          keepFailure(folder, message);
+          if (!gone) setFailed(message);
         });
       timer = setTimeout(tick, STATS_REFRESH_MS);
     };

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultLayout } from '@emerald/shared';
-import type { SessionInfo } from '@emerald/shared';
+import type { Layout, SessionInfo } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { dismissCrash, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
+import { dismissCrash, editAllLayout, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
 import { aSession } from './test-support.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
@@ -209,4 +209,65 @@ test('whenSynced waits for the daemon and the layout, and gives up after its tim
   assert.equal(done, true);
   push({ type: 'daemon.disconnected' });
   await assert.rejects(whenSynced(30), /the daemon did not come up/);
+});
+
+// A daemon holding the layout at a revision, refusing a set on any other
+// as layout-store.ts does, or with `refuse` set refusing the next set
+// with that error and moving its revision by `moveBy` first.
+function stubLayoutDaemon(start: Layout): { sets: () => number; at: (layout: Layout) => void; refuse: (err: Error, moveBy: number) => void } {
+  let held = start;
+  let sets = 0;
+  let refusal: { err: Error; moveBy: number } | null = null;
+  const request = async (type: string, body: { layout?: Layout }) => {
+    if (type === 'layout.get') return { layout: held };
+    if (type === 'layout.set') {
+      sets += 1;
+      const sent = body.layout!;
+      if (refusal !== null) {
+        const { err, moveBy } = refusal;
+        refusal = null;
+        held = { ...held, revision: held.revision + moveBy };
+        throw err;
+      }
+      if (sent.revision !== held.revision) {
+        throw Object.assign(new Error(`layout edit was based on revision ${sent.revision} but the current revision is ${held.revision}`), { code: 'stale-revision' });
+      }
+      held = { ...sent, revision: held.revision + 1 };
+      return { layout: held };
+    }
+    return {};
+  };
+  (globalThis as { window?: unknown }).window = { emerald: { request } };
+  return {
+    sets: () => sets,
+    at: (layout) => (held = layout),
+    refuse: (err, moveBy) => (refusal = { err, moveBy }),
+  };
+}
+
+test('a layout edit that loses a race is read again and applied once more, and one refused otherwise is thrown (M9 fix 947)', async () => {
+  const start = { ...defaultLayout(), revision: 5 };
+  push({ type: 'layout.changed', layout: start });
+  // The daemon has taken a write the window has not heard of.
+  const daemon = stubLayoutDaemon({ ...start, revision: 6 });
+  const rename = (l: Layout): Layout => ({ ...l, tabs: l.tabs.map((t) => ({ ...t, name: 'renamed 947' })) });
+  const renamed = await editAllLayout(rename);
+  assert.ok(renamed.tabs.every((t) => t.name === 'renamed 947'));
+  assert.equal(daemon.sets(), 2, 'a set at 5 refused, then one at 6');
+
+  const before = daemon.sets();
+  const now = getState().allLayout!;
+  daemon.at(now);
+  daemon.refuse(new Error("Error invoking remote method 'emerald:request': Error: layout must be a layout"), 0);
+  await assert.rejects(editAllLayout((l) => ({ ...l, tabs: l.tabs.map((t) => ({ ...t, name: 'refused 947' })) })), /layout must be a layout/);
+  assert.equal(daemon.sets() - before, 1, 'a refusal with the revision unmoved is not tried again');
+});
+
+test("a refusal whose code the bridge dropped is retried when the daemon's revision moved past the one sent (M9 fix 947)", async () => {
+  const daemon = stubLayoutDaemon(getState().allLayout!);
+  const before = daemon.sets();
+  daemon.refuse(new Error('layout edit was based on revision 7 but the current revision is 8'), 1);
+  const done = await editAllLayout((l) => ({ ...l, tabs: l.tabs.map((t) => ({ ...t, name: 'retried 947' })) }));
+  assert.ok(done.tabs.every((t) => t.name === 'retried 947'));
+  assert.equal(daemon.sets() - before, 2);
 });

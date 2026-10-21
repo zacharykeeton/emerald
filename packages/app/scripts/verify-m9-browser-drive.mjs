@@ -7,10 +7,11 @@
 // with the pane's driven mark while they run. Then a target=_blank link
 // and a console error read in events with no window opened, a download
 // saved to the home's downloads folder with no dialog, upload on a file
-// input, a --profile b pane that does not see the default pane's cookie,
+// input, a hidden file input set by upload --selector, a --profile b pane that does not see the default pane's cookie,
 // and the person's click and key pausing the driver until emmer browser
-// resume and the Resume button. Uses a private home and pipe unless the
-// environment names them.
+// resume and the Resume button, and emmer browser close putting away the
+// pane this session opened while refusing another session's. Uses a
+// private home and pipe unless the environment names them.
 // Run: npm run verify:browser-drive -w @emerald/app
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -72,6 +73,7 @@ server = http.createServer((req, res) => {
         '<input id="tint" type="color" aria-label="Tint">',
         '<div id="rich" contenteditable="true" role="textbox" aria-label="Rich"></div>',
         '<a id="two" href="/two">Two</a>',
+        `<input id="hidden-up" type="file" hidden aria-label="Hidden import" onchange="this.dataset.changes = String(Number(this.dataset.changes || 0) + 1)">`,
       ].join('\n'),
     );
   } else if (pathname === '/two') page('Drive fixture two', '<p>two</p>');
@@ -140,9 +142,10 @@ for (const dir of ['downloads', 'screenshots']) fs.rmSync(path.join(homeDir, dir
 // process answers the page meanwhile, as the shell's own session.
 const cliMain = path.join(repoRoot, 'packages', 'cli', 'dist', 'main.js');
 let ownId = '';
-const cli = (...args) =>
+// As a session of the given id (M9 fix 969: another session's, or none).
+const cliAs = (id, ...args) =>
   new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliMain, 'browser', ...args], { env: { ...process.env, EMERALD_SESSION_ID: ownId }, windowsHide: true });
+    const child = spawn(process.execPath, [cliMain, 'browser', ...args], { env: { ...process.env, EMERALD_SESSION_ID: id }, windowsHide: true });
     // No input: a --stdin read through cli() meets the end at once rather than hanging to the watchdog.
     child.stdin.end();
     let out = '';
@@ -151,6 +154,7 @@ const cli = (...args) =>
     child.stderr.on('data', (d) => (err += d));
     child.on('close', (code) => resolve({ code, out: out.replace(/\r?\n$/, ''), err: err.replace(/\r?\n$/, '') }));
   });
+const cli = (...args) => cliAs(ownId, ...args);
 // The same with text piped to its stdin (M9 fix 854's --stdin).
 const cliIn = (input, ...args) =>
   new Promise((resolve) => {
@@ -163,6 +167,13 @@ const cliIn = (input, ...args) =>
     child.stdin.end(input);
   });
 const said = (r) => `${r.code}: ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`;
+// M9 fix 968: the row of a saved snapshot's lines that matches, and on a miss
+// those lines, never r.out, which every later command reassigns.
+const rowIn = (lines, re, where = '') => {
+  const line = lines.find((l) => re.test(l));
+  expect(line !== undefined, `a row matching ${re}${where === '' ? '' : ` ${where}`} (${lines.join('\n')})`);
+  return line;
+};
 
 const s = await launch(freshPort(), { freshState: true, env: { EMERALD_BROWSER_HOLD_MS: '4000' } });
 app = s;
@@ -233,11 +244,7 @@ try {
   const lines = r.out.split(/\r?\n/);
   expect(lines[0] === `page "Drive fixture" ${origin}/`, `the first line names the page (${lines[0]})`);
   expect(lines.includes('heading "Drive" level=1'), `the heading row (${r.out})`);
-  const refOf = (re) => {
-    const line = lines.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} (${r.out})`);
-    return line.split(' ')[0];
-  };
+  const refOf = (re) => rowIn(lines, re).split(' ')[0];
   let go = refOf(/^@e\d+ button "Go"$/);
   let nameRef = refOf(/^@e\d+ textbox "Name"$/);
   refOf(/^@e\d+ link "New tab"$/);
@@ -382,11 +389,7 @@ try {
   r = await cli('snapshot');
   expect(r.code === 0, `the snapshot with the menu open (${said(r)})`);
   const menuLines = r.out.split(/\r?\n/);
-  const menuRefOf = (re) => {
-    const line = menuLines.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} with the menu open (${r.out})`);
-    return line.split(' ')[0];
-  };
+  const menuRefOf = (re) => rowIn(menuLines, re, 'with the menu open').split(' ')[0];
   const itemRef = menuRefOf(/^@e\d+ button "Item"$/);
   const gateRef = menuRefOf(/^@e\d+ button "Gate"$/);
   r = await cli('click', itemRef);
@@ -437,6 +440,22 @@ try {
   expect(r.code === 1 && r.err === `emmer: ${go} is not a file input`, `upload on a button (${said(r)})`);
   step('M9 fix 673: upload sets a file input and refuses a button');
 
+  // (k1) M9 fix 970: a hidden file input has no ref in (h)'s snapshot, and
+  // upload --selector sets it by CSS.
+  expect(!lines.some((l) => l.includes('"Hidden import"')), `the hidden input has no row in the snapshot (${lines.join('\n')})`);
+  r = await cli('upload', '--selector', '#hidden-up', file);
+  expect(r.code === 0 && r.out === `set #hidden-up to ${file}`, `upload --selector (${said(r)})`);
+  expect((await inGuest(g1, `document.getElementById('hidden-up').files[0]?.name`)) === 'upload-me.txt', 'the hidden input holds the file');
+  const hiddenChanges = await inGuest(g1, `document.getElementById('hidden-up').dataset.changes ?? null`);
+  console.log(`[970] change events on the hidden input: ${hiddenChanges}`);
+  expect(hiddenChanges === '1', `one change event on the hidden input (${hiddenChanges})`);
+  r = await cli('upload', '--selector', '#nothing-here', file);
+  expect(r.code === 1 && r.err === 'emmer: no element matches #nothing-here', `upload --selector with no match (${said(r)})`);
+  r = await cli('upload', '--selector', '#go', file);
+  expect(r.code === 1 && r.err === 'emmer: #go is not a file input', `upload --selector on a button (${said(r)})`);
+  expect(await activeIsShell(), 'the window keeps the shell textarea focused after upload --selector');
+  step('M9 fix 970: upload --selector sets a hidden file input the snapshot does not list, and refuses a selector with no match and one on a button');
+
   // (k2) M9 fix 874: drag on the /drag page's list, onto a row's ref and
   // then by dx,dy; the move count and span are logged, not expected, since
   // a coalesced move still reorders the rows.
@@ -446,11 +465,7 @@ try {
   expect(r.code === 0, `the snapshot of /drag (${said(r)})`);
   console.log(`[874] the snapshot of /drag:\n${r.out}`);
   const dragLines = r.out.split(/\r?\n/);
-  const dragRefOf = (re) => {
-    const line = dragLines.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} on /drag (${r.out})`);
-    return line.split(' ')[0];
-  };
+  const dragRefOf = (re) => rowIn(dragLines, re, 'on /drag').split(' ')[0];
   const rowA = dragRefOf(/^@e\d+ button "Step A"$/);
   const rowC = dragRefOf(/^@e\d+ button "Step C"$/);
   const order = () => inGuest(g1, "[...document.querySelectorAll('#steps li')].map((li) => li.textContent).join(',')");
@@ -512,11 +527,7 @@ try {
   expect(r.code === 0, `the whole snapshot of /drag (${said(r)})`);
   console.log(`[875] the whole snapshot:\n${r.out}`);
   const whole = r.out.split(/\r?\n/);
-  const wholeLine = (re) => {
-    const line = whole.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} in the whole snapshot (${r.out})`);
-    return line;
-  };
+  const wholeLine = (re) => rowIn(whole, re, 'in the whole snapshot');
   const dialogLine = wholeLine(/^@r\d+ dialog "Edit step" \(3 rows\)$/);
   const dialogRef = dialogLine.split(' ')[0];
   const saveDraftLine = wholeLine(/^@e\d+ button "Save draft"$/);
@@ -641,11 +652,7 @@ try {
   r = await cli('--pane', driven.id, 'snapshot');
   expect(r.code === 0, `the snapshot for the blur menu (${said(r)})`);
   const blurLines = r.out.split(/\r?\n/);
-  const blurRefOf = (re, from = blurLines) => {
-    const line = from.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} (${from.join('\n')})`);
-    return line.split(' ')[0];
-  };
+  const blurRefOf = (re) => rowIn(blurLines, re).split(' ')[0];
   const bmenuRef = blurRefOf(/^@e\d+ button "Blur menu"$/);
   const heldNameRef = blurRefOf(/^@e\d+ textbox "Name"$/);
   const shellBoxO = await s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(shellPane.id)}] .term-host').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -710,8 +717,7 @@ try {
   expect(r.code === 0, `the snapshot for the fill targets (${said(r)})`);
   const fillLines = r.out.split(/\r?\n/);
   const rowOf = (re) => {
-    const line = fillLines.find((l) => re.test(l));
-    expect(line !== undefined, `a row matching ${re} (${r.out})`);
+    const line = rowIn(fillLines, re);
     return { ref: line.split(' ')[0], role: line.split(' ')[1] };
   };
   const car = rowOf(/^@e\d+ \S+ "Car"( |$)/);
@@ -789,6 +795,30 @@ try {
   expect(afterLink?.profile === 'b', `the record keeps profile b across the link (${JSON.stringify(afterLink)})`);
   await s.waitFor(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(second.id)}] .browser-profile`)})?.textContent === 'profile b'`, 'the profile mark after the link');
   step('M9 fix 878: a --profile b pane keeps profile b across a link it follows (fix 839)');
+
+  // (r) M9 fix 969: both browser panes were opened by this shell's cli(),
+  // at (a) and (l), so both views carry its id after every navigation
+  // since; close refuses a caller outside emerald and another session,
+  // and puts away the driven pane for this one.
+  const opened = await browserPanes();
+  expect(opened.length === 2 && opened.every((p) => p.view.openedBy === ownId), `both browser views carry this session's id (${JSON.stringify(opened.map((p) => p.view))})`);
+  r = await cliAs('', '--pane', second.id, 'close');
+  expect(r.code === 1 && r.err === 'emmer: close is for the session that opened the pane', `close from outside emerald is refused (${said(r)})`);
+  r = await cliAs('00000000-0000-4000-8000-000000000969', '--pane', second.id, 'close');
+  expect(r.code === 1 && r.err === `emmer: pane ${second.id.slice(0, 8)} was not opened by this session; the person closes it`, `close from another session is refused (${said(r)})`);
+  expect((await browserPanes()).length === 2, 'both browser panes are still there after the two refusals');
+  r = await cli('--pane', driven.id, 'close');
+  expect(r.code === 0 && new RegExp(`^closed pane ${driven.id.slice(0, 8)} on tab .+$`).test(r.out), `close the pane this session opened (${said(r)})`);
+  const deadlineR = Date.now() + 5000;
+  let left = await browserPanes();
+  while (!(left.length === 1 && left[0].id === second.id) && Date.now() < deadlineR) {
+    await sleep(100);
+    left = await browserPanes();
+  }
+  expect(left.length === 1 && left[0].id === second.id, `the profile b pane alone is left (${JSON.stringify(left.map((p) => p.id))})`);
+  console.log(`[969] guests after the close: ${(await guestTargets()).length}`);
+  console.log(`[969] the shell keeps the keyboard after the close: ${await activeIsShell()}`);
+  step("M9 fix 969: emmer browser close puts away the pane this session opened, and refuses one from outside emerald and another session's");
 
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[672] window console: ${line}`);
   step('PASS');

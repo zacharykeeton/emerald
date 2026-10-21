@@ -354,19 +354,23 @@ async function applyEdit(fn: (layout: Layout) => Layout, whole: boolean): Promis
     }
     const next = fn(base);
     if (next === base) return base;
+    const id = state.windowId ?? FIRST_WINDOW_ID;
+    const merged = whole ? setFrontWindow(claimLooseTabs(next, id), id) : mergeWindowView(state.allLayout ?? next, next, state.windowId);
     try {
       // The push carries the same layout, but the reply is what this edit
       // awaited on, so apply it here too and the next queued edit sees it.
-      const id = state.windowId ?? FIRST_WINDOW_ID;
-      const merged = whole ? setFrontWindow(claimLooseTabs(next, id), id) : mergeWindowView(state.allLayout ?? next, next, state.windowId);
       const reply = await window.emerald.request('layout.set', { layout: layoutForWire(merged, state.daemon) });
       const patch = layoutPatch(normalizeLayout(reply.layout));
       if (state.allLayout === null || patch.allLayout!.revision > state.allLayout.revision) setState(patch);
       return whole ? patch.allLayout! : patch.layout!;
     } catch (err) {
-      if ((err as { code?: string }).code !== 'stale-revision') throw err;
       const { layout } = await window.emerald.request('layout.get', {});
+      // The bridge drops an Error's code (M9 fix 947's probe), so a set is
+      // stale when the daemon's revision moved past the one sent; a refusal
+      // for any other reason leaves the revision where it was and is thrown.
+      if ((err as { code?: string }).code !== 'stale-revision' && layout.revision === merged.revision) throw err;
       setState(layoutPatch(normalizeLayout(layout)));
+      console.warn('[emerald] layout edit lost a race to another write; read the layout again and applied it once more');
     }
   }
   throw new Error('layout edit lost to another client twice');

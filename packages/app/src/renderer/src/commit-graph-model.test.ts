@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HISTORY_PREFIX, PERSON_PREFIX, REMOTE_PREFIX, agentLabel, agentRole, commitsTheBarSitsBelow, historyIdOf, holdGraph, laneAgents, laneSessions, memberTint, personNameOf, remoteBranchOf, remoteIdsByRecord, remoteOnlyCommits, sessionGraph, spanIdOf, spanIds, spanSessions, underFolder } from './commit-graph-model.ts';
-import type { CommitItem, GraphSession } from './commit-graph-model.ts';
+import { HISTORY_PREFIX, PERSON_PREFIX, REMOTE_PREFIX, agentLabel, agentRole, blockKey, commitsTheBarSitsBelow, historyIdOf, holdGraph, homeBranchOf, laneAgents, laneSessions, memberTint, personNameOf, remoteBranchOf, remoteIdsByRecord, remoteOnlyCommits, sessionGraph, spanIdOf, spanIds, spanSessions, underFolder } from './commit-graph-model.ts';
+import type { AgentItem, CommitItem, GraphSession } from './commit-graph-model.ts';
 import type { GraphCommit, HistoryTranscript } from '../../preload/api.ts';
 import { COLOR_FLOOR, SESSION_COLORS, colorDistance, colorForKey, farthestSessionColor, hueOf, oklabOf } from '@emerald/shared';
 import type { TeamMember } from '@emerald/shared';
@@ -25,8 +25,9 @@ const claim = (hashes: string[]) => hashes.map((hash) => ({ hash, at: 1 }));
 
 // The rows as text: an agent row is its member id with the lane (~ for
 // a commit-less worktree), a commit row its hash with the lane; the
-// lines as kind, lane and rows (b for the bottom, ~ for dashed).
-const picture = (g: ReturnType<typeof sessionGraph>) => g.items.map((it) => (it.kind === 'agent' ? `${it.member?.id ?? `own:${it.sessionId}`}${it.pending ? '~' : ''}${it.startRow !== null ? '^' : ''}@${it.lane}` : `${it.commit.hash}@${it.lane}`));
+// lines as kind, lane and rows (b for the bottom, ~ for dashed). A square
+// (M9 fix 945) has # after its hash.
+const picture = (g: ReturnType<typeof sessionGraph>) => g.items.map((it) => (it.kind === 'agent' ? `${it.member?.id ?? `own:${it.sessionId}`}${it.pending ? '~' : ''}${it.startRow !== null ? '^' : ''}@${it.lane}` : `${it.commit.hash}${it.foreign === true ? '#' : ''}@${it.lane}`));
 const dotsOf = (g: ReturnType<typeof sessionGraph>) => g.dots.map((d) => `${d.sessionId}@${d.lane}:${d.row}`);
 const wires = (g: ReturnType<typeof sessionGraph>) => g.lines.map((l) => `${l.kind}:${l.lane}:${l.fromRow}-${l.toRow === 'bottom' ? 'b' : l.toRow}${l.toLane === null ? '' : `>${l.toLane}`}${l.dashed ? '~' : ''}`);
 
@@ -353,15 +354,17 @@ test("sessionGraph (M9 fix 117): a session's line runs down to the commit it sta
   const commits = [c('s2', ['main'], null, ['s1']), c('s1', [], null, ['x']), c('x', [], null, ['m2']), c('m2', [], null, ['m1']), c('m1')];
   const started = claude({ id: 's', createdAt: 5, commits: claim(['s2', 's1']), startHead: 'm2' });
   const g = sessionGraph(commits, [started], 'graph', ROOTS);
-  assert.deepEqual(picture(g), ['own:s@0', 's2@0', 's1@0', 'x@1', 'm2@1', 'm1@1']);
-  assert.deepEqual(wires(g), ['session:0:1-4', 'pending:0:0-1~', 'outside:1:3-5'], 'the line runs from s2 past s1 to the start row, solid');
+  // x, nobody's, sits on s's line above its start commit, so it is s's
+  // square (M9 fix 945).
+  assert.deepEqual(picture(g), ['own:s@0', 's2@0', 's1@0', 'x#@0', 'm2@1', 'm1@1']);
+  assert.deepEqual(wires(g), ['session:0:1-4', 'pending:0:0-1~', 'outside:1:4-5'], 'the line runs from s2 past s1 and the square x to the start row, solid');
   assert.deepEqual(dotsOf(g), ['s@0:4'], "a mark on the session's lane at m2's row");
   assert.deepEqual(g.dots.map((d) => d.shape), ['bar'], 'the start is a bar (M9 fix 145)');
   const own = g.items[0]!;
   assert.ok(own.kind === 'agent' && own.member === null && own.tipRow === 1 && own.startRow === null, 'the own row is still the tip kind above s2');
   // The same in the list: one lane per session, the same stretch and dot.
   const l = sessionGraph(commits, [started], 'list', ROOTS);
-  assert.deepEqual(wires(l), ['session:0:1-4', 'pending:0:0-1~', 'outside:1:3-5'], 'the list line reaches the start row too, dashed above the newest commit (M9 fix 118)');
+  assert.deepEqual(wires(l), ['session:0:1-4', 'pending:0:0-1~', 'outside:1:4-5'], 'the list line reaches the start row too, dashed above the newest commit (M9 fix 118)');
   assert.deepEqual(dotsOf(l), ['s@0:4']);
   // A start commit the log no longer holds: the line stops at s1 as before.
   const older = claude({ id: 's', createdAt: 5, commits: claim(['s2', 's1']), startHead: 'zz' });
@@ -371,23 +374,23 @@ test("sessionGraph (M9 fix 117): a session's line runs down to the commit it sta
   const legacy = claude({ id: 's', createdAt: 5, commits: claim(['s2', 's1']) });
   assert.deepEqual(wires(sessionGraph(commits, [legacy], 'graph', ROOTS)), ['session:0:1-2', 'pending:0:0-1~', 'outside:1:3-5']);
   // A start above the oldest own commit (a rebase put the commits under
-  // it) draws nothing more.
+  // it) draws no start bar. main's head s2, nobody's, sits on the line
+  // above that start, so it is the session's square (M9 fix 945) and the
+  // line runs from it; no head bar.
   const rebased = claude({ id: 's', createdAt: 5, commits: claim(['x', 'm2']), startHead: 's1' });
   const gr = sessionGraph(commits, [rebased], 'graph', ROOTS);
-  assert.deepEqual(wires(gr).filter((w) => w.startsWith('session')), ['session:0:3-4'], 'x to m2 only');
-  // No start bar; the bar there is the head bar under the row (M9 fix
-  // 151), since main's head s2 is nobody's here.
-  assert.deepEqual(gr.dots.map((d) => `${d.kind}:${d.row}`), ['head:1']);
+  assert.deepEqual(wires(gr).filter((w) => w.startsWith('session')), ['session:0:1-4'], 's2 to m2');
+  assert.deepEqual(gr.dots.map((d) => `${d.kind}:${d.row}`), []);
   // A session with no commit yet keeps its start bar on its start
-  // commit, not on the tip its branch has moved to since; its row sits
-  // over that tip (M9 fix 151), with a head bar there and the stretch
-  // running on down to the start bar, solid under the head bar (M9 fix
-  // 176: dashed is the air above the head, and under it has landed).
+  // commit, not on the tip its branch has moved to since. Every commit on
+  // main above that start is nobody's, so they are its squares (M9 fix
+  // 945): its row sits over the newest as over a commit of its own, and
+  // its line runs down through them to the start bar.
   const fresh = claude({ id: 'f', createdAt: 5, startHead: 'm2' });
   const gf = sessionGraph(commits, [fresh], 'graph', ROOTS);
-  assert.deepEqual(picture(gf), ['own:f^@0', 's2@1', 's1@1', 'x@1', 'm2@1', 'm1@1']);
-  assert.deepEqual(wires(gf), ['pending:0:0-1~', 'start:0:1-4', 'outside:1:1-5']);
-  assert.deepEqual(gf.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['head:0:1', 'start:0:4']);
+  assert.deepEqual(picture(gf), ['own:f@0', 's2#@0', 's1#@0', 'x#@0', 'm2@1', 'm1@1']);
+  assert.deepEqual(wires(gf), ['session:0:1-4', 'pending:0:0-1~', 'outside:1:4-5']);
+  assert.deepEqual(gf.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['start:0:4']);
 });
 
 test('sessionGraph (M68): a session in another repository has no block, agents out or not; a removed or exited session keeps its lane by its commits alone', () => {
@@ -442,8 +445,10 @@ test('sessionGraph (M68): inside a block the lanes follow the parents: a merged 
   const mine = [c('S', ['main'], null, ['M2', 'w2']), c('w2', ['wt'], null, ['w1']), c('w1', [], null, ['M2']), c('M2')];
   const parent = session({ id: 'p', commits: claim(['S', 'w2', 'w1']), team: [member({ id: 'a1', branch: 'wt', commits: claim(['w1', 'w2']) })] });
   const g4 = sessionGraph(mine, [parent], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g4), ['S@0', 'a1@1', 'w2@1', 'w1@1', 'M2@2']);
-  assert.deepEqual(wires(g4), ['merge:1:2-0>0', 'worktree:1:2-3', 'branch:1:3-4>0', 'session:0:0-4', 'pending:1:1-2~'], "the worktree curves up into the session's merge commit and down into the session's line at M2's row, which the line reaches (M9 fix 145); no merge-back is promised for a merged branch");
+  // a1's row sits under S, on the merge line coming up its lane to S, so
+  // its star takes a side lane beside the line (M9 fix 946, rule 10).
+  assert.deepEqual(picture(g4), ['S@0', 'a1@2', 'w2@1', 'w1@1', 'M2@3']);
+  assert.deepEqual(wires(g4), ['merge:1:2-0>0', 'worktree:1:2-3', 'branch:1:3-4>0', 'session:0:0-4', 'fork:2:1-2>1~'], "the worktree curves up into the session's merge commit and down into the session's line at M2's row, which the line reaches (M9 fix 145); no merge-back is promised for a merged branch; a1's star forks down beside it into w2");
   assert.deepEqual(dotsOf(g4), [], 'no bar: the fork point is on the line');
   // With main's tip a session's, the grey trunk is main's history below
   // it (the first grey commit down the tip's first parents), not the
@@ -471,11 +476,13 @@ test("sessionGraph (M9 fix 131): a member's commit on top of the session's own, 
   assert.ok(own.kind === 'agent' && own.member === null && own.lane === 0 && own.tipRow === 5, 'the own row is the tip row above o1 on the trunk');
   assert.deepEqual(g.lanes.map((l) => `${l.slot}:${l.memberId}`), ['0:null', '1:a2', '2:a3', '3:a1']);
   // The same with an own commit above the member's: the trunk is taken
-  // by then, so the picture is M68's, unchanged.
+  // by then, so the lanes are M68's; the member's head is older than
+  // main's, so its row is lifted above the session's own (M9 fix 944, the
+  // seats stack above main's row), its stretch down its own lane to w1.
   const above = [c('o2', ['main'], null, ['o1']), c('w1', ['wt'], null, ['o1']), c('o1', [], null, ['o0']), c('o0')];
   const g2 = sessionGraph(above, [claude({ id: 'p', createdAt: 5, commits: claim(['o2', 'o1', 'o0']), team: [member({ id: 'a1', branch: 'wt', commits: claim(['w1']) })] })], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g2), ['own:p@0', 'o2@0', 'a1@1', 'w1@1', 'o1@0', 'o0@0']);
-  assert.deepEqual(wires(g2), ['branch:1:3-4>0', 'session:0:1-5', 'pending:0:0-1~', 'pending:1:2-3~']);
+  assert.deepEqual(picture(g2), ['a1@1', 'own:p@0', 'o2@0', 'w1@1', 'o1@0', 'o0@0']);
+  assert.deepEqual(wires(g2), ['branch:1:3-4>0', 'session:0:2-5', 'pending:0:1-2~', 'pending:1:0-3~']);
   // A lane a merge reserved for its second parent holds: the merge
   // commit's first parent is in another block, so the trunk waits under
   // it, and the merged branch keeps its side lane and the merge curve
@@ -500,12 +507,16 @@ test("sessionGraph (M9 fix 151): the session's row sits over the head of its bra
   const ff = [c('D', ['main', 'fb'], null, ['W2']), c('W2', [], null, ['W1', 'M']), c('W1', [], null, ['P']), c('M', [], null, ['P', 'X']), c('X', ['x'], null, ['P']), c('P', [], null, ['Z']), c('Z')];
   const s = claude({ id: 's', createdAt: 5, commits: claim(['P', 'M']), startHead: 'Z', team: [member({ id: 'a', branch: 'fb', startedAt: 1, commits: claim(['W1', 'W2', 'D']) }), member({ id: 'b', branch: 'x', startedAt: 2, commits: claim(['X']) })] });
   const g = sessionGraph(ff, [s], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g), ['own:s@0', 'a@1', 'D@1', 'W2@1', 'W1@1', 'M@2', 'b@3', 'X@3', 'P@0', 'Z@4'], "the star at the top over D, the session's own merge M on a side lane");
-  assert.deepEqual(wires(g), ['worktree:1:2-3', 'worktree:1:3-4', 'merge:2:5-3>1', 'branch:1:4-8>0', 'branch:2:5-8>0', 'merge:3:7-5>2', 'branch:3:7-8>0', 'session:0:8-9', 'pending:0:0-2>1~', 'pending:1:1-2~', 'pending:3:6-7~'], "the star's stretch bends into lane 1 onto D");
+  // b's head X is older than D, so b's row is lifted above the session's
+  // own (M9 fix 944, the seats stack above main's row); X is merged at M,
+  // whose merge line comes up b's lane, so b's star takes the side lane
+  // beside it and forks down into X (M9 fix 946, rule 10).
+  assert.deepEqual(picture(g), ['b@4', 'own:s@0', 'a@1', 'D@1', 'W2@1', 'W1@1', 'M@2', 'X@3', 'P@0', 'Z@5'], "the star over D, b lifted above it beside its line, the session's own merge M on a side lane");
+  assert.deepEqual(wires(g), ['worktree:1:3-4', 'worktree:1:4-5', 'merge:2:6-4>1', 'branch:1:5-8>0', 'branch:2:6-8>0', 'merge:3:7-6>2', 'branch:3:7-8>0', 'session:0:8-9', 'pending:0:1-3>1~', 'pending:1:2-3~', 'fork:4:0-7>3~'], "the star's stretch bends into lane 1 onto D");
   assert.deepEqual(dotsOf(g), ['s@0:9'], 'the start bar alone');
-  const own = g.items[0]!;
-  assert.ok(own.kind === 'agent' && own.member === null && own.tipRow === 2 && own.tipLane === 1 && own.restRow === null, "the own row's tip is D's row on lane 1");
-  // The list: one lane, the same rows, the stretch straight.
+  const own = g.items[1]!;
+  assert.ok(own.kind === 'agent' && own.member === null && own.tipRow === 3 && own.tipLane === 1 && own.restRow === null, "the own row's tip is D's row on lane 1");
+  // The list: one lane, the stretch straight, no member lifted.
   assert.deepEqual(wires(sessionGraph(ff, [s], 'list', ROOTS, 'main')), ['session:0:2-9', 'pending:0:0-2~', 'pending:0:1-2~']);
   // The head is the session's own newest commit: as before.
   const own2 = [c('S2', ['main'], null, ['S1']), c('S1', [], null, ['Z']), c('Z')];
@@ -513,47 +524,47 @@ test("sessionGraph (M9 fix 151): the session's row sits over the head of its bra
   assert.deepEqual(picture(g2), ['own:s@0', 'S2@0', 'S1@0', 'Z@1']);
   assert.deepEqual(wires(g2), ['session:0:1-3', 'pending:0:0-1~']);
   assert.deepEqual(g.dots.map((d) => d.kind), ['start']);
-  // Someone else's commit O on main over the session's: the star sits
-  // over O, its stretch ends under a head bar on the session's lane at
-  // O's row and goes on down to S2, solid from the bar (M9 fix 176),
-  // the line below unchanged.
+  // Someone else's commit O on main over the session's, nobody's here:
+  // it is the session's square (M9 fix 945), its line running through it
+  // in its colour, the star right above it, no head bar.
   const other = [c('O', ['main'], null, ['S2']), c('S2', [], null, ['S1']), c('S1', [], null, ['Z']), c('Z')];
   const sOther = claude({ id: 's', createdAt: 5, commits: claim(['S2', 'S1']), startHead: 'Z' });
   const g3 = sessionGraph(other, [sOther], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g3), ['own:s@0', 'O@1', 'S2@0', 'S1@0', 'Z@1']);
-  assert.deepEqual(wires(g3), ['session:0:2-4', 'pending:0:0-1~', 'pending:0:1-2', 'outside:1:1-4'], "the stretch to O's row, then on to S2 solid");
-  assert.deepEqual(g3.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['head:0:1', 'start:0:4'], "a head bar at O's row, the start bar at Z's");
-  // A member with no branch forks into the head bar's row (M9 fix 150).
+  assert.deepEqual(picture(g3), ['own:s@0', 'O#@0', 'S2@0', 'S1@0', 'Z@1']);
+  assert.deepEqual(wires(g3), ['session:0:1-4', 'pending:0:0-1~'], 'the line from the square O down to the start row');
+  assert.deepEqual(g3.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['start:0:4'], "the start bar at Z's row alone");
+  // A member with no branch forks into the square's row (M9 fix 150).
   const g4 = sessionGraph(other, [{ ...sOther, team: [member({ id: 'e' })] }], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g4), ['e~@1', 'own:s@0', 'O@2', 'S2@0', 'S1@0', 'Z@2']);
-  assert.deepEqual(wires(g4), ['session:0:3-5', 'pending:0:1-2~', 'pending:0:2-3', 'fork:1:0-2>0~', 'outside:2:2-5']);
+  assert.deepEqual(picture(g4), ['e~@1', 'own:s@0', 'O#@0', 'S2@0', 'S1@0', 'Z@2']);
+  assert.deepEqual(wires(g4), ['session:0:2-5', 'pending:0:1-2~', 'fork:1:0-2>0~']);
   // No branch (a detached checkout): the newest own commit anchors, as before.
   const g5 = sessionGraph(other, [{ ...sOther, branch: null }], 'graph', ROOTS, 'main');
   assert.deepEqual(picture(g5), ['O@1', 'own:s@0', 'S2@0', 'S1@0', 'Z@1']);
   assert.deepEqual(wires(g5), ['session:0:2-4', 'pending:0:1-2~', 'outside:1:0-4']);
   assert.deepEqual(g5.dots.map((d) => d.kind), ['start']);
-  // A session with no commit whose start is under someone else's O: the
-  // star over O, the head bar, and the start stretch on down to the
-  // start bar, one lane in one piece; with O its start, as before.
+  // A session with no commit whose start is under someone else's O: O is
+  // its square (M9 fix 945), the star over it and the line on down to
+  // the start bar, one lane in one piece; with O its start, as before.
   const fresh = [c('O', ['main'], null, ['Z']), c('Z')];
   const g6 = sessionGraph(fresh, [claude({ id: 'f', createdAt: 5, startHead: 'Z' })], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g6), ['own:f^@0', 'O@1', 'Z@1']);
-  assert.deepEqual(wires(g6), ['pending:0:0-1~', 'start:0:1-2', 'outside:1:1-2']);
-  assert.deepEqual(g6.dots.map((d) => `${d.kind}:${d.row}`), ['head:1', 'start:2']);
+  assert.deepEqual(picture(g6), ['own:f@0', 'O#@0', 'Z@1']);
+  assert.deepEqual(wires(g6), ['session:0:1-2', 'pending:0:0-1~']);
+  assert.deepEqual(g6.dots.map((d) => `${d.kind}:${d.row}`), ['start:2']);
   const g7 = sessionGraph(fresh, [claude({ id: 'f', createdAt: 5, startHead: 'O' })], 'graph', ROOTS, 'main');
   assert.deepEqual(wires(g7), ['start:0:0-1~', 'outside:1:1-2']);
   assert.deepEqual(g7.dots.map((d) => d.kind), ['start']);
   // Two sessions on main both sit over its head, S2, which is s's own:
-  // t's row goes on top with a head bar on its lane at S2's row and its
-  // stretch on down to T1, and s's member stays next to s's own row
-  // under it rather than t's row falling between them.
+  // t's row goes on top with its stretch to S2's row on its lane and on
+  // down to T1 (the head bar there went with M9 fix 945), and s's member
+  // stays next to s's own row under it rather than t's row falling
+  // between them.
   const two = [c('S2', ['main'], null, ['T1']), c('T1', [], null, ['S1']), c('S1', [], null, ['Z']), c('Z')];
   const st = claude({ id: 's', createdAt: 5, commits: claim(['S2', 'S1']), team: [member({ id: 'e' })] });
   const tt = claude({ id: 't', color: '#00ff00', createdAt: 6, commits: claim(['T1']) });
   const g8 = sessionGraph(two, [st, tt], 'graph', ROOTS, 'main');
   assert.deepEqual(picture(g8), ['own:t@2', 'e~@1', 'own:s@0', 'S2@0', 'T1@2', 'S1@0', 'Z@3']);
   assert.deepEqual(wires(g8), ['session:0:3-5', 'pending:0:2-3~', 'fork:1:1-3>0~', 'pending:2:0-3~', 'pending:2:3-4'], "t's stretch to S2's row and on to T1 solid, e's fork into s's line at S2");
-  assert.deepEqual(g8.dots.map((d) => `${d.kind}:${d.sessionId}:${d.lane}:${d.row}`), ['head:t:2:3']);
+  assert.deepEqual(g8.dots.map((d) => `${d.kind}:${d.sessionId}:${d.lane}:${d.row}`), []);
 });
 
 test("sessionGraph (M9 fix 937): the session's own commits on another branch, newer than the head of its branch, draw on a side lane of its block, so nothing of its own sits above its star on its line", () => {
@@ -569,12 +580,13 @@ test("sessionGraph (M9 fix 937): the session's own commits on another branch, ne
   assert.deepEqual(picture(g1), ['N5@1', 'N4@1', 'N3@1', 'N2@1', 'N1@1', 'own:s@0', 'H@0', 'Z@2']);
   assert.deepEqual(wires(g1), ['worktree:1:0-1', 'worktree:1:1-2', 'worktree:1:2-3', 'worktree:1:3-4', 'branch:1:4-7>0', 'session:0:6-7', 'pending:0:5-6~']);
   assert.deepEqual(g1.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['start:0:7']);
-  // Main moves and the star follows.
+  // Main moves and the star follows; M1, nobody's, is the session's
+  // square on its line (M9 fix 945).
   const log2 = [...nLog, c('M1', ['main'], null, ['H']), c('H', [], null, ['Z']), c('Z')];
   const g2 = sessionGraph(log2, [s1], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g2), ['N5@1', 'N4@1', 'N3@1', 'N2@1', 'N1@1', 'own:s@0', 'M1@2', 'H@0', 'Z@2']);
-  assert.deepEqual(wires(g2), ['worktree:1:0-1', 'worktree:1:1-2', 'worktree:1:2-3', 'worktree:1:3-4', 'branch:1:4-8>0', 'session:0:7-8', 'pending:0:5-6~', 'pending:0:6-7', 'outside:2:6-8']);
-  assert.deepEqual(g2.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['head:0:6', 'start:0:8']);
+  assert.deepEqual(picture(g2), ['N5@1', 'N4@1', 'N3@1', 'N2@1', 'N1@1', 'own:s@0', 'M1#@0', 'H@0', 'Z@2']);
+  assert.deepEqual(wires(g2), ['worktree:1:0-1', 'worktree:1:1-2', 'worktree:1:2-3', 'worktree:1:3-4', 'branch:1:4-8>0', 'session:0:6-8', 'pending:0:5-6~']);
+  assert.deepEqual(g2.dots.map((d) => `${d.kind}:${d.lane}:${d.row}`), ['start:0:8']);
   // Guard: a session on b with five newer commits on main by nobody.
   const log3 = [c('M5', ['main'], null, ['M4']), c('M4', [], null, ['M3']), c('M3', [], null, ['M2']), c('M2', [], null, ['M1']), c('M1', [], null, ['M0']), c('B1', ['b'], null, ['M0']), c('M0', [], null, ['Z']), c('Z')];
   const g3 = sessionGraph(log3, [claude({ id: 's', branch: 'b', createdAt: 5, startHead: 'M0', commits: claim(['B1']) })], 'graph', ROOTS, 'main');
@@ -583,6 +595,236 @@ test("sessionGraph (M9 fix 937): the session's own commits on another branch, ne
   const g4 = sessionGraph(log1, [s1], 'list', ROOTS, 'main');
   assert.deepEqual(picture(g4), ['N5@0', 'N4@0', 'N3@0', 'N2@0', 'N1@0', 'own:s@0', 'H@0', 'Z@1']);
   assert.deepEqual(wires(g4), ['session:0:0-7', 'pending:0:5-6~']);
+});
+
+// The batch of the graph-through-a-batch frames in small (M9 fix 944 to
+// 946): the lead opened on D0 in the main checkout, made the plan commit
+// P on main, and sent out three seats in worktrees off P on m9-seat-a,
+// -b and -c. Newest first.
+const BATCH_ROOTS = ['C:/repo', 'C:/repo-wt/a', 'C:/repo-wt/b', 'C:/repo-wt/c'];
+const BATCH_CHECKOUTS = [
+  { path: 'C:/repo', branch: 'main' },
+  { path: 'C:/repo-wt/a', branch: 'm9-seat-a' },
+  { path: 'C:/repo-wt/b', branch: 'm9-seat-b' },
+  { path: 'C:/repo-wt/c', branch: 'm9-seat-c' },
+];
+const batchBase = [c('P', [], null, ['D0']), c('D0', [], null, ['Z2']), c('Z2', [], null, ['Z1']), c('Z1')];
+const seatA = (commits: string[]) => member({ id: 'a', branch: 'm9-seat-a', startedAt: 1, outcome: 'returned', cwd: 'C:/repo-wt/a', commits: claim(commits) });
+const seatB = (commits: string[]) => member({ id: 'b', branch: 'm9-seat-b', startedAt: 2, outcome: 'returned', cwd: 'C:/repo-wt/b', commits: claim(commits) });
+const seatC = (commits: string[]) => member({ id: 'c', branch: 'm9-seat-c', startedAt: 3, outcome: 'returned', cwd: 'C:/repo-wt/c', commits: claim(commits) });
+const laneOfHash = (g: ReturnType<typeof sessionGraph>, hash: string) => g.items.find((it): it is CommitItem => it.kind === 'commit' && it.commit.hash === hash)?.lane ?? null;
+const rowOfHash = (g: ReturnType<typeof sessionGraph>, hash: string) => g.items.findIndex((it) => it.kind === 'commit' && it.commit.hash === hash);
+const rowOfMember = (g: ReturnType<typeof sessionGraph>, id: string | null) => g.items.findIndex((it) => it.kind === 'agent' && (it.member?.id ?? null) === id);
+
+// F05: the lead's fix-up B2 in seat-b's worktree, on top of B1.
+const batchF05 = [c('B2', ['m9-seat-b'], null, ['B1']), c('A2', ['m9-seat-a'], null, ['A1']), c('C1', ['m9-seat-c'], null, ['P']), c('B1', [], null, ['P']), c('A1', [], null, ['P']), { ...batchBase[0]!, refs: ['main'] }, ...batchBase.slice(1)];
+const batchLead = claude({ id: 'lead', createdAt: 5, startHead: 'D0', commits: claim(['P', 'B2']), team: [seatA(['A1', 'A2']), seatB(['B1']), seatC(['C1'])] });
+
+test("sessionGraph (M9 fix 944): F05, a seat's star sits over its branch's head even when the lead made it, and the lead's fix-up draws on the seat's line", () => {
+  const f05 = batchF05;
+  const lead = batchLead;
+  const g5 = sessionGraph(f05, [lead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  const bLane = laneOfHash(g5, 'B2');
+  assert.equal(bLane, laneOfHash(g5, 'B1'), 'the fix-up and the seat\'s commit on one lane');
+  assert.equal(g5.lanes[bLane!]!.memberId, 'b', "that lane is seat-b's");
+  assert.equal(rowOfMember(g5, 'b'), rowOfHash(g5, 'B2') - 1, "seat-b's row right above the fix-up, its branch's head");
+  const bRow = g5.items[rowOfMember(g5, 'b')]!;
+  assert.ok(bRow.kind === 'agent' && bRow.pending === false && bRow.lane === bLane);
+  assert.equal(rowOfMember(g5, null), rowOfHash(g5, 'P') - 1, "the lead's row right above main's head");
+  assert.equal(g5.items[rowOfMember(g5, null)]!.lane, laneOfHash(g5, 'P'));
+  assert.equal(laneOfHash(g5, 'P'), 0, 'the plan commit on the lead\'s line');
+});
+
+test("sessionGraph (M9 fix 944): F07, a commit on main from elsewhere leaves the lead's line on main's chain and seat-b's work on seat-b's lane", () => {
+  const f07 = [c('X1', ['main'], null, ['P']), ...batchF05.map((x) => (x.hash === 'P' ? { ...x, refs: [] } : x))];
+  const g7 = sessionGraph(f07, [batchLead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.equal(laneOfHash(g7, 'B2'), laneOfHash(g7, 'B1'));
+  assert.equal(g7.lanes[laneOfHash(g7, 'B2')!]!.memberId, 'b');
+  assert.notEqual(laneOfHash(g7, 'B2'), laneOfHash(g7, 'P'), "the fix-up off the lead's line");
+  assert.equal(laneOfHash(g7, 'P'), 0);
+  assert.equal(rowOfMember(g7, null), rowOfHash(g7, 'X1') - 1, "the lead's row right above main's new head");
+  // The seats' heads are older than main's now, so the three rows stack
+  // above the lead's (the user's amendment to rule 2), each stretch down
+  // its own lane to its head.
+  assert.deepEqual(g7.items.slice(0, 4).map((it) => (it.kind === 'agent' ? (it.member?.id ?? 'lead') : 'commit')), ['a', 'b', 'c', 'lead']);
+  const b = g7.items[rowOfMember(g7, 'b')]!;
+  assert.ok(b.kind === 'agent' && b.tipRow === rowOfHash(g7, 'B2') && b.lane === laneOfHash(g7, 'B2') && !b.pending, "seat-b's stretch runs down its own lane to the fix-up");
+});
+
+test("sessionGraph (M9 fix 944): with main two commits past the seats' fork point, every commit-less seat sits above main's head row, its fork stretch down to the fork point", () => {
+  const log = [c('M2', ['main'], null, ['M1']), c('M1', [], null, ['P']), { ...batchBase[0]!, refs: ['m9-seat-a', 'm9-seat-b', 'm9-seat-c'] }, ...batchBase.slice(1)];
+  const lead = claude({ id: 'lead', createdAt: 5, startHead: 'D0', commits: claim(['P']), team: [seatA([]), seatB([]), seatC([])] });
+  const g = sessionGraph(log, [lead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  const head = rowOfHash(g, 'M2');
+  for (const id of ['a', 'b', 'c']) {
+    const row = rowOfMember(g, id);
+    const it = g.items[row]!;
+    assert.ok(row < head && row < rowOfMember(g, null), `${id} above main's head and the lead's row`);
+    assert.ok(it.kind === 'agent' && it.pending && it.forkRow === rowOfHash(g, 'P'), `${id}'s fork stretch runs down to P`);
+    assert.ok(g.lines.some((l) => l.kind === 'fork' && l.fromRow === row && l.toRow === rowOfHash(g, 'P')), `${id}'s dashed fork line from its row to P's`);
+  }
+  assert.equal(rowOfMember(g, null), head - 1, "the lead's row right above main's head");
+  // A seat that has committed past main stays over its own head.
+  const past = [c('A1', ['m9-seat-a'], null, ['P']), ...log];
+  const g2 = sessionGraph(past, [{ ...lead, team: [seatA(['A1']), seatB([]), seatC([])] }], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.equal(rowOfMember(g2, 'a'), rowOfHash(g2, 'A1') - 1, 'a seat newer than main stays over its head');
+  assert.ok(rowOfMember(g2, 'b') < rowOfHash(g2, 'M2') && rowOfMember(g2, 'c') < rowOfHash(g2, 'M2'), 'the others still above main');
+});
+
+test("sessionGraph (M9 fix 944): the lead's commit on a seat's branch before the seat has one is on the seat's lane, the seat's row over it", () => {
+  // The hint: the lead commits B2 on seat-b's branch straight off P before
+  // seat-b has a commit of its own. B2's lane is seat-b's and seat-b has
+  // no fresh lane besides.
+  const early = [c('B2', ['m9-seat-b'], null, ['P']), c('A2', ['m9-seat-a'], null, ['A1']), c('A1', [], null, ['P']), { ...batchBase[0]!, refs: ['main', 'm9-seat-c'] }, ...batchBase.slice(1)];
+  const leadEarly = claude({ id: 'lead', createdAt: 5, startHead: 'D0', commits: claim(['P', 'B2']), team: [seatA(['A1', 'A2']), seatB([]), seatC([])] });
+  const ge = sessionGraph(early, [leadEarly], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.equal(ge.lanes[laneOfHash(ge, 'B2')!]!.memberId, 'b', "B2's lane is seat-b's");
+  assert.equal(ge.lanes.filter((l) => l.memberId === 'b').length, 1, 'no fresh lane for seat-b besides');
+  assert.equal(rowOfMember(ge, 'b'), rowOfHash(ge, 'B2') - 1, "seat-b's row right above B2");
+  const commitB2 = ge.items.find((it): it is CommitItem => it.kind === 'commit' && it.commit.hash === 'B2')!;
+  assert.equal(commitB2.memberId, null, 'the commit is still the lead\'s');
+});
+
+const itemOf = (g: ReturnType<typeof sessionGraph>, hash: string) => g.items.find((it): it is CommitItem => it.kind === 'commit' && it.commit.hash === hash)!;
+
+test("sessionGraph (M9 fix 945): F07, a commit on main by nobody inside the lead's span is the lead's square on its line, the star right above it, and no head bar", () => {
+  const f07 = [c('X1', ['main'], null, ['P']), ...batchF05.map((x) => (x.hash === 'P' ? { ...x, refs: [] } : x))];
+  const g = sessionGraph(f07, [batchLead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  const x1 = itemOf(g, 'X1');
+  assert.equal(x1.foreign, true, 'X1 is a square');
+  assert.equal(x1.sessionId, 'lead');
+  assert.equal(x1.lane, 0, "on the lead's line");
+  assert.equal(rowOfMember(g, null), rowOfHash(g, 'X1') - 1, "the lead's row right above it");
+  assert.ok(!g.dots.some((d) => (d.kind as string) === 'head'), 'no head bar');
+  assert.ok(g.lines.some((l) => l.kind === 'session' && l.lane === 0 && l.fromRow === rowOfHash(g, 'X1') && l.toRow === rowOfHash(g, 'D0')), 'the line from X1 down to the start bar at D0');
+  assert.ok(g.dots.some((d) => d.kind === 'start' && d.row === rowOfHash(g, 'D0') && d.lane === 0), 'the start bar at D0');
+  assert.equal(itemOf(g, 'D0').foreign, undefined, 'the start commit is no square');
+  assert.equal(itemOf(g, 'D0').sessionId, null);
+});
+
+test('sessionGraph (M9 fix 945): F12, the by-hand commits above the start are squares and the merges and the docs commit the lead\'s own', () => {
+  const log = [c('X2', ['main'], null, ['D1']), c('D1', [], null, ['MC']), c('MC', [], null, ['MB', 'C1']), c('MB', [], null, ['MA', 'B2']), c('MA', [], null, ['X1', 'A2']), c('X1', [], null, ['P']), ...batchF05.map((x) => ({ ...x, refs: [] }))];
+  const lead = { ...batchLead, commits: claim(['P', 'B2', 'MA', 'MB', 'MC', 'D1']) };
+  const g = sessionGraph(log, [lead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.deepEqual(['X2', 'X1'].map((h) => itemOf(g, h).foreign), [true, true]);
+  assert.deepEqual(['D1', 'MC', 'MB', 'MA', 'P'].map((h) => itemOf(g, h).foreign), [undefined, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(['X2', 'D1', 'MC', 'MB', 'MA', 'X1', 'P'].map((h) => itemOf(g, h).lane), [0, 0, 0, 0, 0, 0, 0], "every one on the lead's line");
+});
+
+test('sessionGraph (M9 fix 945): two live sessions on one branch, the earliest started takes the commit nobody made; a start off the chain, the start commit and a member take none', () => {
+  // s and t both started on Z; O by nobody on main on top.
+  const log = [c('O', ['main'], null, ['Z']), c('Z', [], null, ['Y']), c('Y')];
+  const s = claude({ id: 's', createdAt: 5, startHead: 'Z' });
+  const t = claude({ id: 't', color: '#00ff00', createdAt: 6, startHead: 'Z' });
+  const g = sessionGraph(log, [t, s], 'graph', ROOTS, 'main');
+  assert.equal(itemOf(g, 'O').sessionId, 's', "O is s's square");
+  assert.equal(itemOf(g, 'O').foreign, true);
+  const tRow = g.items.find((it) => it.kind === 'agent' && it.sessionId === 't' && it.member === null)!;
+  assert.ok(tRow.kind === 'agent' && tRow.row < rowOfHash(g, 'O'), "t's row over O");
+  assert.ok(tRow.kind === 'agent' && tRow.tipRow === rowOfHash(g, 'O'), "t's stretch to O's row");
+  assert.ok(!g.dots.some((d) => (d.kind as string) === 'head'), 'no bar for t at O');
+  assert.ok(!g.items.some((it) => it.kind === 'commit' && it.sessionId === 't'), 't draws nothing on O');
+  // A start not on the head's first-parent chain: no squares, O grey.
+  const off = [c('O', ['main'], null, ['Z']), c('W', ['w'], null, ['Y']), c('Z', [], null, ['Y']), c('Y')];
+  const g2 = sessionGraph(off, [claude({ id: 's', createdAt: 5, startHead: 'W' })], 'graph', ROOTS, 'main');
+  assert.equal(itemOf(g2, 'O').sessionId, null, 'O stays grey');
+  assert.equal(itemOf(g2, 'O').foreign, undefined);
+  // The start commit itself: a session started on O has no square.
+  const g3 = sessionGraph(log, [claude({ id: 's', createdAt: 5, startHead: 'O' })], 'graph', ROOTS, 'main');
+  assert.equal(itemOf(g3, 'O').sessionId, null, 'the start commit is never a square');
+  // A member's branch takes none: N by nobody on a seat's branch stays grey.
+  const seat = [c('N', ['m9-seat-a'], null, ['P']), c('P', ['main'], null, ['Z']), c('Z')];
+  const g4 = sessionGraph(seat, [claude({ id: 's', createdAt: 5, startHead: 'Z', commits: claim(['P']), team: [member({ id: 'a', branch: 'm9-seat-a', cwd: 'C:/repo-wt/a' })] })], 'graph', BATCH_ROOTS, 'main');
+  assert.equal(itemOf(g4, 'N').sessionId, null, "a commit nobody made on a seat's branch stays grey");
+});
+
+// The batch carried through the merges (M9 fix 946), under the draw chip's
+// `active` as the frames are: the grey block below the start draws nothing.
+const activeOnly = { drawn: (keys: readonly string[]) => new Set(keys.filter((k) => k !== blockKey(null))) };
+const batchMerged = (merged: Array<'a' | 'b' | 'c'>) => {
+  const m = { a: c('MA', [], null, ['X1', 'A2']), b: c('MB', [], null, ['MA', 'B2']), c: c('MC', [], null, ['MB', 'C1']) };
+  const top = merged.map((x) => m[x]).reverse();
+  return [...top.map((x, i) => (i === 0 ? { ...x, refs: ['main'] } : x)), c('X1', top.length === 0 ? ['main'] : [], null, ['P']), ...batchF05.map((x) => (x.hash === 'P' ? { ...x, refs: [] } : x))];
+};
+const leadMerged = (merged: string[]) => ({ ...batchLead, commits: claim(['P', 'B2', ...merged]) });
+const agentOf = (g: ReturnType<typeof sessionGraph>, id: string) => g.items.find((it): it is AgentItem => it.kind === 'agent' && it.member?.id === id);
+
+test("sessionGraph (M9 fix 946): a merged seat that still exists moves its star to a side lane beside its line, so no line runs through it; one gone with its worktree has no row", () => {
+  // F06: the seats returned, their branches and worktrees still there:
+  // three resting rows, no side lane.
+  const g6 = sessionGraph(batchF05, [batchLead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS, ...activeOnly });
+  assert.deepEqual(['a', 'b', 'c'].map((id) => agentOf(g6, id)?.working), [false, false, false], 'three resting rows');
+  assert.equal(g6.lanes.filter((l) => l.side === true).length, 0, 'no side lane');
+  assert.equal(g6.columns, 4);
+  // F07: main moved past every seat's head, nothing merged: no side lane.
+  const g7 = sessionGraph(batchMerged([]), [batchLead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS, ...activeOnly });
+  assert.equal(g7.lanes.filter((l) => l.side === true).length, 0);
+  assert.equal(g7.columns, 4);
+  // F08: MA merges m9-seat-a, whose branch and worktree are still there.
+  const g8 = sessionGraph(batchMerged(['a']), [leadMerged(['MA'])], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS, ...activeOnly });
+  const aLine = laneOfHash(g8, 'A1')!;
+  const a = agentOf(g8, 'a')!;
+  assert.equal(a.lane, aLine + 1, "seat-a's star on the lane right after its line");
+  assert.equal(a.beside, true);
+  assert.deepEqual({ ...g8.lanes[a.lane]!, slot: 0 }, { ...g8.lanes[aLine]!, slot: 0, side: true }, "the side lane is seat-a's, marked side");
+  const onSide = g8.lines.filter((l) => l.lane === a.lane);
+  assert.deepEqual(onSide.map((l) => `${l.kind}:${l.fromRow}-${l.toRow}>${l.toLane}${l.dashed ? '~' : ''}`), [`fork:${a.row}-${rowOfHash(g8, 'A2')}>${aLine}~`], "one dashed fork from the star to A2's row bending into seat-a's line, and nothing else on the side lane");
+  assert.ok(!g8.lines.some((l) => l.lane === aLine && l.fromRow === a.row), "no stretch left on seat-a's line");
+  const used = [laneOfHash(g8, 'P'), aLine, a.lane, laneOfHash(g8, 'B1'), laneOfHash(g8, 'C1')];
+  assert.deepEqual([...new Set(used)].sort(), [0, 1, 2, 3, 4], "the lead's line, seat-a's and its side lane, then seat-b's and seat-c's moved over");
+  assert.equal(g8.columns, 5);
+  assert.equal(agentOf(g8, 'b')!.beside, undefined, 'the unmerged seats stay on their lines');
+  // F09: all three merged, three side lanes.
+  const g9 = sessionGraph(batchMerged(['a', 'b', 'c']), [leadMerged(['MA', 'MB', 'MC'])], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS, ...activeOnly });
+  for (const [id, first] of [['a', 'A1'], ['b', 'B1'], ['c', 'C1']] as const) {
+    const it = agentOf(g9, id)!;
+    assert.ok(it.beside === true && it.lane === laneOfHash(g9, first)! + 1, `${id}'s star beside its line`);
+    assert.equal(g9.lines.filter((l) => l.lane === it.lane).length, 1, `${id}'s side lane holds its fork alone`);
+  }
+  assert.equal(g9.columns, 7);
+  // The colour the drawing gives a lane is its index among the block's
+  // member lanes; a side lane carries its member's id, so the drawing
+  // skips it (CommitGraph's tint pass) and every line keeps its place.
+  assert.equal(g9.lanes.filter((l) => l.memberId !== null && l.side !== true).length, 3);
+  // F11: the sweep removed the worktrees and deleted the branches; the
+  // seats are still in the team, returned. No member rows, their commits
+  // on their lanes, four columns.
+  const swept = batchMerged(['a', 'b', 'c']).map((x) => ({ ...x, refs: x.refs.filter((r) => !r.startsWith('m9-seat-')) }));
+  const g11 = sessionGraph([c('D1', ['main'], null, ['MC']), ...swept.map((x) => (x.hash === 'MC' ? { ...x, refs: [] } : x))], [leadMerged(['MA', 'MB', 'MC', 'D1'])], 'graph', ['C:/repo'], 'main', new Map(), { checkouts: [BATCH_CHECKOUTS[0]!], ...activeOnly });
+  assert.deepEqual(g11.items.filter((it) => it.kind === 'agent').map((it) => (it.kind === 'agent' ? (it.member?.id ?? 'lead') : '')), ['lead'], 'the lead alone has a row');
+  assert.deepEqual(['A1', 'A2', 'B1', 'C1'].map((h) => itemOf(g11, h).memberId), ['a', 'a', 'b', 'c'], "the seats' commits keep their member");
+  assert.deepEqual(['A1', 'B1', 'C1'].map((h) => g11.lanes[laneOfHash(g11, h)!]!.memberId), ['a', 'b', 'c'], 'on their lanes');
+  assert.equal(g11.lanes.filter((l) => l.side === true).length, 0);
+  assert.equal(g11.columns, 4);
+  // Only the branch gone, the worktree still a checkout: the seat exists
+  // and keeps its row; a returned member with no branch keeps its row.
+  const g11b = sessionGraph([c('D1', ['main'], null, ['MC']), ...swept.map((x) => (x.hash === 'MC' ? { ...x, refs: [] } : x))], [{ ...leadMerged(['MA', 'MB', 'MC', 'D1']), team: [seatA(['A1', 'A2']), seatB(['B1']), { ...seatC(['C1']), branch: null, cwd: null }] }], 'graph', BATCH_ROOTS, 'main', new Map(), activeOnly);
+  assert.deepEqual(['a', 'b', 'c'].map((id) => agentOf(g11b, id) !== undefined), [true, true, true], 'a worktree still there, or no branch at all, keeps the row');
+  // A gone member with nothing in the log has no lane either.
+  const g3 = sessionGraph([{ ...batchBase[0]!, refs: ['main'] }, ...batchBase.slice(1)], [{ ...batchLead, commits: claim(['P']), team: [seatA([])] }], 'graph', ['C:/repo'], 'main', new Map(), activeOnly);
+  assert.equal(agentOf(g3, 'a'), undefined);
+  assert.equal(g3.lanes.filter((l) => l.memberId === 'a').length, 0);
+  // The replay's stand-in, a branch named and no folder known, keeps its row.
+  const g3r = sessionGraph([{ ...batchBase[0]!, refs: ['main'] }, ...batchBase.slice(1)], [{ ...batchLead, commits: claim(['P']), team: [{ ...seatA([]), cwd: null }] }], 'graph', ['C:/repo'], 'main', new Map(), activeOnly);
+  assert.notEqual(agentOf(g3r, 'a'), undefined);
+});
+
+test('homeBranchOf (M9 fix 944): the branch of the checkout holding the folder the session started in, the live folder\'s only when it is in that checkout', () => {
+  const wandered = { cwd: 'C:\\repo-wt\\b', groupCwd: 'C:\\repo', spawnCwd: 'C:\\repo', branch: 'm9-seat-b' };
+  assert.equal(homeBranchOf(wandered, BATCH_CHECKOUTS), 'main');
+  assert.equal(homeBranchOf({ ...wandered, cwd: 'C:\\repo\\packages' }, BATCH_CHECKOUTS), 'm9-seat-b', "the live folder in the home checkout: the daemon's branch");
+  assert.equal(homeBranchOf({ ...wandered, groupCwd: 'D:\\elsewhere', spawnCwd: 'D:\\elsewhere' }, BATCH_CHECKOUTS), 'm9-seat-b', 'a home under no checkout');
+  const nested = [...BATCH_CHECKOUTS, { path: 'C:/repo/.claude/worktrees/x', branch: 'x' }];
+  assert.equal(homeBranchOf({ cwd: 'C:\\repo', groupCwd: 'C:\\repo\\.claude\\worktrees\\x', spawnCwd: 'C:\\repo', branch: 'main' }, nested), 'x', 'a checkout inside another wins over its parent');
+  assert.equal(homeBranchOf(wandered, [{ path: 'C:/repo', branch: null }, ...BATCH_CHECKOUTS.slice(1)]), null, 'a detached home');
+  // Through the graph: the lead wandered into seat-b's worktree with its
+  // branch read there, and its row stays over main's head, not over B2.
+  const f05 = [c('B2', ['m9-seat-b'], null, ['B1']), c('B1', [], null, ['P']), { ...batchBase[0]!, refs: ['main'] }, ...batchBase.slice(1)];
+  const lead = claude({ id: 'lead', createdAt: 5, startHead: 'D0', branch: 'm9-seat-b', cwd: 'C:\\repo-wt\\b', groupCwd: 'C:\\repo', spawnCwd: 'C:\\repo', commits: claim(['P', 'B2']), team: [seatB(['B1'])] });
+  const g = sessionGraph(f05, [lead], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.equal(rowOfMember(g, null), rowOfHash(g, 'P') - 1, "the lead's row over P");
+  const bare = sessionGraph(f05, [lead], 'graph', BATCH_ROOTS, 'main');
+  assert.notEqual(rowOfMember(bare, null), rowOfHash(bare, 'P') - 1, 'without the checkouts the row follows the live folder, as before');
 });
 
 test("sessionGraph (M9 fix 144): the trunk is never handed out as a free lane once its chain has left the block, and a merged branch keeps its lane down to its last commit in the block", () => {
@@ -637,8 +879,10 @@ test("sessionGraph (M9 fix 145): a branch forked from another block's commit cur
   const cut = [c('BM', ['main'], null, ['B0']), c('B0', [], null, ['A1']), c('A1', ['wt'], null, ['A0']), c('A0')];
   const p = claude({ id: 'b', color: '#00ff00', createdAt: 5, commits: claim(['BM', 'B0']), team: [member({ id: 'm1', branch: 'wt' })] });
   const g2 = sessionGraph(cut, [a, p], 'graph', ROOTS, 'main');
-  assert.deepEqual(picture(g2), ['own:b@0', 'BM@0', 'B0@0', 'm1~@1', 'A1@2', 'A0@2']);
-  assert.deepEqual(wires(g2), ['session:0:1-4', 'pending:0:0-1~', 'fork:1:3-4>0~', 'session:2:4-5'], "the fork lands on b's lane 0 at A1's row and b's line reaches it");
+  // Its fork point is older than main's head, so its row is lifted above
+  // b's own (M9 fix 944, the seats stack above main's row).
+  assert.deepEqual(picture(g2), ['m1~@1', 'own:b@0', 'BM@0', 'B0@0', 'A1@2', 'A0@2']);
+  assert.deepEqual(wires(g2), ['session:0:2-4', 'pending:0:1-2~', 'fork:1:0-4>0~', 'session:2:4-5'], "the fork lands on b's lane 0 at A1's row and b's line reaches it");
   // The landing on b's bare line is marked with a fork bar (M9 fix 374;
   // no bar there until then, and the fork read as from nowhere).
   assert.deepEqual(dotsOf(g2), ['b@0:4'], "a fork bar on b's lane at A1's row");
@@ -660,9 +904,11 @@ test("sessionGraph (M9 fix 145): a lane forked from another block's commit that 
   const r = session({ id: 'r', color: '#00ff00', commits: claim(['X']) });
   const g = sessionGraph(commits, [s, r], 'graph', ROOTS, 'main');
   // a2, commit-less, is lane 1 beside the line and a1's worktree lane
-  // is 2 (M9 fix 374).
-  assert.deepEqual(picture(g), ['own:s@0', 'M@0', 'a1@2', 'w1@2', 's2@0', 'a2~@1', 'X@3', 's1@0']);
-  assert.deepEqual(wires(g), ['merge:2:3-1>0', 'worktree:2:3-6', 'session:0:1-7', 'pending:0:0-1~', 'fork:1:5-6~', 'pending:2:2-3~'], "w1's lane runs straight down to X's row and stops, a2's fork ends on its own lane there, and neither touches s's line");
+  // is 2 (M9 fix 374). Both heads are older than main's M, so both rows
+  // are lifted above s's own (M9 fix 944), and a1's, merged at M, sits
+  // beside its line on a side lane, forking down into w1 (M9 fix 946).
+  assert.deepEqual(picture(g), ['a1@3', 'a2~@1', 'own:s@0', 'M@0', 'w1@2', 's2@0', 'X@4', 's1@0']);
+  assert.deepEqual(wires(g), ['merge:2:4-3>0', 'worktree:2:4-6', 'session:0:3-7', 'pending:0:2-3~', 'fork:1:1-6~', 'fork:3:0-4>2~'], "w1's lane runs straight down to X's row and stops, a2's fork ends on its own lane there, and neither touches s's line");
   assert.deepEqual(dotsOf(g), ['s@1:6', 's@2:6'], "a bar on each lane at X's row");
   assert.deepEqual(g.dots.map((d) => d.shape), ['bar', 'bar']);
   // Neither bar is a landing (M9 fix 399): a2's fork ends on its own

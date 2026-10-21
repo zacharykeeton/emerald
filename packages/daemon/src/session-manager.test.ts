@@ -788,6 +788,38 @@ test('the start commit is read again where Claude started when that is another f
   }
 });
 
+test('a session spawned or resumed with a PATH runs with it, and one given none keeps the daemon\'s (M9 fix 971)', async () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
+  // A shell that echoes its PATH and exits; its output collected until it
+  // holds `want`, or, with no `want`, until it exits.
+  const echoes = async (id: string, want: string | null): Promise<string> => {
+    const output: string[] = [];
+    manager.get(id).pty!.on('data', (chunk: Buffer) => output.push(chunk.toString()));
+    const exited = once(manager, 'exit');
+    const deadline = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`no ${want ?? 'exit'} within 20 s; output: ${output.join('').slice(-400)}`)), 20_000).unref();
+    });
+    await Promise.race([exited, deadline]);
+    const all = output.join('');
+    if (want !== null) assert.ok(all.includes(want), `the shell echoed ${want}; output: ${all.slice(-400)}`);
+    return all;
+  };
+  const args = ['-NoProfile', '-Command', 'echo ("P=" + $env:Path)'];
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 200, rows: 30, args }, 'C:\\emerald-971-fresh');
+    await echoes(s.id, 'P=C:\\emerald-971-fresh');
+    manager.resume(s.id, 200, 30, 'C:\\emerald-971-again');
+    await echoes(s.id, 'P=C:\\emerald-971-again');
+    const plain = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 200, rows: 30, args });
+    const out = await echoes(plain.id, null);
+    assert.ok(out.includes('P='), `the third shell echoed its PATH; output: ${out.slice(-400)}`);
+    assert.ok(!out.includes('emerald-971'), 'a shell given no PATH keeps the daemon\'s');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
 test('a resumed shell that hosted a conversation starts in its folder and gets claude --resume typed at its first prompt (M48)', async () => {
   const shim = shimClaude();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });

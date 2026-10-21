@@ -1708,6 +1708,49 @@ try {
   await pickScheme926(s, before926);
   await s2.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(before926)}`, `and back to ${before926}`, 5000);
   step("fix 926: a terminal scheme picked in one window is the other window's at once, and back");
+  // M9 fix 949: the sidebar's order, filter and folded groups follow the
+  // other window; the stored fold set keeps both windows' folds.
+  const pickOrder949 = async (w, label) => {
+    const header = await w.evalJs(`(() => { const r = document.querySelector('.sidebar-header').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+    await w.rightClick(header.x, header.y);
+    await w.waitFor(`!!document.querySelector('.order-menu')`, 'the order menu');
+    await w.evalJs(`[...document.querySelectorAll('.order-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(label)}).click()`);
+    await w.waitFor(`!document.querySelector('.order-menu')`, 'the order menu closed');
+  };
+  const chip949 = async (w, filter) => {
+    await w.evalJs(`document.querySelector(${JSON.stringify(`.sidebar-filter[data-filter=${JSON.stringify(filter)}]`)}).click()`);
+    await w.waitFor(`document.querySelector('.sidebar-filters')?.dataset.filter === ${JSON.stringify(filter)}`, `the ${filter} chip active`);
+  };
+  const foldSel949 = (key) => `.sidebar-group[data-group=${JSON.stringify(key)}] .sidebar-group-fold`;
+  const folded949 = (key) => `document.querySelector(${JSON.stringify(`.sidebar-group[data-group=${JSON.stringify(key)}]`)})?.dataset.folded === 'true'`;
+  const unfolded949 = (key) => `!!document.querySelector(${JSON.stringify(`.sidebar-group[data-group=${JSON.stringify(key)}]`)}) && !(${folded949(key)})`;
+  const storedFolds949 = async () => JSON.parse((await s.evalJs(`localStorage.getItem('emerald.sidebarFolded') ?? '[]'`)) || '[]');
+  // (i) The order.
+  await pickOrder949(s, 'Order: by state');
+  await s2.waitFor(`document.querySelector('.sidebar-header')?.dataset.order === 'state'`, "fix 949: the second window's list follows the first's order", 5000);
+  await pickOrder949(s2, 'Order: as created');
+  await s.waitFor(`document.querySelector('.sidebar-header')?.dataset.order === 'created'`, "fix 949: the first window's list follows the second's order", 5000);
+  // (ii) The filter.
+  await chip949(s, 'unshown');
+  await s2.waitFor(`document.querySelector('.sidebar-filters')?.dataset.filter === 'unshown'`, "fix 949: the second window's filter follows the first's", 5000);
+  await chip949(s2, 'all');
+  await s.waitFor(`document.querySelector('.sidebar-filters')?.dataset.filter === 'all'`, "fix 949: the first window's filter follows the second's", 5000);
+  // (iii) The folds, one made in each window.
+  const groups949 = await s.evalJs(`[...document.querySelectorAll('.sidebar-group')].map((g) => g.dataset.group)`);
+  expect(groups949.length >= 2, `two groups or more in the sidebar, got ${JSON.stringify(groups949)}`);
+  const [g1, g2] = groups949;
+  await s.evalJs(`document.querySelector(${JSON.stringify(foldSel949(g1))}).click()`);
+  await s2.waitFor(folded949(g1), `fix 949: ${g1} folded in the second window too`, 5000);
+  await s2.evalJs(`document.querySelector(${JSON.stringify(foldSel949(g2))}).click()`);
+  await s.waitFor(folded949(g2), `fix 949: ${g2} folded in the first window too`, 5000);
+  const both949 = await storedFolds949();
+  expect(both949.includes(g1) && both949.includes(g2), `the stored folds hold both groups, got ${JSON.stringify(both949)}`);
+  await s2.evalJs(`document.querySelector(${JSON.stringify(foldSel949(g1))}).click()`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(foldSel949(g2))}).click()`);
+  for (const w of [s, s2]) await w.waitFor(`${unfolded949(g1)} && ${unfolded949(g2)}`, 'neither group folded in either window', 5000);
+  const none949 = await storedFolds949();
+  expect(!none949.includes(g1) && !none949.includes(g2), `the stored folds hold neither group, got ${JSON.stringify(none949)}`);
+  step("fix 949: the sidebar's order, filter and folded groups picked in one window follow in the other, and a fold made in each window is kept in the profile");
   expect((await getTabs(s)).currentTabId === plus867, 'the second window still in front for emmer open');
 
   // (d) emmer open goes to the window in front, the second.
@@ -1803,9 +1846,16 @@ try {
   expect(dx927 === 1300 && dy927 === 0, `the second window sits 1300 px right of the first, got ${dx927},${dy927}`);
   const inFirst927 = (p) => ({ x: Math.round(p.x + dx927), y: Math.round(p.y + dy927) });
   // (b) claudeIdle627's pane by its title onto the right of loop627's pane.
+  // M9 fix 947: a layout.set a revision ahead is as stale as one behind
+  // (layout-store.ts) and is never negative.
+  const staleSet947 = `window.emerald.request('layout.get', {}).then(({ layout }) => window.emerald.request('layout.set', { layout: { ...layout, revision: layout.revision + 1 } })).then(() => null, (e) => ({ message: String(e?.message), code: e?.code ?? null, isError: e instanceof Error }))`;
   await s.evalJs(`document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).click()`);
   await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(claudeIdle627.tabId)}`, "the first window on claudeIdle627's tab", 5000);
   const idlePane927 = rootOf927(await getTabs(s), claudeIdle627.tabId).id;
+  // The page's refusal is the daemon's sentence; its code the bridge drops
+  // (fix 947's probe), which applyEdit makes up for by the revision.
+  const stale947 = await s.evalJs(staleSet947);
+  expect(stale947 !== null && /^layout edit was based on revision \d+ but the current revision is \d+$/.test(stale947.message), `fix 947: a refused layout.set reaches the page as the daemon's sentence, got ${JSON.stringify(stale947)}`);
   const title927 = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(`${paneSel927(idlePane927)} .pane-title`)}).getBoundingClientRect(); return { x: Math.round(r.x + 40), y: Math.round(r.y + r.height / 2) }; })()`);
   const loopBox927 = await boxIn927(s2_927, paneSel927(loopPane927));
   const right927 = inFirst927({ x: loopBox927.x + loopBox927.width * 0.9, y: loopBox927.y + loopBox927.height / 2 });
@@ -1814,7 +1864,22 @@ try {
   await move927(s, right927);
   await s2_927.waitFor(`document.querySelector(${JSON.stringify(`${paneSel927(loopPane927)} .drop-overlay`)})?.dataset.dropZone === 'right'`, "the right zone of loop627's pane lit in the second window", 5000);
   expect(await s.evalJs(`document.querySelectorAll('.drop-overlay').length === 0 && document.body.classList.contains('dragging-session')`), 'the first window lights nothing past its edge and is still dragging');
+  // M9 fix 947: the layout written from the first window between the hover
+  // and the drop. The second window's page is held busy, so the drop main
+  // sends it and then the push of the first window's write queue in that
+  // order; freed, the page makes the drop on the layout it had, one
+  // revision behind, as the lift's window.front made it at the install of
+  // fixes 918 to 943.
+  const fails947 = mainLog867().split(/\r?\n/).filter((l) => l.includes('[emerald] drop failed')).length;
+  const mark947 = mainLog867().length;
+  const hold947 = Date.now();
+  const held947 = s2_927.evalJs(`(() => { const until = Date.now() + 3000; while (Date.now() < until) {} return true; })()`);
+  await sleep(200);
   await release927(s, right927);
+  await until867(async () => mainLog867().includes(`window drag: a pane from window first dropped on window ${W2}`), 'main sent the drop to the second window', 2000);
+  await zreq(s, 'layout.set', { layout: await getTabs(s) });
+  console.log(`[verify] fix 947: the first window's write answered ${Date.now() - hold947} ms into the hold`);
+  await held947;
   await until867(async () => {
     const l = await getTabs(s);
     const loopRoot = rootOf927(l, loop627.tabId);
@@ -1827,6 +1892,11 @@ try {
   expect(!(await s.evalJs(`document.body.classList.contains('dragging-session')`)), 'the first window is no longer dragging');
   expect(mainLog867().includes(`window drag: a pane from window first dropped on window ${W2}`), 'main.log says the pane went from the first window to the second');
   step("fix 927: a pane dragged by its title past its window's edge lights the zone under the pointer in the other window, and the release moves it there");
+  const since947 = () => mainLog867().slice(mark947);
+  expect(since947().includes('renderer: warning [emerald] layout edit lost a race to another write'), "fix 947: the drop's edit lost its race and was applied again");
+  expect(mainLog867().split(/\r?\n/).filter((l) => l.includes('[emerald] drop failed')).length === fails947, 'fix 947: no drop failed');
+  await until867(async () => since947().includes(`window drag: the drop on window ${W2} settled; lifting it`), 'main lifts the second window once its drop settled', 3000);
+  step("fix 947: a pane dropped into the other window lands there although the layout was written between the hover and the release, its edit read again and applied once more, and that window lifted once it had");
   // (c) claudeIdle627's strip tab onto the left edge of loop627's tab there.
   const idleTab927 = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(tabSel867(claudeIdle627.tabId))}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
   const loopTabBox927 = await boxIn927(s2_927, tabSel867(loop627.tabId));
@@ -1846,6 +1916,7 @@ try {
   expect((await s.evalJs(`document.querySelectorAll('.tab[data-drop]').length`)) === 0 && (await s2_927.evalJs(`document.querySelectorAll('.tab[data-drop]').length`)) === 0, 'no line left in either strip');
   expect(!(await s.evalJs(`document.body.classList.contains('dragging-tab')`)), 'the first window is no longer dragging a tab');
   expect(mainLog867().includes(`window drag: a tab from window first dropped on window ${W2}`), 'main.log says the tab went from the first window to the second');
+  await until867(async () => since947().split(/\r?\n/).filter((l) => l.includes(`window drag: the drop on window ${W2} settled; lifting it`)).length === 2, 'the tab drop lifts the second window once it settled too', 3000);
   step("fix 927: a layout tab dragged past its window's edge shows its line in the other window's strip and lands there, in front");
   // M9 fix 928: a drop outside every window. The two harness windows end
   // at y 850 (window-plan.ts), so a point 200 px below a window's own
@@ -1908,9 +1979,50 @@ try {
   expect(await s.evalJs(windowCount867(4)), 'still four windows');
   expect(JSON.stringify((await getTabs(s)).windows) === before928, 'the layout unchanged by the refused drop');
   step("fix 928: a layout tab dropped outside every window opens a window holding it, and a window's only tab stays");
-  // The fourth, third and second windows closed; the script ends in one
-  // window as (g) left it.
-  for (const w of [s4_928, s3_928, s2_927]) {
+  // M9 fix 948: a contents hit from the second window's rail, released
+  // below both windows, opens a fifth window holding the file at the hit's
+  // line, lit; the reveal goes across in storage, one shot.
+  fs.mkdirSync(path.join(seed, 'src'), { recursive: true });
+  const file948 = path.join(seed, 'src', 'reveal-948.txt');
+  const lines948 = [];
+  for (let i = 1; i <= 29; i++) lines948.push(`filler ${i}`);
+  lines948.push('    revealHandoff948 is on this line');
+  for (let i = 31; i <= 60; i++) lines948.push(`filler ${i}`);
+  fs.writeFileSync(file948, lines948.join('\n') + '\n');
+  await s2_927.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
+  await s2_927.waitFor(`!!document.querySelector('.files-rail')?.dataset.root`, "the second window's Files rail on a folder", 5000);
+  const root948 = await s2_927.evalJs(`document.querySelector('.files-rail').dataset.root`);
+  expect(root948.toLowerCase().startsWith(seed.toLowerCase()), `the second window's rail is under the seed, got ${root948}`);
+  await s2_927.evalJs(`document.querySelector('.files-mode[data-mode="contents"]').click()`);
+  await s2_927.waitFor(`document.querySelector('.files-mode[data-mode="contents"]').dataset.active === 'true'`, 'Contents mode in the second window');
+  await s2_927.evalJs(`document.querySelector('.files-filter-input').focus()`);
+  await s2_927.type('revealHandoff948');
+  await s2_927.waitFor(`!!document.querySelector('.files-hit[data-line="30"]')`, 'the hit on line 30', 5000);
+  const hit948 = await s2_927.evalJs(`(() => { const r = document.querySelector('.files-hit[data-line="30"]').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  await s2_927.mouse('mousePressed', hit948.x, hit948.y);
+  await move927(s2_927, { x: hit948.x + 10, y: hit948.y });
+  await move927(s2_927, out928);
+  await release927(s2_927, out928);
+  await s.waitFor(windowCount867(5), 'a fifth window opened by the hit dropped outside', 5000);
+  L867 = await getTabs(s);
+  const W5 = L867.windows[4].id;
+  const w5Root948 = L867.windows[4].tabIds.length === 1 ? rootOf927(L867, L867.windows[4].tabIds[0]) : null;
+  expect(w5Root948?.kind === 'pane' && w5Root948.view?.kind === 'file' && w5Root948.view.path.toLowerCase() === file948.toLowerCase(), `the fifth window holds one tab with the file's pane, got ${JSON.stringify(w5Root948)}`);
+  const s5_948 = await windowPage(s.port, W5);
+  const pane948 = `document.querySelector(${JSON.stringify(paneSel927(w5Root948.id))})`;
+  await s5_948.waitFor(`${pane948}?.querySelector('.file-view')?.dataset.state === 'text'`, 'the file read into the new window', 10000);
+  const paneEd948 = `${pane948}.querySelector('.file-editor').emeraldEditor`;
+  await s5_948.waitFor(`${paneEd948}.getPosition()?.lineNumber === 30`, "the new window's file pane on the hit's line", 5000);
+  const landed948 = await s5_948.evalJs(
+    `(() => { const e = ${paneEd948}; return { visible: e.getVisibleRanges().some((r) => r.startLineNumber <= 30 && r.endLineNumber >= 30), flashed: e.getModel().getAllDecorations().some((d) => d.options.className === 'file-line-flash' && d.range.startLineNumber === 30) }; })()`,
+  );
+  expect(landed948.visible, `the hit's line is in the new window's visible range (${JSON.stringify(landed948)})`);
+  expect(landed948.flashed, `the hit's line is lit in the new window (${JSON.stringify(landed948)})`);
+  expect(await s5_948.evalJs(`localStorage.getItem('emerald.revealHandoff') === null`), 'the hand-off was taken once');
+  step('fix 948: a contents hit dropped outside every window opens a window holding the file at its line, lit');
+  // The fifth, fourth, third and second windows closed; the script ends in
+  // one window as (g) left it.
+  for (const w of [s5_948, s4_928, s3_928, s2_927]) {
     await w.send('Page.close').catch(() => {});
     w.close();
   }

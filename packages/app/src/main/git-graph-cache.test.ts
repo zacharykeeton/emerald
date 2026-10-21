@@ -50,6 +50,7 @@ test('gitGraph: an unchanged repository spawns only log and branch --merged afte
   const first = await gitGraph(root, {}, git);
   assert.equal(first.author, 'verify');
   assert.deepEqual(first.worktrees.length, 1);
+  assert.deepEqual(first.checkouts, [{ path: root, branch: 'main' }], 'the checkout with its branch (M9 fix 944)');
   assert.deepEqual(calls, ['log --branches', 'branch --merged', 'worktree list', 'config user.name', 'diff-tree'], 'five calls on the first read, and no rev-parse');
 
   calls.length = 0;
@@ -57,6 +58,7 @@ test('gitGraph: an unchanged repository spawns only log and branch --merged afte
   assert.deepEqual(calls, ['log --branches', 'branch --merged'], 'two calls on a read of an unchanged repository');
   assert.equal(second.author, 'verify', 'the cached author');
   assert.equal(second.worktrees.length, 1, 'the cached worktree list');
+  assert.deepEqual(second.checkouts, [{ path: root, branch: 'main' }], 'the cached checkouts');
 
   // A `git config user.name` in the repository moves the config's mtime.
   const earlier = new Date(Date.now() - 60_000);

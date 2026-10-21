@@ -71,14 +71,14 @@ import type { GraphWrite } from './write-graph-model.ts';
 // process watches the repo's logs folder so a commit shows within a
 // moment of landing. In a pane of its own (M52) the panel has no session
 // behind it, so the branch is the graph's own read of HEAD.
-const EMPTY: GitGraph = { root: null, head: null, headHash: null, defaultBranch: null, merged: [], commits: [], worktrees: [], author: null, fetchedAt: null };
+const EMPTY: GitGraph = { root: null, head: null, headHash: null, defaultBranch: null, merged: [], commits: [], worktrees: [], checkouts: [], author: null, fetchedAt: null };
 
 // What of a graph read the panel draws (M9 fix 354): the head and its
 // hash, the default branch, the fetch time behind the remote chip, the
-// worktrees, the author, and every commit's hash with its refs (twins
-// derive from the commits).
+// worktrees and their branches (M9 fix 944), the author, and every
+// commit's hash with its refs (twins derive from the commits).
 function graphStamp(g: GitGraph): string {
-  return [g.root, g.head, g.headHash, g.defaultBranch, g.fetchedAt, g.author, g.merged.join('|'), g.worktrees.join('|'), ...g.commits.map((c) => `${c.hash}:${c.refs.join('|')}:${(c.remoteRefs ?? []).join('|')}`)].join(',');
+  return [g.root, g.head, g.headHash, g.defaultBranch, g.fetchedAt, g.author, g.merged.join('|'), g.worktrees.join('|'), g.checkouts.map((c) => `${c.path}=${c.branch ?? ''}`).join('|'), ...g.commits.map((c) => `${c.hash}:${c.refs.join('|')}:${(c.remoteRefs ?? []).join('|')}`)].join(',');
 }
 const EMPTY_WRITES: ReadonlyMap<string, GraphWrite> = new Map();
 
@@ -294,7 +294,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
   const writeInput = noRepo && folder !== null ? writeGraphInput(sessionList, folder) : null;
   const model =
     writeInput === null || folder === null
-      ? sessionGraph(graph.commits, sessionList, view, roots, graph.defaultBranch, history, { layout: new Map(Object.entries(prefs.layout)), drawn: (keys) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author })
+      ? sessionGraph(graph.commits, sessionList, view, roots, graph.defaultBranch, history, { layout: new Map(Object.entries(prefs.layout)), drawn: (keys) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author, checkouts: graph.checkouts })
       : sessionGraph(writeInput.commits, writeInput.sessions, view, [folder], null, new Map(), { layout: new Map(Object.entries(prefs.layout)), drawn: (keys) => drawnBlocks(prefs, keys, live) });
   const writes = writeInput?.writes ?? EMPTY_WRITES;
   // The replay (M9 fix 869): the model is built once from the record and
@@ -312,7 +312,7 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
     setRun({ ...asked, model: null, replay: null, note: null, historyFrom: null, startedAt: 0, pausedAt: null });
     const commits = graph.commits;
     const records = sessionList;
-    const options = { layout: new Map(Object.entries(prefs.layout)), drawn: (keys: readonly string[]) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author };
+    const options = { layout: new Map(Object.entries(prefs.layout)), drawn: (keys: readonly string[]) => drawnBlocks(prefs, keys, live), historyColors: HISTORY_COLORS, author: graph.author, checkouts: graph.checkouts };
     const defaultBranch = graph.defaultBranch;
     const askedAt = Date.now();
     // requestsSince at the ask's own time keeps the request points out of
@@ -462,7 +462,9 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
     const next: BlockLayout = b.layout === 'line' ? 'graph' : 'line';
     return { current: b.layout, toggle: () => choosePrefs({ ...prefs, layout: { ...prefs.layout, [blockKey(sessionId)]: next } }) };
   };
-  const unowned = model.items.some((it) => it.kind === 'commit' && it.sessionId === null && it.commit.claudeSession !== null && it.commit.claudeSession !== undefined);
+  // A square (M9 fix 945) is nobody's here, so a trailer on one asks for
+  // the scan as a grey commit's does.
+  const unowned = model.items.some((it) => it.kind === 'commit' && (it.sessionId === null || it.foreign === true) && it.commit.claudeSession !== null && it.commit.claudeSession !== undefined);
   useEffect(() => {
     if (unowned) ensureHistoryTranscripts();
   }, [unowned]);
@@ -875,7 +877,7 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
     return r === null || name === undefined ? r : { ...r, name };
   };
   const ownerOf = new Map<string, string>();
-  for (const it of model.items) if (it.kind === 'commit' && it.sessionId !== null) ownerOf.set(it.commit.hash, it.sessionId);
+  for (const it of model.items) if (it.kind === 'commit' && it.sessionId !== null && it.foreign !== true) ownerOf.set(it.commit.hash, it.sessionId);
   const recordOfHash = (hash: string): SessionInfo | null => recordOf(ownerOf.get(hash) ?? null);
   // The transcripts' requests behind the rows' dollars cells and the
   // cards (fix 252), asked for once per change of the records' commits
@@ -949,7 +951,8 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
   };
   // The outside block's card (M68): the commits nobody here made, and
   // why, off the block's lines and nodes; none when there is no block.
-  const outside = model.items.flatMap((it) => (it.kind === 'commit' && it.sessionId === null ? [it.commit] : []));
+  // A square (M9 fix 945) is still a commit nobody here made.
+  const outside = model.items.flatMap((it) => (it.kind === 'commit' && (it.sessionId === null || it.foreign === true) ? [it.commit] : []));
   const onHistory = model.items.filter((it) => it.kind === 'commit' && historyIdOf(it.sessionId) !== null).length;
   const outsideBars: CardBar[] = model.dots
     .filter((d) => d.shape === 'bar' && d.sessionId === null)
@@ -1116,8 +1119,11 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
       {roomAfter}
       {rows && (
       <div className="commits-graph-rows">
-        {ordered.map((it) =>
-          it.kind === 'agent' ? (
+        {ordered.map((x) => {
+          // A square (M9 fix 945) is the session's in the gutter alone:
+          // its row, its pills and its card read it as nobody's.
+          const it = x.kind === 'commit' && x.foreign === true ? { ...x, sessionId: null } : x;
+          return it.kind === 'agent' ? (
             <AgentRow key={`agent-${it.sessionId}-${it.member?.id ?? 'own'}`} item={it} session={replay === null ? (sessionOf.get(it.sessionId) ?? null) : replayRecord(it.sessionId)} color={colorOf(it.sessionId)} model={agentModel(it, sessionOf.get(it.sessionId))} now={now} card={agentCard(it)} replay={replay === null ? undefined : agentReplay(replay, it.row)} />
           ) : (
             <CommitRow key={it.commit.hash} item={it} write={writes.get(it.commit.hash) ?? null} ownerName={it.sessionId === null ? null : (nameOf.get(it.sessionId) ?? null)} color={colorOf(it.sessionId)} branch={branches.get(it.commit.hash) ?? null} defaultBranch={graph.defaultBranch} now={rowNow} recent={start !== null && it.commit.at >= start} lines={linesOf(it.sessionId)} record={recordOf(it.sessionId)} pricing={pricing} twins={twinInfo(it.commit, graph.commits, branchOfHash)} lit={raised !== null && (it.commit.twins?.includes(raised) ?? false)} onMenu={onMenu === null ? undefined : (x, y) => onMenu(x, y, blockKey(it.sessionId), it.commit.hash)} onRaise={onRaise} replay={replay === null ? undefined : { dim: replay.frame.hidden.has(it.row), lands: replay.replay.lands.get(it.row) ?? null }}>
@@ -1128,8 +1134,8 @@ function GraphView({ model, replay, onStop, graph, writes, sessionList, prefs, r
                 <Pill key={`remote:${b}`} branch={b} color={colorOf(it.sessionId)} merged={merged.has(b)} agent={null} card={null} remote />
               ))}
             </CommitRow>
-          ),
-        )}
+          );
+        })}
       </div>
       )}
     </div>

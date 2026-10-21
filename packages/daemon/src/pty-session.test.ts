@@ -100,6 +100,16 @@ test('stampEnv adds identity and strips inherited supervisor markers', () => {
   assert.equal('EMERALD_PIPE' in stampEnv({ EMERALD_PIPE: '' }, { sessionId: 's' }), false);
 });
 
+test('stampEnv puts a given path in as Path and drops every spelling the base had (M9 fix 971)', () => {
+  assert.deepEqual(stampEnv({ PATH: 'old', path: 'older', X: '1' }, { sessionId: 's', path: 'C:\\fresh' }), {
+    X: '1',
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    Path: 'C:\\fresh',
+    EMERALD_SESSION_ID: 's',
+  });
+});
+
 test('stampEnv drops an inherited emerald mod from CLAUDE_CODE_PLUGIN_DIRS and keeps the rest (M9 fix 833)', () => {
   const root = mkTemp('emerald-833-');
   const mod = path.join(root, 'mod');

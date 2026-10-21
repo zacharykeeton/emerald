@@ -305,7 +305,7 @@ try {
   const rowsShape = ['', 'Which shape should the sample button be?', '', '> 1. Round', '     Soft corners all round', '  2. Square', '     Sharp corners', '  3. Pill', '     Fully rounded ends', '  4. Type something.', '', '  5. Chat about this', ''];
   const rowsColour = ['', 'Which colour should the sample button be?', '', '> 1. Green', '     Matches the brand', '  2. Grey', '     Stays quiet', '  3. Red', '     Draws the eye', '  4. Type something.', '', '  5. Chat about this', ''];
   const drawA = (list) => list.map((r) => `Write-Host '${r}'`).join('; ');
-  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsShape)}; Write-Host -NoNewline ${footer}; $a = [Console]::ReadKey($true); $b = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsColour)}; Write-Host -NoNewline ${footer}; $c = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.Key + ' ' + $b.Key); Read-Host | Out-Null`);
+  await type(sessionId, `cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsShape)}; Write-Host -NoNewline ${footer}; $a = [Console]::ReadKey($true); $b = [Console]::ReadKey($true); cls; Write-Host ''; Write-Host ${tabRowA}; ${drawA(rowsColour)}; Write-Host -NoNewline ${footer}; $c = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.Key + ' ' + $b.Key + ' ' + $c.Key); Read-Host | Out-Null`);
   await waitCursorRow(sessionId, (row) => row.trim().endsWith('cancel'), 'fix 922: the question drawn, the cursor on its footer');
   await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
   await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
@@ -317,12 +317,15 @@ try {
   await s.waitFor(`document.querySelector('.answer-popover-question')?.textContent === 'Which colour should the sample button be?' && !document.querySelector('.answer-popover [data-sent]')`, 'fix 922: the dialog on Colour, the card taking a press again', 10000);
   const tabs922 = await s.evalJs(`[...document.querySelectorAll('.answer-popover-tab')].map((t) => t.tagName + ':' + t.textContent.replace(/^✓/, '') + ':' + (t.dataset.current ?? ''))`);
   expect(JSON.stringify(tabs922) === JSON.stringify(['SPAN:Colour:true', 'BUTTON:Size:', 'BUTTON:Shape:']), `fix 922: Colour current after the click, got ${JSON.stringify(tabs922)}`);
-  await type(sessionId, '');
-  await waitCursorRow(sessionId, (row) => row.trim().endsWith('got LeftArrow LeftArrow'), 'fix 922: the session got two Lefts');
+  // M9 fix 959: a Tab with the card open on a question is the dialog's
+  // tabs:next, taken from wherever the focus is; the stub's third key.
+  await s.key('Tab', 'Tab', 9);
+  await waitCursorRow(sessionId, (row) => row.trim().endsWith('got LeftArrow LeftArrow RightArrow'), 'fix 959: the sidebar card took the Tab and sent a Right');
   await type(sessionId, '');
   await post({ hook_event_name: 'Stop', stop_hook_active: false });
   await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 922: the tabs card closed');
   step("fix 922: the sidebar card's earlier tab is a button that sends a Left per tab back, and the card reads it as current while the dialog draws its question");
+  step('fix 959: a Tab with the sidebar card open on a question moves its dialog one tab on, whatever has the focus');
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

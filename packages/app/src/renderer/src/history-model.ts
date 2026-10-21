@@ -1,5 +1,5 @@
 import type { HistorySession, HistoryTranscript, TranscriptCost } from '../../preload/api.ts';
-import { remoteSessionIdOfLine } from '@emerald/shared';
+import { remoteSessionIdOfLine, repeatsPrompt } from '@emerald/shared';
 import type { Turn } from '@emerald/shared';
 
 // The pure part of the session history panel: reading Claude Code's own
@@ -56,6 +56,19 @@ export interface HistoryIndex {
   firstAt: number;
   lastAt: number;
   project: string;
+  // M9 fix 954: the earliest display that is an ask, not a bare command, and when it was sent.
+  firstAsk: string | null;
+  firstAskAt: number | null;
+}
+
+// M9 fix 954: Claude Code's own commands whose argument is a setting, never an ask (/model opus[1m], /rename <name>), read off history.jsonl's displays on 2026-10-20.
+const SETTING_COMMANDS = new Set(['model', 'rename', 'effort', 'resume', 'add-dir', 'output-style', 'color', 'theme']);
+// Whether a prompt is a slash command rather than an ask: its first line is /<word> with nothing after it, or one of the setting commands with its argument. A skill's command with words after it (/backlog file this) is an ask, and so is a path (/c/Users/...), since the word stops at the slash.
+export function isBareCommand(text: string): boolean {
+  const line = text.trim().split('\n')[0]!.trim();
+  const m = /^\/([A-Za-z0-9][\w:.-]*)(?:\s+([\s\S]*))?$/.exec(line);
+  if (m === null) return false;
+  return (m[2] ?? '').trim() === '' || SETTING_COMMANDS.has(m[1]!.toLowerCase());
 }
 
 // history.jsonl grouped by session: how many prompts, the first one, and
@@ -67,11 +80,16 @@ export function indexHistory(text: string): Map<string, HistoryIndex> {
     const line = parseHistoryLine(raw);
     if (line === null) continue;
     const have = index.get(line.sessionId);
+    const ask = !isBareCommand(line.display);
     if (have === undefined) {
-      index.set(line.sessionId, { prompts: 1, firstPrompt: line.display, firstAt: line.timestamp, lastAt: line.timestamp, project: line.project });
+      index.set(line.sessionId, { prompts: 1, firstPrompt: line.display, firstAt: line.timestamp, lastAt: line.timestamp, project: line.project, firstAsk: ask ? line.display : null, firstAskAt: ask ? line.timestamp : null });
       continue;
     }
     have.prompts += 1;
+    if (ask && (have.firstAskAt === null || line.timestamp < have.firstAskAt)) {
+      have.firstAsk = line.display;
+      have.firstAskAt = line.timestamp;
+    }
     if (line.timestamp < have.firstAt) {
       have.firstAt = line.timestamp;
       have.firstPrompt = line.display;
@@ -86,6 +104,10 @@ export function indexHistory(text: string): Map<string, HistoryIndex> {
 
 export interface TranscriptHead {
   title: string | null;
+  // M9 fix 954: the last /rename in the chunk (a custom-title line).
+  name: string | null;
+  // M9 fix 954: the first prompt that is not a bare slash command.
+  firstAsk: string | null;
   cwd: string | null;
   branch: string | null;
   firstPrompt: string | null;
@@ -96,6 +118,8 @@ export interface TranscriptHead {
 }
 
 export interface TranscriptTail {
+  // M9 fix 954: the last /rename in the chunk (a custom-title line).
+  name: string | null;
   model: string | null;
   lastAt: number | null;
   preview: { who: 'you' | 'agent'; text: string } | null;
@@ -108,11 +132,12 @@ export interface TranscriptTail {
 // mid-line, and that line is dropped; `complete` says the text is the
 // whole file, so its last line counts.
 export function parseTranscriptHead(text: string, complete = false): TranscriptHead {
-  const head: TranscriptHead = { title: null, cwd: null, branch: null, firstPrompt: null, startedAt: null, remoteIds: [] };
+  const head: TranscriptHead = { title: null, name: null, firstAsk: null, cwd: null, branch: null, firstPrompt: null, startedAt: null, remoteIds: [] };
   for (const line of wholeLines(text, complete ? 'whole' : 'head')) {
     const o = parseObject(line);
     if (o === null) continue;
     addRemoteId(head.remoteIds, o);
+    head.name = customTitleOf(o) ?? head.name;
     if (o['type'] === 'ai-title' && typeof o['aiTitle'] === 'string' && head.title === null) head.title = o['aiTitle'].trim() || null;
     if (typeof o['cwd'] === 'string' && head.cwd === null) head.cwd = o['cwd'];
     if (typeof o['gitBranch'] === 'string' && head.branch === null) head.branch = o['gitBranch'] || null;
@@ -122,8 +147,23 @@ export function parseTranscriptHead(text: string, complete = false): TranscriptH
       const prompt = promptText(o);
       if (prompt !== null) head.firstPrompt = prompt;
     }
+    if (head.firstAsk === null) {
+      const prompt = promptText(o);
+      if (prompt !== null && !isBareCommand(prompt)) head.firstAsk = prompt;
+    }
   }
   return head;
+}
+
+// M9 fix 954: the name a /rename wrote (a custom-title line), trimmed, null for any other line or an empty name.
+function customTitleOf(o: Record<string, unknown>): string | null {
+  if (o['type'] !== 'custom-title' || typeof o['customTitle'] !== 'string') return null;
+  return o['customTitle'].trim() || null;
+}
+
+// M9 fix 954: what the user or Claude called the session: the /rename from the tail, else the head, else Claude's ai-title.
+export function nameOf(head: TranscriptHead, tail: TranscriptTail): string | null {
+  return tail.name ?? head.name ?? head.title;
 }
 
 // The last lines of a transcript. A chunk shorter than the file starts
@@ -131,12 +171,13 @@ export function parseTranscriptHead(text: string, complete = false): TranscriptH
 // prompt and the last reply with text in it, which is what Orca shows
 // under the title.
 export function parseTranscriptTail(text: string, complete = false): TranscriptTail {
-  const tail: TranscriptTail = { model: null, lastAt: null, preview: null, remoteIds: [] };
+  const tail: TranscriptTail = { name: null, model: null, lastAt: null, preview: null, remoteIds: [] };
   let previewAt = -1;
   for (const line of wholeLines(text, complete ? 'whole' : 'tail')) {
     const o = parseObject(line);
     if (o === null) continue;
     addRemoteId(tail.remoteIds, o);
+    tail.name = customTitleOf(o) ?? tail.name;
     const at = lineTime(o);
     if (at !== null && (tail.lastAt === null || at > tail.lastAt)) tail.lastAt = at;
     const message = o['message'];
@@ -178,9 +219,18 @@ function addRemoteId(ids: string[], o: Record<string, unknown>): void {
 // Counts the prompts in as much of a transcript as was read.
 export function countPrompts(text: string, complete = false): number {
   let n = 0;
+  // M9 fix 956: a typed /compact is written twice on one promptId; the second is not another prompt.
+  let lastId: string | null = null;
+  let last: string | null = null;
   for (const line of wholeLines(text, complete ? 'whole' : 'head')) {
     const o = parseObject(line);
-    if (o !== null && promptText(o) !== null) n += 1;
+    if (o === null) continue;
+    const prompt = promptText(o);
+    if (prompt === null) continue;
+    if (repeatsPrompt(o, prompt, lastId, last)) continue;
+    n += 1;
+    lastId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+    last = prompt;
   }
   return n;
 }
@@ -285,7 +335,7 @@ export function buildSession(
   return {
     id,
     path,
-    title: head.title ?? firstLine(firstPrompt) ?? '(no prompt yet)',
+    title: nameOf(head, tail) ?? firstLine(index?.firstAsk ?? head.firstAsk) ?? firstLine(firstPrompt) ?? '(no prompt yet)',
     remoteIds,
     cwd,
     branch: head.branch,
@@ -409,7 +459,9 @@ export function restoreOpenedFolds(collapsed: ReadonlySet<string>, focusedId: st
 // row keeps the scan's count, which is capped at COUNT_CAP_BYTES and
 // undercounts a long conversation.
 export function promptsText(turns: readonly Turn[]): string {
-  return `${turns.length} ${turns.length === 1 ? 'prompt' : 'prompts'}`;
+  // M9 fix 955: a bash run is not a prompt, so the unfolded count stays the folded scan's reading (which skips bash lines) and history.jsonl's (which never logs one).
+  const n = turns.filter((t) => !t.bash).length;
+  return `${n} ${n === 1 ? 'prompt' : 'prompts'}`;
 }
 
 // Whether two prices say the same thing (M9 fix 354), so the cost

@@ -46,6 +46,10 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
   // window first finds it.
   const pending = new Map<string, { point: Point; at: number }>();
   const focusedAt = new Map<number, number>();
+  // The windows a drop was sent to, lifted once the drop's edit has
+  // settled (M9 fix 947): lifted at the release, a window's focus wrote
+  // window.front and took the revision its drop was based on.
+  const lifts = new Set<number>();
   const live = (w: BrowserWindow | null): w is BrowserWindow => w !== null && !w.isDestroyed();
   const send = (w: BrowserWindow | null, msg: WindowDragTarget) => {
     if (live(w)) w.webContents.send('emerald:window-drag-target', msg);
@@ -102,11 +106,20 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
     if (target !== null) {
       send(target, { type: 'drop', drag, ...clientOf(target, point) });
       opts.log(`window drag: ${what(drag)} from window ${nameOf(source)} dropped on window ${nameOf(target)}`);
-      opts.lift(target);
+      lifts.add(target.webContents.id);
       return { to: 'window' };
     }
     opts.log(`window drag: ${what(drag)} from window ${nameOf(source)} released outside every window at ${Math.round(point.x)},${Math.round(point.y)}`);
     return { to: 'none', x: point.x, y: point.y };
+  });
+
+  // M9 fix 947: the target's drop has settled, landed or failed, so its
+  // window comes to the front now.
+  ipcMain.on('emerald:window-drag-landed', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (!live(w) || !lifts.delete(e.sender.id)) return;
+    opts.log(`window drag: the drop on window ${nameOf(w)} settled; lifting it`);
+    opts.lift(w);
   });
 
   // M9 fix 928: a layout tab to a window of its own whose title row is at
@@ -145,6 +158,7 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
       win.on('focus', () => focusedAt.set(key, Date.now()));
       win.on('closed', () => {
         focusedAt.delete(key);
+        lifts.delete(key);
         if (flight !== null && (flight.source === win || flight.target === win)) {
           if (flight.target === win) flight.target = null;
           end();

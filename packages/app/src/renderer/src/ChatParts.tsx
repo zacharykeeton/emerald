@@ -296,8 +296,9 @@ export function ChatCompact({ step }: { step: Extract<Step, { kind: 'compact' }>
 // rail: the command after a pink !, then the stdout and the stderr each
 // cut at three lines with a +N lines that opens the rest in place, or the
 // CLI's (No output). With no output line yet the head stands alone.
-// Static: no animation.
-export function ChatBash({ step }: { step: Extract<Step, { kind: 'bash' }> }) {
+// Static: no animation. Its turn's time and length stand at the head's
+// right, as a prompt row's (M9 fix 958).
+export function ChatBash({ step, time }: { step: Extract<Step, { kind: 'bash' }>; time: string | null }) {
   const [whole, setWhole] = useState<{ stdout: boolean; stderr: boolean }>({ stdout: false, stderr: false });
   const part = (name: 'stdout' | 'stderr', text: string, className: string) => {
     if (text === '') return null;
@@ -318,7 +319,10 @@ export function ChatBash({ step }: { step: Extract<Step, { kind: 'bash' }> }) {
   return (
     <div className="chat-step chat-bash" data-kind="bash">
       <div className="chat-bash-head">
-        <span className="chat-bash-mark">!</span> <span className="chat-bash-command">{step.command}</span>
+        <span className="chat-bash-line">
+          <span className="chat-bash-mark">!</span> <span className="chat-bash-command">{step.command}</span>
+        </span>
+        {time !== null && <span className="chat-bash-time">{time}</span>}
       </div>
       {out !== null && part('stdout', out.stdout, 'chat-bash-out')}
       {out !== null && part('stderr', out.stderr, 'chat-bash-err')}

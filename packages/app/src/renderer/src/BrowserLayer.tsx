@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { allPanes, browserPartition, findPane, focusPane, guestNavigationAllowed, isLocalPageUrl, paneUrl, setPaneView } from '@emerald/shared';
 import type { BrowserPaneView } from '@emerald/shared';
-import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, navigationRefusal, paneOfWebContents, patchPageState, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
+import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, refusalLine, refusedLink, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
 import type { WebviewLike } from './browser-layer.ts';
 import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
@@ -14,9 +14,6 @@ type FailEvent = Event & { errorCode: number; errorDescription: string; validate
 type ConsoleEvent = Event & { level: number | string; message: string };
 
 const LOCAL_RESOURCE = 'Not allowed to load local resource: ';
-const refusedLink = (url: string) => `This page tried to open ${url}; a browser pane opens only http and https pages`;
-// M9 fix 896: a link into the disk from a page not of the same folder.
-const refusedLocal = (url: string) => `This page tried to open ${url}; a web page cannot open a page from the disk`;
 
 const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
 
@@ -187,12 +184,9 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
       if (!framePageState(frameId).ready) return;
       patchPageState(frameId, { back: page.canGoBack(), forward: page.canGoForward() });
     };
-    // M9 fix 933: the pages from the disk this frame has shown, for navigationRefusal.
-    const shownLocal = new Set<string>();
     const navigated = (ev: Event) => {
       const e = ev as NavigateEvent;
       if (e.isMainFrame === false) return;
-      if (isLocalPageUrl(e.url)) shownLocal.add(e.url);
       patchPageState(frameId, { error: null, url: e.url });
       nav();
       // M9 fix 896: a link inside a page from the disk moves the record
@@ -225,22 +219,6 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
           if (/^\S+$/.test(refused) && !guestNavigationAllowed(refused)) patchPageState(frameId, { error: refusedLink(refused) });
         },
       ],
-      // What reaches main's guard first (it logs the same refusal).
-      [
-        'will-navigate',
-        (ev) => {
-          const url = (ev as NavigateEvent).url;
-          // getURL throws before the first dom-ready; '' is then a web origin.
-          let from = '';
-          try {
-            from = page.getURL();
-          } catch {
-            from = '';
-          }
-          const refusal = navigationRefusal(url, from, shownLocal);
-          if (refusal !== null) patchPageState(frameId, { error: refusal === 'local' ? refusedLocal(url) : refusedLink(url) });
-        },
-      ],
       ['did-navigate', navigated],
       ['did-navigate-in-page', navigated],
       // The history's own entry is not always committed by did-navigate,
@@ -264,10 +242,21 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
     // emmer browser (M9 fix 672): the guest told to main on each attach,
     // and the focus guard while a command runs.
     const unwire = wireDrivenPage(page, () => paneRef.current);
+    // M9 fix 967: main's guard is the one rule a link onto the disk meets, so its refusal is what the line says.
+    const offRefused = window.emerald.keys.onGuestRefused(({ webContentsId, url }) => {
+      let mine = false;
+      try {
+        mine = page.getWebContentsId() === webContentsId;
+      } catch {
+        mine = false;
+      }
+      if (mine) patchPageState(frameId, { error: refusalLine(url) });
+    });
     // The element goes with the frame, which goes only when its pane
     // closes or stops being a page.
     return () => {
       unwire();
+      offRefused();
       pageRef.current = null;
       page.remove();
       dropPageState(frameId);

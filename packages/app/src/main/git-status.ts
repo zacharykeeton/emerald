@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { GitChanges, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
+import type { ChangedFile, GitChanges, GitCheckout, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
 import { forgetInFlight, gitBytes, gitPipe, gitText, type GitOptions } from './git-runner.ts';
-import { defaultBranchOf, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, twinGroups } from '../renderer/src/git-changes-model.ts';
+import { defaultBranchOf, parseCheckouts, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, twinGroups } from '../renderer/src/git-changes-model.ts';
 import type { GitStatusResult } from '../renderer/src/git-status-model.ts';
 import { parseStatus } from '../renderer/src/git-status-model.ts';
 import { normalizePath } from '../renderer/src/files-model.ts';
@@ -49,29 +49,46 @@ export function gitStatus(dir: string): Promise<GitStatusResult> {
   );
 }
 
-// The Changes tab (M45): the status's files with the line counts of
-// `git diff --numstat HEAD`, which covers the index and the work tree
-// both, so a staged change has its numbers too. An untracked file is not
-// in the diff and keeps null counts; a binary one is listed with dashes
-// and keeps them too. A repo with no commit yet has no HEAD to diff
-// against, and the list then shows without numbers rather than not at
-// all.
-export function gitChanges(dir: string): Promise<GitChanges> {
-  return gitStatus(dir).then((status) => {
-    if (status.root === null) return { root: null, files: [] };
-    const root = status.root;
-    return gitText([NO_LOCKS, 'diff', '--numstat', 'HEAD', '-z'], root).then((stdout) => {
-      const counts = stdout === null ? new Map<string, [number | null, number | null]>() : parseNumstat(stdout, root);
-      const files = status.files
-        .filter((f) => f.status !== 'ignored')
-        .map((f) => {
-          const c = counts.get(f.path.toLowerCase());
-          return { ...f, rel: path.relative(root, f.path).replaceAll('\\', '/'), added: c?.[0] ?? null, removed: c?.[1] ?? null };
-        })
-        .sort((a, b) => a.rel.localeCompare(b.rel));
-      return { root, files };
+// The Changed list (M45's Changes tab, the Files rail's Changed toggle
+// since fix 70): the tracked changes off `git status --untracked-files=no`
+// with the line counts of `git diff --numstat HEAD`, which covers the index
+// and the work tree both, so a staged change has its numbers too; then
+// every untracked file off `git ls-files --others --exclude-standard`,
+// counted as the review counts them (countUntracked), so a new folder's
+// files are rows of their own with their counts where the status named the
+// folder once (M9 fix 965). A nested repository stays one row with no
+// count, and a binary file keeps null counts. A repo with no commit yet has
+// no HEAD to diff against, and its tracked rows then show without numbers
+// rather than not at all. `git` is the worker's gitText unless a test
+// hands in its own. gitStatus keeps the untracked default, since the
+// tree's tints want a new folder once.
+export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null> = gitText): Promise<GitChanges> {
+  if (typeof dir !== 'string' || !path.isAbsolute(dir)) return Promise.resolve({ root: null, files: [] });
+  const root = findRepoRoot(dir);
+  if (root === null) return Promise.resolve({ root: null, files: [] });
+  const run = (args: string[]) => git([NO_LOCKS, ...args], root);
+  const relOf = (p: string) => path.relative(root, p).replaceAll('\\', '/');
+  return (async () => {
+    const [status, nums, others] = await Promise.all([
+      run(['status', '--porcelain=v1', '--untracked-files=no', '-z']),
+      run(['diff', '--numstat', 'HEAD', '-z']),
+      run(['ls-files', '--others', '--exclude-standard', '-z']),
+    ]);
+    const counts = nums === null ? new Map<string, [number | null, number | null]>() : parseNumstat(nums, root);
+    const files: ChangedFile[] = (status === null ? [] : parseStatus(status, root).files).map((f) => {
+      const c = counts.get(f.path.toLowerCase());
+      return { ...f, rel: relOf(f.path), added: c?.[0] ?? null, removed: c?.[1] ?? null };
     });
-  });
+    const untracked = untrackedPaths(others, root);
+    const added = await countUntracked(root, untracked.filter((u) => !u.repo).map((u) => u.path), git);
+    for (const { path: p } of untracked) {
+      const n = added.get(p.toLowerCase()) ?? null;
+      // No count is no number on both sides, as the review's rows (M9 fix 917).
+      files.push({ path: p, code: '??', status: 'untracked', rel: relOf(p), added: n, removed: n === null ? null : 0 });
+    }
+    files.sort((a, b) => a.rel.localeCompare(b.rel));
+    return { root, files };
+  })();
 }
 
 // The Commits tab (M45): the repo's recent commits, newest first, with
@@ -135,7 +152,7 @@ const patchIdsOf = new Map<string, Map<string, string | null>>();
 // A global `git config --global user.name` and a `git worktree move`
 // change no key here, and a minute is the most either stays stale.
 export const GIT_FACTS_TTL_MS = 60_000;
-const repoFacts = new Map<string, { authorKey: string; author: string | null; authorAt: number; worktreesKey: string; worktrees: string[]; worktreesAt: number }>();
+const repoFacts = new Map<string, { authorKey: string; author: string | null; authorAt: number; worktreesKey: string; worktrees: string[]; checkouts: GitCheckout[]; worktreesAt: number }>();
 
 // The git a graph read spawns, a parameter so a test can count the calls.
 export interface GraphGit {
@@ -185,7 +202,7 @@ async function patchIds(root: string, hashes: readonly string[], pipe: GraphGit[
 
 export function gitGraph(dir: string, options: GitGraphOptions = {}, git: GraphGit = realGit): Promise<GitGraph> {
   const remotes = options.remotes === true;
-  const empty = (root: string | null): GitGraph => ({ root, head: null, headHash: null, defaultBranch: null, merged: [], commits: [], worktrees: [], author: null, fetchedAt: null });
+  const empty = (root: string | null): GitGraph => ({ root, head: null, headHash: null, defaultBranch: null, merged: [], commits: [], worktrees: [], checkouts: [], author: null, fetchedAt: null });
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) return Promise.resolve(empty(null));
   const root = findRepoRoot(dir);
   if (root === null) return Promise.resolve(empty(null));
@@ -208,17 +225,23 @@ export function gitGraph(dir: string, options: GitGraphOptions = {}, git: GraphG
     const now = Date.now();
     let facts = repoFacts.get(root);
     if (facts === undefined) {
-      facts = { authorKey: '', author: null, authorAt: -Infinity, worktreesKey: '', worktrees: [], worktreesAt: -Infinity };
+      facts = { authorKey: '', author: null, authorAt: -Infinity, worktreesKey: '', worktrees: [], checkouts: [], worktreesAt: -Infinity };
       repoFacts.set(root, facts);
     }
     const wtKey = worktreesKey(common);
     let worktrees: string[];
+    // The branch of each checkout (M9 fix 944) comes off the same run and
+    // is cached with it; a branch switched inside a linked worktree moves
+    // no key, so it is at most GIT_FACTS_TTL_MS stale.
+    let checkouts: GitCheckout[];
     if (facts.worktreesKey === wtKey && now - facts.worktreesAt < GIT_FACTS_TTL_MS) {
       worktrees = facts.worktrees;
+      checkouts = facts.checkouts;
     } else {
       const worktreeOut = await run(['worktree', 'list', '--porcelain']);
       worktrees = worktreeOut === null ? [] : parseWorktrees(worktreeOut);
-      if (worktreeOut !== null) Object.assign(facts, { worktreesKey: wtKey, worktrees, worktreesAt: now });
+      checkouts = worktreeOut === null ? [] : parseCheckouts(worktreeOut);
+      if (worktreeOut !== null) Object.assign(facts, { worktreesKey: wtKey, worktrees, checkouts, worktreesAt: now });
       else facts.worktreesAt = -Infinity;
     }
     // The repository's own author (M9 fix 286), read in the root so a
@@ -241,7 +264,7 @@ export function gitGraph(dir: string, options: GitGraphOptions = {}, git: GraphG
       const others = twins.get(c.hash);
       if (others !== undefined) c.twins = others;
     }
-    return { root, head: parsed.head, headHash: parsed.headHash, defaultBranch, merged, commits: parsed.commits, worktrees, author, fetchedAt: fetchedAt(common) };
+    return { root, head: parsed.head, headHash: parsed.headHash, defaultBranch, merged, commits: parsed.commits, worktrees, checkouts, author, fetchedAt: fetchedAt(common) };
   });
 }
 
@@ -257,6 +280,19 @@ function fetchedAt(common: string | null): number | null {
   } catch {
     return null;
   }
+}
+
+// The untracked paths of `git ls-files --others --exclude-standard -z`,
+// relative to the root with forward slashes, made absolute the way
+// parseNameStatus keys its rows. An entry ending in `/` is a repository of
+// its own (M9 fix 963): ls-files lists a plain folder's files and never
+// the folder, so only a nested repository keeps the slash, which
+// normalizePath then drops. A null (git failed) is none.
+export function untrackedPaths(others: string | null, root: string): { path: string; repo: boolean }[] {
+  return (others ?? '')
+    .split('\0')
+    .filter((rel) => rel !== '')
+    .map((rel) => ({ path: normalizePath(`${root}\\${rel}`), repo: rel.endsWith('/') }));
 }
 
 // The review tab (M64): the files changed since a base, with their status
@@ -299,20 +335,17 @@ export function gitReview(dir: string, base: string, git: (args: string[], cwd: 
     }
     // Relative to the root with forward slashes, keyed the way
     // parseNameStatus keys its rows so the dedupe against the diff holds; a
-    // nested repository stays one entry with a trailing slash, which
-    // normalizePath drops. A null (git failed) is no untracked rows.
-    const untracked = (others ?? '')
-      .split('\0')
-      .filter((rel) => rel !== '')
-      .map((rel) => normalizePath(`${root}\\${rel}`))
-      .filter((p) => !letters.has(p.toLowerCase()));
-    const added = await countUntracked(root, untracked, git);
-    for (const p of untracked) {
+    // nested repository stays one entry, marked `repo` (M9 fix 963). A null
+    // (git failed) is no untracked rows.
+    const untracked = untrackedPaths(others, root).filter((u) => !letters.has(u.path.toLowerCase()));
+    // A repository is never measured, which saves its stat.
+    const added = await countUntracked(root, untracked.filter((u) => !u.repo).map((u) => u.path), git);
+    for (const { path: p, repo } of untracked) {
       const rel = path.relative(root, p).replaceAll('\\', '/');
       const n = added.get(p.toLowerCase()) ?? null;
       // No count is no number on both sides: `+0 −0` would read as an
       // empty file (M9 fix 917).
-      files.push({ rel, path: p, letter: 'A', added: n, removed: n === null ? null : 0 });
+      files.push({ rel, path: p, letter: 'A', added: n, removed: n === null ? null : 0, ...(repo ? { repo: true as const } : {}) });
     }
     files.sort((a, b) => a.rel.localeCompare(b.rel));
     return { root, head, defaultBranch, baseHash, files };

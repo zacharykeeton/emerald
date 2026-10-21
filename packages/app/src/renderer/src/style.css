@@ -10787,11 +10787,11 @@ body.dragging-tab .tab {
   --vscode-editor-findMatchHighlightBackground: color-mix(in srgb, var(--find-match) 60%, transparent);
 }
 
-/* M9 fix 341: the tab strip or the files rail with a file from Explorer
-   over it, lit as a pane is for a file (the drop opens it as a tab). The
-   strip's own inset so its tabs stay where they are. */
-.tab-strip[data-drop-target],
-.files-rail[data-drop-target] {
+/* M9 fix 341: the tab strip with a file from Explorer over it, lit as a
+   pane is for a file: the drop opens it as a tab; the Files rail moves
+   instead (M9 fix 953). The strip's own inset so its tabs stay where they
+   are. */
+.tab-strip[data-drop-target] {
   box-shadow: inset 0 0 0 2px var(--done);
   background-color: var(--drop-target-fill);
 }
@@ -13960,55 +13960,6 @@ button.answer-popover-tab[data-sent="true"]:hover {
   font: inherit;
 }
 
-/* M9 fix 797: a shell call with a description reads as Claude Code draws it, the plain words on the row and the command dim under them. */
-.chat-step[data-kind="tool"][data-described] {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-
-.chat-step[data-kind="tool"][data-described] .chat-tool-arg {
-  font-family: inherit;
-  font-size: 12px;
-  color: var(--fg);
-}
-
-.chat-tool-command {
-  flex: 1 0 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-/* M9 fix 798: a command's output, a centred dim line across the rail, as a timeline marker. Static: no animation. */
-.chat-command-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--muted);
-}
-
-.chat-command-note::before,
-.chat-command-note::after {
-  content: '';
-  flex: 1 1 0;
-  height: 1px;
-  background: var(--line-strong);
-}
-
-.chat-command-note-text {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* M9 fix 889: remote control's link in its divider, as a reply's link reads. */
 .chat-command-note-link {
   color: var(--focus);
@@ -14071,11 +14022,6 @@ button.answer-popover-tab[data-sent="true"]:hover {
 .agent-card-earlier + .agent-card-earlier,
 .agent-card-earlier + .agent-card-activity {
   margin-top: 1px;
-}
-/* The shade's member box holds its three text lines in one span so a hover
-   on them opens the card while the checklist strip beside keeps its own. */
-.pane-shade-member-body {
-  display: contents;
 }
 
 /* M9 fix 837: the Statistics tab, a folder's whole history as figures, a
@@ -14485,4 +14431,81 @@ button.answer-popover-tab[data-sent="true"]:hover {
 .chat-bash-more:hover {
   background: none;
   color: var(--text-dim);
+}
+
+/* M9 fix 953: the folder a drop from Explorer lands in, its row or the
+   whole list for the rail's own folder, lit as fix 341 lights the strip. */
+.files-row[data-drop-into],
+.files-list[data-drop-into] {
+  box-shadow: inset 0 0 0 2px var(--done);
+  background-color: var(--drop-target-fill);
+}
+
+/* M9 fix 953: the ask when a drop from Explorer meets names already in
+   the folder. */
+.move-clash-dialog {
+  width: min(480px, 90vw);
+}
+
+.move-clash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 12px;
+}
+
+.move-clash-row {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.move-clash-held,
+.move-clash-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* M9 fix 963: a nested repository selected in the review, its one line and the button opening its own review. */
+.review-nested {
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px;
+  text-align: center;
+}
+
+.review-nested-open {
+  font-size: 12px;
+  color: var(--path);
+}
+
+/* M9 fix 957: the box is never shorter than its two rows (two 18px lines, 12px of padding, 2px of border), whatever its height measure wrote; one taken while its layout tab was hidden wrote 0px, drawn as the padding alone. */
+.chat-box {
+  min-height: 50px;
+}
+
+/* M9 fix 958: a bash turn's time and length at its head's right, in .chat-prompt-time's look and the chat's own face rather than the block's mono. */
+.chat-bash-head {
+  align-self: stretch;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.chat-bash-line {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-bash-time {
+  flex: none;
+  color: var(--muted);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }

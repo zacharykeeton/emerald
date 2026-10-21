@@ -76,6 +76,8 @@ interface Pane {
   // M9 fix 876: the timer that lets go of the page once it has had no command for the hold, and whether a command is running now.
   hold: NodeJS.Timeout | null;
   busy: boolean;
+  // M9 fix 966: the page's own zoom read as its window began to reload, for the fresh guest the reload makes for this pane; taken by that guest's first load.
+  keptZoom: { url: string; level: number } | null;
 }
 
 class Failed extends Error {}
@@ -89,7 +91,7 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   const paneOf = (id: string): Pane => {
     let p = panes.get(id);
     if (p === undefined) {
-      p = { contents: null, navigations: 0, refs: null, rows: new Map(), regions: new Map(), refsAt: 0, chain: Promise.resolve(), runs: 0, events: new EventLog(), driven: false, paused: false, synthetic: 0, by: 'emmer', hold: null, busy: false };
+      p = { contents: null, navigations: 0, refs: null, rows: new Map(), regions: new Map(), refsAt: 0, chain: Promise.resolve(), runs: 0, events: new EventLog(), driven: false, paused: false, synthetic: 0, by: 'emmer', hold: null, busy: false, keptZoom: null };
       panes.set(id, p);
     }
     return p;
@@ -123,6 +125,8 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
   };
   // Listeners go on a guest once, whichever pane holds it now.
   const wired = new WeakSet<WebContents>();
+  // M9 fix 966: the windows whose reload is heard, once each; a reload keeps the window's web contents, so one listener lasts.
+  const hostsHeard = new WeakSet<WebContents>();
   // The guests whose first Electron console error main.log has (M9 fix 857).
   const electronNoted = new WeakSet<WebContents>();
 
@@ -188,11 +192,38 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       zoomBefore = { url: contents.getURL(), level: contents.getZoomLevel() };
     });
     contents.on('did-navigate', (_e, url) => {
-      const before = zoomBefore;
+      // M9 fix 966: the level kept across the window's reload comes first.
+      const h = holder();
+      const kept = h?.[1].keptZoom ?? null;
+      if (h !== null) h[1].keptZoom = null;
+      const before = kept ?? zoomBefore;
       zoomBefore = null;
       if (before === null || !zoomKeptAcross(before.url, url)) return;
       if (contents.getZoomLevel() !== before.level) contents.setZoomLevel(before.level);
     });
+    // M9 fix 966: a reload of the window makes a new guest for every
+    // browser pane, at the window's level, under the same pane ids, so
+    // the level each page has as the window starts to reload is kept on
+    // its pane for the guest that comes next. Heard on the window's own
+    // navigation, not the menu's reload, so Ctrl+R, View > Reload and a
+    // CDP Page.reload all keep it.
+    const host = contents.hostWebContents;
+    if (host !== null && host !== undefined && !hostsHeard.has(host)) {
+      hostsHeard.add(host);
+      host.on('did-start-navigation', (details) => {
+        if (!details.isMainFrame || details.isSameDocument) return;
+        for (const [id, p] of panes) {
+          const c = p.contents;
+          if (c === null || c.isDestroyed() || c.hostWebContents !== host) continue;
+          try {
+            p.keptZoom = { url: c.getURL(), level: c.getZoomLevel() };
+            opts.log(`browser: pane ${id.slice(0, 8)} keeps zoom ${p.keptZoom.level} across the window's reload`);
+          } catch (err) {
+            opts.log(`browser: pane ${id.slice(0, 8)} zoom not read at the window's reload: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      });
+    }
     contents.on('console-message', (e) => {
       if (e.level !== 'error') return;
       if (fromElectron(e.sourceId)) {
@@ -234,6 +265,20 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       h[1].hold = null;
       h[1].contents = null;
     });
+    // M9 fix 966: a guest told to main only at its dom-ready (fix 693)
+    // has had its first did-navigate already, so the kept level is put
+    // back here too; whatever its first load leaves is dropped once that
+    // load is over, so a later link reads the page's live level.
+    const kept = p.keptZoom;
+    if (kept !== null && zoomKeptAcross(kept.url, contents.getURL())) {
+      if (contents.getZoomLevel() !== kept.level) contents.setZoomLevel(kept.level);
+      if (!contents.isLoading()) p.keptZoom = null;
+      else
+        contents.once('did-stop-loading', () => {
+          const h = holder();
+          if (h !== null) h[1].keptZoom = null;
+        });
+    }
   };
 
   const resume = (paneId: string, how: string): boolean => {
@@ -623,6 +668,21 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
         return { ok: true, text: `on ${contents.getURL()}, titled ${JSON.stringify(contents.getTitle())}` };
       }
       case 'upload': {
+        // M9 fix 970: a CSS selector in place of a ref (emmer browser upload --selector), for a hidden file input the snapshot does not list; the same setFileInputFiles, which Chromium takes as the person's own choice.
+        if (parseRef(a) === null) {
+          const found = await send('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(a)})` });
+          if (pageThrew(found) !== null) failed(`${a} is not a CSS selector`);
+          const objectId = (found['result'] as { objectId?: string } | undefined)?.objectId;
+          if (objectId === undefined) failed(`no element matches ${a}`);
+          try {
+            await send('DOM.setFileInputFiles', { files: [b], objectId: objectId! });
+          } catch {
+            failed(`${a} is not a file input`);
+          } finally {
+            await send('Runtime.releaseObject', { objectId: objectId! }).catch(() => {});
+          }
+          return { ok: true, text: `set ${a} to ${b}` };
+        }
         const r = resolveRef(p, a);
         try {
           await send('DOM.setFileInputFiles', { files: [b], backendNodeId: r.id });

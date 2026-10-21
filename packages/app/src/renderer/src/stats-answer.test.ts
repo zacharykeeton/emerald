@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ActivityTotals, ActivityTotalsPart } from '@emerald/shared';
 import type { GitProjectCounts } from '../../preload/api.ts';
-import { askDue, countAsk, keepAnswer, keptAnswer, noteAsk, onAnswer, resetStatsAnswers, statsCounts, statsSheet } from './stats-answer.ts';
+import { askDue, countAsk, keepAnswer, keepFailure, keptAnswer, keptFailure, noteAsk, onAnswer, resetStatsAnswers, statsCounts, statsSheet } from './stats-answer.ts';
 import type { StatsAnswer } from './stats-answer.ts';
 import { statsFigures } from './stats-model.ts';
 
@@ -63,6 +63,51 @@ test('keepAnswer hands the answer to every listener on the folder until it unsub
   resetStatsAnswers();
   keepAnswer('C:\\x', answer(3));
   assert.deepEqual(heard, ['a1', 'b1', 'b2'], 'a reset drops the listeners');
+});
+
+test('a failure with no answer kept is kept and heard by every panel on the folder that listens for one, and the next answer clears it (M9 fix 964)', () => {
+  resetStatsAnswers();
+  const heard: string[] = [];
+  onAnswer(
+    'C:\\x',
+    (a) => heard.push(`a${a.at}`),
+    (m) => heard.push(`a:${m}`),
+  );
+  onAnswer('c:/X/', (a) => heard.push(`b${a.at}`));
+  onAnswer(
+    'C:\\y',
+    (a) => heard.push(`y${a.at}`),
+    (m) => heard.push(`y:${m}`),
+  );
+  keepFailure('C:\\x', 'no pipe');
+  assert.equal(keptFailure('c:/X/'), 'no pipe');
+  assert.equal(keptFailure('C:\\y'), null);
+  keepAnswer('C:\\x', answer(1));
+  assert.equal(keptFailure('C:\\x'), null, 'an answer clears the failure');
+  assert.deepEqual(heard, ['a:no pipe', 'a1', 'b1']);
+});
+
+test('a failure on a folder with an answer kept is neither kept nor heard (M9 fix 964)', () => {
+  resetStatsAnswers();
+  const a = answer(1);
+  keepAnswer('C:\\x', a);
+  const heard: string[] = [];
+  onAnswer(
+    'C:\\x',
+    () => heard.push('answer'),
+    (m) => heard.push(m),
+  );
+  keepFailure('C:\\x', 'late');
+  assert.equal(keptFailure('C:\\x'), null);
+  assert.deepEqual(heard, []);
+  assert.equal(keptAnswer('C:\\x'), a);
+});
+
+test('a reset clears a kept failure (M9 fix 964)', () => {
+  resetStatsAnswers();
+  keepFailure('C:\\x', 'gone');
+  resetStatsAnswers();
+  assert.equal(keptFailure('C:\\x'), null);
 });
 
 test('statsSheet computes once per answer and counts only a computation; asks count per folder (M9 fix 885)', () => {

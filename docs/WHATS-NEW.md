@@ -2,6 +2,36 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 944 to 971, 2026-10-21
+
+Twenty-eight fixes: the commit graph through a batch (every seat on its own branch, stacked above main, squares for what someone else committed), the pane drop between windows made to work, a drop from Explorer that moves the file into the Files tree, the tree's last keys, the chat view's and the Sessions tab's small items, the shade's card, the browser pane and its CLI, and a new shell that sees a tool installed since the daemon started. The daemon goes from level 75 to 76, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**The commit graph through a batch.** Run a batch of subagents in worktrees and the graph now follows it from the plan to the merge. A session's line is its folder's branch, so a `cd` inside one command no longer moves its star, and each seat's star sits over its own branch's head, the lead's own fix-ups on a seat's branch drawn on that seat's line. The seats always stack above main's row, main first and the subagents on top, even once main has moved on past where they forked. A commit on a session's line that nobody in the session made, yours by hand or another session's, is a square in the line's colour, and the short head bar is gone. A seat that has finished and whose worktree is gone has no row; one still there rests, and a merged one moves to a lane beside its line so the merge line never runs through its star.
+
+**Drag a pane into the other window.** With two windows open, press a pane's title and drag it into the other window: it lands where you let go, and that window comes to the front once it has. In 0.1.918 the drop lit the other window's zones and then moved nothing. A hit from the contents search dropped outside every window now opens its new window on the file at the hit's line, lit, and the sidebar's order, filter and folded groups follow from one window to the other while each keeps its own panel widths.
+
+**Drop files from Explorer into the Files tree.** Drag a file or a folder from Explorer onto the Files rail and it goes into the folder under the mouse, lit as you hover: a folder row is that folder, a file row its folder, anywhere else the rail's own. It follows Explorer's rule, a move on the same drive and a copy to another, Shift forcing a move and Ctrl a copy, and a note in the corner says what went where; a tab open on a moved file follows it. A name already there asks once for the whole drop: Replace (what was there goes to the recycle bin), Skip or Cancel. The cursor shows a copy's plus even for a move, the safe answer until Explorer's own behaviour is read. Opening a file from Explorer is now the tab strip's drop alone.
+
+**The Files tree's last keys.** With the tree holding the keyboard, Delete sends the selected file or folder to the recycle bin at once with a note in the corner, Space previews a file or opens a folder without leaving the tree, and typing the start of a name jumps to the next row that starts with it. Hiding the rail while it has the keyboard gives the keyboard back to the terminal, or to the file in front.
+
+### Details
+
+**The Sessions tab.** A row is titled by the name you gave the session with `/rename`, and a session never named by its first real ask rather than a `/model` or another setting command. A bash run is a row of its own marked `!` in the Turns tab and the rail's unfolded turns, and the turn before it keeps its own reply and length.
+
+**The chat view.** A `/compact` typed in the box or the terminal draws one prompt bubble, its compaction note under it. The box is never squished shorter than its two rows, even after a reload with its tab behind another. A bash run's block shows its time and length at its head, as a prompt row does. The question card walks its tabs by Claude Code's own keys, Left and Shift+Tab back, Right and Tab on, on the chat card and the sidebar's.
+
+**The shade.** The whole of a member's box keeps its card open, the padding, the border and the gaps between its lines included.
+
+**Small reads.** A repository nested in the folder reads `repository` in the review tab, and selected it says what it is with `Review it ›` opening its own review. A statistics panel opened after a failed ask, or still loading when another panel's ask fails, shows the failure. The Files rail's Changed list lists a new folder's files one row each, and every untracked file carries its line count.
+
+**The browser pane.** A page's own zoom is kept across a reload of the app's window, and a link onto a page from the disk that the app refuses says so on the pane's error line.
+
+**`emmer browser`.** `emmer browser close` puts away the browser pane this session opened, and refuses one you or another session opened. `emmer browser upload --selector <css> <path>` sets a hidden file input the snapshot does not list. A drive script's helper that finds no row prints the snapshot it searched.
+
+**A new shell sees the machine's PATH.** A new shell or Claude session reads PATH from the registry when it starts, as a new Windows Terminal tab does, so a tool installed after emerald's daemon started is found in the next pane without a restart.
+
 ## Fixes 918 to 943, 2026-10-20
 
 Twenty-five fixes: the chat view's lines (the same corners on every bubble, a turn's length, the compaction note, bash mode, the question card's tabs and the remote control bar), the second window finished (tab names, the skin and the settings kept in step, a drag between windows), the Files tree on the keyboard as in VS Code, the commit graph's star over its branch's head, the browser pane's small items and its CLI at a point, and a few small reads. The daemon goes from level 74 to 75, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

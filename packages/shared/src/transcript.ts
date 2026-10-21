@@ -95,6 +95,8 @@ export interface Turn {
   filesRead: string[];
   // Bash commands that can move HEAD.
   commits: number;
+  // M9 fix 955: a bash-mode run (a `!` command), its command the prompt; false on every other turn.
+  bash: boolean;
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -109,17 +111,29 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // background task's end, an agent's report, another session's message, M9
 // fix 805's notificationOf) opens no turn; since fix 883 the task's end, a
 // plain user line, is caught too, and Claude's answer to it is the open
-// turn's reply.
+// turn's reply. A bash-mode run (a `!` command) opens a turn of its own,
+// marked bash, its command the prompt (M9 fix 955), so Claude's answer to
+// it is that turn's reply and the turn before keeps its own.
 export function parseTurns(text: string): Turn[] {
   const turns: Turn[] = [];
   let turn: Turn | null = null;
+  // M9 fix 956: the promptId of the last prompt that opened a turn, for repeatsPrompt.
+  let lastId: string | null = null;
   for (const raw of text.split('\n')) {
     const o = parseObject(raw);
     if (o === null || o['isSidechain'] === true) continue;
     const at = lineTime(o);
+    const command = bashInputOf(o);
+    if (command !== null) {
+      turn = { prompt: command, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0, bash: true };
+      turns.push(turn);
+      continue;
+    }
     const prompt = notificationOf(o, at) === null ? promptOf(o) : null;
+    if (prompt !== null && turn !== null && !turn.bash && repeatsPrompt(o, prompt, lastId, turn.prompt)) continue;
     if (prompt !== null) {
-      turn = { prompt, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0 };
+      lastId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+      turn = { prompt, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0, bash: false };
       turns.push(turn);
       continue;
     }
@@ -432,12 +446,13 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
   // reply is that answer, and the turn before keeps its length. The output
   // fills the open turn's last run still waiting for one, replaced in the
   // steps rather than changed (stepFork shares it). Neither line moves
-  // endAt. promptOf still skips both, so the Turns view, the queue fold and
-  // the history never see them.
+  // endAt. promptOf still skips both, so the queue fold and the Sessions
+  // scan's counts never see them; parseTurns opens a turn on the input line
+  // too (fix 955), marked bash, where this fold's turn has no prompt.
   if (o['type'] === 'user' && o['isMeta'] !== true) {
     const lead = (userTextOf(o) ?? '').trimStart();
-    if (lead.startsWith('<bash-input>')) {
-      const command = (/<bash-input>([\s\S]*?)<\/bash-input>/.exec(lead)?.[1] ?? '').trim();
+    const command = bashInputOf(o);
+    if (command !== null) {
       openBareTurn(state, { kind: 'bash', command, out: null, at }, at);
       state.promptId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
       state.promptUuid = typeof o['uuid'] === 'string' ? o['uuid'] : null;
@@ -464,6 +479,7 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     return;
   }
   const prompt = promptOf(o);
+  if (prompt !== null && state.turn !== null && repeatsPrompt(o, prompt, state.promptId, state.turn.prompt)) return;
   if (prompt !== null) {
     turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
     state.turn = turn;
@@ -830,6 +846,12 @@ function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string
   return text === '' || COMMAND_LEFTOVER.test(text) ? 'drop' : { text };
 }
 
+// M9 fix 956: a /compact typed in the box or the terminal is written twice on one promptId, the plain prompt first and a <command-name> line after the summary; the second is the same prompt again, not a new one. True for a user line holding <command-name> whose promptId is the last prompt's and whose command reads as that prompt's text.
+export function repeatsPrompt(o: Record<string, unknown>, prompt: string, lastId: string | null, lastPrompt: string | null): boolean {
+  if (lastId === null || lastPrompt === null || o['promptId'] !== lastId || prompt !== lastPrompt) return false;
+  return (userTextOf(o) ?? '').includes('<command-name>');
+}
+
 function promptOf(o: Record<string, unknown>): string | null {
   // M9 fix 920: a compaction's summary is Claude Code's, not the person's.
   if (o['type'] !== 'user' || o['isMeta'] === true || o['isCompactSummary'] === true) return null;
@@ -936,6 +958,14 @@ function userTextOf(o: Record<string, unknown>): string | null {
   if (!Array.isArray(content)) return null;
   const first = content.find((part): part is { type: 'text'; text: string } => isObject(part) && part['type'] === 'text' && typeof part['text'] === 'string');
   return first === undefined ? null : first.text;
+}
+
+// M9 fix 955: a bash-mode run's command, off its input line (a user line, not meta, whose text trims to start with <bash-input>), else null. Both folds open a turn on it, so the two readings cannot drift.
+function bashInputOf(o: Record<string, unknown>): string | null {
+  if (o['type'] !== 'user' || o['isMeta'] === true) return null;
+  const lead = (userTextOf(o) ?? '').trimStart();
+  if (!lead.startsWith('<bash-input>')) return null;
+  return (/<bash-input>([\s\S]*?)<\/bash-input>/.exec(lead)?.[1] ?? '').trim();
 }
 
 // M9 fix 921: a bash run's output line read as the CLI shows it. The

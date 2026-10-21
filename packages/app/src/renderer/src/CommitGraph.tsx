@@ -248,11 +248,20 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
   const ownBlocks = new Set<number>();
   const gapGroups = new Map<number, number>();
   for (const l of [...lanes].sort((x, y) => x.slot - y.slot)) {
-    if (l.memberId === null || l.slot === firstSlot.get(l.block)) continue;
+    if (l.memberId === null || l.slot === firstSlot.get(l.block) || l.side === true) continue;
     ownBlocks.add(l.block);
     const index = (memberLanes.get(l.block) ?? 0) + 1;
     memberLanes.set(l.block, index);
     tintOf.set(`${l.block} ${l.slot}`, { index, color: '' });
+  }
+  // A side lane (M9 fix 946) is its member's star beside the member's
+  // line, so it takes that line's tint and counts for none of its own:
+  // every other lane keeps the tint it had.
+  for (const l of lanes) {
+    if (l.side !== true) continue;
+    const line = lanes.find((o) => o.block === l.block && o.memberId === l.memberId && o.side !== true);
+    const tint = line === undefined ? undefined : tintOf.get(`${line.block} ${line.slot}`);
+    if (tint !== undefined) tintOf.set(`${l.block} ${l.slot}`, tint);
   }
   for (const [key, tint] of tintOf) {
     const block = Number(key.split(' ')[0]);
@@ -363,7 +372,7 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
     const lane = laneDef.get(`${block} ${slot}`);
     const tint = tintOf.get(`${block} ${slot}`);
     const own = ownBlocks.has(block) && lane !== undefined && firstSlot.get(block) === slot;
-    return { 'data-lane': slot, 'data-block': block, 'data-session': b.sessionId ?? undefined, 'data-member': lane?.memberId ?? undefined, 'data-tint': tint?.index, 'data-own': own ? '' : undefined, 'data-gone': b.gone ? '' : undefined, 'data-outside': b.sessionId === null ? '' : undefined, 'data-history': b.history === null ? undefined : b.history.transcriptId, 'data-person': b.person === null ? undefined : b.person.name, 'data-remote': b.remote === null ? undefined : b.remote.branch };
+    return { 'data-lane': slot, 'data-block': block, 'data-session': b.sessionId ?? undefined, 'data-member': lane?.memberId ?? undefined, 'data-side': lane?.side === true ? '' : undefined, 'data-tint': tint?.index, 'data-own': own ? '' : undefined, 'data-gone': b.gone ? '' : undefined, 'data-outside': b.sessionId === null ? '' : undefined, 'data-history': b.history === null ? undefined : b.history.transcriptId, 'data-person': b.person === null ? undefined : b.person.name, 'data-remote': b.remote === null ? undefined : b.remote.branch };
   };
   const pathOf = (line: GraphLine): string => {
     const t0 = t(line.fromRow);
@@ -446,11 +455,22 @@ export function CommitGraph({ graph, orientation, reverse, merged, fresh, cards,
     const block = blockOfSession.get(it.sessionId) ?? 0;
     const [cx, cy] = xy(t(it.row), a(it.lane));
     if (it.kind === 'commit') {
+      const title = <title>{isWriteHash(it.commit.hash) ? it.commit.subject : `${it.commit.hash.slice(0, 7)} ${it.commit.subject}`}</title>;
+      // A commit made outside the session on its line (M9 fix 945, rule
+      // 5) is a square of the dot's size in the lane's colour, the one
+      // new shape; the fill, the fade, the hover and the card are the
+      // dot's.
       into(
         it.sessionId,
-        <circle key={it.commit.hash} className="commits-node" cx={cx} cy={cy} r={p.nodeR} data-hash={it.commit.hash} data-fresh={fresh.has(it.commit.hash) ? '' : undefined} {...laneData(it.lane, block)} data-member={it.memberId ?? undefined} style={style(block, it.lane)}>
-          <title>{isWriteHash(it.commit.hash) ? it.commit.subject : `${it.commit.hash.slice(0, 7)} ${it.commit.subject}`}</title>
-        </circle>,
+        it.foreign === true ? (
+          <rect key={it.commit.hash} className="commits-node" x={cx - p.nodeR} y={cy - p.nodeR} width={2 * p.nodeR} height={2 * p.nodeR} data-foreign="" data-hash={it.commit.hash} data-fresh={fresh.has(it.commit.hash) ? '' : undefined} {...laneData(it.lane, block)} data-member={it.memberId ?? undefined} style={style(block, it.lane)}>
+            {title}
+          </rect>
+        ) : (
+          <circle key={it.commit.hash} className="commits-node" cx={cx} cy={cy} r={p.nodeR} data-hash={it.commit.hash} data-fresh={fresh.has(it.commit.hash) ? '' : undefined} {...laneData(it.lane, block)} data-member={it.memberId ?? undefined} style={style(block, it.lane)}>
+            {title}
+          </circle>
+        ),
       );
       if (leaderTo !== null && leaderTo > cx + p.nodeR + 2) {
         leaders.push(<line key={`leader-${it.commit.hash}`} className="commits-leader" x1={cx + p.nodeR} y1={cy} x2={leaderTo} y2={cy} data-hash={it.commit.hash} data-raised={raisedHash === it.commit.hash ? '' : undefined} data-lane={it.lane} data-outside={it.sessionId === null ? '' : undefined} data-remote={remoteBranchOf(it.sessionId) ?? undefined} style={style(block, it.lane)} />);
@@ -673,7 +693,7 @@ function AgentMarker({ item, kind, family, cx, cy, leaderTo, style, card, now, l
   return (
     <>
       {leaderTo !== null && leaderTo > cx + mark / 2 + 2 && <line className="commits-leader" x1={cx + mark / 2 + 2} y1={cy} x2={leaderTo} y2={cy} data-member={memberId} data-session={item.sessionId} style={style} />}
-      <g ref={ref} className="commits-agent-node" data-member={memberId} data-session={item.sessionId} data-lane={item.lane} data-size={size} data-family={memberFamily ?? undefined} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-lit={lit ? '' : undefined} data-popover-for={card?.id} data-popover-open={state.open} style={style} {...handlers}>
+      <g ref={ref} className="commits-agent-node" data-member={memberId} data-session={item.sessionId} data-lane={item.lane} data-side={item.beside === true ? '' : undefined} data-size={size} data-family={memberFamily ?? undefined} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-lit={lit ? '' : undefined} data-popover-for={card?.id} data-popover-open={state.open} style={style} {...handlers}>
         <foreignObject x={cx - mark / 2} y={cy - mark / 2} width={mark} height={mark}>
           <SessionMark kind={kind} working={working} size={size} family={memberFamily} className="commits-agent-mark" />
         </foreignObject>

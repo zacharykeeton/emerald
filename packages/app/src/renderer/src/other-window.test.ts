@@ -52,6 +52,11 @@ test("a pane map's write keeps what another window stored after this one loaded 
     ['C:\\repo\\a.md', 'Dracula'],
     ['C:\\repo\\b.md', 'One Dark'],
   ]);
+
+  // M9 fix 949: a fold starts from the stored set.
+  store.set('emerald.sidebarFolded', '["g-other"]');
+  ui.toggleSidebarFold('g-mine');
+  assert.deepEqual(JSON.parse(store.get('emerald.sidebarFolded')!), ['g-other', 'g-mine']);
 });
 
 test("another window's write is taken as it lands (M9 fix 926)", () => {
@@ -78,4 +83,27 @@ test("another window's write is taken as it lands (M9 fix 926)", () => {
   assert.equal(ui.getUiState().chatModes.get('p-a'), 'verbose');
   wrote('emerald.fileSchemes', '[["C:\\\\repo\\\\c.md","Nord"]]');
   assert.equal(getFileScheme('C:/repo/c.md'), 'Nord');
+  // M9 fix 949: the sidebar list's choices follow.
+  wrote('emerald.sidebarOrder', 'state');
+  assert.equal(ui.getUiState().sidebarOrder, 'state');
+  wrote('emerald.sidebarFilter', 'needs');
+  assert.equal(ui.getUiState().sidebarFilter, 'needs');
+  wrote('emerald.sidebarFolded', '["g-a"]');
+  assert.deepEqual([...ui.getUiState().sidebarFolded], ['g-a']);
+});
+
+test("a contents hit's reveal handed to a new window is taken once at its load, under ten seconds old (M9 fix 948)", () => {
+  const key = 'emerald.revealHandoff';
+  ui.handRevealToNewWindow('p-new', 'C:/repo/a.ts', 12, 5);
+  const at = (JSON.parse(store.get(key)!) as { at: number }).at;
+  assert.deepEqual(ui.loadRevealHandoff(at + 9_999), { path: 'C:/repo/a.ts', line: 12, column: 5, seq: 1, paneId: 'p-new' });
+  assert.equal(store.has(key), false, 'taken once');
+  assert.equal(ui.loadRevealHandoff(at + 9_999), null);
+  ui.handRevealToNewWindow('p-new', 'C:/repo/a.ts', 12, 5);
+  const again = (JSON.parse(store.get(key)!) as { at: number }).at;
+  assert.equal(ui.loadRevealHandoff(again + 10_000), null, 'ten seconds old is too old');
+  assert.equal(store.has(key), false);
+  store.set(key, '{"paneId":3}');
+  assert.equal(ui.loadRevealHandoff(), null);
+  assert.equal(store.has(key), false);
 });

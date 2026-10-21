@@ -101,11 +101,8 @@ test('historyCardModel (M70): the conversation, its folder, its dates, its commi
 
 test('barLines (M9 fix 152): a start bar and the fork bars each get a line, the fork hashes cut to three, and a block with no bar gets none', () => {
   const none = barLines([]);
-  assert.deepEqual(none, { head: null, start: null, landing: null, ending: null });
-  // M9 fix 151: the head bar under a session's row.
-  const head = barLines([{ kind: 'head', hash: 'db2fbafd05e7ef72ec43ff4515126548c810faa7' }]);
-  assert.equal(head.head, 'bar at db2fbaf: the head of the branch this session is on, a commit on another lane');
-  assert.equal(head.start, null);
+  // No head line since M9 fix 945: the head bar went.
+  assert.deepEqual(none, { start: null, landing: null, ending: null });
   const start = barLines([{ kind: 'start', hash: 'e6e114c92bad120993dffe980b1a19d14573051c' }]);
   assert.equal(start.start, 'bar at e6e114c: the commit HEAD was on when this session started');
   assert.equal(start.landing, null);

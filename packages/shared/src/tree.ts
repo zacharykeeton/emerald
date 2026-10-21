@@ -1,7 +1,7 @@
 import { unitBounds } from './activity-model.ts';
 import { isGraphScale } from './layout.ts';
 import { isLocalPageUrl, paneUrl } from './browser-url.ts';
-import { BROWSER_PROFILE } from './browser-drive.ts';
+import { BROWSER_OPENER, BROWSER_PROFILE } from './browser-drive.ts';
 import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, LayoutWindow, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
 
 // Pure operations on the split tree. Every function returns a new tree and
@@ -510,7 +510,7 @@ function validateView(value: unknown, where: string): PaneView | null {
   }
   if (value['kind'] === 'browser') {
     // M9 fix 659: a page's address held as browserUrl writes it, or ''
-    // for a pane whose address bar is still empty; profile (fix 673) and toolbar (fix 839) are kept, nothing else.
+    // for a pane whose address bar is still empty; profile (fix 673), toolbar (fix 839) and openedBy (fix 969) are kept, nothing else.
     const url = value['url'];
     // M9 fix 896: or an emerald-file: page (paneUrl), with its root.
     if (typeof url !== 'string' || (url !== '' && paneUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, an emerald-file page, or empty`);
@@ -524,9 +524,13 @@ function validateView(value: unknown, where: string): PaneView | null {
     // absolute Windows path, required beside such a url and dropped (never
     // refused) beside any other.
     const root = value['root'];
+    // M9 fix 969: the session that opened the pane, kept when BROWSER_OPENER
+    // takes it and dropped (never refused, since a refusal fails the whole
+    // layout at a load) otherwise.
+    const openedBy = value['openedBy'];
     const local = isLocalPageUrl(url);
     if (local && (typeof root !== 'string' || !ABSOLUTE_WINDOWS_PATH.test(root))) throw new LayoutError(`${where}.root must be the absolute folder of its emerald-file page`);
-    return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}) };
+    return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}), ...(typeof openedBy === 'string' && BROWSER_OPENER.test(openedBy) ? { openedBy } : {}) };
   }
   if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
   const folder = value['folder'];

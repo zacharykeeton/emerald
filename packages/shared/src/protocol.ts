@@ -120,7 +120,9 @@ export const PROTOCOL_VERSION = 1;
 //  74: M9 fix 904, seq on a team member and teamSeq on SessionInfo, each subagent's handle number in spawn order (A3), kept when the members before it are dropped
 //  75: M9 fix 935, click and hover from a point x,y on browser.run, relayed to app windows at level 75 alone
 //  75: M9 fix 936, browser on file.open and file.open.requested, an absolute .html or .htm path the window renders in a browser pane on emerald-file:, its root the Files rail's folder when the file is under it, else the file's own
-export const DAEMON_FEATURE_LEVEL = 75;
+//  76: M9 fix 969, openedBy on a browser view, the EMERALD_SESSION_ID of the session whose emmer browser open made the pane, by which emmer browser close puts away only a pane its own session opened
+//  76: M9 fix 970, upload with a CSS selector in place of a ref on browser.run (emmer browser upload --selector), for a hidden file input, relayed to app windows at level 76 alone
+export const DAEMON_FEATURE_LEVEL = 76;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.

@@ -6,7 +6,7 @@ import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
 import { answerOptions, askQuestion, askReview, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption, AskPress } from './screen-prompt-model.ts';
-import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab, AskVisit } from './screen-prompt-model.ts';
 import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown, askHeading } from './chat-model.ts';
@@ -190,6 +190,25 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
     if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
     press(optionKeys(ask, key));
   };
+  // M9 fix 959: the dialog's tab keys on a question, taken from wherever the
+  // focus is, as this card's Escape is (Popover.tsx); its own fields keep
+  // their caret keys, and the review leaves them to the terminal (fix 910).
+  const tabKeys = useRef<(ev: KeyboardEvent) => void>(() => {});
+  tabKeys.current = (ev) => {
+    if (ask === null || askTabs.length === 0) return;
+    const tabStep = tabKeyStep(ev.key, ev.shiftKey);
+    if (tabStep === 0) return;
+    if (ev.target instanceof Element && ev.target.closest('.answer-popover') !== null) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const to = tabStepTo(askTabs, tabStep);
+    if (to !== null) pressTab(askTabs, to);
+  };
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => tabKeys.current(ev);
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true });
+  }, []);
   const askText = askBoxShown({ reason: session.needsInputReason, recognised: ask !== null || review !== null, options: options.length, pressed: pressed !== null, askedFor: session.askedFor });
   // A question wants words, so the box takes the keyboard as the card
   // opens; a permission keeps it in the terminal, the buttons need none.
@@ -282,7 +301,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
             <span className="answer-popover-label">Cancel</span>
           </button>
         )}
-        {/* M9 fix 910: Back carries the ← cap, as the chat card's does: this card takes no key but Escape (Popover.tsx), so a Left goes to the focused terminal and reaches the session as the digits do. */}
+        {/* M9 fix 910: Back carries the ← cap, as the chat card's does: this card takes no key but Escape (Popover.tsx) and, on a question, the tab keys (fix 959), so a Left goes to the focused terminal and reaches the session as the digits do. */}
         {review !== null && (
           <button type="button" className="answer-popover-option answer-popover-back" data-key="back" data-sent={sentMark} title="Sends ← to the session, back to the questions" onClick={() => press('\x1b[D')}>
             <span className="answer-popover-key">←</span>

@@ -14,7 +14,7 @@ import { SessionMark } from './session-mark.tsx';
 import { useSkin } from './skin.ts';
 import { useStore } from './store.ts';
 import { tabQuery } from './tabs-model.ts';
-import { useUi } from './ui.ts';
+import { openFolderReviewTab, useUi } from './ui.ts';
 
 // The review tab (M64): one session's changed files as a read-only diff,
 // comments on the work tree side, and Send review typing them into the
@@ -264,7 +264,9 @@ export function ReviewTab({ path }: { path: string }) {
           ))}
         </div>
         <div className="review-diff-host">
-          {shown !== null && git !== null && folder !== null && (session !== undefined || sessionId === null) ? (
+          {shown !== null && shown.repo === true ? (
+            <NestedRepo file={shown} />
+          ) : shown !== null && git !== null && folder !== null && (session !== undefined || sessionId === null) ? (
             <ReviewDiff key={`${git.baseHash ?? ''}:${shown.rel}`} sessionId={reviewKey} folder={folder} file={shown} baseHash={git.baseHash} baseName={baseName} branch={git.head ?? session?.branch ?? null} />
           ) : (
             <div className="review-empty">{git === null ? 'Reading the changes' : files.length === 0 ? 'Nothing to review' : ''}</div>
@@ -282,7 +284,7 @@ function FileRow({ file, comments, selected, folded, onClick }: { file: ReviewFi
   const dir = file.rel.includes('/') ? file.rel.slice(0, file.rel.lastIndexOf('/')) : '';
   const counts = countsText(file.added, file.removed);
   return (
-    <div className="review-file" data-rel={file.rel} data-letter={file.letter} data-selected={selected || undefined} data-comments={comments || undefined} title={folded ? `${file.rel}${counts === null ? '' : ` ${counts}`}` : file.rel} onClick={onClick}>
+    <div className="review-file" data-rel={file.rel} data-letter={file.letter} data-repo={file.repo || undefined} data-selected={selected || undefined} data-comments={comments || undefined} title={folded ? `${file.rel}${file.repo === true ? ' repository' : counts === null ? '' : ` ${counts}`}` : file.rel} onClick={onClick}>
       <span className="review-file-letter" data-letter={file.letter}>
         {file.letter}
       </span>
@@ -293,12 +295,29 @@ function FileRow({ file, comments, selected, folded, onClick }: { file: ReviewFi
             {comments > 0 && <span className="review-file-comments">▪{comments}</span>}
           </span>
           <span className="review-file-sub">
-            {counts !== null && <span className="review-file-counts">{counts}</span>}
+            {file.repo === true ? <span className="review-file-repo">repository</span> : counts !== null && <span className="review-file-counts">{counts}</span>}
             {dir !== '' && <span className="review-file-dir">{dir}</span>}
           </span>
         </span>
       )}
       {folded && comments > 0 && <span className="review-file-comments">▪{comments}</span>}
+    </div>
+  );
+}
+
+// A repository of its own under the folder (M9 fix 963): no diff here,
+// since its files have another base and another head; the one line saying
+// so and the button that opens its own review, whose gitReview finds the
+// nested root by findRepoRoot.
+function NestedRepo({ file }: { file: ReviewFile }) {
+  return (
+    <div className="review-empty review-nested" data-rel={file.rel}>
+      <span className="review-nested-line">
+        <span className="review-nested-name">{file.rel}</span> is a repository of its own; its changes are reviewed in it
+      </span>
+      <button className="files-button review-nested-open" title={`Open the review of ${file.path}`} onClick={() => openFolderReviewTab(file.path)}>
+        Review it ›
+      </button>
     </div>
   );
 }

@@ -33,9 +33,10 @@ export interface StatsSheet {
 }
 
 const kept = new Map<string, StatsAnswer>();
+const failures = new Map<string, string>();
 const asks = new Map<string, number>();
 const started = new Map<string, number>();
-const listeners = new Map<string, Set<(answer: StatsAnswer) => void>>();
+const listeners = new Map<string, Set<{ answer: (answer: StatsAnswer) => void; failure: ((message: string) => void) | undefined }>>();
 const sheets = new Map<string, number>();
 const sheetOf = new WeakMap<StatsAnswer, StatsSheet>();
 
@@ -50,26 +51,45 @@ export function keptAnswer(folder: string): StatsAnswer | null {
 export function keepAnswer(folder: string, answer: StatsAnswer): void {
   const k = keyOf(folder);
   kept.set(k, answer);
+  failures.delete(k);
   // Over a copy, so a listener that unsubscribes inside its call never
   // skips a sibling.
-  for (const l of [...(listeners.get(k) ?? [])]) l(answer);
+  for (const l of [...(listeners.get(k) ?? [])]) l.answer(answer);
+}
+
+// A failed ask on a folder with no answer kept (M9 fix 964): kept, so a
+// panel mounted later in the minute starts on it, and heard by every panel
+// on the folder, so none reads `Reading the totals…` until its own tick.
+// A folder with an answer kept goes on drawing it (fix 942's rule): there
+// a failure is neither kept nor heard. The next answer clears it.
+export function keepFailure(folder: string, message: string): void {
+  const k = keyOf(folder);
+  if (kept.has(k)) return;
+  failures.set(k, message);
+  for (const l of [...(listeners.get(k) ?? [])]) l.failure?.(message);
+}
+
+export function keptFailure(folder: string): string | null {
+  return failures.get(keyOf(folder)) ?? null;
 }
 
 // Every panel on a folder hears the one ask's answer the moment it is kept
-// (M9 fix 942), so a second panel waits for it rather than asking. Returns
-// the unsubscribe.
-export function onAnswer(folder: string, listener: (answer: StatsAnswer) => void): () => void {
+// (M9 fix 942), so a second panel waits for it rather than asking. A
+// panel's failure listener hears a failed ask while the folder has no
+// answer kept (M9 fix 964). Returns the unsubscribe.
+export function onAnswer(folder: string, listener: (answer: StatsAnswer) => void, failure?: (message: string) => void): () => void {
   const k = keyOf(folder);
   let set = listeners.get(k);
   if (set === undefined) {
     set = new Set();
     listeners.set(k, set);
   }
-  set.add(listener);
+  const entry = { answer: listener, failure };
+  set.add(entry);
   return () => {
     const now = listeners.get(k);
     if (now === undefined) return;
-    now.delete(listener);
+    now.delete(entry);
     if (now.size === 0) listeners.delete(k);
   };
 }
@@ -136,6 +156,7 @@ export function statsSheet(folder: string, answer: StatsAnswer): StatsSheet {
 
 export function resetStatsAnswers(): void {
   kept.clear();
+  failures.clear();
   asks.clear();
   sheets.clear();
   started.clear();

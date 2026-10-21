@@ -591,14 +591,32 @@ try {
   // Collapse all, then the rail's own collapse, the key and the width.
   await s.evalJs(`document.querySelector('.files-button[title="Collapse all folders"]').click()`);
   await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data', 'two.json')))})`, 'collapse all closes data');
+  // M9 fix 952: a click on data gives the tree the keyboard; hiding the rail
+  // with it there hands it on.
+  const treeKeys952 = `document.activeElement === document.querySelector('.files-list')`;
+  await clickRow(s, path.join(seed, 'data'));
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data')))})?.dataset.expanded === 'true' && ${treeKeys952}`, 'a click on data opens it and gives the tree the keyboard', 3000);
+  await clickRow(s, path.join(seed, 'data'));
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel(path.join(seed, 'data')))})?.dataset.expanded === undefined && ${treeKeys952}`, 'a second click folds data, the tree keeping the keyboard', 3000);
   await s.key('F', 'KeyF', 70, CTRL | SHIFT);
   await s.waitFor(`!!document.querySelector('.files-rail-collapsed') && !document.querySelector('.files-rail')`, 'Ctrl+Shift+F hides the rail');
+  await s.waitFor(`document.activeElement === document.querySelector('.pane.focused .xterm-helper-textarea')`, 'Ctrl+Shift+F with the keyboard on the tree gives it to the focused terminal (fix 952)', 3000);
   await s.evalJs(`document.querySelector('.files-expand').click()`);
   await s.waitFor(`!!document.querySelector('.files-rail')`, 'the thin rail brings it back');
+  const hide952 = path.join(seed, 'hide952.txt');
+  fs.writeFileSync(hide952, 'hide\n');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(hide952))})`, 'hide952.txt listed', 5000);
+  await clickRow(s, hide952);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(hide952)} && !!document.querySelector('.file-editor')?.emeraldEditor?.getModel() && ${treeKeys952}`, 'hide952.txt previewed, the tree keeping the keyboard', 5000);
   await s.evalJs(`document.querySelector('.files-collapse').click()`);
   await s.waitFor(`!!document.querySelector('.files-rail-collapsed')`, 'the header button hides it');
+  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, "the header's hide button with the keyboard on the tree gives it to the file tab in front (fix 952)", 3000);
   await s.evalJs(`document.querySelector('.files-rail-label').click()`);
   await s.waitFor(`!!document.querySelector('.files-rail')`, 'the label brings it back');
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'hide952.txt closed', 3000);
+  fs.rmSync(hide952, { force: true });
+  await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(hide952))})`, 'hide952.txt gone', 5000);
   const edge = await s.evalJs(`(() => { const r = document.querySelector('.files-resizer').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 100 }; })()`);
   await s.mouse('mousePressed', edge.x, edge.y);
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edge.x - 80, y: edge.y, button: 'left', buttons: 1 });
@@ -622,7 +640,7 @@ try {
   await s.evalJs(`document.querySelector('.files-scope-clear').click()`);
   await s.evalJs(`document.querySelector('.files-mode[data-mode="names"]').click()`);
   await s.waitFor(`!document.querySelector('.files-scope') && document.querySelector('.files-mode[data-mode="names"]').dataset.active === 'true'`, 'back to names, no scope');
-  step('collapse all, the key, the thin rail, and the width, the mode and the scope across a reload');
+  step('collapse all, the key, the thin rail, and the width, the mode and the scope across a reload; hiding the rail with the keyboard on the tree gives it to the terminal, or to the file tab in front (fix 952)');
 
   // Git status colours: cd the first shell into the seeded repo, then a
   // row per status, a write turning a tracked file orange without a
@@ -699,14 +717,20 @@ try {
 
   // M9 fix 70: the Changes tab folded into Files. The count of the four
   // changed files (the ignored ones left out) sits on the Files tab, the
-  // tree's changed rows carry their counts and the untracked one none,
-  // and the Changed toggle lists the four flat, by path from the root,
+  // tree's changed rows carry their counts, the untracked one too since
+  // fix 965, and the Changed toggle lists the four flat, by path from the root,
   // where a click opens the file; the toggle survives a reload.
-  expect((await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent`)) === '4', 'the Files tab counts the four changed files');
+  // Since fix 965 the count is the Changed list's length, off its own poll
+  // (the untracked counts add two gits to it), so it can land a poll after
+  // the tree's letters above.
+  const filesCount = `document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent`;
+  await s.waitFor(`${filesCount} === '4'`, 'the Files tab counts the four changed files', 8000).catch(() => {});
+  const filesCount4 = await s.evalJs(filesCount);
+  expect(filesCount4 === '4', `the Files tab counts the four changed files: ${filesCount4}`);
   expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 4, 'four rail tabs');
   const countsOf = (n) => `(document.querySelector('.files-row[data-path=' + JSON.stringify(${JSON.stringify(repo + '\\')} + ${JSON.stringify(n)}) + ']')?.querySelector('.changes-counts')?.textContent ?? null)`;
   await s.waitFor(`${countsOf('added.txt')} === '+1 −0' && ${countsOf('staged.txt')} === '+1 −1' && ${countsOf('tracked.txt')} === '+1 −1'`, 'the counts on the changed rows', 8000);
-  expect((await s.evalJs(countsOf('new.txt'))) === null, 'the untracked row has no counts');
+  expect((await s.evalJs(countsOf('new.txt'))) === '+1 −0', 'the untracked row carries its line count (M9 fix 965)');
   expect((await s.evalJs(countsOf('sub'))) === null, 'a folder row has no counts');
   expect((await s.evalJs(`document.querySelector('.files-rail').dataset.changed`)) === undefined, 'the tree shows by default');
   await s.evalJs(`document.querySelector('.files-changed-toggle').click()`);
@@ -715,13 +739,29 @@ try {
   // numstat ran after it is corrected by the next poll (the stamp carries the
   // status code now), so the read waits a poll and a half for the right list.
   const changeRowsRead = `[...document.querySelectorAll('.files-changed-row')].map(r => r.querySelector('.git-letter').textContent + '|' + r.querySelector('.files-name').textContent + '|' + (r.querySelector('.changes-counts')?.textContent ?? '') + '|' + r.dataset.git).join(';')`;
-  const changeRowsWant = 'A|added.txt|+1 −0|staged;|new.txt||untracked;M|staged.txt|+1 −1|modified;M|tracked.txt|+1 −1|staged';
+  const changeRowsWant = 'A|added.txt|+1 −0|staged;|new.txt|+1 −0|untracked;M|staged.txt|+1 −1|modified;M|tracked.txt|+1 −1|staged';
   await s.waitFor(`${changeRowsRead} === ${JSON.stringify(changeRowsWant)}`, 'the list by path with the letter, the counts and the status', 8000).catch(() => {});
   const changeRows = await s.evalJs(changeRowsRead);
   expect(
     changeRows === changeRowsWant,
     `the list by path with the letter, the counts and the status: ${changeRows}`,
   );
+  // M9 fix 965: a new folder's files are rows of their own in the Changed
+  // list, each with its count, where the status named the folder once with
+  // none. The folder goes again before the four-row reads below.
+  fs.mkdirSync(path.join(repo, 'fresh'));
+  fs.writeFileSync(path.join(repo, 'fresh', 'one.txt'), 'one\n');
+  fs.writeFileSync(path.join(repo, 'fresh', 'two.txt'), 'two\nlines\n');
+  const freshRead = `[...document.querySelectorAll('.files-changed-row')].filter(r => r.querySelector('.files-name').textContent.startsWith('fresh')).map(r => r.querySelector('.files-name').textContent + '|' + (r.querySelector('.changes-counts')?.textContent ?? '') + '|' + r.dataset.git).join(';')`;
+  const freshWant = 'fresh/one.txt|+1 −0|untracked;fresh/two.txt|+2 −0|untracked';
+  await s.waitFor(`${freshRead} === ${JSON.stringify(freshWant)}`, "the new folder's files one row each", 8000).catch(() => {});
+  const freshRows = await s.evalJs(freshRead);
+  expect(freshRows === freshWant, `the new folder's files one row each with their counts: ${freshRows}`);
+  const freshCount = await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent`);
+  expect(freshCount === '6', `the Files tab counts the new folder's two files one each (M9 fix 965): ${freshCount}`);
+  fs.rmSync(path.join(repo, 'fresh'), { recursive: true, force: true });
+  await s.waitFor(`document.querySelectorAll('.files-changed-row').length === 4`, 'the four rows back once the folder is gone', 8000);
+  step("M9 fix 965: a new folder's files are rows of their own in the Changed list, each with its count");
   expect((await s.evalJs(`document.querySelectorAll('.files-row:not(.files-changed-row)').length`)) === 0, 'the tree gives way to the list');
   await s.evalJs(`[...document.querySelectorAll('.files-changed-row')].find(r => r.querySelector('.files-name').textContent === 'staged.txt').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'text'`, 'a click on a changed file opens it in a tab');
@@ -782,8 +822,8 @@ try {
   expect(timeline === '*made in the session|7|40;seed|7|40', `the commit since the session started brighter, the hash shown short and carried whole: ${timeline}`);
   // The commit took everything staged (added.txt, tracked.txt and the
   // index half of staged.txt), leaving staged.txt's work tree change and
-  // new.txt. The count is on the tree's own status poll, a separate
-  // timer from the panel's, so it can be a poll behind the log.
+  // new.txt. The count is on the Changed list's poll (M9 fix 965), a
+  // separate timer from the panel's, so it can be a poll behind the log.
   await s.waitFor(`document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent === '2'`, 'the commit takes the staged files off the Files count', 8000);
   step('the Commits tab names the branch, lists the seed commit and a commit made now, brighter since the session started, within four seconds');
 
@@ -1114,13 +1154,20 @@ try {
   git('add', 'e.txt');
   git('commit', '-q', '-m', 'foreign trailer', '-m', 'Claude-Session: https://claude.ai/code/session_nobody');
   const c6 = headHash();
-  await s.waitFor(`document.querySelector(${JSON.stringify(rowSelOf(c6))})?.dataset.owner === 'none'`, 'the foreign trailer commit lands in the outside block', 8000);
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSelOf(c6))})?.dataset.owner === 'none' && document.querySelector(${JSON.stringify(nodeSel(c6))}) !== null`, 'the foreign trailer commit lands, its row nobody\'s', 8000);
   const outsideGroupSel = '.commits-lane-group[data-outside]';
-  expect((await s.evalJs(`document.querySelector(${JSON.stringify(nodeSel(c6))}).closest('.commits-lane-group')?.hasAttribute('data-outside')`)) === true, "the node sits in the outside block's group");
+  // M9 fix 945: c6 by hand on main lies above the start commit of the live
+  // sessions here, so it draws as the earliest started one's square, in
+  // that session's group, while its row and the outside card still count
+  // it as nobody's.
+  const c6Node = await s.evalJs(`(() => { const n = document.querySelector(${JSON.stringify(nodeSel(c6))}); return { tag: n.tagName, foreign: 'foreign' in n.dataset, outsideGroup: n.closest('.commits-lane-group')?.hasAttribute('data-outside') ?? null, session: n.dataset.session ?? null }; })()`);
+  expect(c6Node.tag === 'rect' && c6Node.foreign && c6Node.outsideGroup === false && c6Node.session !== null, `the node is a square in a live session's group (${JSON.stringify(c6Node)})`);
   // The kind is the card's By line (M73 task 4), once the row's tooltip.
   const kinds = { seed: await rowBy(seedHash), foreign: await rowBy(c6) };
   expect(kinds.seed === 'made outside emerald, no trailer' && kinds.foreign === 'made outside emerald, its trailer naming a conversation this daemon never held', `the row cards say which kind (${JSON.stringify(kinds)})`);
-  const outsideAt = await hoverOver(nodeSel(c6));
+  // The outside card opens on the seed commit, below every session's
+  // start and so still a grey node in the outside block.
+  const outsideAt = await hoverOver(nodeSel(seedHash));
   await s.waitFor(`!!document.querySelector('.outside-popover')`, 'the outside card opens on a hover over the block', 3000);
   const outsideCard = await s.evalJs(`(() => { const c = document.querySelector('.outside-popover'); return { name: c.querySelector('.lane-card-name')?.textContent ?? null, line: c.querySelector('.lane-card-commits')?.textContent ?? null, trailer: c.dataset.trailer, bare: c.dataset.bare, kinds: [...c.querySelectorAll('.outside-card-kind')].map((k) => k.dataset.kind).join(',') }; })()`);
   expect(outsideCard.name === 'outside emerald' && outsideCard.line === '2 commits in this log nobody here made' && outsideCard.trailer === '1' && outsideCard.bare === '1' && outsideCard.kinds === 'trailer,bare', `the card counts the two kinds (${JSON.stringify(outsideCard)})`);
@@ -2536,6 +2583,110 @@ try {
   const trashLines644 = fs.readFileSync(openedPaths, 'utf8').split(/\r?\n/).filter((l) => l.startsWith('trash '));
   expect(JSON.stringify(trashLines644) === JSON.stringify([delA, delDir, hitB, chgB].map((p) => `trash ${p}`)), `the open log holds the four trash lines (${JSON.stringify(trashLines644)})`);
   step('M9 fix 644: under a private EMERALD_HOME the four deletes land in the home\'s trash under numbered names, and the open log holds their four trash lines');
+  // M9 fix 950: Space and Delete on the tree. The state fix 617's deletes
+  // leave: the panes tab in front with the keyboard in the terminal.
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes' && document.querySelectorAll('.tab-file').length === 0`, "fix 617's deletes leave no file tab", 5000);
+  const keysDir950 = path.join(repo, 'keys950');
+  const sub950 = path.join(keysDir950, 'sub950');
+  const inner950 = path.join(sub950, 'inner950.txt');
+  const banana950 = path.join(keysDir950, 'banana950.txt');
+  const plum950 = path.join(keysDir950, 'plum950.txt');
+  const qmark950 = path.join(keysDir950, 'qmark950.txt');
+  const qmore950 = path.join(keysDir950, 'qmore950.txt');
+  fs.mkdirSync(sub950, { recursive: true });
+  fs.writeFileSync(inner950, 'i\n');
+  fs.writeFileSync(banana950, 'banana\n');
+  fs.writeFileSync(plum950, 'plum\n');
+  fs.writeFileSync(qmark950, 'q\n');
+  fs.writeFileSync(qmore950, 'q\n');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(keysDir950))})`, 'keys950 listed', 5000);
+  // (1) A click on the folder opens it and gives the tree the keyboard.
+  await clickRow(s, keysDir950);
+  await s.waitFor(
+    `(() => { const r = document.querySelector(${JSON.stringify(rowSel(keysDir950))}); return r?.dataset.expanded === 'true' && r?.dataset.selected === 'true' && ${treeHasKeys}; })()`,
+    'a click on keys950 opens it, selects it and gives the tree the keyboard',
+    3000,
+  );
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(sub950))}) && !!document.querySelector(${JSON.stringify(rowSel(banana950))})`, "keys950's rows listed", 5000);
+  // (2) Space on a folder.
+  await walkTo('ArrowDown', 'ArrowDown', 40, sub950, 'ArrowDown to sub950');
+  await s.key(' ', 'Space', 32);
+  await s.waitFor(
+    `!!document.querySelector(${JSON.stringify(rowSel(inner950))}) && document.querySelector(${JSON.stringify(rowSel(sub950))})?.dataset.expanded === 'true' && ${selJs} === ${JSON.stringify(sub950)} && ${treeHasKeys}`,
+    'Space opens sub950 in place',
+    5000,
+  );
+  await s.key(' ', 'Space', 32);
+  await s.waitFor(
+    `document.querySelector(${JSON.stringify(rowSel(sub950))})?.dataset.expanded === undefined && ${selJs} === ${JSON.stringify(sub950)} && ${treeHasKeys}`,
+    'Space again folds it',
+    3000,
+  );
+  // (3) Space on a file previews it and the tree keeps the keyboard.
+  await walkTo('ArrowDown', 'ArrowDown', 40, banana950, 'ArrowDown to banana950.txt');
+  await s.key(' ', 'Space', 32);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(banana950)} && ${editorJs}.getModel()?.uri.path.endsWith('/banana950.txt') === true`, 'banana950.txt in the editor', 5000);
+  await sleep(300);
+  const space950 = await s.evalJs(`({ tree: ${treeHasKeys}, preview: ${keysTab(banana950)}?.dataset.preview !== undefined, selected: ${selJs} })`);
+  expect(space950.tree && space950.preview && space950.selected === banana950, `Space on a file previews it and the tree keeps the keyboard (${JSON.stringify(space950)})`);
+  // (4) Delete moves it at once, with a note, and the tree keeps the keyboard.
+  await s.key('Delete', 'Delete', 46);
+  await s.waitFor(
+    `!document.querySelector(${JSON.stringify(rowSel(banana950))}) && !${keysTab(banana950)} && document.querySelector('.corner-note')?.textContent === 'banana950.txt moved to the recycle bin'`,
+    'Delete moved banana950.txt away with a note in the corner',
+    5000,
+  );
+  expect(!fs.existsSync(banana950) && fs.existsSync(path.join(trash644, '1-banana950.txt')), "Delete moved banana950.txt to the home's trash at once");
+  await s.waitFor(`${selJs} === ${JSON.stringify(plum950)} && ${treeHasKeys} && document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, "the selection moves to the next row and the tree keeps the keyboard through the tab's close", 3000);
+  // (5) A refusal: unsaved edits.
+  await s.key(' ', 'Space', 32);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(plum950)} && !!${editorJs}.getModel()`, 'plum950.txt in the editor', 5000);
+  await s.evalJs(`${editorJs}.focus()`);
+  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
+  await typeAtEnd('x');
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'plum950.txt dirty', 3000);
+  await clickRow(s, plum950);
+  await s.waitFor(`${selJs} === ${JSON.stringify(plum950)} && ${treeHasKeys}`, 'the tree has the keyboard on plum950.txt', 3000);
+  await s.key('Delete', 'Delete', 46);
+  await s.waitFor(`document.querySelector('.corner-note')?.textContent === 'Unsaved edits in a tab: save or discard them first'`, 'Delete on a dirty file says why', 3000);
+  expect(fs.existsSync(plum950) && (await s.evalJs(`!!document.querySelector(${JSON.stringify(rowSel(plum950))})`)), 'plum950.txt is still on disk and in the tree');
+  await s.evalJs(`${editorJs}.focus()`);
+  await s.key('s', 'KeyS', 83, CTRL);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty !== 'true'`, 'the save', 5000);
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'plum950.txt closed', 3000);
+  step('M9 fix 950: Space on a folder row opens and folds it, on a file previews it with the tree keeping the keyboard; Delete moves the selected file to the recycle bin at once with a note in the corner, closes its tab, selects the next row and keeps the keyboard on the tree; on a file with unsaved edits it says why and moves nothing');
+  // M9 fix 951: type-ahead, on the state above: the panes tab in front,
+  // plum950.txt saved with its tab closed, the selection on it.
+  await clickRow(s, plum950);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(plum950)} && !!${editorJs}.getModel() && ${selJs} === ${JSON.stringify(plum950)} && ${treeHasKeys}`, 'plum950.txt previewed, the tree keeping the keyboard', 5000);
+  // (a) Back to back, with no wait between them (a wait could pass the
+  // second's pause under load): only the buffer qmo reaches qmore950.txt.
+  await s.key('q', 'KeyQ', 81);
+  await s.key('m', 'KeyM', 77);
+  await s.key('o', 'KeyO', 79);
+  await s.waitFor(`${selJs} === ${JSON.stringify(qmore950)} && ${treeHasKeys}`, 'q, m and o typed together select qmore950.txt', 3000);
+  expect(await s.evalJs(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(plum950)}`), 'type-ahead opens nothing');
+  // (b) After the pause Shift+Q starts a new buffer and wraps.
+  await sleep(1200);
+  await s.key('Q', 'KeyQ', 81, SHIFT);
+  await s.waitFor(`${selJs} === ${JSON.stringify(qmark950)}`, 'after the pause Shift+Q starts a new buffer, case-insensitively, and wraps past the last row to qmark950.txt', 3000);
+  // (c) A Space while the buffer is live joins it.
+  await sleep(1200);
+  await s.key('q', 'KeyQ', 81);
+  await s.key(' ', 'Space', 32);
+  await sleep(300);
+  const joined951 = await s.evalJs(`({ sel: ${selJs}, front: document.querySelector('.file-view')?.dataset.path ?? null, tab: !!${keysTab(qmore950)} })`);
+  expect(joined951.sel === qmore950 && joined951.front === plum950 && !joined951.tab, `a Space while the buffer is live joins it and previews nothing (${JSON.stringify(joined951)})`);
+  step('M9 fix 951: typing in the Files tree selects the next row whose name starts with what was typed, a second\'s pause starting over, Shift and the case not mattering, the search wrapping, nothing opened; a Space while typing joins the name');
+  // The clean-up: the window as fix 644 left it, plus 1-banana950.txt in
+  // the harness trash.
+  if ((await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)) !== 'panes') {
+    await s.key('w', 'KeyW', 87, CTRL);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the file tab closed', 3000);
+  }
+  fs.rmSync(keysDir950, { recursive: true, force: true });
+  await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(keysDir950))})`, 'keys950 gone', 5000);
   // M9 fix 337: a file open in a pane with no tab hears a change on
   // disk. A shell in a folder of its own, focused so the rail follows
   // it; the file opened beside it through the row menu's Open in a

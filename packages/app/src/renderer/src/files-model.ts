@@ -206,6 +206,43 @@ export function moveSelection(m: FilesModel, rows: readonly Row[], key: string):
   }
 }
 
+// M9 fix 950: where the selection goes when Delete on the Files tree moves a
+// row's entry to the recycle bin, as VS Code's explorer does: the next entry
+// row past it and its open children, else the entry row above it, else none.
+export function rowAfterRemoval(rows: readonly Row[], path: string): string | null {
+  const entries = rows.filter((r): r is Extract<Row, { type: 'entry' }> => r.type === 'entry');
+  const i = entries.findIndex((r) => r.path === path);
+  if (i < 0) return null;
+  for (let j = i + 1; j < entries.length; j++) {
+    if (entries[j]!.depth <= entries[i]!.depth) return entries[j]!.path;
+  }
+  return i > 0 ? entries[i - 1]!.path : null;
+}
+
+// M9 fix 951: the type-ahead's pause, VS Code's; a key after it starts a new buffer.
+export const TYPE_AHEAD_PAUSE_MS = 1000;
+
+// M9 fix 951: type-ahead in the Files tree, as VS Code's explorer does. The
+// selection moves to the next entry row, wrapping, whose name starts with the
+// buffer, compared case-insensitively. A one-letter buffer starts past the
+// selected row, so the same letter after a pause goes on to the next row it
+// starts; a longer buffer starts at the selected row itself, which keeps the
+// selection while its name still matches. Only entry rows on screen count, so
+// a closed folder's children are never reached. The model comes back
+// unchanged, the same object, when no row matches.
+export function typeAhead(m: FilesModel, rows: readonly Row[], buffer: string): FilesModel {
+  const entries = rows.filter((r): r is Extract<Row, { type: 'entry' }> => r.type === 'entry');
+  if (entries.length === 0 || buffer === '') return m;
+  const want = buffer.toLowerCase();
+  const i = m.selected === null ? -1 : entries.findIndex((r) => r.path === m.selected);
+  const start = buffer.length === 1 ? i + 1 : Math.max(i, 0);
+  for (let k = 0; k < entries.length; k++) {
+    const row = entries[(start + k) % entries.length]!;
+    if (row.name.toLowerCase().startsWith(want)) return select(m, row.path);
+  }
+  return m;
+}
+
 // The entry a listing of dir must keep past the cap (M9 fix 524): the
 // newest folder on the lift chain whose parent is dir, else none. Each
 // folder on a chain has one kept child, so one name per listing is enough.

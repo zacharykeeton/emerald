@@ -7,7 +7,7 @@ import { markDropAt } from './tab-drag.ts';
 import { layoutTabKey } from './tab-order.ts';
 import { PANES } from './tabs-model.ts';
 import { editAllLayout, getState } from './store.ts';
-import { beginSessionDrag, beginViewDrag, endSessionDrag, getUiState, moveTabKey, revealInPane, setSessionDropTarget, setTabDropTarget, showTab } from './ui.ts';
+import { beginSessionDrag, beginViewDrag, endSessionDrag, getUiState, handRevealToNewWindow, moveTabKey, setSessionDropTarget, setTabDropTarget, showTab } from './ui.ts';
 
 // This window as the target of another window's drag (M9 fix 927). Main
 // forwards the moves of a drag that has left its window (window-drag.ts)
@@ -73,8 +73,8 @@ export async function dropOutsideWindows(drag: WindowDrag, x: number, y: number)
   const all = getState().allLayout;
   const tab = landed === null || all === null ? null : tabHolding(all, landed);
   if (landed === null || tab === null) return;
+  if (payload.kind === 'view' && payload.line !== undefined && payload.view.kind === 'file') handRevealToNewWindow(landed, payload.view.path, payload.line, payload.column);
   await window.emerald.windowDrag.open(tab.id, x, y);
-  if (payload.kind === 'view' && payload.line !== undefined && payload.view.kind === 'file') revealInPane(landed, payload.view.path, payload.line, payload.column);
 }
 
 export function startWindowDropTarget(): void {
@@ -95,13 +95,18 @@ export function startWindowDropTarget(): void {
       const tabTarget = tabTargetAt(x, y);
       const target = tabTarget === null ? targetFor(drag.payload, targetAt(x, y)) : null;
       clearAll();
-      void dropPayload(drag.payload, drag.fromPaneId, target, tabTarget, editAllLayout).catch((err: unknown) => console.warn('[emerald] drop failed', err));
+      void dropPayload(drag.payload, drag.fromPaneId, target, tabTarget, editAllLayout)
+        .catch((err: unknown) => console.warn('[emerald] drop failed', err))
+        .finally(() => window.emerald.windowDrag.landed());
       return;
     }
     const before = lineAt(x);
     clearAll();
     const windowId = getState().windowId;
-    if (windowId === null) return;
+    if (windowId === null) {
+      window.emerald.windowDrag.landed();
+      return;
+    }
     const { tabId } = drag;
     void editAllLayout((l) => moveTabToWindow(l, tabId, windowId))
       .then(() => {
@@ -110,6 +115,7 @@ export function startWindowDropTarget(): void {
         moveTabKey(layoutTabKey(tabId), before, layout.tabs.map((t) => t.id));
         showTab(PANES);
       })
-      .catch((err: unknown) => console.warn('[emerald] drop failed', err));
+      .catch((err: unknown) => console.warn('[emerald] drop failed', err))
+      .finally(() => window.emerald.windowDrag.landed());
   });
 }

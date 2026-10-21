@@ -1,7 +1,7 @@
 import { colorForKey, farthestSessionColor, hexOfOklab, markKind, oklabOf } from '@emerald/shared';
 import type { SessionCommit, SessionInfo, SessionSpan, TeamMember } from '@emerald/shared';
 import { commitOwners } from './commit-lanes-model.ts';
-import type { GraphCommit, HistoryTranscript } from '../../preload/api.ts';
+import type { GitCheckout, GraphCommit, HistoryTranscript } from '../../preload/api.ts';
 
 // The commit graph's model (M65, after M51's lane-per-branch walk): the
 // rail draws each session as a little graph of its own, side by side,
@@ -139,6 +139,10 @@ export interface GraphOptions {
   // members keep theirs. The replay's readers and drafters, which made no
   // commit.
   membersOnLine?: ReadonlySet<string> | undefined;
+  // The repository's checkouts with their branches (M9 fix 944), for each
+  // session's home branch (homeBranchOf); absent, every session's line is
+  // the branch the daemon read off its live folder.
+  checkouts?: readonly GitCheckout[] | undefined;
 }
 
 // The transcript id behind a history block's session id, or null for a
@@ -196,6 +200,10 @@ export interface GraphLaneDef {
   // behind a remote block's (M9 fix 286); null on every other.
   person: GraphPerson | null;
   remote: GraphRemote | null;
+  // A lane of its own beside a member's line for the member's star, so
+  // no line runs through it (M9 fix 946, rule 10); it carries the member
+  // lane's fields and takes its tint.
+  side?: true;
 }
 
 export interface CommitItem {
@@ -207,6 +215,10 @@ export interface CommitItem {
   commit: GraphCommit;
   sessionId: string | null;
   memberId: string | null;
+  // A commit nobody here made inside a live session's span on its line
+  // (M9 fix 945): drawn on the session's line as a square, read by the
+  // rows and the cards as nobody's.
+  foreign?: true;
 }
 
 export interface AgentItem {
@@ -233,12 +245,17 @@ export interface AgentItem {
   // where the stretch bends into it.
   tipRow: number | null;
   tipLane: number | null;
-  // Under a head bar (M9 fix 151), the row of the session's newest own
-  // commit, where the stretch goes on to.
+  // Under a head that is another session's commit (M9 fix 151; a head bar
+  // marked it until M9 fix 945), the row of the session's newest own
+  // commit on its line, where the stretch goes on to.
   restRow: number | null;
   // A session with no commit of its own: the row of the commit its
   // branch sits on, where its straight stretch ends in its own dot.
   startRow: number | null;
+  // The member's row moved onto a side lane beside its line (M9 fix 946,
+  // rule 10): its stretch is a dashed fork from there to forkRow,
+  // bending into forkLane, the member's line.
+  beside?: true;
 }
 
 export type GraphItem = CommitItem | AgentItem;
@@ -271,10 +288,9 @@ export interface GraphDot {
   sessionId: string | null;
   block: number;
   shape: 'dot' | 'bar';
-  // A session's start, the end of a lane forked from elsewhere, or the
-  // head of the session's branch when another block's commit is there
-  // (M9 fix 151), under the session's row.
-  kind: 'start' | 'fork' | 'head';
+  // A session's start or the end of a lane forked from elsewhere. The
+  // head bar (M9 fix 151) went with M9 fix 945.
+  kind: 'start' | 'fork';
   // True for a fork bar `forkBar` places, where a fork lands on this
   // session's own line because the commit it came from belongs to
   // another block (M9 fix 374); left unset for a fork bar the walk
@@ -449,6 +465,30 @@ function inRepo(s: Pick<GraphSession, 'cwd' | 'spawnCwd' | 'groupCwd'>, roots: r
   return roots.some((r) => underFolder(group, r) || underFolder(s.cwd, r));
 }
 
+// The branch a session's line and star follow (M9 fix 944): the branch of
+// the checkout holding the folder it started in (groupCwd, else the
+// spawn folder), not the one its live folder is in. Claude Code reports a
+// `cd` that sticks inside one Bash call as the session's new folder (fix
+// 113's CwdChanged), so a lead's `cd <worktree> && git commit` moves its
+// cwd, and the daemon's branch with it, into a seat's worktree until the
+// next hook from home moves it back; the star stays where its folder is.
+// The checkout holding a folder is the one with the longest path over
+// it, since Claude Code's own worktrees sit inside the main checkout.
+// When no checkout holds home, or the live folder is in the home
+// checkout (the usual case, and every shell, whose groupCwd follows its
+// cwd), the daemon's branch is fresh and is the answer; a detached home
+// is null.
+export function homeBranchOf(s: Pick<GraphSession, 'cwd' | 'groupCwd' | 'spawnCwd' | 'branch'>, checkouts: readonly GitCheckout[]): string | null {
+  const holding = (dir: string | null): GitCheckout | null => {
+    let best: GitCheckout | null = null;
+    for (const c of checkouts) if (underFolder(dir, c.path) && (best === null || c.path.length > best.path.length)) best = c;
+    return best;
+  };
+  const home = holding(s.groupCwd || s.spawnCwd);
+  if (home === null || holding(s.cwd) === home) return s.branch;
+  return home.branch;
+}
+
 // A session that gets a row of its own (M68): running Claude by the
 // sidebar's reading (a shell that ran claude counts, as its star does),
 // still in the list and still alive. A removed or exited session keeps
@@ -604,8 +644,17 @@ export function remoteIdsByRecord(sessions: readonly GraphSession[], history: Re
 }
 
 export function sessionGraph(commits: readonly GraphCommit[], given: readonly GraphSession[], mode: GraphMode, roots: readonly string[] = [], defaultBranch: string | null = null, history: ReadonlyMap<string, HistoryTranscript> = new Map(), options: GraphOptions = {}): SessionGraph {
-  // A block per conversation span (M9 fix 185).
-  const records = spanSessions(given);
+  // A block per conversation span (M9 fix 185), each on its home branch
+  // (M9 fix 944): every later read of a session's branch, the seed's head,
+  // the star's anchor and the M68 start guess, reads the branch of the
+  // checkout it started in.
+  const checkouts = options.checkouts ?? [];
+  const withHome = (s: GraphSession): GraphSession => {
+    if (checkouts.length === 0) return s;
+    const home = homeBranchOf(s, checkouts);
+    return home === s.branch ? s : { ...s, branch: home };
+  };
+  const records = spanSessions(given.map((s) => withHome(s)));
   // One line or the little graph, per block (M71): the prefs' word for
   // the block first, else a history block is a line (its inner topology
   // is nobody's to read live), else the mode's.
@@ -675,6 +724,56 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     sessions.splice(0, sessions.length, ...records, ...standIns.values(), ...remoteStandIns.values());
     for (const s of sessions) byId.set(s.id, s);
   }
+  const rowOf = new Map<string, number>();
+  commits.forEach((c, i) => rowOf.set(c.hash, i));
+  // The row a branch name sits on, for the fork points.
+  const refRow = new Map<string, number>();
+  commits.forEach((c, i) => {
+    for (const r of c.refs) if (!refRow.has(r)) refRow.set(r, i);
+  });
+  // A member gone with its worktree (M9 fix 946, rule 7): it has reported
+  // back, its branch is no longer in the log and its folder is no
+  // checkout of the repository any more (the sweep's worktree remove and
+  // branch -D), so it has no row and no star; its commits keep their
+  // lanes and their card as history. One with no branch worked in the
+  // session's own folder and is never gone by this; one still running
+  // never is. A returned member whose branch or worktree is still there
+  // exists and can take more work, so it is drawn resting (rule 9). A
+  // live member with a branch always has its folder (the branch is read
+  // off it); one with none is the replay's stand-in, rebuilt from the
+  // record of a batch long swept, and keeps its row there.
+  const isGone = (m: TeamMember): boolean => m.outcome === 'returned' && m.branch !== null && !refRow.has(m.branch) && m.cwd !== null && !roots.some((r) => underFolder(m.cwd, r));
+  // The squares (M9 fix 945, rule 5): a commit nobody here made that lies
+  // on a live session's home-branch first-parent chain between the commit
+  // it started on and its branch's head is inside the session's span, so
+  // it is the session's, marked foreign: it draws on the session's line in
+  // its colour as a square, while the rows and cards still read it as
+  // nobody's. Another session's commit on that chain stays that session's,
+  // and the start commit itself never is one. Two live sessions on one
+  // branch (open question 1): the earliest started takes them. A chain
+  // that leaves the log before it meets the start commit assigns nothing,
+  // since what lies past the log's end is unknown. Members take none.
+  const foreign = new Set<string>();
+  const squaresFor = records.filter((s) => hasOwnRow(s) && inRepo(s, roots) && s.branch !== null && s.startHead !== null).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  for (const s of squaresFor) {
+    const collected: string[] = [];
+    let met = false;
+    for (let i = refRow.get(s.branch!); i !== undefined; ) {
+      const c = commits[i]!;
+      if (c.hash === s.startHead) {
+        met = true;
+        break;
+      }
+      if (!owners.has(c.hash)) collected.push(c.hash);
+      const fp = c.parents[0];
+      i = fp === undefined ? undefined : rowOf.get(fp);
+    }
+    if (!met) continue;
+    for (const h of collected) {
+      owners.set(h, s.id);
+      foreign.add(h);
+    }
+  }
   const commitSession = commits.map((c) => owners.get(c.hash) ?? null);
   const commitMember = commits.map((c, i) => {
     const s = commitSession[i];
@@ -705,21 +804,15 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
   for (const b of blocks) if (!isDrawn(b.sessionId)) b.laneKeys = [];
   // Lanes in a block (M68): the walk over the block's own commits gives
   // each a lane and each parent edge a bend; lane 0 is the session's
-  // own line (its newest own commit seeds it, or since M9 fix 937 the head of its branch when that commit is newer than the head, and it is never handed to
-  // anyone else), the grey block's trunk the default branch's tip when
+  // own line (the head of its home branch seeds it since M9 fix 944
+  // whenever that head may sit there, else its newest own commit, and it
+  // is never handed to anyone else), the grey block's trunk the default branch's tip when
   // it holds it. A member whose commits are in the block is on the lane
   // its newest commit took; a member with nothing in the log gets a
   // lane of its own after the walk's, by start, whether or not it has a
   // worktree (M9 fix 150: a member in the session's own folder used to
   // sit on the session's line, over its star). The list has the
   // session's line alone.
-  const rowOf = new Map<string, number>();
-  commits.forEach((c, i) => rowOf.set(c.hash, i));
-  // The row a branch name sits on, for the fork points.
-  const refRow = new Map<string, number>();
-  commits.forEach((c, i) => {
-    for (const r of c.refs) if (!refRow.has(r)) refRow.set(r, i);
-  });
   // The row of the commit a session started on (M9 fix 117), when the
   // log holds it.
   const startIndexOf = (s: GraphSession): number | undefined => {
@@ -755,14 +848,6 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
       }
       h = commits[i]!.parents[0];
     }
-    // The commit-less members' fork points in other blocks are watched
-    // (M9 fix 145), so their forks land by the walk's rule: a member
-    // with a branch forks from the commit the branch sits on, and one
-    // with none (M9 fix 150: it works in the session's own folder, or
-    // has not run a command yet) from the commit the session sits on,
-    // which is the session's start commit when it has none of its own.
-    const placedMembers = new Set(mine.map((i) => commitMember[i]).filter((m): m is string => m !== null));
-    const fresh = b.session === null ? [] : agentsOf(b.session).filter((m) => !placedMembers.has(m.id) && !onLine(b.sessionId, m.id)).sort((x, y) => x.startedAt - y.startedAt);
     // Whether lane 0 has anything to land on (M9 fix 145): the grey
     // trunk, a session's own commits, or the start bar a session with
     // a row of its own gets; a member's lane under a session with none
@@ -775,26 +860,61 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // row when the block has no commit of its own on the line.
     const head = b.session === null || b.session.branch === null ? undefined : refRow.get(b.session.branch);
     const seat = head ?? (hasOwn ? undefined : start);
-    const watch = fresh.map((m) => (m.branch === null ? undefined : refRow.get(m.branch)) ?? seat).filter((r): r is number => r !== undefined);
     const withRow = b.session !== null && hasOwnRow(b.session) && inRepo(b.session, roots);
     const trunkDrawn = b.session === null || hasOwn || ((start !== undefined || head !== undefined) && withRow);
-    // The session's line is its branch's (M9 fix 937): when its newest
-    // own commit is newer than the head of the branch it is on (commits
-    // it made in a worktree while its folder stayed on main, the tech
-    // lead committing in a seat's worktree), the trunk waits for that
-    // head, so those commits take a side lane and nothing of the
-    // session's sits above its star on its line. A head in another
-    // block is watched, so the walk follows the trunk's chain through it.
+    // The session's line is its branch's (M9 fix 937, M9 fix 944): the
+    // trunk is seeded with the head of the branch it started on whenever
+    // the log holds it and that head may sit on the trunk, so the lead's
+    // commits off that chain (made in a seat's worktree while its folder
+    // stayed home) take a side lane, nothing of the session's sits above
+    // its star on its line, and a commit landing on main from elsewhere
+    // never hands the trunk back to the lead's newest commit (fix 937
+    // compared age, so the moment one did, the walk restarted from the
+    // fix-up and swung the seat's work onto the lead's line). A head in
+    // another block, or nobody's, is watched, so the walk follows the
+    // trunk's chain through it. A head that is a member's own commit
+    // (main fast-forwarded onto a member's work, fix 151's case) seeds
+    // only when the session's newest own commit is newer, as fix 937 had
+    // it: seeded with it, the member's commits would take lane 0 and its
+    // lane would become the session's line.
     const ownTop = mine.find((i) => commitMember[i] === null);
-    if (b.sessionId !== null && withRow && head !== undefined && ownTop !== undefined && ownTop < head) {
-      seed = commits[head]!.hash;
-      if (!mine.includes(head)) watch.push(head);
-    }
+    const seedHead = b.sessionId !== null && withRow && head !== undefined && (!mine.includes(head) || commitMember[head] === null || (ownTop !== undefined && ownTop < head));
+    if (seedHead) seed = commits[head]!.hash;
+    // The commit-less members' fork points in other blocks are watched
+    // (M9 fix 145), so their forks land by the walk's rule: a member
+    // with a branch forks from the commit the branch sits on, and one
+    // with none (M9 fix 150: it works in the session's own folder, or
+    // has not run a command yet) from the commit the session sits on,
+    // which is the session's start commit when it has none of its own.
+    const placedMembers = new Set(mine.map((i) => commitMember[i]).filter((m): m is string => m !== null));
+    // A gone member with nothing in the block (M9 fix 946) gets no lane.
+    const unplaced = b.session === null ? [] : agentsOf(b.session).filter((m) => !placedMembers.has(m.id) && !onLine(b.sessionId, m.id) && !isGone(m)).sort((x, y) => x.startedAt - y.startedAt);
+    const watch = unplaced.map((m) => (m.branch === null ? undefined : refRow.get(m.branch)) ?? seat).filter((r): r is number => r !== undefined);
+    if (seedHead && !mine.includes(head)) watch.push(head);
     const walk = blockTopology(mine, commits, rowOf, seed, (i) => b.sessionId === null || commitMember[i] === null, watch, trunkDrawn);
     walkOf.set(bi, walk);
+    // The lead's commit on a seat's line (M9 fix 944, rule 4): the commits
+    // down a member's branch from its head that are the session's own and
+    // that the walk put off the trunk are hinted to that member, so the
+    // lane they took is the member's even before the member has a commit
+    // of its own (once it has, the walk puts both on one lane already),
+    // and the member is not fresh. The hint names lanes only: the commit
+    // stays the lead's. A member's watched fork point is never in the
+    // block, so the walk above reads the same with the member unplaced.
+    const hint = new Map<number, string>();
+    for (const m of unplaced) {
+      for (let i = m.branch === null ? undefined : refRow.get(m.branch); i !== undefined; ) {
+        if (commitSession[i] !== b.sessionId || commitMember[i] !== null || (walk.laneOf.get(i) ?? 0) === 0 || hint.has(i)) break;
+        hint.set(i, m.id);
+        const fp = commits[i]!.parents[0];
+        i = fp === undefined ? undefined : rowOf.get(fp);
+      }
+    }
+    const hinted = new Set(hint.values());
+    const fresh = unplaced.filter((m) => !hinted.has(m.id));
     walk.laneOf.forEach((lane, i) => {
       localLane.set(i, lane);
-      const m = commitMember[i] ?? null;
+      const m = commitMember[i] ?? hint.get(i) ?? null;
       const key = `${bi} ${lane}`;
       if (m !== null && !laneMember.has(key)) laneMember.set(key, m);
     });
@@ -874,6 +994,10 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // The commit index the row sits above, or null for the top.
     above: number | null;
     kind: 'tip' | 'fork' | 'line' | 'top' | 'start' | 'head';
+    // A member lifted above its session's anchor (M9 fix 944, the user's
+    // amendment to rule 2): the commit index the row is drawn above, while
+    // `above` keeps the far end its stretch runs down to.
+    at?: number;
   }
   const placed: Placed[] = [];
   for (const b of blocks) {
@@ -897,15 +1021,40 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // else's on top, is the `head` kind.
     const head = s.branch === null ? undefined : refRow.get(s.branch);
     const anchor: Pick<Placed, 'above' | 'kind'> = head !== undefined && head !== own && (own !== -1 || head !== start) ? { above: head, kind: 'head' } : own !== -1 ? { above: own, kind: 'tip' } : start !== undefined ? { above: start, kind: 'start' } : { above: null, kind: 'top' };
+    // A batch's seats stack above its lead (M9 fix 944, the user's word of
+    // 2026-10-20 amending rule 2: "main first and the subagents on top"):
+    // a member whose head is older than the commit its session's own row
+    // sits over (the head of the lead's branch, main in every batch) is
+    // lifted to that row, into the members' block above the session's own
+    // row, its stretch running down its own lane past it to its head; one
+    // whose head is newer (it has committed past main) stays over its head.
+    // A seat merged but still there is lifted too, until it goes. Only a
+    // session with a row of its own over its branch's head, in the graph
+    // (the write graph's sessions have no branch head to stack over).
+    const liftsMembers = hasOwnRow(s) && inRepo(s, roots) && !lineOnly(sessionId) && head !== undefined && anchor.above !== null;
+    const placeMember = (m: TeamMember, above: number, kind: 'tip' | 'fork') => {
+      const lifted = liftsMembers && above > anchor.above! && !onLine(sessionId, m.id);
+      placed.push({ sessionId, session: s, member: m, above, kind, ...(lifted ? { at: anchor.above! } : {}) });
+    };
     for (const m of agentsOf(s)) {
+      // A member gone with its worktree has no row (M9 fix 946, rule 7).
+      if (isGone(m)) continue;
+      // A member's star sits over its branch's head whoever made it (M9
+      // fix 944, rule 2): the lead's fix-up in a seat's worktree is the
+      // seat's head, on the seat's line, and the seat's row goes over it.
+      const ref = m.branch === null ? undefined : refRow.get(m.branch);
+      if (ref !== undefined && commitSession[ref] === sessionId && !lineOnly(sessionId) && slotOfCommit(ref) === laneOf(sessionId, m.id)) {
+        placeMember(m, ref, 'tip');
+        continue;
+      }
       const tip = commitMember.findIndex((x, i) => x === m.id && commitSession[i] === sessionId);
       if (tip !== -1) {
-        placed.push({ sessionId, session: s, member: m, above: tip, kind: 'tip' });
+        placeMember(m, tip, 'tip');
         continue;
       }
       const fork = (m.branch === null ? undefined : refRow.get(m.branch)) ?? anchor.above ?? undefined;
       if (fork !== undefined && !lineOnly(sessionId) && !onLine(sessionId, m.id)) {
-        placed.push({ sessionId, session: s, member: m, above: fork, kind: 'fork' });
+        placeMember(m, fork, 'fork');
         continue;
       }
       placed.push({ sessionId, session: s, member: m, above: anchor.above, kind: anchor.kind === 'top' ? 'top' : 'line' });
@@ -942,8 +1091,10 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
   // the session whose own commit the head is keeps its members next to
   // its own row, under the other sessions' rows, rather than having
   // those rows fall between.
-  const pushAgents = (above: number | null, kinds: Placed['kind'][], ordered: boolean) => {
-    const here = placed.filter((p) => p.above === above && kinds.includes(p.kind));
+  // The lifted members (M9 fix 944) join the first call at their row,
+  // whatever their kind, so they sit above their session's own row.
+  const pushAgents = (above: number | null, kinds: Placed['kind'][], ordered: boolean, lifted = false) => {
+    const here = placed.filter((p) => (p.at ?? p.above) === above && (p.at !== undefined ? lifted : kinds.includes(p.kind)));
     const tipHere = new Set(placed.filter((p) => p.above === above && p.member === null && p.kind === 'tip').map((p) => p.sessionId));
     if (ordered) here.sort((a, b) => (tipHere.has(a.sessionId) ? 1 : 0) - (tipHere.has(b.sessionId) ? 1 : 0) || bySession(a, b));
     for (const p of here) items.push(agentItem(p));
@@ -954,12 +1105,12 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // worktrees, the members on the line, the new sessions), then the
     // agents whose newest commit this is, then the commit (the note's
     // assembly rule).
-    pushAgents(i, ['fork', 'line', 'start', 'head'], true);
+    pushAgents(i, ['fork', 'line', 'start', 'head'], true, true);
     pushAgents(i, ['tip'], false);
     rowOfCommit.set(i, items.length);
     const sessionId = commitSession[i] ?? null;
     const memberId = commitMember[i] ?? null;
-    items.push({ kind: 'commit', row: items.length, lane: slotOfCommit(i), commit: c, sessionId, memberId });
+    items.push({ kind: 'commit', row: items.length, lane: slotOfCommit(i), commit: c, sessionId, memberId, ...(foreign.has(c.hash) ? { foreign: true as const } : {}) });
   });
   // Now the rows are known, the agents' far ends. A fork out of the
   // commit its session started from, with no commit of the session's own
@@ -1014,21 +1165,31 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     else if (p.kind === 'head') {
       // The session's row over its branch's head (M9 fix 151): the
       // stretch ends on the head's node when the block holds it,
-      // bending into its lane, else under a bar on the session's own
-      // lane, the head being a commit elsewhere. Below that the stretch
-      // goes on down to the session's newest own commit, or to its
-      // start bar when it has none, so the lane stays one piece.
+      // bending into its lane, else at the head's row on the session's
+      // own lane, the head being another session's commit (open question
+      // 1 of M9 fix 945: the earlier session's square). Below that the
+      // stretch goes on down to the session's newest own commit, or to
+      // its start bar when it has none, so the lane stays one piece. The
+      // head bar that sat there went with M9 fix 945 (rule 5): a commit
+      // nobody made on the line is the session's square now.
       it.tipRow = row;
       const at = items[row] as CommitItem;
       if (at.sessionId === it.sessionId && at.lane !== null) it.tipLane = at.lane;
       else {
-        dots.push({ row, lane: it.lane, sessionId: it.sessionId, block: lanes[it.lane]!.block, shape: 'bar', kind: 'head' });
-        const own = items.find((x): x is CommitItem => x.kind === 'commit' && x.row > row && x.sessionId === it.sessionId && x.memberId === null);
+        // On the session's own line (M9 fix 944): the lead's commits off
+        // it, on a seat's lane or a side lane, are not where it rests.
+        const own = items.find((x): x is CommitItem => x.kind === 'commit' && x.row > row && x.sessionId === it.sessionId && x.memberId === null && x.lane === it.lane);
         const started = startIndexOf(p.session);
         if (own !== undefined) it.restRow = own.row;
         else if (started !== undefined && rowOfCommit.get(started)! > row) it.startRow = rowOfCommit.get(started)!;
       }
-    } else it.tipRow = row;
+    } else {
+      it.tipRow = row;
+      // A member's head drawn on another lane than its row's (M9 fix
+      // 944): the stretch bends into it there, as fix 151's does.
+      const at = items[row] as CommitItem;
+      if (p.kind === 'tip' && at.lane !== null && at.lane !== it.lane) it.tipLane = at.lane;
+    }
   }
   for (const it of items) {
     if (it.kind === 'agent' && it.member === null && it.startRow !== null) dots.push({ row: it.startRow, lane: it.lane, sessionId: it.sessionId, block: lanes[it.lane]!.block, shape: 'bar', kind: 'start' });
@@ -1046,7 +1207,9 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     if (started === undefined) continue;
     const lane = laneOf(b.sessionId, null);
     const barFloor = commitsTheBarSitsBelow(b.session);
-    const own = items.filter((it): it is CommitItem => it.kind === 'commit' && it.lane === lane && barFloor.has(it.commit.hash));
+    // A square (M9 fix 945) lies above the start commit by its making, so
+    // the bar sits below it as below the session's own.
+    const own = items.filter((it): it is CommitItem => it.kind === 'commit' && it.lane === lane && (barFloor.has(it.commit.hash) || (it.foreign === true && it.sessionId === b.sessionId)));
     const oldest = own[own.length - 1];
     const row = rowOfCommit.get(started)!;
     if (oldest === undefined || row <= oldest.row) continue;
@@ -1176,6 +1339,75 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
       }
     }
     lines.push(...agentLines);
+  }
+
+  // A star beside its line (M9 fix 946, rule 10). A member's row whose own
+  // stretch shares its lane with another line of the block, or passes a
+  // commit on it, has a line running through its star: a merged seat that
+  // still exists, its row stacked above the lead's (M9 fix 944) and its
+  // stretch running down its lane past the merge line coming up it. The
+  // row moves to a lane of its own inserted right after the member's, its
+  // stretch one dashed fork down that lane bending into the member's line
+  // at its head (the short bend a commit-less member's fork draws), and
+  // the lanes to its right move over one. The crossings are read before
+  // any lane is inserted, and the insertions go right to left by slot, so
+  // one never moves the next one's target. The list has no member lanes,
+  // and a member on the session's own line (M9 fix 907's, or one with no
+  // lane) shares it with the session's stretch by design, so neither moves.
+  const spanOfLine = (l: GraphLine): [number, number] => {
+    const to = l.toRow === 'bottom' ? items.length : l.toRow;
+    return [Math.min(l.fromRow, to), Math.max(l.fromRow, to)];
+  };
+  const stretchOf = (it: AgentItem): GraphLine[] => lines.filter((l) => l.lane === it.lane && l.fromRow === it.row);
+  const besides: AgentItem[] = [];
+  for (const it of items) {
+    if (it.kind !== 'agent' || it.member === null || lineOnly(it.sessionId) || it.lane === trunkSlot(lanes[it.lane]!.block)) continue;
+    const own = stretchOf(it);
+    if (own.length === 0) continue;
+    const lo = it.row;
+    const hi = Math.max(...own.map((l) => spanOfLine(l)[1]));
+    const crossed =
+      lines.some((l) => {
+        if (l.lane !== it.lane || own.includes(l)) return false;
+        const [a, b] = spanOfLine(l);
+        return Math.max(a, lo) < Math.min(b, hi);
+      }) || items.some((x) => x.kind === 'commit' && x.lane === it.lane && x.row > lo && x.row < hi);
+    if (crossed) besides.push(it);
+  }
+  besides.sort((x, y) => y.lane - x.lane);
+  for (const it of besides) {
+    const k = it.lane;
+    const memberLane = lanes[k]!;
+    const bi = memberLane.block;
+    const own = stretchOf(it);
+    const far = Math.max(...own.map((l) => spanOfLine(l)[1]));
+    const farLane = it.pending ? it.forkLane : it.tipLane;
+    const up = (slot: number) => (slot > k ? slot + 1 : slot);
+    lanes.splice(k + 1, 0, { ...memberLane, side: true });
+    lanes.forEach((l, i) => {
+      l.slot = i;
+    });
+    for (const x of items) {
+      if (x.lane !== null) x.lane = up(x.lane);
+      if (x.kind !== 'agent') continue;
+      if (x.forkLane !== null) x.forkLane = up(x.forkLane);
+      if (x.tipLane !== null) x.tipLane = up(x.tipLane);
+    }
+    for (const l of lines) {
+      l.lane = up(l.lane);
+      if (l.toLane !== null) l.toLane = up(l.toLane);
+    }
+    for (const d of dots) d.lane = up(d.lane);
+    // The packing's width is the block's key count.
+    const keys = blocks[bi]!.laneKeys;
+    keys.splice(k - lanes.findIndex((l) => l.block === bi) + 1, 0, `side:${it.member!.id}`);
+    for (const l of own) lines.splice(lines.indexOf(l), 1);
+    const toLane = farLane === null || farLane === k ? k : up(farLane);
+    it.lane = k + 1;
+    it.forkRow = far;
+    it.forkLane = toLane;
+    it.beside = true;
+    lines.push({ kind: 'fork', lane: k + 1, fromRow: it.row, toRow: far, toLane, dashed: true, block: bi });
   }
 
   // The columns (M71). Up to here every block has slots of its own in

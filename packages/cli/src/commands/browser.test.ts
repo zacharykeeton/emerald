@@ -28,10 +28,12 @@ const sets: Layout[] = [];
 let server: net.Server;
 const sockets = new Set<net.Socket>();
 
-function freshLayout(withBrowser: boolean): Layout {
+// openedBy (M9 fix 969) puts an opener on the browser pane's view.
+function freshLayout(withBrowser: boolean, openedBy?: string): Layout {
   const own = { kind: 'pane' as const, id: OWN_PANE, sessionId: OWN, view: null };
+  const view = { kind: 'browser' as const, url: 'http://127.0.0.1:9/', ...(openedBy === undefined ? {} : { openedBy }) };
   const root = withBrowser
-    ? { kind: 'split' as const, id: 'split-1', direction: 'row' as const, ratio: 0.5, first: own, second: { kind: 'pane' as const, id: BROWSER_PANE, sessionId: null, view: { kind: 'browser' as const, url: 'http://127.0.0.1:9/' } } }
+    ? { kind: 'split' as const, id: 'split-1', direction: 'row' as const, ratio: 0.5, first: own, second: { kind: 'pane' as const, id: BROWSER_PANE, sessionId: null, view } }
     : own;
   return { tabs: [{ id: 'tab-1', name: 'main', root, focusedPaneId: OWN_PANE }], currentTabId: 'tab-1', revision: 4 };
 }
@@ -329,11 +331,53 @@ test('upload refuses a file that is not there before the pipe, and sends the abs
   }
 });
 
+// M9 fix 970: upload --selector for a hidden file input.
+test('upload --selector sends the selector in the ref\'s place at level 76, and is refused by an older daemon or window', async () => {
+  const file = path.join(os.tmpdir(), `emmer-upload-sel-${process.pid}.txt`);
+  fs.writeFileSync(file, 'x');
+  try {
+    level = 76;
+    await capture(() => runBrowser(['upload', '--selector', '#hidden-up', file]));
+    assert.deepEqual(runs.at(-1)!['args'], ['#hidden-up', file]);
+    runs.length = 0;
+    runReply = { apps: 1, drivers: 0 };
+    let err = await failure(runBrowser(['upload', '--selector', '#hidden-up', file]));
+    assert.equal(err.message, 'the window is older than emmer browser upload --selector (it needs level 76); quit Emerald and open it again');
+    runs.length = 0;
+    level = 75;
+    err = await failure(runBrowser(['upload', '--selector', '#hidden-up', file]));
+    assert.equal(err.message, "emmerd fake is older than emmer browser upload --selector (level 75, needs 76); restart it from the app's banner");
+    assert.deepEqual(runs, []);
+    level = 63;
+    runReply = answered({ ok: true, text: 'set @e1 to x' });
+    await capture(() => runBrowser(['upload', 'e1', file]));
+    assert.deepEqual(runs.at(-1)!['args'], ['e1', file]);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test('--selector on another verb, an empty or ref-shaped one, and upload with neither a ref nor --selector are usage errors', async () => {
+  level = 76;
+  const cases: Array<[string[], string]> = [
+    [['click', 'e1', '--selector', 'x'], '--selector is for upload'],
+    [['upload', '--selector', '', 'f'], '--selector takes a CSS selector, such as #file or input[type=file]'],
+    [['upload', '--selector', '@e3', 'f'], '--selector takes a CSS selector, not a ref; upload @e3 <path> takes the ref'],
+    [['upload', 'nowhere', 'f'], 'upload takes a ref such as @e7, or --selector <css> for a file input the snapshot does not list; got "nowhere"'],
+  ];
+  for (const [argv, message] of cases) {
+    const err = await failure(runBrowser(argv));
+    assert.equal(err.exitCode, EXIT.usage, argv.join(' '));
+    assert.equal(err.message, message);
+  }
+  assert.deepEqual(runs, []);
+});
+
 test('open --profile b puts the profile on the view and says so; a bad name and another verb are usage errors', async () => {
   layout = freshLayout(false);
   const { out } = await capture(() => runBrowser(['open', 'http://127.0.0.1:9/', '--profile', 'b']));
   const panes = listPanes(currentTab(sets[0]!));
-  assert.deepEqual(panes[1]!.view, { kind: 'browser', url: 'http://127.0.0.1:9/', profile: 'b' });
+  assert.deepEqual(panes[1]!.view, { kind: 'browser', url: 'http://127.0.0.1:9/', profile: 'b', openedBy: OWN });
   assert.equal(out, `opened http://127.0.0.1:9/ in pane ${panes[1]!.id.slice(0, 8)} on tab main under profile b\n`);
   let err = await failure(runBrowser(['open', 'http://127.0.0.1:9/', '--profile', 'B']));
   assert.equal(err.exitCode, EXIT.usage);
@@ -351,8 +395,62 @@ test('open puts a browser pane right of the caller\'s pane and leaves the focus 
   const panes = listPanes(tab);
   assert.equal(panes.length, 2);
   assert.equal(panes[0]!.id, OWN_PANE);
-  assert.deepEqual(panes[1]!.view, { kind: 'browser', url: 'http://127.0.0.1:9/' });
+  assert.deepEqual(panes[1]!.view, { kind: 'browser', url: 'http://127.0.0.1:9/', openedBy: OWN });
   assert.equal(tab.focusedPaneId, OWN_PANE);
   assert.equal(sets[0]!.revision, 4);
   assert.equal(out, `opened http://127.0.0.1:9/ in pane ${panes[1]!.id.slice(0, 8)} on tab main\n`);
+});
+
+// M9 fix 969: the opener on the view, and close.
+test('open from outside emerald writes a view with no opener', async () => {
+  layout = freshLayout(false);
+  delete process.env['EMERALD_SESSION_ID'];
+  await capture(() => runBrowser(['open', 'http://127.0.0.1:9/']));
+  const view = listPanes(currentTab(sets[0]!))[1]!.view;
+  assert.deepEqual(view, { kind: 'browser', url: 'http://127.0.0.1:9/' });
+  assert.ok(view !== null && !Object.hasOwn(view, 'openedBy'));
+});
+
+test('close puts away the browser pane this session opened, with no window and no browser.run', async () => {
+  level = 76;
+  layout = freshLayout(true, OWN);
+  const { code, out } = await capture(() => runBrowser(['close']));
+  assert.equal(code, EXIT.ok);
+  assert.equal(out, 'closed pane bbbbbbbb on tab main\n');
+  assert.equal(sets.length, 1);
+  const tab = currentTab(sets[0]!);
+  assert.deepEqual(listPanes(tab).map((p) => p.id), [OWN_PANE]);
+  assert.equal(tab.focusedPaneId, OWN_PANE);
+  assert.equal(sets[0]!.revision, 4);
+  assert.deepEqual(runs, []);
+  sets.length = 0;
+  const r = await capture(() => runBrowser(['close', '--json']));
+  assert.equal(r.code, EXIT.ok);
+  assert.deepEqual(JSON.parse(r.out), { pane: BROWSER_PANE, tab: 'main' });
+});
+
+test('close refuses a pane the person or another session opened', async () => {
+  level = 76;
+  for (const opener of [undefined, '22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb']) {
+    layout = freshLayout(true, opener);
+    const err = await failure(runBrowser(['close']));
+    assert.equal(err.exitCode, EXIT.failure);
+    assert.equal(err.message, 'pane bbbbbbbb was not opened by this session; the person closes it');
+  }
+  assert.deepEqual(sets, []);
+});
+
+test('close outside emerald, and close on a daemon older than 76, are refused', async () => {
+  level = 76;
+  layout = freshLayout(true, OWN);
+  delete process.env['EMERALD_SESSION_ID'];
+  let err = await failure(runBrowser(['close']));
+  assert.equal(err.exitCode, EXIT.failure);
+  assert.equal(err.message, 'close is for the session that opened the pane');
+  assert.deepEqual(sets, []);
+  process.env['EMERALD_SESSION_ID'] = OWN;
+  level = 75;
+  err = await failure(runBrowser(['close']));
+  assert.equal(err.message, "emmerd fake is older than emmer browser close (level 75, needs 76); restart it from the app's banner");
+  assert.deepEqual(sets, []);
 });

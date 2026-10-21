@@ -703,6 +703,15 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   for (const profile of ['B', '', 3]) {
     assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', profile }))), /profile must be/);
   }
+  // M9 fix 969: the opener is kept beside a profile, an absent one leaves
+  // no key, and one BROWSER_OPENER refuses is dropped, never refused.
+  const opened = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', openedBy: '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })));
+  assert.deepEqual((opened.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', openedBy: '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  assert.equal('openedBy' in ((page.tabs[0]!.root as { first: { view: object } }).first.view), false);
+  for (const openedBy of ['', 3, 'a b', 'a'.repeat(65)]) {
+    const dropped = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', openedBy })));
+    assert.deepEqual((dropped.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: '' });
+  }
   // M9 fix 896: a page from the disk is kept whole with its root, refused
   // without an absolute one, and a root beside a web url is dropped.
   const localUrl = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html';

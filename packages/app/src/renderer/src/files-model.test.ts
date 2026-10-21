@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, rowAfterRemoval, typeAhead, walk, watchOrder, withPending } from './files-model.ts';
 import type { FilesModel, Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -220,6 +220,49 @@ test('moveSelection: Up, Down, Home and End over the entry rows, Right opens and
   assert.equal(move(denied, 'ArrowRight'), denied);
   // Keys the walk does not take pass.
   for (const key of ['Enter', 'F2', 'a', ' ', 'Delete']) assert.equal(move(m, key), null);
+});
+
+test('rowAfterRemoval: the next row past the entry and its open children, else the row above, else none (M9 fix 950)', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['data', 'readme.md'], ['data']));
+  m = applyListing(m, 'C:\\repo\\data', list(['a.json', 'b.json']));
+  m = toggleFolder(m, 'C:/repo/data');
+  const rows = walk(m).rows;
+  assert.equal(rowAfterRemoval(rows, 'C:\\repo\\data\\a.json'), 'C:\\repo\\data\\b.json');
+  assert.equal(rowAfterRemoval(rows, 'C:\\repo\\data\\b.json'), 'C:\\repo\\readme.md');
+  assert.equal(rowAfterRemoval(rows, 'C:\\repo\\data'), 'C:\\repo\\readme.md');
+  assert.equal(rowAfterRemoval(rows, 'C:\\repo\\readme.md'), 'C:\\repo\\data\\b.json');
+  assert.equal(rowAfterRemoval(rows, 'C:\\repo\\gone.txt'), null);
+  const only = applyListing(setRoot(emptyModel(), 'C:\\repo'), 'C:\\repo', list(['only.txt']));
+  assert.equal(rowAfterRemoval(walk(only).rows, 'C:\\repo\\only.txt'), null);
+});
+
+test('typeAhead: a prefix, case-insensitively, from the selected row on and wrapping; a one-letter buffer starts past the selected row; a miss and an empty buffer give the same object; the children of a closed folder, a note and a name box are skipped (M9 fix 951)', () => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['data', 'deep', 'Readme.md', 'rows.txt'], ['data', 'deep']));
+  m = applyListing(m, 'C:\\repo\\data', list(['red.json', 'a.json']));
+  m = applyListing(m, 'C:\\repo\\deep', list(['rare.txt']));
+  m = toggleFolder(m, 'C:/repo/data');
+  const rows = walk(m).rows;
+  const ahead = (from: FilesModel, b: string) => typeAhead(from, rows, b);
+  const at = (p: string) => select(m, p);
+  const sel = (r: FilesModel) => r.selected;
+  assert.equal(sel(ahead(m, 'r')), 'C:\\repo\\data\\red.json');
+  assert.equal(sel(ahead(m, 'RE')), 'C:\\repo\\data\\red.json');
+  assert.equal(sel(ahead(at('C:\\repo\\data\\red.json'), 'r')), 'C:\\repo\\Readme.md');
+  assert.equal(sel(ahead(at('C:\\repo\\Readme.md'), 'r')), 'C:\\repo\\rows.txt');
+  assert.equal(sel(ahead(at('C:\\repo\\rows.txt'), 'r')), 'C:\\repo\\data\\red.json');
+  const readme = at('C:\\repo\\Readme.md');
+  assert.equal(ahead(readme, 're'), readme);
+  assert.equal(sel(ahead(at('C:\\repo\\data\\red.json'), 'ro')), 'C:\\repo\\rows.txt');
+  const last = at('C:\\repo\\rows.txt');
+  assert.equal(ahead(last, 'ra'), last);
+  assert.equal(ahead(readme, 'zz'), readme);
+  assert.equal(ahead(readme, ''), readme);
+  const boxed = withPending(rows, 'C:\\repo', { dir: 'C:\\repo', kind: 'file' });
+  assert.equal(sel(typeAhead(m, boxed, 'd')), 'C:\\repo\\data');
+  const denied = applyListing(at('C:\\repo\\data'), 'C:\\repo\\data', { error: 'Access denied' });
+  assert.equal(sel(typeAhead(denied, walk(denied).rows, 'r')), 'C:\\repo\\Readme.md');
 });
 
 test('setRoot keeps the listings and the expanded set, drops the selection', () => {

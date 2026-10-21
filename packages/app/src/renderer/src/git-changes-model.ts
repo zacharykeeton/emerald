@@ -1,4 +1,4 @@
-import type { GitChanges, GitCommit, GraphCommit } from '../../preload/api.ts';
+import type { GitChanges, GitCheckout, GitCommit, GraphCommit } from '../../preload/api.ts';
 import { normalizePath } from './files-model.ts';
 
 // The pure parts of the Changes and Timeline tabs (M45): the parsers the
@@ -83,8 +83,9 @@ export function countsText(added: number | null, removed: number | null): string
 // their line counts. The list is the whole repository's, so the answer
 // does not depend on what is expanded. null with no changed file under
 // the folder, so the row stays plain; a sum over files that have no
-// numbers (untracked ones) is null too, so a folder of fresh files shows
-// its count in the tooltip and no `+0 −0`.
+// numbers (binary ones, a nested repository) is null too, so such a
+// folder shows its count in the tooltip and no `+0 −0`; since fix 965 a
+// new folder's files carry their counts, so it sums them.
 export interface FolderCounts {
   files: number;
   added: number | null;
@@ -251,6 +252,26 @@ export function parseWorktrees(output: string): string[] {
     .filter((l) => l.startsWith('worktree '))
     .map((l) => l.slice('worktree '.length).trim())
     .filter((l) => l !== '');
+}
+
+// The same list with each checkout's branch (M9 fix 944): a
+// `branch refs/heads/<name>` line under the entry gives the name, and a
+// `detached` entry or one with no branch line gives null. The graph reads
+// a session's home branch off the checkout holding the folder it started
+// in, since a `cd` that sticks inside one Bash call moves its live folder.
+export function parseCheckouts(output: string): GitCheckout[] {
+  const out: GitCheckout[] = [];
+  for (const raw of output.split('\n')) {
+    const l = raw.trim();
+    if (l.startsWith('worktree ')) {
+      const p = l.slice('worktree '.length).trim();
+      if (p !== '') out.push({ path: p, branch: null });
+    } else if (l.startsWith('branch ') && out.length > 0) {
+      const ref = l.slice('branch '.length).trim();
+      out[out.length - 1]!.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+    }
+  }
+  return out;
 }
 
 // `git diff --name-status -z <base>` (M64): a status letter, then the

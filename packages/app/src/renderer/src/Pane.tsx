@@ -1370,26 +1370,39 @@ function ShadeMemberRule({ session, agentId }: { session: SessionInfo; agentId: 
 }
 
 // M9 fix 821: a hover on a member's box opens the commit graph's agent card
-// for it (a shell's gets the same card with its command). The box's name,
-// state and activity lines sit in this span, which is display: contents so
-// the grid does not move, and carries the hover only: not the click or the
-// press (usePopoverAnchor's other handlers pin the card and stop the click),
-// so a click on a box or on its open card still lifts the shade. The
-// checklist strip is outside it, the box's last child, and opens its own card.
-function ShadeMemberCard({ session, member, now, children }: { session: SessionInfo; member: TeamMember; now: number; children: ReactNode }) {
-  const ref = useRef<HTMLSpanElement>(null);
+// for it (a shell's gets the same card with its command). M9 fix 961: the
+// hover is the box's own, its padding, border and the gaps between its
+// lines included; the span that held it was display: contents and had no
+// box, so a pointer resting in the padding was off it. The box carries the
+// hover only: not the click or the press (usePopoverAnchor's other
+// handlers pin the card and stop the click), so a click on a box or on its
+// open card still lifts the shade. The checklist strip inside the box
+// opens its own card, so a pointer over the strip counts as off the box.
+function ShadeMemberCard({ session, member, now, data, children }: { session: SessionInfo; member: TeamMember; now: number; data: Record<string, string | undefined>; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
   const state = usePopoverAnchor(true);
   const id = `${session.id}:shade-member:${member.id}`;
   return (
-    <>
-      <span ref={ref} className="pane-shade-member-body" data-popover-for={id} data-popover-open={state.open} onMouseEnter={state.handlers.onMouseEnter} onMouseLeave={state.handlers.onMouseLeave}>
-        {children}
-      </span>
-      {/* The span has no box of its own (display: contents), so the card hangs under the member's box. */}
-      {state.card(ref.current?.parentElement ?? null, (props) => (
+    <div
+      ref={ref}
+      className="pane-shade-member"
+      {...data}
+      data-popover-for={id}
+      data-popover-open={state.open}
+      onMouseOver={(ev) => {
+        // A card portalled to the body bubbles here through the React
+        // tree; it keeps itself through its own onEnter and onLeave.
+        if (!(ev.target instanceof Element) || !ev.currentTarget.contains(ev.target)) return;
+        if (ev.target.closest('.pane-shade-member-rule') !== null) state.handlers.onMouseLeave();
+        else state.handlers.onMouseEnter();
+      }}
+      onMouseLeave={state.handlers.onMouseLeave}
+    >
+      {children}
+      {state.card(ref.current, (props) => (
         <AgentCard member={member} session={session} now={now} anchorId={id} {...props} />
       ))}
-    </>
+    </div>
   );
 }
 
@@ -1435,8 +1448,7 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
         const type = m.type ?? kind;
         const kindWord = kind === 'shell' || type === name ? null : type;
         return (
-          <div key={m.id} className="pane-shade-member" data-working={working || undefined} data-kind={kind} data-type={type} data-member={m.id} data-fold={i >= NARROW_MEMBERS ? '' : undefined}>
-            <ShadeMemberCard session={session} member={m} now={now}>
+          <ShadeMemberCard key={m.id} session={session} member={m} now={now} data={{ 'data-working': working ? 'true' : undefined, 'data-kind': kind, 'data-type': type, 'data-member': m.id, 'data-fold': i >= NARROW_MEMBERS ? '' : undefined }}>
               <span className="pane-shade-member-head">
                 <SessionMark kind={kind === 'shell' ? 'shell' : 'claude'} working={working} size="unit" family={word} />
                 <span className="pane-shade-member-name">{name}</span>
@@ -1465,9 +1477,8 @@ function ShadeTeam({ session }: { session: SessionInfo }) {
                 {activity ?? ' '}
               </span>
             )}
-            </ShadeMemberCard>
             <ShadeMemberRule session={session} agentId={m.id} />
-          </div>
+          </ShadeMemberCard>
         );
       })}
       {session.team.length > NARROW_MEMBERS && (

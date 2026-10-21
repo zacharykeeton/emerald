@@ -331,7 +331,9 @@ export class SessionManager extends EventEmitter {
     return rec;
   }
 
-  spawn(req: SpawnRequest): SessionInfo {
+  // `path` is the registry's PATH for this session (M9 fix 971); null keeps
+  // the daemon's own, which every test and every caller but the pipe uses.
+  spawn(req: SpawnRequest, path: string | null = null): SessionInfo {
     checkDirectory(req.cwd);
     // One spelling per folder (M9 fix 108): a shell spawned at the 8.3
     // form os.tmpdir() gives and a Claude reporting the long form of the
@@ -346,7 +348,7 @@ export class SessionManager extends EventEmitter {
     const shell = req.kind === 'shell' ? this.pickShell(req.shell) : null;
     const id = randomUUID();
     const now = Date.now();
-    const pty = this.launch(id, req.kind, req.args ?? [], req.cwd, req.cols, req.rows, shell);
+    const pty = this.launch(id, req.kind, req.args ?? [], req.cwd, req.cols, req.rows, shell, path);
 
     const given = req.name?.trim() ?? '';
     const info: SessionInfo = {
@@ -462,7 +464,7 @@ export class SessionManager extends EventEmitter {
   // Clients attached to the old PTY hear nothing from the new one until
   // they attach again; the renderer does that when it sees the session
   // leave `exited`.
-  resume(sessionId: string, cols: number, rows: number): SessionInfo {
+  resume(sessionId: string, cols: number, rows: number, path: string | null = null): SessionInfo {
     const rec = this.get(sessionId);
     if (rec.info.state !== 'exited') throw new SessionError('bad-request', `session ${sessionId} is still running`);
     this.stopTail(rec);
@@ -489,7 +491,7 @@ export class SessionManager extends EventEmitter {
         this.log.warn('shell is not installed now, resuming in the default', { id: sessionId, shell: recorded, default: shell.id });
       }
     }
-    const pty = this.launch(sessionId, rec.info.kind, args, cwd, cols, rows, shell);
+    const pty = this.launch(sessionId, rec.info.kind, args, cwd, cols, rows, shell, path);
     const now = Date.now();
     rec.pty = pty;
     rec.spinnerFromMod = false;
@@ -1281,14 +1283,18 @@ export class SessionManager extends EventEmitter {
     rec.typeAtPrompt = null;
   }
 
-  private launch(id: string, kind: SessionKind, args: string[], cwd: string, cols: number, rows: number, shell: ShellOption | null): PtySession {
+  private launch(id: string, kind: SessionKind, args: string[], cwd: string, cols: number, rows: number, shell: ShellOption | null, path: string | null): PtySession {
     // Git Bash reads its rc from the file (M9 fix 624), written fresh at
     // every launch so a new build's rc reaches the next shell.
     if (shell?.id === 'gitbash' && args.length === 0) writeFileAtomic(this.bashrcPath, BASH_RC, this.log);
     const command = this.launchers[kind].command(args, shell);
     if (command.note !== undefined) this.log.warn(command.note, { id });
     const hook = this.opts.hook;
-    const env = stampEnv(process.env, hook === undefined ? { sessionId: id } : { sessionId: id, hookPort: hook.port, hookToken: hook.token });
+    const env = stampEnv(process.env, {
+      sessionId: id,
+      ...(hook === undefined ? {} : { hookPort: hook.port, hookToken: hook.token }),
+      ...(path === null ? {} : { path }),
+    });
     // The launch's own variables (M9 fix 624: cmd's PROMPT) replace the
     // inherited ones whatever their case, since Windows reads the block
     // case-blind and two spellings of one name would leave either.

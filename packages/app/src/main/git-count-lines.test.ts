@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { COUNT_LINES_CAP, countUntracked, gitReview } from './git-status.ts';
+import { COUNT_LINES_CAP, countUntracked, gitChanges, gitReview, untrackedPaths } from './git-status.ts';
 import type { GitOptions } from './git-runner.ts';
 import { normalizePath } from '../renderer/src/files-model.ts';
 
@@ -139,7 +139,50 @@ test('gitReview lists a new folder\'s files one row each with their counts, the 
       ['tracked.txt', 'M', 1, 1],
     ],
   );
+  assert.deepEqual(review.files.filter((r) => r.repo === true).map((r) => r.rel), ['nested'], 'the nested repository alone is marked');
   assert.match(review.baseHash ?? '', /^[0-9a-f]{40}$/);
   assert.equal(review.files.find((r) => r.rel === 'new/a.txt')?.path, path.join(dir, 'new', 'a.txt'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('untrackedPaths marks only an entry ending in a slash and reads a null as none (M9 fix 963)', () => {
+  assert.deepEqual(untrackedPaths('a.txt\0nested/\0new/b.txt\0', 'C:\\r'), [
+    { path: 'C:\\r\\a.txt', repo: false },
+    { path: 'C:\\r\\nested', repo: true },
+    { path: 'C:\\r\\new\\b.txt', repo: false },
+  ]);
+  assert.deepEqual(untrackedPaths(null, 'C:\\r'), []);
+});
+
+test("gitChanges lists a new folder's files one row each with their counts, the ignored left out and a nested repository one row (M9 fix 965)", async () => {
+  const dir = scratchRepo();
+  const f = (rel: string) => path.join(dir, ...rel.split('/'));
+  fs.writeFileSync(f('tracked.txt'), 'u\n');
+  fs.writeFileSync(f('extra.txt'), 'e\n');
+  fs.mkdirSync(f('new'));
+  fs.writeFileSync(f('new/a.txt'), 'a1\na2\n');
+  fs.writeFileSync(f('new/b.txt'), 'b1\n');
+  fs.appendFileSync(f('.git/info/exclude'), 'skip/\n');
+  fs.mkdirSync(f('skip'));
+  fs.writeFileSync(f('skip/s.txt'), 's\n');
+  fs.mkdirSync(f('nested'));
+  execFileSync('git', ['init', '-q'], { cwd: f('nested'), stdio: 'ignore' });
+  fs.writeFileSync(f('nested/n.txt'), 'n\n');
+  fs.writeFileSync(f('staged.txt'), 's1\n');
+  execFileSync('git', ['add', 'staged.txt'], { cwd: dir, stdio: 'ignore' });
+  const changes = await gitChanges(dir, realGit([]));
+  assert.deepEqual(
+    changes.files.map((r) => [r.rel, r.code, r.status, r.added, r.removed]),
+    [
+      ['extra.txt', '??', 'untracked', 1, 0],
+      ['nested', '??', 'untracked', null, null],
+      ['new/a.txt', '??', 'untracked', 2, 0],
+      ['new/b.txt', '??', 'untracked', 1, 0],
+      ['staged.txt', 'A ', 'staged', 1, 0],
+      ['tracked.txt', ' M', 'modified', 1, 1],
+    ],
+  );
+  assert.equal(changes.root, dir);
+  assert.equal(changes.files.find((r) => r.rel === 'new/a.txt')?.path, path.join(dir, 'new', 'a.txt'));
   fs.rmSync(dir, { recursive: true, force: true });
 });

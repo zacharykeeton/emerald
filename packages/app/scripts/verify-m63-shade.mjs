@@ -954,6 +954,34 @@ try {
   await s.waitFor(`!document.querySelector('.agent-popover')`, "sh1's card closes after the mouse leaves");
   step("fix 821: a hover on a member's box opens the agent card (the fork's with its whole name, the model in full, the box's price and its tasks; the shell's with its command), a click on the box lifts the shade and closes the card");
 
+  // M9 fix 961: the hover is the whole box's, its padding, border and line
+  // gaps included; the checklist strip inside the box keeps its own card.
+  await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a2"] .pane-shade-member-name', '.agent-popover[data-member="a2"]', "a2's card on its name (fix 961)");
+  const pad961 = await s.evalJs(`(() => { const el = document.querySelector(${JSON.stringify(sixSel + ' .pane-shade-member[data-member="a2"]')}); const r = el.getBoundingClientRect(); return { x: r.x + 3, y: r.y + 3, hit: document.elementFromPoint(r.x + 3, r.y + 3) === el }; })()`);
+  expect(pad961.hit, `fix 961: the point 3px inside a2's box's top-left corner is the box itself, got ${JSON.stringify(pad961)}`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pad961.x, y: pad961.y });
+  await sleep(600);
+  expect(await s.evalJs(`!!document.querySelector('.agent-popover[data-member="a2"]')`), "fix 961: a2's card stays open with the pointer resting in its box's padding");
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a2's card closes after the mouse leaves (fix 961)");
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pad961.x, y: pad961.y });
+  await s.waitFor(`!!document.querySelector('.agent-popover[data-member="a2"]')`, "fix 961: a fresh hover resting in a2's padding opens its card", 1500);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover')`, "a2's card closes again (fix 961)");
+  const a1Name961 = await hoverForCard(s, sixSel + ' .pane-shade-member[data-member="a1"] .pane-shade-member-name', '.agent-popover[data-member="a1"]', "a1's card on its name (fix 961)");
+  const a1Track961 = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sixSel + ' .pane-shade-member[data-member="a1"] .pane-shade-member-track')}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: a1Track961.x, y: a1Track961.y });
+  const strip961 = `!!document.querySelector('.tasks-popover') && !document.querySelector('.agent-popover[data-member="a1"]')`;
+  await s.waitFor(strip961, "fix 961: on a1's strip the checklist card opens and the agent card closes", 3000);
+  await sleep(600);
+  expect(await s.evalJs(strip961), "fix 961: a1's strip, inside its box, keeps its checklist card alone");
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: a1Name961.x, y: a1Name961.y });
+  await s.waitFor(`!document.querySelector('.tasks-popover') && !!document.querySelector('.agent-popover[data-member="a1"]')`, "fix 961: back on a1's name the agent card reopens and the checklist card closes", 3000);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 400 });
+  await s.waitFor(`!document.querySelector('.agent-popover') && !document.querySelector('.tasks-popover')`, "both cards close after the mouse leaves (fix 961)");
+  expect(await s.evalJs(`!!${q(sixSel + ' .pane-shade')}`), 'the shade is still down after the box hovers (fix 961)');
+  step("M9 fix 961: a2's card stays open with the pointer resting in its box's padding and opens on a fresh hover there; a1's checklist strip, inside its box, opens its own card alone and the name reopens the agent card");
+
   // M9 fix 834: the card's heading is two lines, the name alone on the
   // first and the role, model, state and price as chips under it at the
   // name's start. a4 is a long-typed member with no description (its
@@ -1043,6 +1071,13 @@ try {
   await s.waitFor(`!${q(sixSel + ' .pane-shade')}`, 'lifted');
   await s.send('Emulation.clearDeviceMetricsOverride');
   await s.waitFor(`${q(sixSel)}.getBoundingClientRect().width < 760`, 'the viewport back');
+  // M9 fix 962: the fold step alone runs on a window 80px taller, so
+  // "and 3 more" has room under it; at the window's own height it sat 0px
+  // above the pane's bottom, the next line added to a shown box past it.
+  // The width stays the window's own, so the pane stays under 360px.
+  const ownW962 = await s.evalJs('window.innerWidth');
+  await s.send('Emulation.setDeviceMetricsOverride', { width: ownW962, height: viewportH + 80, deviceScaleFactor: 0, mobile: false });
+  await s.waitFor(`window.innerHeight === ${viewportH + 80}`, 'the fold step 80px taller (fix 962)');
   layout = await getLayout(s);
   await zreq(s, 'layout.set', { layout: { ...layout, root: { kind: 'split', id: 'm63-fold', direction: 'row', ratio: 0.25, first: layout.root, second: { kind: 'pane', id: 'm63-p2', sessionId: two.id, view: null } } } });
   await s.waitFor(`document.querySelectorAll('.term-host').length === 2`, 'two panes, the six-member one narrow');
@@ -1060,7 +1095,7 @@ try {
   expect(fold.activity !== null && !fold.activityShown, `the folded narrow lid hides its activity line, got ${JSON.stringify({ activity: fold.activity, shown: fold.activityShown })}`);
   const shownBoxes = fold.members.filter((m) => m.shown);
   expect(fold.paneWidth < 360 && fold.columns === 1 && shownBoxes.length === 4 && shownBoxes.map((m) => m.id).join(',') === 'a1,a2,a3,a4', `the narrow tier folds at four boxes in one column, got ${fold.paneWidth}px, ${fold.columns} columns, shown ${shownBoxes.map((m) => m.id).join(',')}`);
-  expect(fold.more.length === 1 && fold.more[0].text === 'and 3 more' && fold.more[0].box.bottom <= fold.paneBottom && fold.more[0].box.h > 0, `"and 3 more" is drawn inside the pane under the four, got ${JSON.stringify(fold.more)} against the pane's bottom at ${fold.paneBottom}`);
+  expect(fold.more.length === 1 && fold.more[0].text === 'and 3 more' && fold.more[0].box.bottom <= fold.paneBottom && fold.more[0].box.h > 0 && fold.paneBottom - fold.more[0].box.bottom >= 32, `"and 3 more" is drawn inside the pane under the four with 32px or more beneath it (fix 962), got ${JSON.stringify(fold.more)} against the pane's bottom at ${fold.paneBottom}, a margin of ${fold.more[0] === undefined ? 'none' : fold.paneBottom - fold.more[0].box.bottom}px`);
   expect(shownBoxes.every((m) => m.box.bottom <= fold.paneBottom && m.box.w === fold.rule.face.w), `every shown box is inside the pane and as wide as the face, got ${JSON.stringify(shownBoxes.map((m) => m.box))} against ${fold.paneBottom}`);
   expect(fold.nameSize === 32 && fold.subjectSize === 15 && fold.mark.w === 40, `the narrow tier's 32px name, 15px subject and 40px mark, got ${JSON.stringify({ nameSize: fold.nameSize, subjectSize: fold.subjectSize, mark: fold.mark })}`);
   const empties940 = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(sixSel + ' .pane-shade-member:not([data-fold]) .pane-shade-member-activity[data-empty]')})].map((e) => e.getClientRects().length)`);
@@ -1069,7 +1104,9 @@ try {
   await frame('m9-372-lid-fold.png');
   expect(await click(sixSel + ' .pane-shade'), 'lift the folded shade');
   await s.waitFor(`!${q(sixSel + ' .pane-shade')}`, 'lifted');
-  step('fix 372: under 360px the six-member lid folds at four boxes with "and 3 more" inside the pane; fix 940: the boxes\' empty activity lines are not drawn there');
+  await s.send('Emulation.clearDeviceMetricsOverride');
+  await s.waitFor(`window.innerHeight === ${viewportH}`, 'the viewport back after the fold (fix 962)');
+  step('fix 372: under 360px the six-member lid folds at four boxes with "and 3 more" inside the pane, 32px or more above its bottom on a window 80px taller (fix 962); fix 940: the boxes\' empty activity lines are not drawn there');
 
   // Twelve members at the wide tier: the columns tighten to 132px past
   // eight (five across in the 760px column), every box shown, no fold

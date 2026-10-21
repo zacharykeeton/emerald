@@ -332,6 +332,13 @@ const EMPTY_PANE_KIND_KEY = 'emerald.emptyPaneKind';
 const EMPTY_PANE_SHELL_KEY = 'emerald.emptyPaneShell';
 const WRAP_LINES_KEY = 'emerald.wrapLines';
 const PLAN_KEY = 'emerald.plan';
+// A contents hit dropped outside every window (M9 fix 948): the source
+// window makes the pane's tab and moves it to a new window, whose page has
+// a ui state of its own, so the reveal goes across in storage, one shot,
+// and the new page takes it at its load. Ten seconds, the span of
+// window-drag.ts's DROP_PLACEMENT_MS; the page loads in well under it.
+const REVEAL_HANDOFF_KEY = 'emerald.revealHandoff';
+export const REVEAL_HANDOFF_MS = 10_000;
 
 let state: UiState = {
   pickerPaneId: null,
@@ -352,7 +359,7 @@ let state: UiState = {
   tabs: loadTabs(),
   tabOrder: loadTabOrder(),
   tabTitles: new Map(),
-  reveal: null,
+  reveal: loadRevealHandoff(),
   revealConversation: null,
   revealFile: null,
   search: loadSearch(),
@@ -593,7 +600,9 @@ function loadSidebarFilter(): SidebarFilter {
 }
 
 export function toggleSidebarFold(folder: string): void {
-  const folded = new Set(state.sidebarFolded);
+  // From the stored set, not this window's (M9 fix 949): a group another
+  // window folded since this one loaded stays folded.
+  const folded = new Set(loadIds(FOLDED_KEY));
   if (!folded.delete(folder)) folded.add(folder);
   setState({ ...state, sidebarFolded: folded });
   try {
@@ -1286,6 +1295,42 @@ export function revealInPane(paneId: string, path: string, line: number, column 
   setState({ ...state, reveal: { path, line, column, seq: (state.reveal?.seq ?? 0) + 1, paneId } });
 }
 
+// M9 fix 948: the reveal for a pane about to move to a new window, written
+// for that window's page to take at its load. On a throw the new window
+// opens the file at its top.
+export function handRevealToNewWindow(paneId: string, path: string, line: number, column = 1): void {
+  try {
+    localStorage.setItem(REVEAL_HANDOFF_KEY, JSON.stringify({ paneId, path, line, column, at: Date.now() }));
+  } catch {
+    // no storage
+  }
+}
+
+// Read once and removed whatever it held; a hand-off ten seconds old or
+// more is another drop's, left unread.
+export function loadRevealHandoff(now = Date.now()): Reveal | null {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(REVEAL_HANDOFF_KEY);
+    if (raw !== null) localStorage.removeItem(REVEAL_HANDOFF_KEY);
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof v !== 'object' || v === null) return null;
+  const { paneId, path, line, column, at } = v as Record<string, unknown>;
+  if (typeof paneId !== 'string' || typeof path !== 'string' || typeof line !== 'number' || typeof column !== 'number' || typeof at !== 'number') return null;
+  const age = now - at;
+  if (age < 0 || age >= REVEAL_HANDOFF_MS) return null;
+  return { path, line, column, seq: 1, paneId };
+}
+
 // The file view has shown the line; a later open of the same tab starts
 // where it was left, as before.
 export function clearReveal(seq: number): void {
@@ -1790,3 +1835,10 @@ onOtherWindowWrite(SHADE_AFTER_KEY, () => setState({ ...state, shadeAfter: loadS
 onOtherWindowWrite(COPY_ON_SELECT_KEY, () => setState({ ...state, copyOnSelect: loadCopyOnSelect() }));
 onOtherWindowWrite(SPLIT_KIND_KEY, () => setState({ ...state, splitKind: loadSplitKind() }));
 onOtherWindowWrite(WRAP_LINES_KEY, () => setState({ ...state, wrapLines: loadWrapLines() }));
+// M9 fix 949: the sidebar's list choices follow too, since every window
+// lists every session; its width and collapse, the rail's tab, the Changed
+// toggle and the search stay each window's own, as a browser keeps each
+// window's side panel.
+onOtherWindowWrite(ORDER_KEY, () => setState({ ...state, sidebarOrder: loadSidebarOrder() }));
+onOtherWindowWrite(FILTER_KEY, () => setState({ ...state, sidebarFilter: loadSidebarFilter() }));
+onOtherWindowWrite(FOLDED_KEY, () => setState({ ...state, sidebarFolded: loadSidebarFolded() }));

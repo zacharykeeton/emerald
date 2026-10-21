@@ -224,6 +224,11 @@ try {
   fs.writeFileSync(path.join(shimDir, 'claude.cmd'), `@"${process.execPath}" "${path.join(cliDir, 'scripts', 'fake-claude.mjs')}" %*\r\n`);
   const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
   env[pathKey] = `${shimDir};${env[pathKey] ?? ''}`;
+  // M9 fix 971: a session's PATH is read from the registry at each spawn,
+  // which holds the user's real claude and not this shim, so this daemon
+  // keeps its own PATH for every session and the claude typed below is
+  // the fake one.
+  env.EMERALD_SPAWN_PATH = 'inherit';
   // M9 fix 232: the stall floor in seconds, so wait --for stale can be
   // read; the daemon checks every half floor. Six seconds clears every
   // working stretch the fake Claude holds (a Stop lands 300 ms after

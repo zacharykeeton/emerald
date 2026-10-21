@@ -1,3 +1,4 @@
+import { decodeRequestError } from '../main/request-error.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, WindowDragTarget } from './api.ts';
@@ -35,6 +36,11 @@ const api: EmeraldApi = {
       ipcRenderer.on('emerald:guest-input', listener);
       return () => ipcRenderer.off('emerald:guest-input', listener);
     },
+    onGuestRefused: (handler) => {
+      const listener = (_e: IpcRendererEvent, refused: { webContentsId: number; url: string }) => handler(refused);
+      ipcRenderer.on('emerald:guest-refused', listener);
+      return () => ipcRenderer.off('emerald:guest-refused', listener);
+    },
   },
   files: {
     list: (dir, keep) => ipcRenderer.invoke('emerald:files-list', dir, keep),
@@ -45,6 +51,7 @@ const api: EmeraldApi = {
     create: (path) => ipcRenderer.invoke('emerald:files-create', path),
     rename: (from, to) => ipcRenderer.invoke('emerald:files-rename', from, to),
     trash: (path) => ipcRenderer.invoke('emerald:files-trash', path),
+    move: (paths, dir, mode, replace) => ipcRenderer.invoke('emerald:files-move', paths, dir, mode, replace),
     search: (root, needle, mode) => ipcRenderer.invoke('emerald:files-search', root, needle, mode),
     stopSearch: () => ipcRenderer.invoke('emerald:files-search-stop'),
     watch: (dirs) => ipcRenderer.invoke('emerald:files-watch', dirs),
@@ -165,10 +172,14 @@ const api: EmeraldApi = {
       return () => ipcRenderer.off('emerald:window-drag-target', listener);
     },
     open: (tabId, x, y) => ipcRenderer.invoke('emerald:window-drag-open', tabId, x, y),
+    landed: () => ipcRenderer.send('emerald:window-drag-landed'),
   },
   daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
   dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),
-  request: (type, body) => ipcRenderer.invoke('emerald:request', type, body),
+  request: (type, body) =>
+    ipcRenderer.invoke('emerald:request', type, body).catch((err: unknown) => {
+      throw decodeRequestError(err);
+    }),
   send: (msg: FireAndForget) => ipcRenderer.send('emerald:send', msg),
   on: (handler) => {
     const listener = (_event: IpcRendererEvent, msg: RendererPush) => handler(msg);

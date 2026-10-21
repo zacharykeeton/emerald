@@ -34,6 +34,9 @@ export interface EnvStamp {
   // when the port is missing, so such a session is simply hook-less.
   hookPort?: number;
   hookToken?: string;
+  // The PATH read from the registry at this spawn (M9 fix 971); absent
+  // keeps the daemon's own.
+  path?: string;
 }
 
 // Variables that mark a process as living inside another Claude Code session.
@@ -124,6 +127,12 @@ export function stampEnv(base: NodeJS.ProcessEnv, stamp: EnvStamp): Record<strin
   env['EMERALD_SESSION_ID'] = stamp.sessionId;
   if (stamp.hookPort !== undefined) env['EMERALD_HOOK_PORT'] = String(stamp.hookPort);
   if (stamp.hookToken !== undefined) env['EMERALD_HOOK_TOKEN'] = stamp.hookToken;
+  // Windows' own spelling, every other one dropped: the block is read
+  // case-blind, so two spellings would leave either.
+  if (stamp.path !== undefined) {
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
+    env['Path'] = stamp.path;
+  }
   return env;
 }
 

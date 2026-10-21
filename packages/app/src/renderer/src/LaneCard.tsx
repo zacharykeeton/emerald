@@ -78,11 +78,6 @@ export function BarLines({ bars }: { bars: readonly CardBar[] | undefined }): Re
   const lines = barLines(bars ?? []);
   return (
     <>
-      {lines.head !== null && (
-        <div className="lane-card-bars" data-kind="head">
-          {lines.head}
-        </div>
-      )}
       {lines.start !== null && (
         <div className="lane-card-bars" data-kind="start">
           {lines.start}

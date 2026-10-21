@@ -13,13 +13,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ClientMessage, RequestType, Requests, ServerMessage, UsageEdge } from '@emerald/shared';
-import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
+import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, MoveMode, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
 import { runCliJson } from './cli.ts';
 import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, readTail, revealPath, statPath } from './files.ts';
 import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
-import { createFile, makeFolder, heldTrash, renameEntry, trashEntry, writeFileText } from './file-write.ts';
+import { createFile, makeFolder, heldTrash, moveEntries, renameEntry, trashEntry, writeFileText } from './file-write.ts';
 import { folderIcon, folderIconForget } from './folder-icon.ts';
 import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitProjectCounts, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
 import type { Runner } from './node-runner.ts';
@@ -29,6 +29,7 @@ import { rendererLogLine } from './renderer-log.ts';
 import { awayAfterMs, IDLE_POLL_MS, PresenceTracker } from './presence.ts';
 import { createTaskbar } from './taskbar.ts';
 import { wireWindowDrag } from './window-drag.ts';
+import { encodeRequestError } from './request-error.ts';
 import { createUseRecord } from './use-record.ts';
 import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
 import { PipeClient } from './pipe-client.ts';
@@ -386,7 +387,14 @@ ipcMain.handle('emerald:request', async (event, type: RequestType, body: Request
       else if (!broker.detach(sessionId, event.sender.id)) return {};
     }
   }
-  const reply = await client.request(type, body);
+  // M9 fix 947: the code rides in the message, which is all an invoke's
+  // rejection carries (request-error.ts).
+  let reply: Requests[RequestType]['res'];
+  try {
+    reply = await client.request(type, body);
+  } catch (err) {
+    throw encodeRequestError(err);
+  }
   // A page's own layout read binds the startup window as soon as main's
   // would (M9 fix 866), so the page's window id is never later than its
   // layout.
@@ -761,6 +769,17 @@ const trasher = trashHeld
   ? heldTrash(path.resolve(emeraldHomeOf(process.env)), log, process.env['EMERALD_OPEN_LOG'])
   : (target: string) => shell.trashItem(target);
 ipcMain.handle('emerald:files-trash', (_event, p: string) => trashEntry(p, trasher, log));
+// M9 fix 953: a drop from Explorer on the Files rail, the replaced entries
+// through the same trasher as Delete.
+ipcMain.handle('emerald:files-move', (_event, paths: unknown, dir: string, mode: MoveMode, replace: unknown) =>
+  moveEntries(
+    Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : [],
+    dir,
+    mode === 'move' || mode === 'copy' ? mode : 'auto',
+    Array.isArray(replace) ? replace.filter((p): p is string => typeof p === 'string') : null,
+    { trash: trasher, log },
+  ),
+);
 // One running search per window (M9 fix 519): a newer search aborts the
 // one before it, and the rail's stop aborts whatever is running, so a
 // walk the rail no longer wants ends at its next folder or file.
@@ -1406,6 +1425,9 @@ app.on('web-contents-created', (_event, contents) => {
       if (isLocalPageUrl(url) && contents.navigationHistory.getAllEntries().some((entry) => entry.url === url)) return;
       e.preventDefault();
       log(`browser: navigation refused: ${url}`);
+      // M9 fix 967: the pane's error line says it, from the one rule that refuses, since only main reads the guest's live history.
+      const host = contents.hostWebContents;
+      if (host !== null && host !== undefined && !host.isDestroyed()) host.send('emerald:guest-refused', { webContentsId: contents.id, url });
     });
     // M9 fix 896: a frame inside a page is held to the same rule for a page from the disk, so a web page cannot frame one into itself (the handler's frame-ancestors says the same). A subframe's web navigation stays the page's own business, as it was.
     contents.on('will-frame-navigate', (e) => {

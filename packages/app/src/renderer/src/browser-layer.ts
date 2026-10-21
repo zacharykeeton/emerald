@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { guestNavigationAllowed, isLocalPageUrl, localPageOf } from '@emerald/shared';
+import { isLocalPageUrl, localPageOf } from '@emerald/shared';
 import type { BrowserPaneView, PaneView } from '@emerald/shared';
 
 // The browser layer's model (M9 fix 669). Every browser pane's page lives
@@ -256,17 +256,13 @@ export function resetPageZoom(paneId: string): void {
   browserPage(paneId)?.setZoomLevel(window.emerald.zoom.level());
 }
 
-// M9 fix 933: what the pane's error line says of a navigation, the rule
-// main's guard keeps (index.ts's will-navigate): the web and a page of the
-// same folder pass, and so does a page from the disk this frame has
-// already shown, exactly that URL, which is how a page's own Back onto it
-// reaches will-navigate. The set never shrinks while the history does, so
-// a link onto a URL the history has dropped can pass here and still be
-// refused by main, which logs it; the line then says nothing, rarer than
-// the flash this replaces.
-export function navigationRefusal(url: string, from: string, committed: ReadonlySet<string>): 'link' | 'local' | null {
-  if (guestNavigationAllowed(url, from)) return null;
-  return isLocalPageUrl(url) ? (committed.has(url) ? null : 'local') : 'link';
+export const refusedLink = (url: string): string => `This page tried to open ${url}; a browser pane opens only http and https pages`;
+// M9 fix 896: a link into the disk from a page not of the same folder.
+export const refusedLocal = (url: string): string => `This page tried to open ${url}; a web page cannot open a page from the disk`;
+
+// M9 fix 967: what the error line says when main's guard refuses a page's own navigation (emerald:guest-refused): a page from the disk is one a web page may not open, anything else is off the web.
+export function refusalLine(url: string): string {
+  return isLocalPageUrl(url) ? refusedLocal(url) : refusedLink(url);
 }
 
 // The pane whose page is the guest with this web contents id (fix 670's

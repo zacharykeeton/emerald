@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
-import { tabMoves, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
+import type { AskTab } from './screen-prompt-model.ts';
 
 // A permission dialog as Claude Code 2.1 draws it, the transcript above
 // it, the cursor on the dialog's last row.
@@ -617,6 +618,30 @@ test('M9 fix 922: tabMoves is one arrow per tab between the current one and the 
   assert.equal(tabMoves(3, 0), '\x1b[D\x1b[D\x1b[D', 'from the review Submit');
   assert.equal(tabMoves(1, 1), '');
   assert.equal(tabMoves(-1, 0), '');
+});
+
+test('M9 fix 959: Left and Shift+Tab step one tab back, Right and Tab one on, any other key none', () => {
+  assert.equal(tabKeyStep('ArrowLeft', false), -1);
+  assert.equal(tabKeyStep('Tab', true), -1);
+  assert.equal(tabKeyStep('ArrowRight', false), 1);
+  assert.equal(tabKeyStep('Tab', false), 1);
+  assert.equal(tabKeyStep('ArrowUp', false), 0);
+  assert.equal(tabKeyStep('2', false), 0);
+});
+
+test('M9 fix 959: tabStepTo moves from the current tab, clamped at the ends, null with none current', () => {
+  const tabs = (cur: number): AskTab[] =>
+    [
+      { name: 'Colour', state: 'open' },
+      { name: 'Size', state: 'open' },
+      { name: 'Shape', state: 'open' },
+      { name: 'Submit', state: 'submit' },
+    ].map((t, i) => ({ ...t, state: t.state as AskTab['state'], current: i === cur }));
+  assert.equal(tabStepTo(tabs(1), -1), 0);
+  assert.equal(tabStepTo(tabs(0), -1), 0);
+  assert.equal(tabStepTo(tabs(2), 1), 3, 'on from the last question is Submit');
+  assert.equal(tabStepTo(tabs(3), 1), 3);
+  assert.equal(tabStepTo(tabs(-1), 1), null);
 });
 
 test('M9 fix 922: visitedTabs reads the tab a card moved to as current in place of the inferred one', () => {

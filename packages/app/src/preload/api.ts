@@ -196,6 +196,40 @@ export type FileRenamed = { ok: true } | { ok: false; reason: 'exists' } | { ok:
 // gone, or refused (a relative path, a drive root, a trash that failed).
 export type FileTrashed = { ok: true } | { ok: false; reason: 'gone' | 'refused' };
 
+// A drop from Explorer on the Files rail (M9 fix 953): auto is Explorer's
+// rule per entry, a move on the same drive and a copy to another; Shift's
+// move and Ctrl's copy override it.
+export type MoveMode = 'auto' | 'move' | 'copy';
+
+// A name already in the folder, met before anything moved: the dropped
+// entry, where it would land, and what each is.
+export interface FileClash {
+  from: string;
+  to: string;
+  kind: 'dir' | 'file';
+  there: 'dir' | 'file';
+}
+
+// What became of one dropped entry (M9 fix 953).
+export type MoveResult = 'moved' | 'copied' | 'here' | 'inside' | 'skipped' | 'refused';
+
+// `replaced` when it went over a name the person chose to replace;
+// `sourceKept` on a `copied` that was a move across drives whose original
+// could not be removed; `busy` on EBUSY or EPERM; `why` the words of a
+// `refused` or `inside`, and of a `sourceKept`.
+export interface MoveOutcome {
+  from: string;
+  to: string;
+  result: MoveResult;
+  replaced?: true;
+  sourceKept?: true;
+  busy?: true;
+  why?: string;
+}
+
+// The first pass's clashes, every entry's outcome, or the folder refused.
+export type FilesMoved = { clashes: FileClash[] } | { done: MoveOutcome[] } | { refused: string };
+
 // The file service behind the files rail. Paths are absolute; the main
 // process refuses relative ones.
 export interface FilesApi {
@@ -221,6 +255,10 @@ export interface FilesApi {
   rename(from: string, to: string): Promise<FileRenamed>;
   // An entry moved to the recycle bin (M9 fix 617), never deleted outright.
   trash(path: string): Promise<FileTrashed>;
+  // Entries dropped from Explorer moved or copied into dir (M9 fix 953),
+  // never over a name that is there unless its source is in replace; with
+  // replace null and any name taken, nothing moves and the clashes come back.
+  move(paths: string[], dir: string, mode: MoveMode, replace: string[] | null): Promise<FilesMoved>;
   // Case insensitive substring over the names under root, or over the
   // lines of the text files under it, skipping .git and node_modules.
   search(root: string, needle: string, mode: SearchMode): Promise<FileSearch>;
@@ -328,6 +366,8 @@ export interface ReviewFile {
   letter: string;
   added: number | null;
   removed: number | null;
+  // A repository of its own under the root (M9 fix 963): one row with no count, its changes reviewed in it. Absent on every other row.
+  repo?: true;
 }
 
 export interface GitReview {
@@ -422,6 +462,13 @@ export interface GraphCommit extends GitCommit {
   twins?: string[];
 }
 
+// One checkout of the repository and its branch (M9 fix 944), off `git
+// worktree list --porcelain`; branch is null when the checkout is detached.
+export interface GitCheckout {
+  path: string;
+  branch: string | null;
+}
+
 // The repository's commits across every local branch (M51), newest first
 // in date order so a child is always above its parents. head is the
 // checked out branch (null when detached) and headHash its commit;
@@ -437,6 +484,10 @@ export interface GitGraph {
   // Every checkout of the repository, the main one first (M68): a
   // session whose folder is under one of them is in this repository.
   worktrees: string[];
+  // The same checkouts with the branch each has out (M9 fix 944), null
+  // for a detached one: a session's line is the branch of the checkout
+  // it started in.
+  checkouts: GitCheckout[];
   // The repository's own author (M9 fix 286), `git config user.name`
   // read in the root so a local config wins, null when none is set: a
   // commit by anyone else is a person's, drawn in a block of their own.
@@ -742,6 +793,8 @@ export interface KeysApi {
   armed(on: boolean): void;
   onGuestKey(handler: (key: GuestKey) => void): () => void;
   onGuestInput(handler: (hit: { webContentsId: number; kind: 'mouse' | 'key' }) => void): () => void;
+  // M9 fix 967: a page's own navigation main's guard refused, for the pane's error line.
+  onGuestRefused(handler: (refused: { webContentsId: number; url: string }) => void): () => void;
 }
 
 // The usage record (M9 fix 676): send-only; main checks every line
@@ -802,6 +855,11 @@ export interface WindowDragApi {
   // A layout tab to a window of its own whose title row is at this
   // screen point (M9 fix 928).
   open(tabId: string, x: number, y: number): Promise<void>;
+  // This window's drop of another window's drag has settled, landed or
+  // failed: main brings the window to the front now and not at the
+  // release, so the lift's own layout write (window.front, on its focus)
+  // cannot take the revision the drop's edit was based on (M9 fix 947).
+  landed(): void;
 }
 
 // The window's page zoom (M9 fix 900), through webFrame in this preload, so main is not involved.

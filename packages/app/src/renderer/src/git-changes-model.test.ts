@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countsText, defaultBranchOf, folderCounts, folderCountsTitle, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, remoteSessionOf, splitSince, twinGroups, twinOriginal } from './git-changes-model.ts';
+import { countsText, defaultBranchOf, parseCheckouts, folderCounts, folderCountsTitle, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, remoteSessionOf, splitSince, twinGroups, twinOriginal } from './git-changes-model.ts';
 import type { ChangedFile, GraphCommit } from '../../preload/api.ts';
 
 test('parseNumstat: counts per path, a binary as nulls, a rename keyed by its new path', () => {
@@ -135,6 +135,14 @@ test('parseWorktrees (M68): the path of every entry, the main checkout first, as
   const out = ['worktree C:/Users/x/code/repo', 'HEAD abc', 'branch refs/heads/main', '', 'worktree C:/Users/x/code/repo-wt/fix', 'HEAD def', 'branch refs/heads/fix', '', ''].join(String.fromCharCode(10));
   assert.deepEqual(parseWorktrees(out), ['C:/Users/x/code/repo', 'C:/Users/x/code/repo-wt/fix']);
   assert.deepEqual(parseWorktrees(''), []);
+});
+
+test('parseCheckouts (M9 fix 944): every entry with the branch it has out, null when detached', () => {
+  const out = ['worktree C:/Users/x/code/repo', 'HEAD abc', 'branch refs/heads/main', '', 'worktree C:/Users/x/code/repo-wt/fix', 'HEAD def', 'branch refs/heads/fix', '', ''].join(String.fromCharCode(10));
+  assert.deepEqual(parseCheckouts(out), [{ path: 'C:/Users/x/code/repo', branch: 'main' }, { path: 'C:/Users/x/code/repo-wt/fix', branch: 'fix' }]);
+  const detached = ['worktree C:/r', 'HEAD abc', 'branch refs/heads/main', '', 'worktree C:/r-wt/d', 'HEAD def', 'detached', ''].join(String.fromCharCode(10));
+  assert.deepEqual(parseCheckouts(detached), [{ path: 'C:/r', branch: 'main' }, { path: 'C:/r-wt/d', branch: null }]);
+  assert.deepEqual(parseCheckouts(''), []);
 });
 
 test('parseNameStatus: a letter per path, a rename keyed by its new path and marked R', () => {
