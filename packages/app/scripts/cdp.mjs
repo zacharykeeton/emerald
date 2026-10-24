@@ -500,9 +500,10 @@ export async function connect(wsUrl) {
     await mouse('mousePressed', x, y);
     await mouse('mouseReleased', x, y);
   };
-  const rightClick = async (x, y) => {
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'right', clickCount: 1 });
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'right', clickCount: 1 });
+  // M9 fix 989: modifiers are CDP's bits (SHIFT for the pane menu over a terminal), on the press and the release alike, so the contextmenu carries them whichever of the two raises it.
+  const rightClick = async (x, y, modifiers = 0) => {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'right', clickCount: 1, modifiers });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'right', clickCount: 1, modifiers });
   };
   const close = () => ws.close();
   // What the box's settings are, at every launch (M9 fix 329): the batch
@@ -597,13 +598,14 @@ export async function startFromEmpty(s, paneSel = '', { kind = 'shell' } = {}) {
 }
 
 // Same, through the focused pane's menu. Ctrl+Shift+N itself starts a shell
-// with no dialog since M9 (startShellByKey below).
+// with no dialog since M9 (startShellByKey below). Shift, since a plain
+// right-click over a terminal copies or pastes and opens no menu (M9 fix 989).
 export async function startSessionByKey(s, opts = {}) {
   const layout = await getLayout(s);
   const c = await s.evalJs(
     `(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(layout.focusedPaneId)}]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
   );
-  await s.rightClick(c.x, c.y);
+  await s.rightClick(c.x, c.y, SHIFT);
   await s.waitFor(`!!document.querySelector('.pane-menu')`, 'pane menu for the dialog');
   await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'New Claude session here').click()`);
   await openDialogAndStart(s, opts);

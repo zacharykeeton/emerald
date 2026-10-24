@@ -17,7 +17,7 @@
 // renderer reload, and `emmer open <host:port>` opens a second browser
 // pane, an HTML file in a folder the Files rail shows opens rendered from its row's menu and its tab's Browser button on emerald-file:, its stylesheet and a file a level up read, a path out of the folder refused and a web page unable to reach it (fix 896 and 897), and the page reloads when its file or stylesheet changes on disk (fix 898). Uses a private home and pipe unless the environment names them.
 // Run: npm run verify:browser -w @emerald/app
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -25,7 +25,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'browser-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-browser';
-const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, daemonPid, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
@@ -88,7 +88,8 @@ const cliOpen = (...args) =>
     child.on('close', (code) => resolve({ code, out, err }));
   });
 
-const s = await launch(freshPort(), { freshState: true, env: { EMERALD_SIGNIN_TEST_PREFIX: `${origin}/signin` } });
+// A let since fix 986's (o) quits and relaunches on the same home.
+let s = await launch(freshPort(), { freshState: true, env: { EMERALD_SIGNIN_TEST_PREFIX: `${origin}/signin` } });
 app = s;
 let guest = null;
 // Block (n)'s fixture folder and its local page's connection (fixes 896 to 898).
@@ -111,16 +112,18 @@ try {
   // a host:port loaded.
   const browserTile = `.empty-pane .empty-kind[data-kind="browser"]`;
   await s.waitFor(`!!document.querySelector(${JSON.stringify(browserTile)})`, 'the Browser tile in the empty pane');
-  // M9 fix 666: three tiles side by side over 760 px of pane, the Browser
-  // tile on a row of its own under that; none clipped at either width, and
-  // at the 320 px the narrow rules were written for. The harness window's
+  // M9 fixes 666 and 990: four tiles, Shell, Claude session, Browser and
+  // File, two by two at every width above 310 px; none clipped over 760 px,
+  // under it, or at the 320 px the narrow rules were written for. The harness window's
   // single pane is 678 px wide, so the wide and the narrow read emulate
   // the viewport and clear it after. The sidebar, the rail and the window's
   // chrome around the pane are measured, not written in: they took 522 px
   // until M9 fix 885 widened the rail's default to 330 (592 since).
   const tileRead = () =>
     s.evalJs(`(() => { const tiles = [...document.querySelectorAll('.empty-pane .empty-kind')].map((t) => ({ name: t.querySelector('.empty-kind-name').textContent, r: t.getBoundingClientRect() })); return { pane: Math.round(document.querySelector('.empty-pane').getBoundingClientRect().width), names: tiles.map((t) => t.name), tops: tiles.map((t) => t.r.top), bottoms: tiles.map((t) => t.r.bottom), widths: tiles.map((t) => t.r.width), box: document.querySelector('.empty-kinds').getBoundingClientRect().width, clipped: [...document.querySelectorAll('.empty-pane .empty-kind-name')].some((n) => n.scrollWidth > n.clientWidth) }; })()`);
-  const NAMES = JSON.stringify(['Shell', 'Claude session', 'Browser']);
+  const NAMES = JSON.stringify(['Shell', 'Claude session', 'Browser', 'File']);
+  // Two rows of two: the first two share a top, the last two share one, and the second row sits under the first.
+  const twoByTwo = (r) => Math.abs(r.tops[0] - r.tops[1]) <= 1 && Math.abs(r.tops[2] - r.tops[3]) <= 1 && r.tops[2] >= r.bottoms[0] - 0.5;
   const viewportH = await s.evalJs(`window.innerHeight`);
   const emulate = async (width) => {
     await s.send('Emulation.setDeviceMetricsOverride', { width, height: viewportH, deviceScaleFactor: 0, mobile: false });
@@ -129,34 +132,34 @@ try {
   const stacked = await tileRead();
   const around = (await s.evalJs(`window.innerWidth`)) - stacked.pane;
   console.log(`[666] the empty pane is ${stacked.pane} px wide, ${around} px of the window around it`);
-  expect(JSON.stringify(stacked.names) === NAMES && !stacked.clipped, `the three tiles by name, none clipped (${JSON.stringify(stacked)})`);
-  expect(stacked.pane <= 760 && stacked.tops[2] >= stacked.bottoms[0] - 0.5 && stacked.widths[2] >= stacked.box * 0.9, `under 760 px the Browser tile has a row of its own (${JSON.stringify(stacked)})`);
+  expect(JSON.stringify(stacked.names) === NAMES && !stacked.clipped, `the four tiles by name, none clipped (${JSON.stringify(stacked)})`);
+  expect(stacked.pane <= 760 && twoByTwo(stacked), `under 760 px the four tiles lie two by two (${JSON.stringify(stacked)})`);
   await s.screenshot('browser-tiles.png');
   await emulate(1500);
   const wide = await tileRead();
   console.log(`[666] the empty pane is ${wide.pane} px wide`);
-  expect(wide.pane > 760 && JSON.stringify(wide.names) === NAMES && !wide.clipped && Math.max(...wide.tops) - Math.min(...wide.tops) <= 1, `over 760 px the three tiles share one top and none is clipped (${JSON.stringify(wide)})`);
+  expect(wide.pane > 760 && JSON.stringify(wide.names) === NAMES && !wide.clipped && twoByTwo(wide), `over 760 px the four tiles lie two by two and none is clipped (${JSON.stringify(wide)})`);
   await s.screenshot('browser-tiles-wide.png');
   await emulate(320 + around);
   const narrow = await tileRead();
   console.log(`[666] the empty pane is ${narrow.pane} px wide`);
-  expect(Math.abs(narrow.pane - 320) <= 4 && JSON.stringify(narrow.names) === NAMES && !narrow.clipped && narrow.tops[2] >= narrow.bottoms[0] - 0.5 && narrow.tops[2] >= narrow.bottoms[1] - 0.5 && narrow.widths[2] >= narrow.box * 0.9, `at 320 px the names are whole and the Browser tile sits under both (${JSON.stringify(narrow)})`);
+  expect(Math.abs(narrow.pane - 320) <= 4 && JSON.stringify(narrow.names) === NAMES && !narrow.clipped && twoByTwo(narrow), `at 320 px the names are whole and the four tiles lie two by two (${JSON.stringify(narrow)})`);
   // M9 fix 706: two tiles a row and whole at 340, 328 and 312 px of pane,
   // one above another at 308 and 278.
   for (const w of [340, 328, 312]) {
     await emulate(w + around);
     const r = await tileRead();
     console.log(`[706] the empty pane is ${r.pane} px wide`);
-    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && Math.abs(r.tops[0] - r.tops[1]) <= 1, `at ${w} px the names are whole with two tiles a row (${JSON.stringify(r)})`);
+    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && twoByTwo(r), `at ${w} px the names are whole with the four tiles two by two (${JSON.stringify(r)})`);
   }
   for (const w of [308, 278]) {
     await emulate(w + around);
     const r = await tileRead();
     console.log(`[706] the empty pane is ${r.pane} px wide`);
-    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && r.tops[1] >= r.bottoms[0] - 0.5 && r.tops[2] >= r.bottoms[1] - 0.5, `at ${w} px the names are whole, one tile above another (${JSON.stringify(r)})`);
+    expect(Math.abs(r.pane - w) <= 4 && JSON.stringify(r.names) === NAMES && !r.clipped && r.tops[1] >= r.bottoms[0] - 0.5 && r.tops[2] >= r.bottoms[1] - 0.5 && r.tops[3] >= r.bottoms[2] - 0.5, `at ${w} px the names are whole, one tile above another (${JSON.stringify(r)})`);
     if (w === 278) await s.screenshot('browser-tiles-278.png');
   }
-  step('M9 fix 706: the tile names stay whole at 340, 328 and 312 px with two tiles a row, and at 308 and 278 px one above another');
+  step('M9 fixes 706 and 990: the four tile names stay whole at 340, 328 and 312 px two by two, and at 308 and 278 px one above another');
   // M9 fix 791: in a narrow pane a tile's shortcut hint goes whole before
   // its name loses a letter. Shell's hint is the person's own binding, so
   // the widths are logged and the relations expected.
@@ -417,15 +420,24 @@ try {
   await s.key('Tab', 'Tab', 9);
   await s.key('Tab', 'Tab', 9);
   const pressedTiles = await s.evalJs(`[...document.querySelectorAll('.layout-tab:not([hidden]) .empty-pane .empty-kind')].map((t) => t.dataset.kind + ':' + t.getAttribute('aria-pressed'))`);
-  expect(pressedTiles.join() === 'shell:false,claude:false,browser:true', `Tab twice presses the Browser tile (${pressedTiles})`);
+  expect(pressedTiles.join() === 'shell:false,claude:false,browser:true,file:false', `Tab twice presses the Browser tile (${pressedTiles})`);
   const startText = await s.evalJs(`document.querySelector('.layout-tab:not([hidden]) .empty-start').textContent`);
   expect(startText.startsWith('Open web page'), `Start reads Open web page (${startText})`);
-  // Tab wraps to Shell and Shift+Tab comes back, then Enter opens.
+  // M9 fix 990: Tab on to File, whose path box takes the keyboard, then
+  // wraps to Shell; Shift+Tab comes back through File to Browser, then
+  // Enter opens.
   const pressedNow = () => s.evalJs(`[...document.querySelectorAll('.layout-tab:not([hidden]) .empty-pane .empty-kind[aria-pressed="true"]')].map((t) => t.dataset.kind).join()`);
+  const focusIn = (cls) => s.evalJs(`document.activeElement === document.querySelector('.layout-tab:not([hidden]) .empty-pane ${cls}')`);
   await s.key('Tab', 'Tab', 9);
-  expect((await pressedNow()) === 'shell', `Tab from Browser wraps to Shell (${await pressedNow()})`);
+  await s.waitFor(`document.activeElement === document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-path')`, 'the path box has the keyboard', 3000).catch(() => {});
+  expect((await pressedNow()) === 'file' && (await focusIn('.empty-path')), `Tab from Browser lands on File, its path box has the keyboard (${await pressedNow()})`);
+  await s.key('Tab', 'Tab', 9);
+  expect((await pressedNow()) === 'shell' && (await focusIn('.palette-input')), `Tab from File wraps to Shell (${await pressedNow()})`);
   await s.key('Tab', 'Tab', 9, SHIFT);
-  expect((await pressedNow()) === 'browser', `Shift+Tab from Shell lands on Browser (${await pressedNow()})`);
+  await s.waitFor(`document.activeElement === document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-path')`, 'the path box has the keyboard again', 3000).catch(() => {});
+  expect((await pressedNow()) === 'file' && (await focusIn('.empty-path')), `Shift+Tab from Shell lands on File (${await pressedNow()})`);
+  await s.key('Tab', 'Tab', 9, SHIFT);
+  expect((await pressedNow()) === 'browser' && (await focusIn('.palette-input')), `Shift+Tab from File lands on Browser (${await pressedNow()})`);
   await s.key('Enter', 'Enter', 13);
   await s.waitFor(`document.querySelector('.layout-tab:not([hidden]) .pane[data-view="browser"]')?.dataset.url === ''`, 'Enter opened a browser pane with an empty url');
   await s.waitFor(`document.activeElement === document.querySelector('.layout-tab:not([hidden]) .pane[data-view="browser"] .browser-address')`, 'the address has the keyboard');
@@ -922,6 +934,79 @@ try {
   expect(droppedErrors.some((t) => t === `This page tried to open ${localUrl}; a web page cannot open a page from the disk`), `the error line names a page from the disk the history dropped (fix 967) (${JSON.stringify(droppedErrors)})`);
   expect(logText().split(`browser: navigation refused: ${localUrl}`).length === refusedBefore + 1, 'main logged the refusal once');
   step('(n4) M9 fix 967: a link onto a page from the disk the history has dropped is refused by main, and the pane\'s error line says so');
+
+  // (n5) M9 fix 987: a frame the web page makes onto a page from the disk
+  // is refused by main's subframe guard, and the pane's error line says
+  // it was a frame.
+  if ((await guest.evalJs('location.href')) !== home) {
+    await guest.send('Page.navigate', { url: home });
+    await guest.waitFor(`location.href === ${JSON.stringify(home)} && document.readyState === 'complete'`, 'the web page back on / (987)');
+  }
+  expect(await watchErrors(homePaneId, '__error987'), 'the web page\'s frame to watch (987)');
+  const frameRefusedBefore = logText().split(`browser: navigation refused: ${localUrl}`).length;
+  await guest.evalJs(`(() => { const f = document.createElement('iframe'); f.id = 'frame987'; f.src = ${JSON.stringify(localUrl)}; document.body.appendChild(f); return true; })()`);
+  await sleep(1500);
+  const frameErrors = await stopWatch('__error987');
+  const frameRefusals = logText().split(`browser: navigation refused: ${localUrl}`).length - frameRefusedBefore;
+  console.log(`[987] error line ${JSON.stringify(frameErrors)}, refusals logged ${frameRefusals}`);
+  expect(frameErrors.some((t) => t === `A frame in this page tried to open ${localUrl}; a web page cannot open a page from the disk`), `the error line says a frame was refused (${JSON.stringify(frameErrors)})`);
+  expect(frameRefusals === 1, `main logged the frame's refusal once (${frameRefusals})`);
+  expect((await guest.evalJs('location.href')) === home, 'the web page stayed on / under its refused frame');
+  await guest.evalJs(`document.getElementById('frame987')?.remove()`);
+  step("(n5) M9 fix 987: a web page's frame onto a page from the disk is refused by main, and the pane's error line says a frame tried to open it");
+
+  // (o) M9 fix 986: a page's own zoom is written to its pane's record and
+  // comes back across a quit and relaunch. The relaunch is the script's
+  // last act, so no later step meets the new window.
+  const homeRecord = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser' && p.view.url === home) ?? null;
+  if ((await homeRecord()) === null) {
+    r = await cliOpen(origin + '/');
+    expect(r.code === 0, `emmer open / for the zoom step (${r.code}: ${JSON.stringify(r.err)})`);
+  }
+  let zoomUntil = Date.now() + 5000;
+  while ((await homeRecord()) === null && Date.now() < zoomUntil) await sleep(150);
+  const zoomHomeId = (await homeRecord())?.id ?? null;
+  expect(zoomHomeId !== null, 'a browser pane whose record is on / (986)');
+  const homeTag = `.browser-frame[data-browser-pane=${JSON.stringify(zoomHomeId)}] webview`;
+  const homeLevel = (sess) => sess.evalJs(`(() => { try { return document.querySelector(${JSON.stringify(homeTag)}).getZoomLevel(); } catch { return null; } })()`);
+  await s.waitFor(`(() => { try { document.querySelector(${JSON.stringify(homeTag)}).getZoomLevel(); return true; } catch { return false; } })()`, "the home pane's page ready (986)", 10000);
+  const z0 = await homeLevel(s);
+  await s.evalJs(`(() => { const w = document.querySelector(${JSON.stringify(homeTag)}); const r = w.getBoundingClientRect(); w.sendInputEvent({ type: 'mouseWheel', x: Math.max(1, Math.round(r.width / 2)), y: Math.max(1, Math.round(r.height / 2)), deltaX: 0, deltaY: 120, wheelTicksX: 0, wheelTicksY: 1, canScroll: true, modifiers: ['control'] }); })()`);
+  zoomUntil = Date.now() + 3000;
+  while (Math.abs((await homeLevel(s)) - z0) !== 1 && Date.now() < zoomUntil) await sleep(100);
+  const zStepped = await homeLevel(s);
+  expect(Math.abs(zStepped - z0) === 1 && zStepped !== 0, `a Ctrl+wheel steps the home page one level off 0 (${z0} then ${zStepped})`);
+  zoomUntil = Date.now() + 5000;
+  while ((await homeRecord())?.view.zoom !== zStepped && Date.now() < zoomUntil) await sleep(150);
+  expect((await homeRecord())?.view.zoom === zStepped, `the pane's record holds the page's zoom (${JSON.stringify((await homeRecord())?.view)})`);
+  // Quit and relaunch on the same home: the window closed and the daemon
+  // killed, as verify-m52-view.mjs does, so the layout comes back off disk.
+  const oldDaemon = daemonPid();
+  const oldChild = s.child;
+  guest?.close();
+  guest = null;
+  pageGuest?.close();
+  pageGuest = null;
+  s.send('Runtime.evaluate', { expression: 'window.close()' }).catch(() => {});
+  s.close();
+  await Promise.race([new Promise((res) => oldChild.on('exit', res)), sleep(10000)]);
+  if (oldChild.exitCode === null && oldChild.signalCode === null) {
+    console.log('[986] note: the old window had not exited after 10 s');
+    oldChild.kill();
+    await Promise.race([new Promise((res) => oldChild.once('exit', res)), sleep(5000)]);
+  }
+  execFileSync('taskkill', ['/pid', String(oldDaemon), '/f'], { stdio: 'ignore' });
+  await sleep(1000);
+  s = await launch(s.port + 1);
+  app = s;
+  await s.waitFor(`!!document.querySelector('.app-body')`, 'app after the relaunch (986)');
+  await s.waitFor(`(() => { try { document.querySelector(${JSON.stringify(homeTag)}).getZoomLevel(); return true; } catch { return false; } })()`, "the home pane's page ready after the relaunch (986)", 20000);
+  zoomUntil = Date.now() + 5000;
+  while ((await homeLevel(s)) !== zStepped && Date.now() < zoomUntil) await sleep(150);
+  const zRelaunched = await homeLevel(s);
+  expect(zRelaunched === zStepped, `the relaunched page comes back at its zoom (${zStepped} then ${zRelaunched})`);
+  expect((await homeRecord())?.view.zoom === zStepped, `the record still holds the zoom after the relaunch (${JSON.stringify((await homeRecord())?.view)})`);
+  step("(o) M9 fix 986: a Ctrl+wheel step is kept on the pane's record, and the page comes back at it across a quit and relaunch");
 
   // Anything the window's console said about a renderer that failed to
   // start, for the report.

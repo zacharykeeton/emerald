@@ -1,7 +1,7 @@
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -15,6 +15,7 @@ import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
 import type { ConflictWatch } from './conflicts.ts';
 import { SessionError, SessionManager, type LoadTick, type SpawnRequest } from './session-manager.ts';
+import { HELLO_WAIT_MS } from './spawn-path.ts';
 import { emeraldHomeOf } from '@emerald/shared/pipe-name';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -57,10 +58,11 @@ export interface PipeServerOptions {
   // daemon's shutdown, scheduled after the reply has gone out. A server
   // without one (tests) keeps the screens and stays up.
   onStop?: () => void;
-  // The PATH for a session the pipe starts (M9 fix 971), read from the
-  // registry at each spawn and resume; a server without one (the tests)
-  // starts every session on the daemon's.
-  spawnPath?: () => Promise<string | null>;
+  // The registry's variables for a session the pipe starts (M9 fix 996,
+  // fix 971 its PATH alone), read at each spawn and resume and at an app's
+  // hello for the shells; a server without one (the tests) starts every
+  // session on the daemon's environment.
+  spawnEnv?: () => Promise<Record<string, string> | null>;
   // A presence edge (M9 fix 245): `away` when the last connection that
   // said hello as the app closes, `back` when the next one says hello,
   // and whichever the app posts through presence.away and presence.back
@@ -237,6 +239,23 @@ export const MOD_CHANNEL_WAIT_MS = 3000;
 // the mod's, since typing a prompt that did enter would send it twice.
 export const MOD_SUBMIT_ACK_MS = 3000;
 
+// One submit's wait for the mod's word (M9 fix 995): wake is null once the
+// send has been answered, the entry kept for the final word.
+interface SubmitWord {
+  entered: boolean;
+  drop: string | null;
+  queued: boolean;
+}
+interface SubmitWait {
+  sessionId: string;
+  at: number;
+  wake: ((word: SubmitWord) => void) | null;
+}
+
+function secondsSince(at: number): number {
+  return Math.round((Date.now() - at) / 1000);
+}
+
 export class PipeServer {
   // Built by listen() (the tests) or handed over by attach() (the daemon,
   // M9 fix 454); null until one of them runs, so a daemon never builds a
@@ -267,8 +286,10 @@ export class PipeServer {
   private readonly modEverUp = new Set<string>();
   private readonly modWaits = new Map<string, Array<(channel: ClientConnection | null) => void>>();
   // The sends waiting for the mod's word on their submit (M9 fix 781), by
-  // the submitId their mod.submit push carried.
-  private readonly submitWaits = new Map<string, { sessionId: string; wake: (entered: boolean, drop: string | null) => void }>();
+  // the submitId their mod.submit push carried. M9 fix 995: an entry
+  // outlives its send's answer (wake null), so the mod's final word on a
+  // prompt queued behind a turn is still logged when it comes.
+  private readonly submitWaits = new Map<string, SubmitWait>();
   private nextSubmitId = 0;
   private closing = false;
   private readonly manager: SessionManager;
@@ -447,12 +468,12 @@ export class PipeServer {
   // on the topic said level 58 at hello, a plain open waits the same way
   // and the reply says whether the window answered.
   private requestFileOpen(req: FileOpenAsk): Promise<FileOpenAnswer> {
-    const { path, pane, scheme, beside, url, browser } = req;
+    const { path, pane, scheme, beside, url, browser, opener } = req;
     const apps = this.subscribedCount('app');
     const answering = this.appTopicAnswers();
-    const words = [pane ? 'for a pane' : '', scheme === undefined ? '' : scheme === null ? 'clearing its scheme' : `with scheme ${scheme}`, beside === undefined ? '' : `beside ${beside}`, url ? 'as a page' : '', browser ? 'as a page from the disk' : ''].filter((w) => w !== '');
+    const words = [pane ? 'for a pane' : '', scheme === undefined ? '' : scheme === null ? 'clearing its scheme' : `with scheme ${scheme}`, beside === undefined ? '' : `beside ${beside}`, url ? 'as a page' : '', browser ? 'as a page from the disk' : '', opener === undefined ? '' : `for session ${opener.slice(0, 8)}`].filter((w) => w !== '');
     this.opts.log.info(`file.open: ${path} relayed to the app${words.length > 0 ? ' ' + words.join(', ') : ''}`);
-    const extras = { ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside }), ...(url === true ? { url: true } : {}), ...(browser === true ? { browser: true } : {}) };
+    const extras = { ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside }), ...(url === true ? { url: true } : {}), ...(browser === true ? { browser: true } : {}), ...(opener === undefined ? {} : { opener }) };
     if (apps === 0 || (scheme === undefined && beside === undefined && !answering)) {
       this.broadcast('app', { type: 'file.open.requested', path, pane, ...extras });
       return Promise.resolve({ apps });
@@ -500,6 +521,13 @@ export class PipeServer {
     if (held === undefined || (channel !== null && held !== channel)) return;
     this.modChannels.delete(sessionId);
     this.opts.log.info(`mod channel down for ${sessionId.slice(0, 8)}`);
+    // M9 fix 995: the channel's child lives as long as the session, so a
+    // prompt still queued in the mod when it goes never enters.
+    for (const [submitId, kept] of this.submitWaits) {
+      if (kept.sessionId !== sessionId || kept.wake !== null) continue;
+      this.submitWaits.delete(submitId);
+      this.opts.log.info(`mod submit for ${sessionId.slice(0, 8)} never entered: the mod channel closed after ${secondsSince(kept.at)} s`);
+    }
   }
 
   // No text is logged, as browser.run logs no argument.
@@ -541,27 +569,40 @@ export class PipeServer {
     this.nextSubmitId += 1;
     const submitId = `${id8}-${this.nextSubmitId}`;
     const ackMs = this.opts.modSubmitAckMs ?? MOD_SUBMIT_ACK_MS;
-    const word = new Promise<{ entered: boolean; drop: string | null } | null>((resolve) => {
+    // The entry stays past the send's answer (wake null) until the final
+    // word or the channel's close, so a prompt queued behind a turn is
+    // logged when it enters (M9 fix 995).
+    const entry: SubmitWait = { sessionId: req.sessionId, at: Date.now(), wake: null };
+    const word = new Promise<SubmitWord | null>((resolve) => {
       const timer = setTimeout(() => {
-        this.submitWaits.delete(submitId);
+        entry.wake = null;
         resolve(null);
       }, ackMs);
-      this.submitWaits.set(submitId, {
-        sessionId: req.sessionId,
-        wake: (entered, drop) => {
-          clearTimeout(timer);
-          this.submitWaits.delete(submitId);
-          resolve({ entered, drop });
-        },
-      });
+      entry.wake = (w) => {
+        clearTimeout(timer);
+        entry.wake = null;
+        resolve(w);
+      };
     });
+    this.submitWaits.set(submitId, entry);
     channel.send({ type: 'mod.submit', sessionId: req.sessionId, text: req.text, submitId });
     this.opts.log.info(`mod submit for ${id8}: ${req.text.length} characters`);
     const got = await word;
     if (got === null) {
-      this.opts.log.info(`mod submit for ${id8}: no word from the mod in ${ackMs} ms, taken as entered`);
+      let working = false;
+      try {
+        working = this.manager.get(req.sessionId).info.state === 'working';
+      } catch {
+        // Gone meanwhile; the line says taken as entered.
+      }
+      this.opts.log.info(`mod submit for ${id8}: no word from the mod in ${ackMs} ms, ${working ? 'queued behind the turn' : 'taken as entered'}`);
       return { via: 'mod' };
     }
+    if (got.queued) {
+      this.opts.log.info(`mod submit for ${id8}: queued behind the turn, by the mod's word`);
+      return { via: 'mod' };
+    }
+    this.submitWaits.delete(submitId);
     if (!got.entered) {
       this.opts.log.info(`mod submit for ${id8} not entered (${got.drop ?? 'no reason'}): typed`);
       return { via: 'typed' };
@@ -570,12 +611,23 @@ export class PipeServer {
   }
 
   // The mod's word on one submit (M9 fix 781), from the hook sink's
-  // ModSubmit post; a word for another session's submit, or one that came
-  // after its send stopped waiting, is ignored.
-  modSubmitAnswered(sessionId: string, submitId: string, entered: boolean, drop: string | null): void {
+  // ModSubmit post; a word for another session's submit is ignored. M9
+  // fix 995: a queued word answers the send at once and keeps the entry;
+  // a final word on a kept entry, its send long answered, is logged and
+  // nothing is typed, since the sender has gone.
+  modSubmitAnswered(sessionId: string, submitId: string, entered: boolean, drop: string | null, queued = false): void {
     const held = this.submitWaits.get(submitId);
     if (held === undefined || held.sessionId !== sessionId) return;
-    held.wake(entered, drop);
+    if (held.wake !== null) {
+      held.wake({ entered, drop, queued });
+      return;
+    }
+    if (queued) return;
+    this.submitWaits.delete(submitId);
+    const id8 = sessionId.slice(0, 8);
+    const s = secondsSince(held.at);
+    if (entered) this.opts.log.info(`mod submit for ${id8} entered after ${s} s`);
+    else this.opts.log.info(`mod submit for ${id8} not entered after ${s} s (${drop ?? 'no reason'}): nothing typed`);
   }
 
   // The relay of a browser.run (M9 fix 672), shaped as the file relay:
@@ -862,9 +914,10 @@ class ClientConnection {
     return refuse('hello-first', 'say hello with the token from daemon.json first (M9 fix 612)', `dropping client: ${msg.type} before hello`);
   }
 
-  // The PATH for a session this pipe starts (M9 fix 971).
-  private spawnPath(): Promise<string | null> {
-    return this.opts.spawnPath?.() ?? Promise.resolve(null);
+  // The registry's variables for a session this pipe starts (M9 fix 996,
+  // fix 971 its PATH alone).
+  private spawnEnv(): Promise<Record<string, string> | null> {
+    return this.opts.spawnEnv?.() ?? Promise.resolve(null);
   }
 
   private handle(req: Request): Requests[RequestType]['res'] | Promise<Requests[RequestType]['res']> {
@@ -879,7 +932,7 @@ class ClientConnection {
           this.isApp = true;
           this.hooks.onAppHello();
         }
-        return {
+        const reply = () => ({
           daemonPid: process.pid,
           daemonStartedAt: this.opts.startedAt ?? Math.round(Date.now() - process.uptime() * 1000),
           home: this.opts.home ?? path.resolve(emeraldHomeOf(process.env)),
@@ -887,7 +940,22 @@ class ClientConnection {
           featureLevel: this.opts.featureLevel ?? DAEMON_FEATURE_LEVEL,
           feed: this.opts.feed?.() ?? null,
           shells: this.manager.installedShells(),
-        };
+        });
+        // An app's hello finds the shells again on the registry (M9 fix
+        // 996), waiting at most HELLO_WAIT_MS for the read; a read that
+        // lands later still refreshes them for the next spawn and hello.
+        // A cli hello answers at once: emmer says hello on every command.
+        const spawnEnv = this.opts.spawnEnv;
+        if (req.client !== 'app' || spawnEnv === undefined) return reply();
+        const manager = this.manager;
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(reply()), HELLO_WAIT_MS);
+          void spawnEnv().then((layer) => {
+            if (layer !== null) manager.refreshShells(layer);
+            clearTimeout(timer);
+            resolve(reply());
+          });
+        });
       }
       case 'session.list':
         return { sessions: this.manager.list({ removed: req.removed === undefined ? false : expectBoolean(req, 'removed') }) };
@@ -910,7 +978,7 @@ class ClientConnection {
         };
         // Every check above runs before the read, so a bad request is
         // refused without one (M9 fix 971).
-        return this.spawnPath().then((p) => ({ session: this.manager.spawn(spawnReq, p) }));
+        return this.spawnEnv().then((layer) => ({ session: this.manager.spawn(spawnReq, layer) }));
       }
       case 'session.kill':
         this.manager.kill(expectString(req, 'sessionId'), req.remove === undefined ? false : expectBoolean(req, 'remove'));
@@ -919,7 +987,7 @@ class ClientConnection {
         const sessionId = expectString(req, 'sessionId');
         const cols = expectNumber(req, 'cols');
         const rows = expectNumber(req, 'rows');
-        return this.spawnPath().then((p) => ({ session: this.manager.resume(sessionId, cols, rows, p) }));
+        return this.spawnEnv().then((layer) => ({ session: this.manager.resume(sessionId, cols, rows, layer) }));
       }
       case 'session.remove':
         this.manager.remove(expectString(req, 'sessionId'));
@@ -1033,6 +1101,14 @@ class ClientConnection {
           if (!path.isAbsolute(ask.path) || !/\.html?$/i.test(ask.path)) throw new SessionError('bad-request', 'browser needs an absolute .html or .htm path');
           if (ask.scheme !== undefined) throw new SessionError('bad-request', 'a browser page takes no scheme');
           ask.browser = true;
+        }
+        // M9 fix 988: the session that asked, kept on the browser view as
+        // its openedBy; only beside a url or a page from the disk.
+        if (req.opener !== undefined) {
+          const opener = expectString(req, 'opener');
+          if (!BROWSER_OPENER.test(opener)) throw new SessionError('bad-request', 'opener must be a session id');
+          if (ask.url !== true && ask.browser !== true) throw new SessionError('bad-request', 'opener is for a url or a browser page');
+          ask.opener = opener;
         }
         return this.hooks.requestFileOpen(ask);
       }

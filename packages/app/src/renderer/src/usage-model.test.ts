@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { NO_SCHEDULE, STRIP_BAR_PX, USAGE_FLOOR_MS, breakFor, breakText, dialPercent, dialStyle, errorText, fitForm, holdText, labelFor, nextSchedule, overlayLimits, paceBar, parseRetryAfter, parseUsageReply, refreshTitle, resetText, resetWhen, runway, runwayText, segmentLabel, segmentRest, segmentText, shortLabelFor, shouldPoll, staleText, stripNeeds, stripRunway, stripText, windowElapsed, windowLengthMs, windowName } from './usage-model.ts';
+import { USAGE_WARN_AT, usageWarning } from './usage-model.ts';
 import type { StripWindowNeed } from './usage-model.ts';
 
 const NOW = Date.parse('2026-09-11T12:00:00Z');
@@ -500,4 +501,43 @@ test('overlayLimits lays a newer mod reading over the matching windows only (M9 
   assert.equal(overlayLimits(windows, { at: NOW + 1, limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: null }] }, NOW), windows, 'nothing moved: the same array');
   assert.equal(overlayLimits(windows, null, NOW), windows);
   assert.equal(overlayLimits(null, later, NOW), null);
+});
+
+test("usageWarning: the highest window at or past 75 or 95 in the CLI's words, a dismissal per key, reset and mark (fix 974)", () => {
+  assert.deepEqual(USAGE_WARN_AT, [75, 95]);
+  // The five-hour window 24 minutes in, the week twelve hours in: both in
+  // their first tenth, so neither projects a runway unless a case asks.
+  const five = (percent: number) => ({ key: 'five_hour', label: '5 hour', kind: 'time' as const, percent, resetsAt: NOW + 4.6 * HOUR });
+  const week = (percent: number, resetsAt = NOW + 6 * DAY + 12 * HOUR) => ({ key: 'seven_day', label: '7 day', kind: 'time' as const, percent, resetsAt });
+  const none = new Set<string>();
+  assert.equal(usageWarning(null, NOW, none), null);
+  assert.equal(usageWarning([five(74.9), week(10)], NOW, none), null, 'none under 75');
+  const at75 = usageWarning([week(75)], NOW, none)!;
+  assert.equal(at75.threshold, 75);
+  assert.equal(at75.text, `You've used 75% of your weekly limit · ${resetWhen(week(75), NOW)}`);
+  assert.equal(at75.dismissKey, `seven_day:${NOW + 6 * DAY + 12 * HOUR}:75`);
+  assert.equal(usageWarning([week(95)], NOW, none)!.threshold, 95);
+  // Of 80 and 92 the week wins.
+  const both = usageWarning([five(80), week(92)], NOW, none)!;
+  assert.equal(both.key, 'seven_day');
+  assert.equal(both.text, `You've used 92% of your weekly limit · ${resetWhen(week(92), NOW)}`);
+  // The week's 75 dismissed, the five-hour shows.
+  const gone = new Set([both.dismissKey]);
+  const sess = usageWarning([five(80), week(92)], NOW, gone)!;
+  assert.equal(sess.key, 'five_hour');
+  assert.equal(sess.text, `You've used 80% of your session limit · ${resetWhen(five(80), NOW)}`);
+  // Dismissed at 75, the week comes back at 95, and on a new reset.
+  assert.equal(usageWarning([week(93)], NOW, gone), null);
+  assert.equal(usageWarning([week(96)], NOW, gone)!.threshold, 95);
+  assert.equal(usageWarning([week(93, NOW + 6 * DAY)], NOW, gone)!.key, 'seven_day');
+  // A window past its reset is skipped.
+  assert.equal(usageWarning([week(99, NOW - 1)], NOW, none), null);
+  // A short runway: the five-hour at 90 percent half way through.
+  const fast = { ...five(90), resetsAt: NOW + 2.5 * HOUR };
+  const r = runway(fast, NOW)!;
+  assert.equal(r.short, true);
+  assert.equal(usageWarning([fast], NOW, none)!.text, `You've used 90% of your session limit · ${resetWhen(fast, NOW)} · ${runwayText(r, NOW)}`);
+  // A model window by its label, the percent floored.
+  const opus = { key: 'seven_day_opus', label: 'Opus', kind: 'model' as const, percent: 81.7, resetsAt: NOW + 6 * DAY + 12 * HOUR };
+  assert.equal(usageWarning([opus], NOW, none)!.text, `You've used 81% of your Opus limit · ${resetWhen(opus, NOW)}`);
 });

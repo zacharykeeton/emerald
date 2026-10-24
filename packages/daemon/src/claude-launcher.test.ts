@@ -66,6 +66,13 @@ test('a shim with node.exe beside it runs that node on the script', () => {
   assert.deepEqual(cmd, { file: path.join(dir, 'node.exe'), args: [path.join(dir, SCRIPT_REL), '--resume', 'a&b'] });
 });
 
+test("claude is found on the session's own environment when the launch hands one in (M9 fix 996)", () => {
+  const dir = folder();
+  fs.writeFileSync(path.join(dir, 'claude.exe'), '');
+  const cmd = launcher([]).command([], null, { PATH: dir, PATHEXT: '.EXE' });
+  assert.equal(cmd.file, path.join(dir, 'claude.exe'));
+});
+
 test('with no node.exe beside the shim, the node on PATH runs the script', () => {
   const dir = shimFolder({ script: true, node: false });
   const nodeDir = folder();

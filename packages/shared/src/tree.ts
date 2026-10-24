@@ -2,6 +2,7 @@ import { unitBounds } from './activity-model.ts';
 import { isGraphScale } from './layout.ts';
 import { isLocalPageUrl, paneUrl } from './browser-url.ts';
 import { BROWSER_OPENER, BROWSER_PROFILE } from './browser-drive.ts';
+import { ZOOM_LEVEL_MAX, ZOOM_LEVEL_MIN } from './zoom.ts';
 import type { GraphViewLayout, GraphViewState, Layout, LayoutNode, LayoutTab, LayoutWindow, PaneTree, PaneView, SingleTree, SplitDirection } from './layout.ts';
 
 // Pure operations on the split tree. Every function returns a new tree and
@@ -510,7 +511,7 @@ function validateView(value: unknown, where: string): PaneView | null {
   }
   if (value['kind'] === 'browser') {
     // M9 fix 659: a page's address held as browserUrl writes it, or ''
-    // for a pane whose address bar is still empty; profile (fix 673), toolbar (fix 839) and openedBy (fix 969) are kept, nothing else.
+    // for a pane whose address bar is still empty; profile (fix 673), toolbar (fix 839), openedBy (fix 969) and zoom (fix 986) are kept, nothing else.
     const url = value['url'];
     // M9 fix 896: or an emerald-file: page (paneUrl), with its root.
     if (typeof url !== 'string' || (url !== '' && paneUrl(url) !== url)) throw new LayoutError(`${where}.url must be an http or https URL, an emerald-file page, or empty`);
@@ -528,9 +529,13 @@ function validateView(value: unknown, where: string): PaneView | null {
     // takes it and dropped (never refused, since a refusal fails the whole
     // layout at a load) otherwise.
     const openedBy = value['openedBy'];
+    // M9 fix 986: the page's own zoom level, kept when it is a whole level
+    // within the app's zoom steps and not 0, dropped (never refused) otherwise.
+    const zoom = value['zoom'];
+    const keptZoom = typeof zoom === 'number' && Number.isInteger(zoom) && zoom !== 0 && zoom >= ZOOM_LEVEL_MIN && zoom <= ZOOM_LEVEL_MAX;
     const local = isLocalPageUrl(url);
     if (local && (typeof root !== 'string' || !ABSOLUTE_WINDOWS_PATH.test(root))) throw new LayoutError(`${where}.root must be the absolute folder of its emerald-file page`);
-    return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}), ...(typeof openedBy === 'string' && BROWSER_OPENER.test(openedBy) ? { openedBy } : {}) };
+    return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}), ...(typeof openedBy === 'string' && BROWSER_OPENER.test(openedBy) ? { openedBy } : {}), ...(keptZoom ? { zoom } : {}) };
   }
   if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
   const folder = value['folder'];

@@ -17,6 +17,7 @@ import { MarkScanner } from './osc-marks.ts';
 import { TitleScanner } from './osc-title.ts';
 import { SpinnerScanner } from './spinner-word.ts';
 import { PtySession, stampEnv } from './pty-session.ts';
+import { withRegistry } from './spawn-path.ts';
 import { TranscriptTail } from './transcript-tail.ts';
 import { ClaudeLauncher } from './launchers/claude.ts';
 import { BASH_RC, ShellLauncher } from './launchers/shell.ts';
@@ -28,6 +29,7 @@ import { writeFileAtomic } from './store-file.ts';
 import type { PersistedSession, SessionStore } from './session-store.ts';
 import { LoadSampler } from './load-sampler.ts';
 import type { SweepMethod, TreeReading } from './load-sampler.ts';
+import { SwitchRead } from './switch-read.ts';
 import { TrustRead } from './trust-read.ts';
 
 // One load tick (M9 fix 703), emitted as 'load' once per tick in place of
@@ -157,8 +159,9 @@ export interface SessionManagerOptions {
   // path replays a file instead of sweeping the box (the verify script).
   load?: { tickMs: number; method: SweepMethod; stubPath: string | null; scriptPath: string | null };
   // The shells found at the daemon's start (M9 fix 624, findShells), the
-  // first the default; absent means the manager finds them itself, which
-  // is every test that does not hand in a list.
+  // first the default, found again on the registry's PATH at each spawn
+  // and app hello since fix 996; absent means the manager finds them
+  // itself, which is every test that does not hand in a list.
   shells?: ShellOption[];
   // Where Git Bash's rc is written before each Git Bash launch (M9 fix
   // 624, paths.ts bashrcPath); absent means a folder of its own under the
@@ -222,7 +225,7 @@ export class SessionManager extends EventEmitter {
   private saveTimer: NodeJS.Timeout | null = null;
   private closed = false;
   private readonly offReftable: () => void;
-  private readonly shells: ShellOption[];
+  private shells: ShellOption[];
 
   constructor(log: Logger, opts: SessionManagerOptions = {}) {
     super();
@@ -286,6 +289,19 @@ export class SessionManager extends EventEmitter {
     return this.shells.map((o) => ({ ...o }));
   }
 
+  // The shells found again on the registry's variables (M9 fix 996), so
+  // one installed since the daemon started is offered and started; the
+  // list is replaced, with a line, only when an id or a file differs.
+  refreshShells(registry: Record<string, string>): ShellOption[] {
+    const found = findShells(withRegistry(process.env, registry));
+    const same = found.length === this.shells.length && found.every((o, i) => o.id === this.shells[i]!.id && o.file === this.shells[i]!.file);
+    if (!same) {
+      this.log.info('shells changed', { from: this.shells.map((o) => o.id), to: found.map((o) => o.id) });
+      this.shells = found;
+    }
+    return this.installedShells();
+  }
+
   // The shell a spawn asked for, among the installed ones; none asked is
   // the default.
   private pickShell(id: ShellId | undefined): ShellOption {
@@ -331,9 +347,10 @@ export class SessionManager extends EventEmitter {
     return rec;
   }
 
-  // `path` is the registry's PATH for this session (M9 fix 971); null keeps
-  // the daemon's own, which every test and every caller but the pipe uses.
-  spawn(req: SpawnRequest, path: string | null = null): SessionInfo {
+  // `registry` is the registry's variables for this session (M9 fix 996,
+  // fix 971 its PATH alone); null keeps the daemon's own environment and
+  // shells, which every test and every caller but the pipe uses.
+  spawn(req: SpawnRequest, registry: Record<string, string> | null = null): SessionInfo {
     checkDirectory(req.cwd);
     // One spelling per folder (M9 fix 108): a shell spawned at the 8.3
     // form os.tmpdir() gives and a Claude reporting the long form of the
@@ -345,10 +362,11 @@ export class SessionManager extends EventEmitter {
     // from home in the rail's graph.
     const cwd = realFolder(req.cwd);
 
+    if (registry !== null) this.refreshShells(registry);
     const shell = req.kind === 'shell' ? this.pickShell(req.shell) : null;
     const id = randomUUID();
     const now = Date.now();
-    const pty = this.launch(id, req.kind, req.args ?? [], req.cwd, req.cols, req.rows, shell, path);
+    const pty = this.launch(id, req.kind, req.args ?? [], req.cwd, req.cols, req.rows, shell, registry);
 
     const given = req.name?.trim() ?? '';
     const info: SessionInfo = {
@@ -464,7 +482,8 @@ export class SessionManager extends EventEmitter {
   // Clients attached to the old PTY hear nothing from the new one until
   // they attach again; the renderer does that when it sees the session
   // leave `exited`.
-  resume(sessionId: string, cols: number, rows: number, path: string | null = null): SessionInfo {
+  // `registry` as spawn's (M9 fix 996).
+  resume(sessionId: string, cols: number, rows: number, registry: Record<string, string> | null = null): SessionInfo {
     const rec = this.get(sessionId);
     if (rec.info.state !== 'exited') throw new SessionError('bad-request', `session ${sessionId} is still running`);
     this.stopTail(rec);
@@ -482,6 +501,7 @@ export class SessionManager extends EventEmitter {
     // The shell the record ran, while it is still installed (M9 fix 624);
     // a record from before the field, or one whose shell has gone since,
     // resumes in the default.
+    if (registry !== null) this.refreshShells(registry);
     let shell: ShellOption | null = null;
     if (rec.info.kind === 'shell') {
       const recorded = rec.info.shell ?? null;
@@ -491,7 +511,7 @@ export class SessionManager extends EventEmitter {
         this.log.warn('shell is not installed now, resuming in the default', { id: sessionId, shell: recorded, default: shell.id });
       }
     }
-    const pty = this.launch(sessionId, rec.info.kind, args, cwd, cols, rows, shell, path);
+    const pty = this.launch(sessionId, rec.info.kind, args, cwd, cols, rows, shell, registry);
     const now = Date.now();
     rec.pty = pty;
     rec.spinnerFromMod = false;
@@ -1283,18 +1303,20 @@ export class SessionManager extends EventEmitter {
     rec.typeAtPrompt = null;
   }
 
-  private launch(id: string, kind: SessionKind, args: string[], cwd: string, cols: number, rows: number, shell: ShellOption | null, path: string | null): PtySession {
+  private launch(id: string, kind: SessionKind, args: string[], cwd: string, cols: number, rows: number, shell: ShellOption | null, registry: Record<string, string> | null): PtySession {
     // Git Bash reads its rc from the file (M9 fix 624), written fresh at
     // every launch so a new build's rc reaches the next shell.
     if (shell?.id === 'gitbash' && args.length === 0) writeFileAtomic(this.bashrcPath, BASH_RC, this.log);
-    const command = this.launchers[kind].command(args, shell);
-    if (command.note !== undefined) this.log.warn(command.note, { id });
     const hook = this.opts.hook;
     const env = stampEnv(process.env, {
       sessionId: id,
       ...(hook === undefined ? {} : { hookPort: hook.port, hookToken: hook.token }),
-      ...(path === null ? {} : { path }),
+      ...(registry === null ? {} : { registry }),
     });
+    // The executable is found on the session's own environment (M9 fix
+    // 996), so it is built first.
+    const command = this.launchers[kind].command(args, shell, env);
+    if (command.note !== undefined) this.log.warn(command.note, { id });
     // The launch's own variables (M9 fix 624: cmd's PROMPT) replace the
     // inherited ones whatever their case, since Windows reads the block
     // case-blind and two spellings of one name would leave either.
@@ -1351,8 +1373,25 @@ export class SessionManager extends EventEmitter {
         this.log.info(shown ? 'the trust dialog is on screen' : 'the trust dialog is gone', { id });
       },
     });
+    // And Claude Code's switch confirmation (M9 fix 976), read off the
+    // screen of a Claude at rest, since no hook fires while it is up.
+    const switchGate = (): 'rest' | 'switch' | null => {
+      if (rec.pty !== pty || runningKind(rec.info) !== 'claude') return null;
+      const state = rec.info.state;
+      if (state === 'idle' || state === 'done' || state === 'waiting') return 'rest';
+      return state === 'needs-input' && rec.info.needsInputReason === 'switch' ? 'switch' : null;
+    };
+    const switchRead = new SwitchRead({
+      read: () => pty.screen(),
+      gate: switchGate,
+      apply: (shown) => {
+        this.apply(rec, { type: 'switch', shown, at: Date.now() });
+        this.log.info(shown ? 'the switch dialog is on screen' : 'the switch dialog is gone', { id });
+      },
+    });
     pty.on('data', (chunk: Buffer) => {
       if (trustGate() !== null) trust.poke();
+      if (switchGate() !== null) switchRead.poke();
       for (const { mark, code } of marks.push(chunk)) {
         if (rec.pty === pty) this.apply(rec, { type: 'shell-mark', mark, code, at: Date.now(), doneAfterMs: this.shellDoneAfterMs });
       }
@@ -1406,6 +1445,7 @@ export class SessionManager extends EventEmitter {
       // node-pty on Windows sometimes reports no code (M9 fix 831); null is "unknown", which the store keeps.
       const code = exitCode ?? null;
       trust.dispose();
+      switchRead.dispose();
       if (rec.pty === pty) this.dropTypeAtPrompt(rec);
       // The frame at the exit (M9 fix 159), read once the emulator has
       // applied the last bytes; it lands on the record a moment after

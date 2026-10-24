@@ -1,6 +1,7 @@
 import type { HistorySession, HistoryTranscript, TranscriptCost } from '../../preload/api.ts';
-import { remoteSessionIdOfLine, repeatsPrompt } from '@emerald/shared';
+import { isCompactBoundary, remoteSessionIdOfLine, repeatsPrompt } from '@emerald/shared';
 import type { Turn } from '@emerald/shared';
+import { isBuiltinCommand } from './claude-commands.ts';
 
 // The pure part of the session history panel: reading Claude Code's own
 // files into rows, and sorting the rows into groups. The main process
@@ -61,14 +62,12 @@ export interface HistoryIndex {
   firstAskAt: number | null;
 }
 
-// M9 fix 954: Claude Code's own commands whose argument is a setting, never an ask (/model opus[1m], /rename <name>), read off history.jsonl's displays on 2026-10-20.
-const SETTING_COMMANDS = new Set(['model', 'rename', 'effort', 'resume', 'add-dir', 'output-style', 'color', 'theme']);
-// Whether a prompt is a slash command rather than an ask: its first line is /<word> with nothing after it, or one of the setting commands with its argument. A skill's command with words after it (/backlog file this) is an ask, and so is a path (/c/Users/...), since the word stops at the slash.
+// Whether a prompt is a slash command rather than an ask: its first line is /<word> with nothing after it, or one of Claude Code's built-ins with any argument (M9 fix 973, from fix 954's eight setting commands to the whole table: /compact <instructions> and /clear <name> are not asks either). A skill's or a plugin's command with words after it (/backlog file this) is an ask, and so is a path (/c/Users/...), since the word stops at the slash.
 export function isBareCommand(text: string): boolean {
   const line = text.trim().split('\n')[0]!.trim();
   const m = /^\/([A-Za-z0-9][\w:.-]*)(?:\s+([\s\S]*))?$/.exec(line);
   if (m === null) return false;
-  return (m[2] ?? '').trim() === '' || SETTING_COMMANDS.has(m[1]!.toLowerCase());
+  return (m[2] ?? '').trim() === '' || isBuiltinCommand('/' + m[1]!);
 }
 
 // history.jsonl grouped by session: how many prompts, the first one, and
@@ -222,15 +221,19 @@ export function countPrompts(text: string, complete = false): number {
   // M9 fix 956: a typed /compact is written twice on one promptId; the second is not another prompt.
   let lastId: string | null = null;
   let last: string | null = null;
+  // M9 fix 993: a compact boundary since the last prompt, for repeatsPrompt.
+  let compacted = false;
   for (const line of wholeLines(text, complete ? 'whole' : 'head')) {
     const o = parseObject(line);
     if (o === null) continue;
+    if (isCompactBoundary(o)) { compacted = true; continue; }
     const prompt = promptText(o);
     if (prompt === null) continue;
-    if (repeatsPrompt(o, prompt, lastId, last)) continue;
+    if (repeatsPrompt(o, prompt, lastId, last, compacted)) continue;
     n += 1;
     lastId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
     last = prompt;
+    compacted = false;
   }
   return n;
 }

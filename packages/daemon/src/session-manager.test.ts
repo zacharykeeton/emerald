@@ -788,7 +788,7 @@ test('the start commit is read again where Claude started when that is another f
   }
 });
 
-test('a session spawned or resumed with a PATH runs with it, and one given none keeps the daemon\'s (M9 fix 971)', async () => {
+test("a session spawned or resumed with the registry's variables runs with them, and one given none keeps the daemon's (M9 fixes 971 and 996)", async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   // A shell that echoes its PATH and exits; its output collected until it
   // holds `want`, or, with no `want`, until it exits.
@@ -804,16 +804,21 @@ test('a session spawned or resumed with a PATH runs with it, and one given none 
     if (want !== null) assert.ok(all.includes(want), `the shell echoed ${want}; output: ${all.slice(-400)}`);
     return all;
   };
-  const args = ['-NoProfile', '-Command', 'echo ("P=" + $env:Path)'];
+  const args = ['-NoProfile', '-Command', 'echo ("P=" + $env:Path + " R=" + $env:E996_FROM_REG)'];
+  // The shell's own folder is on the layer's Path, so the shells found
+  // again on it still hold the one the spawn starts.
+  const shellDir = path.dirname(manager.installedShells()[0]!.file);
   try {
-    const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 200, rows: 30, args }, 'C:\\emerald-971-fresh');
-    await echoes(s.id, 'P=C:\\emerald-971-fresh');
-    manager.resume(s.id, 200, 30, 'C:\\emerald-971-again');
+    const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 200, rows: 30, args }, { Path: 'C:\\emerald-971-fresh;' + shellDir, E996_FROM_REG: 'yes' });
+    const first = await echoes(s.id, 'P=C:\\emerald-971-fresh');
+    assert.ok(first.includes('R=yes'), `a variable the registry holds reaches the shell; output: ${first.slice(-400)}`);
+    manager.resume(s.id, 200, 30, { Path: 'C:\\emerald-971-again;' + shellDir });
     await echoes(s.id, 'P=C:\\emerald-971-again');
     const plain = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 200, rows: 30, args });
     const out = await echoes(plain.id, null);
     assert.ok(out.includes('P='), `the third shell echoed its PATH; output: ${out.slice(-400)}`);
-    assert.ok(!out.includes('emerald-971'), 'a shell given no PATH keeps the daemon\'s');
+    assert.ok(!out.includes('emerald-971'), 'a shell given no registry keeps the daemon\'s PATH');
+    assert.ok(!out.includes('R=yes'), 'and none of its other variables');
   } finally {
     manager.killAll();
     manager.close();
@@ -2530,6 +2535,27 @@ test('saves inside the coalescing window are written once, and keepScreens and c
 function boxShells(...ids: string[]) {
   return findShells().filter((o) => ids.includes(o.id));
 }
+
+test("refreshShells finds the shells again on the registry's Path and says when they change (M9 fix 996)", () => {
+  const lines: { msg: string; extra: unknown }[] = [];
+  const noting = { info: (msg: string, extra?: unknown) => lines.push({ msg, extra }), warn() {}, error() {} };
+  const manager = new SessionManager(noting, { staleCheckIntervalMs: 0, shells: boxShells('powershell', 'cmd') });
+  try {
+    const withPwsh = tempDir();
+    fs.writeFileSync(path.join(withPwsh, 'pwsh.exe'), '');
+    manager.refreshShells({ Path: withPwsh });
+    assert.equal(manager.installedShells()[0]!.file, path.join(withPwsh, 'pwsh.exe'), 'the pwsh on the new Path is the default');
+    const changed = lines.filter((l) => l.msg === 'shells changed');
+    assert.equal(changed.length, 1);
+    assert.deepEqual((changed[0]!.extra as { from: string[] }).from, ['powershell', 'cmd']);
+    manager.refreshShells({ Path: withPwsh });
+    assert.equal(lines.filter((l) => l.msg === 'shells changed').length, 1, 'the same list again logs nothing');
+    manager.refreshShells({ Path: tempDir() });
+    assert.equal(manager.installedShells().some((o) => o.id === 'pwsh'), false, 'a Path without it drops pwsh');
+  } finally {
+    manager.close();
+  }
+});
 
 test('a spawn runs the shell asked for, records it, and refuses one not installed (M9 fix 624)', async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, shells: boxShells('powershell', 'cmd') });

@@ -84,6 +84,22 @@ export function withToolbar(view: BrowserPaneView, shown: boolean): BrowserPaneV
   return shown ? rest : { ...rest, toolbar: false };
 }
 
+// M9 fix 986: the page's own zoom is kept on the record when it differs
+// from the window's level and is not 0, so a quit and relaunch brings it
+// back; a page at 0 under a zoomed window comes back at the window's.
+export function zoomToKeep(page: number, windowLevel: number): number | undefined {
+  const level = Math.round(page);
+  return level === Math.round(windowLevel) || level === 0 ? undefined : level;
+}
+
+export function withPageZoom(view: BrowserPaneView, zoom: number | undefined): BrowserPaneView {
+  const { zoom: _zoom, ...rest } = view;
+  return zoom === undefined ? rest : { ...rest, zoom };
+}
+
+// The quiet after a zoom step or a load before the level is written to the record (fix 986); each hearing restarts it.
+export const ZOOM_WRITE_MS = 500;
+
 export interface FrameBox {
   left: number;
   top: number;
@@ -259,6 +275,8 @@ export function resetPageZoom(paneId: string): void {
 export const refusedLink = (url: string): string => `This page tried to open ${url}; a browser pane opens only http and https pages`;
 // M9 fix 896: a link into the disk from a page not of the same folder.
 export const refusedLocal = (url: string): string => `This page tried to open ${url}; a web page cannot open a page from the disk`;
+// M9 fix 987: the same refusal for a frame inside the page, which main's subframe guard sends.
+export const refusedFrame = (url: string): string => `A frame in this page tried to open ${url}; a web page cannot open a page from the disk`;
 
 // M9 fix 967: what the error line says when main's guard refuses a page's own navigation (emerald:guest-refused): a page from the disk is one a web page may not open, anything else is off the web.
 export function refusalLine(url: string): string {

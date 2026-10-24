@@ -182,6 +182,8 @@ test("gitChanges lists a new folder's files one row each with their counts, the 
       ['tracked.txt', ' M', 'modified', 1, 1],
     ],
   );
+  assert.equal(changes.files.find((r) => r.rel === 'nested')?.repo, true);
+  assert.equal(changes.files.filter((r) => 'repo' in r).length, 1);
   assert.equal(changes.root, dir);
   assert.equal(changes.files.find((r) => r.rel === 'new/a.txt')?.path, path.join(dir, 'new', 'a.txt'));
   fs.rmSync(dir, { recursive: true, force: true });

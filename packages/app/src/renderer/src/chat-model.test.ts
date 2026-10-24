@@ -51,6 +51,9 @@ test('askHeading: the four reasons and none', () => {
   assert.equal(askHeading('elicitation'), 'Waiting on you');
   assert.equal(askHeading(null), 'Waiting on you');
   assert.equal(askHeading('trust'), 'Trust this folder?', 'M9 fix 808');
+  // M9 fix 976: the switch confirmation's title off its rows, else a fallback.
+  assert.equal(askHeading('switch', [' Switch model?', '', '   Yes, switch to Opus 5.5', ' ❯ No, go back']), 'Switch model?');
+  assert.equal(askHeading('switch'), 'Confirm a switch');
 });
 
 // M9 fix 777: an AskUserQuestion comes as a permission_prompt; its dialog
@@ -640,6 +643,9 @@ const promptTurn = (prompt: string, steps: Step[] = []): StepTurn => ({ prompt, 
 test('pendingKey strips the image markers and collapses whitespace (M9 fix 782)', () => {
   assert.equal(pendingKey('[Image #2]  fix\n  it '), 'fix it');
   assert.equal(pendingKey('fix it'), 'fix it');
+  // 2026-10-23: a pasted message's wrapper is not part of its key, so the
+  // box's bubble matches the prompt line that carries it.
+  assert.equal(pendingKey('<pasted_content id="18cb">fix\n it</pasted_content id="18cb">'), 'fix it');
   // M9 fix 921: a bash-mode send keys as ! and the command trimmed.
   assert.equal(pendingKey('! ls'), '!ls');
   assert.equal(pendingKey('!ls'), '!ls');
@@ -703,6 +709,19 @@ test('pendingWords: refused, Not seen yet at 15 s after the later of the send an
   assert.deepEqual(pendingWords({ ...run, refusal: 'Resume it first' }, 1000, 0), { state: 'refused', words: 'Resume it first' });
 });
 
+import { strayLanded } from './chat-model.ts';
+
+test('strayLanded: a new key no waiting send carries, never a seen one, a matched one, a slash command or an empty prompt (M9 fix 980)', () => {
+  const item = pendingItem(1, 'echo x', 0, [], new Map());
+  const wrapped = '<later_wrap>echo x</later_wrap>';
+  assert.deepEqual(strayLanded(new Set(['send me']), new Map([['send me', 1], [wrapped, 1]]), [item]), [wrapped]);
+  assert.deepEqual(strayLanded(new Set(['send me']), new Map([['send me', 1], [wrapped, 1]]), []), []);
+  assert.deepEqual(strayLanded(new Set(['send me']), new Map([['send me', 1], [wrapped, 1]]), [{ ...item, refusal: 'Resume it first' }]), []);
+  assert.deepEqual(strayLanded(new Set(), new Map([['echo x', 1]]), [item]), []);
+  assert.deepEqual(strayLanded(new Set([wrapped]), new Map([[wrapped, 1]]), [item]), []);
+  assert.deepEqual(strayLanded(new Set(), new Map([['', 1], ['/model opus', 1]]), [item]), []);
+});
+
 // M9 fix 778: the carry helper's read of Claude Code's input.
 import { carryRead } from './chat-model.ts';
 
@@ -731,6 +750,16 @@ test('carryRead: text, blocked, and the ghost cut', () => {
   // A ghost on another row cuts nothing, and a present null strips nothing.
   assert.deepEqual(carryRead({ ...at(row), ghost: { y: 0, x: 1, text: 'x' } }), { kind: 'text', text: 'fix the login' });
   assert.deepEqual(carryRead({ ...at('❯ Try "x"'), ghost: null }), { kind: 'text', text: 'Try "x"' });
+});
+
+import { pickRoute } from './chat-model.ts';
+
+test('pickRoute: none types, text carries first, a marker or a wrapped input refuses (fix 972)', () => {
+  const on = (rows: string[]) => carryRead({ rows, cursor: { x: 2, y: 0 } });
+  assert.equal(pickRoute(on(['❯'])), 'type');
+  assert.equal(pickRoute(on(['❯ draft words'])), 'carry-then-type');
+  assert.equal(pickRoute(on(['❯ [Image #1] look'])), 'refuse');
+  assert.equal(pickRoute(on(['❯ a long line', 'its wrapped tail'])), 'refuse');
 });
 
 test('carryRead: with expect, the whole prompt over two rows, and never a placeholder', () => {

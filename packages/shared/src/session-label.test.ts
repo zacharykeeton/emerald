@@ -240,6 +240,9 @@ test('describeState says a needs-input reason in words, not its key (M9 fix 123)
   // M9 fix 808: a starting Claude at its folder's trust dialog.
   assert.equal(asking('trust').text, 'needs input: folder trust');
   assert.equal(asking('trust').detail, 'Claude Code asks whether to trust this folder before it starts.');
+  // M9 fix 976: a Claude at rest at Claude Code's switch confirmation.
+  assert.equal(asking('switch').text, 'needs input: confirm a switch');
+  assert.equal(asking('switch').detail, 'Claude Code asks you to confirm a switch of effort level or model before your next message.');
 });
 
 test('describeState says how many tasks a waiting session waits on, and which', () => {
@@ -275,6 +278,7 @@ test('waitingOnText names what a needs-input session waits on, and nothing in an
   assert.equal(waitingOnText({ state: 'working', needsInputReason: 'permission', liveTool: 'Editing session.ts' }), null, 'a stale reason outside needs-input says nothing');
   assert.equal(waitingOnText({ state: 'idle', needsInputReason: null, liveTool: null }), null);
   assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'trust', liveTool: null }), 'Trust this folder?', 'M9 fix 808');
+  assert.equal(waitingOnText({ state: 'needs-input', needsInputReason: 'switch', liveTool: null }), 'Confirm a switch', 'M9 fix 976');
 });
 
 test('a plain shell\'s command words (M9 fix 196): the badge at done and errored, the tooltip text at idle, and nothing on a bound shell', () => {

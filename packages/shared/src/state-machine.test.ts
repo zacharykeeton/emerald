@@ -164,6 +164,31 @@ test('trust: the dialog read moves only a starting row to needs-input/trust, and
   assert.equal(exited.needsInputReason, null);
 });
 
+test('switch: the dialog read moves only a row at rest to needs-input/switch, and only that ask back (M9 fix 976)', () => {
+  const shown: SessionEvent = { type: 'switch', shown: true, at: T0 + 10 };
+  const gone: SessionEvent = { type: 'switch', shown: false, at: T0 + 20 };
+  for (const state of ['idle', 'done', 'waiting'] as const) {
+    const asking = reduce(session({ state }), shown);
+    assert.equal(asking.state, 'needs-input', `shown moves ${state}`);
+    assert.equal(asking.needsInputReason, 'switch');
+    assert.equal(asking.stateSince, T0 + 10);
+  }
+  for (const state of ['working', 'starting'] as const) {
+    const s = session({ state });
+    assert.equal(reduce(s, shown), s, `shown moves nothing from ${state}`);
+  }
+  const asking = reduce(session({ state: 'done' }), shown);
+  const back = reduce(asking, gone);
+  assert.equal(back.state, 'idle', 'an answered switch from done goes back to idle');
+  assert.equal(back.needsInputReason, null);
+  const listed = reduce(session({ state: 'waiting', waitingOn: [{ type: 'subagent', description: 'M30', command: null }] }), shown);
+  assert.equal(listed.waitingOn.length, 1, 'the list survives the ask');
+  assert.equal(reduce(listed, gone).state, 'waiting', 'gone with a list still running goes back to waiting');
+  const permission = session({ state: 'needs-input', needsInputReason: 'permission' });
+  assert.equal(reduce(permission, shown), permission, 'shown leaves a permission ask alone');
+  assert.equal(reduce(permission, gone), permission, 'gone leaves a permission ask alone');
+});
+
 test('the first SessionStart binds claudeSessionId and later ones do not rebind', () => {
   const unbound = session({ claudeSessionId: null, state: 'starting' });
   const bound = reduce(unbound, hook('SessionStart', { source: 'startup', session_id: 'first' }));
@@ -1796,9 +1821,6 @@ test('an automatic compaction at idle, waiting or done puts the row back when it
   assert.equal(busy.compactFrom ?? null, null, 'and records nothing');
   assert.equal(Object.hasOwn(busy, 'compactFrom'), false, 'nor touches the key');
 
-  const manual = reduce(reduce(session({ state: 'idle', stateSince: T0 }), hook('PreCompact', { trigger: 'manual' }, T0 + 10)), hook('PostCompact', { trigger: 'manual' }, T0 + 30));
-  assert.equal(manual.state, 'working', 'a typed /compact is left as it was');
-
   const idlePre = reduce(session({ state: 'idle', stateSince: T0 }), hook('PreCompact', auto, T0 + 10));
   const prompted = reduce(idlePre, hook('UserPromptSubmit', { prompt: 'go on' }, T0 + 20));
   assert.equal(prompted.compactFrom, null, 'a prompt during the compaction clears the record');
@@ -1809,6 +1831,32 @@ test('an automatic compaction at idle, waiting or done puts the row back when it
   const gone = reduce(idlePre, { type: 'pty.exit', at: T0 + 20, exitCode: 0 });
   assert.equal(gone.state, 'exited');
   assert.equal(gone.compactFrom, null, 'an exit during the compaction clears the record');
+});
+
+test('a typed /compact at idle or done puts the row back when it ends, with no Stop (M9 fix 994)', () => {
+  // The hooks Claude Code 2.1.306 fires for a /compact typed at rest: no prompt hook, no Stop, no TurnComplete.
+  const manual = { trigger: 'manual' };
+  for (const state of ['idle', 'done'] as const) {
+    const pre = reduce(session({ state, stateSince: T0 }), hook('PreCompact', manual, T0 + 10));
+    assert.equal(pre.state, 'working', `${state}: PreCompact puts the row at working`);
+    assert.deepEqual(pre.compactFrom, { state, since: T0 }, `${state}: the record names where it was`);
+    const sub = reduce(pre, hook('SubagentStop', { agent_id: 'a74ce08cd230ce002', agent_type: '' }, T0 + 14700));
+    assert.equal(sub.state, 'working', `${state}: the compactor's SubagentStop keeps it working`);
+    const restarted = reduce(sub, hook('SessionStart', { source: 'compact' }, T0 + 14900));
+    assert.equal(restarted.state, 'working', `${state}: the compaction's SessionStart keeps it working`);
+    assert.deepEqual(restarted.compactFrom, { state, since: T0 }, `${state}: and keeps the record`);
+    const post = reduce(restarted, hook('PostCompact', manual, T0 + 15100));
+    assert.equal(post.state, state, `${state}: PostCompact puts it back`);
+    assert.equal(post.stateSince, T0, `${state}: with its age`);
+    assert.equal(post.compactFrom, null, `${state}: and drops the record`);
+    const idled = reduce(post, hook('Notification', { notification_type: 'idle_prompt' }, T0 + 75200));
+    assert.equal(idled.state, state, `${state}: the idle_prompt after it moves nothing`);
+    assert.equal(idled.stateSince, T0, `${state}: nor its age`);
+  }
+  const busy = reduce(reduce(session({ state: 'working', stateSince: T0 }), hook('PreCompact', manual, T0 + 10)), hook('PostCompact', manual, T0 + 30));
+  assert.equal(busy.state, 'working', 'a typed /compact mid-turn stays working');
+  assert.equal(Object.hasOwn(busy, 'compactFrom'), false, 'and records nothing');
+  assert.equal(reduce(busy, hook('Stop', {}, T0 + 40)).state, 'done', 'the turn\'s own Stop ends it');
 });
 
 test("a Claude session keeps its SessionEnd's reason through the exit, and a SessionStart clears it (M9 fix 813)", () => {

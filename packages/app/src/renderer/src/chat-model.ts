@@ -1,7 +1,12 @@
 import type { EffortState, NeedsInputReason, SessionState, Step, StepTurn, TeamCounts } from '@emerald/shared';
 import type { SessionInfo } from '@emerald/shared';
+import { unwrapPasted } from '@emerald/shared';
+import { switchDialog } from '@emerald/shared';
 import { normalizePath, relativePath } from './files-model.ts';
 import { isQuestionDialog } from './screen-prompt-model.ts';
+// M9 fix 973: Claude Code's command table lives in claude-commands.ts.
+import { ARGUMENT_COMMANDS, SENT_COMMANDS, TERMINAL_ALIASES, TERMINAL_COMMANDS } from './claude-commands.ts';
+export { ARGUMENT_COMMANDS, SENT_COMMANDS, TERMINAL_ALIASES, TERMINAL_COMMANDS } from './claude-commands.ts';
 
 // The chat view's pure parts (M9 fix 689), kept out of the components so
 // node:test can cover them: the face's stored set, the spinner read off
@@ -104,6 +109,8 @@ export function askHeading(reason: NeedsInputReason | null | undefined, rows?: r
   if (reason === 'agent-permission') return 'A subagent is asking permission';
   if (reason === 'question') return 'Claude has a question';
   if (reason === 'trust') return 'Trust this folder?';
+  // M9 fix 976: the switch confirmation's own title when its rows are read.
+  if (reason === 'switch') return (rows === undefined ? null : switchDialog(rows)?.title) ?? 'Confirm a switch';
   return 'Waiting on you';
 }
 
@@ -131,64 +138,6 @@ export function answeredElsewhere(o: { key: string | null; pressed: boolean; spe
 // feeding the live line's spinner, the mode chip and the ask card (the
 // card read it on its own before, as the sidebar's card does).
 export const SCREEN_READ_MS = 1000;
-
-// The slash commands that open a picker or a dialog of their own in the
-// TUI, which the chat view cannot draw: a send of one shows the fallback
-// bar over the box. Read off Claude Code 2.1.301's command table (M9
-// fixes 749 and 780): fix 749's thirteen first, then the rest of the
-// table's terminal forms (`local-jsx`, and /rewind's message picker) in
-// name order, each with its argument hint and description verbatim. A
-// command whose gate reads the account, a flag or the platform is left
-// out, since the view cannot see it, except /remote-control, a sent row (M9 fix 890).
-export const TERMINAL_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
-  { name: '/model', hint: '[model]', description: 'Set the AI model for Claude Code' },
-  { name: '/permissions', hint: '', description: 'Manage allow and deny tool permission rules' },
-  { name: '/mcp', hint: '[reconnect (<server>|all)|enable|disable [<server>|all]]', description: 'Manage MCP servers' },
-  { name: '/config', hint: '[key=value]', description: 'Open settings' },
-  { name: '/usage', hint: '', description: 'Show session cost, plan usage, and activity stats' },
-  { name: '/hooks', hint: '', description: 'View hook configurations for tool events' },
-  { name: '/memory', hint: '', description: 'Edit CLAUDE.md files and memory settings' },
-  { name: '/resume', hint: '[conversation id or search term]', description: 'Resume a previous conversation' },
-  { name: '/theme', hint: '', description: 'Change the theme' },
-  { name: '/login', hint: '', description: 'Sign in with your Anthropic account' },
-  { name: '/status', hint: '', description: 'Show Claude Code status including version, model, account, API connectivity, and tool statuses' },
-  { name: '/doctor', hint: '', description: 'Health-check your setup and fix issues: installation, unused extensions, duplicated or bloated memory files, slow hooks, updates, permissions' },
-  { name: '/btw', hint: '[question]', description: 'Ask a quick side question without interrupting the main conversation' },
-  { name: '/autocompact', hint: '[auto|<tokens>]', description: 'Set how full the context gets before auto-summarizing' },
-  { name: '/background', hint: '[prompt]', description: 'Send this session to the background and free the terminal' },
-  { name: '/branch', hint: '[name]', description: 'Create a branch of the current conversation at this point' },
-  { name: '/bug', hint: '[report]', description: 'Report a bug or share your conversation' },
-  { name: '/context', hint: '[all]', description: 'Visualize current context usage as a colored grid' },
-  { name: '/copy', hint: '', description: "Copy Claude's last response to clipboard (or /copy N for the Nth-latest)" },
-  { name: '/daemon', hint: '', description: 'Manage background services and routines' },
-  { name: '/effort', hint: '[low|medium|high|xhigh|max|auto]', description: 'Set effort level for model usage' },
-  { name: '/exit', hint: '', description: 'Exit the CLI' },
-  { name: '/export', hint: '[filename]', description: 'Export the current conversation to a file or clipboard' },
-  { name: '/feedback', hint: '[report]', description: 'Send feedback to Anthropic or report a bug' },
-  { name: '/focus', hint: '', description: 'Toggle focus view: just your prompt, summary, and response' },
-  { name: '/goal', hint: '[<condition> | clear]', description: 'Set a goal Claude checks before stopping' },
-  { name: '/help', hint: '', description: 'Show help and available commands' },
-  { name: '/ide', hint: '[open]', description: 'Manage IDE integrations and show status' },
-  { name: '/install-github-app', hint: '', description: 'Set up Claude GitHub Actions for a repository' },
-  { name: '/logout', hint: '', description: 'Sign out from your Anthropic account' },
-  { name: '/mobile', hint: '', description: 'Show QR code to download the Claude mobile app' },
-  { name: '/plan', hint: '[open|<description>]', description: 'Enable plan mode or view the current session plan' },
-  { name: '/plugin', hint: '', description: 'Manage Claude Code plugins' },
-  { name: '/powerup', hint: '', description: 'Discover Claude Code features through quick interactive lessons' },
-  { name: '/release-notes', hint: '', description: 'View release notes' },
-  { name: '/rewind', hint: '', description: 'Restore the code and/or conversation to a previous point' },
-  { name: '/skill-doctor', hint: '', description: 'Show which loaded skills are unused and costing context' },
-  { name: '/skills', hint: '', description: 'List available skills' },
-  { name: '/tasks', hint: '', description: 'View and manage everything running in the background' },
-  { name: '/terminal-setup', hint: '', description: 'Install Shift+Enter key binding for newlines' },
-  { name: '/tui', hint: '[default|fullscreen]', description: 'Set the terminal UI renderer (default | fullscreen)' },
-];
-
-// Claude Code 2.1.301's aliases of the terminal commands: a typed one
-// opens its command's dialog, so it brings the bar, but the menu lists
-// the command alone (M9 fixes 749 and 780). The aliases of a sent command
-// (/reset and /new for /clear, /name for /rename) need nothing.
-export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats', '/settings', '/allowed-tools', '/continue', '/plugins', '/marketplace', '/bashes', '/quit', '/share', '/bg', '/ios', '/android', '/checkpoint', '/undo', '/checkup'];
 
 // M9 fix 780: the two commands whose argument skips their dialog (a model
 // or an effort level picked by name); every other one keeps the bar.
@@ -656,46 +605,6 @@ export function foldText(tools: readonly ToolStep[], running: boolean): string {
   return sentence.charAt(0).toUpperCase() + sentence.slice(1) + (running ? '…' : '');
 }
 
-// M9 fix 719: the `/` menu over the box. The built-ins that run and leave
-// nothing to answer, their hints and descriptions verbatim from Claude
-// Code's own command table (the bundle under
-// ~/.local/share/claude/versions; `claude --help` lists no slash
-// commands). Read off Claude Code 2.1.301's command table (M9 fix 780):
-// fix 719's five first, then the rest of the table's `local` and `prompt`
-// commands, and /rename, which prints a line and opens nothing (bare, it
-// names the session itself), in name order. /remote-control (M9 fix 890)
-// is the one command whose gate reads the account that is listed, since
-// the person asked to call it from the chat view; its send opens one of
-// Claude Code's dialogs (the one-time Enable Remote Control, or Disconnect
-// while connected), so opensMenu answers true for it (fix 923). /review is not in the table,
-// /cost is /usage's alias and /btw a terminal row, since it answers in a
-// panel of its own.
-export const SENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
-  { name: '/compact', hint: '<optional custom summarization instructions>', description: 'Free up context by summarizing the conversation so far' },
-  { name: '/clear', hint: '[name]', description: 'Start a new session with empty context; previous session stays on disk (resumable with /resume)' },
-  { name: '/init', hint: '', description: 'Initialize a new CLAUDE.md file with codebase documentation' },
-  { name: '/recap', hint: '', description: 'Generate a one-line session recap now' },
-  { name: '/reload-skills', hint: '', description: 'Pick up skills added or changed on disk during this session' },
-  { name: '/insights', hint: '', description: 'Generate a report analyzing your Claude Code sessions' },
-  { name: '/install-slack-app', hint: '', description: 'Install the Claude Slack app' },
-  { name: '/radio', hint: '', description: 'Listen to Claude FM lo-fi radio' },
-  { name: '/reload-plugins', hint: '[--force]', description: 'Activate pending plugin changes in the current session' },
-  { name: '/remote-control', hint: '[name]', description: 'Control this session from your phone or claude.ai/code' },
-  { name: '/rename', hint: '[name]', description: 'Rename the current conversation' },
-  { name: '/statusline', hint: '', description: "Set up Claude Code's status line UI" },
-  { name: '/stickers', hint: '', description: 'Order Claude Code stickers' },
-  { name: '/team-onboarding', hint: '', description: 'Help teammates ramp on Claude Code with a guide from your usage' },
-];
-
-// M9 fix 780: the commands whose hint is a required argument. A pick
-// completes the name with a space and sends nothing, and the send of the
-// completed box brings the bar, since both draw a dialog of their own
-// (/add-dir's `Add directory to workspace`).
-export const ARGUMENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
-  { name: '/add-dir', hint: '<path>', description: 'Add a new working directory' },
-  { name: '/cd', hint: '<path>', description: 'Move this session to a new working directory' },
-];
-
 export interface SlashRow {
   name: string;
   description: string;
@@ -997,6 +906,18 @@ export function stopCarry(read: CarryRead, turn: { steps: readonly unknown[] } |
   return 'none';
 }
 
+// M9 fix 972: a model or effort pick, or a `/` command sent from the box,
+// is typed into Claude Code's input, and its Enter submits whatever already
+// sits there with it. So the input is read first: empty, the command types
+// as it is; holding text, that text moves into the box before the command
+// types; blocked (a marker or an input past one row), nothing is typed.
+export type PickRoute = 'type' | 'carry-then-type' | 'refuse';
+export function pickRoute(read: CarryRead): PickRoute {
+  if (read.kind === 'none') return 'type';
+  if (read.kind === 'text') return 'carry-then-type';
+  return 'refuse';
+}
+
 // Which way Claude Code takes a queued message back: 'one' when Up
 // selects a message and Enter pulls that one alone (popEditableAt, a
 // `popOne` line), 'all' when Up pulls the whole queue into the input
@@ -1041,7 +962,7 @@ export function drawsPending(prompt: string): boolean {
 // and the command trimmed, so `! ls` and `!ls` match the same run (fix
 // 921); a prompt never starts with `!`, since a typed `!` is bash mode.
 export function pendingKey(text: string): string {
-  const flat = text.replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
+  const flat = unwrapPasted(text).replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
   return flat.startsWith('!') ? `!${flat.slice(1).trim()}` : flat;
 }
 
@@ -1093,6 +1014,18 @@ export function pendingWords(item: PendingItem, now: number, quietSince: number 
   if (item.key.startsWith('!')) return { state: 'sending', words: 'Running' };
   if (quietSince !== null && now - Math.max(item.at, quietSince) >= PENDING_UNSEEN_MS) return { state: 'unseen', words: 'Not seen yet' };
   return { state: 'sending', words: 'Sending' };
+}
+
+// M9 fix 980: the keys a read brought that were never seen in this
+// session, while a send waits (Sending, Running or Not seen yet), and
+// that no pending item carries: the next wrapper Claude Code puts round a
+// sent message, as <pasted_content> was on 2026-10-23, shows in the log
+// rather than only as a bubble stuck beside its own words. A key with no
+// bubble of its kind (an empty bare turn, a slash command, the memory
+// key) is never one.
+export function strayLanded(seen: ReadonlySet<string>, counts: ReadonlyMap<string, number>, items: readonly PendingItem[]): string[] {
+  if (!items.some((p) => p.refusal === null)) return [];
+  return [...counts.keys()].filter((key) => !seen.has(key) && drawsPending(key) && !items.some((p) => p.key === key));
 }
 
 // M9 fix 783: a Ctrl+C within about a second of a turn's Stop left the [Image #N] marker in Claude Code's prompt (fix 748's runs), so the × waits this long after the session leaves working or needs-input.

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout, LayoutTab, SessionInfo, SessionTouched } from '@emerald/shared';
-import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, rowAfterRemoval, typeAhead, walk, watchOrder, withPending } from './files-model.ts';
+import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, localPageFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, rowAfterRemoval, typeAhead, walk, watchOrder, withPending, togglePick, pickRange, extendSelection, pickedRows, dragSet, rowAfterRemovals, trashNote } from './files-model.ts';
 import type { FilesModel, Row } from './files-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -504,4 +504,120 @@ test("canEditFrom is true for a tree row, a names hit and a Changed row and fals
   assert.equal(canEditFrom('line'), false);
   assert.equal(canEditFrom('gone'), false);
   assert.equal(canEditFrom('root'), false);
+});
+
+// M9 fix 982: the picked set. The tree of the moveSelection test, data open:
+// .claude, data, data\deep, data\a.json, readme.md.
+const pickTree = (): FilesModel => {
+  let m = setRoot(emptyModel(), 'C:\\repo');
+  m = applyListing(m, 'C:\\repo', list(['.claude', 'data', 'readme.md'], ['.claude', 'data']));
+  m = applyListing(m, 'C:\\repo\\data', list(['deep', 'a.json'], ['deep']));
+  m = applyListing(m, 'C:\\repo\\data\\deep', list(['b.json']));
+  return toggleFolder(m, 'C:/repo/data');
+};
+const R = {
+  claude: 'C:\\repo\\.claude',
+  data: 'C:\\repo\\data',
+  deep: 'C:\\repo\\data\\deep',
+  a: 'C:\\repo\\data\\a.json',
+  readme: 'C:\\repo\\readme.md',
+};
+const pickedOf = (m: FilesModel | null) => [...(m?.picked ?? [])].sort();
+
+test('select picks the row alone and returns the same object when nothing changes (M9 fix 982)', () => {
+  const m = select(pickTree(), R.data);
+  assert.deepEqual(pickedOf(m), [R.data]);
+  assert.equal(m.anchor, R.data);
+  assert.equal(select(m, R.data), m);
+  assert.deepEqual(pickedOf(select(m, null)), []);
+  // A set of two goes back to the row alone.
+  assert.deepEqual(pickedOf(select(togglePick(m, R.a), R.a)), [R.a]);
+});
+
+test('togglePick adds and removes a row and moves the focused row and the anchor to it (M9 fix 982)', () => {
+  const m = togglePick(select(pickTree(), R.claude), R.a);
+  assert.deepEqual(pickedOf(m), [R.claude, R.a].sort());
+  assert.equal(m.selected, R.a);
+  assert.equal(m.anchor, R.a);
+  const out = togglePick(m, R.claude);
+  assert.deepEqual(pickedOf(out), [R.a]);
+  assert.equal(out.selected, R.claude);
+  assert.equal(out.anchor, R.claude);
+});
+
+test('pickRange runs from the anchor across an open folder, up and down, and from p itself with no anchor (M9 fix 982)', () => {
+  const rows = walk(pickTree()).rows;
+  const down = pickRange(select(pickTree(), R.claude), rows, R.a);
+  assert.deepEqual(pickedOf(down), [R.claude, R.data, R.deep, R.a].sort());
+  assert.equal(down.selected, R.a);
+  assert.equal(down.anchor, R.claude);
+  const up = pickRange(select(pickTree(), R.readme), rows, R.deep);
+  assert.deepEqual(pickedOf(up), [R.deep, R.a, R.readme].sort());
+  assert.equal(up.anchor, R.readme);
+  // From the anchor again, not the focused row.
+  assert.deepEqual(pickedOf(pickRange(up, rows, R.data)), [R.data, R.deep, R.a, R.readme].sort());
+  const alone = pickRange(pickTree(), rows, R.deep);
+  assert.deepEqual(pickedOf(alone), [R.deep]);
+  assert.equal(alone.selected, R.deep);
+});
+
+test('extendSelection with Shift+Down, Shift+Up, Home and End; null for ArrowLeft; m itself at the top (M9 fix 982)', () => {
+  const rows = walk(pickTree()).rows;
+  const m = select(pickTree(), R.data);
+  assert.deepEqual(pickedOf(extendSelection(m, rows, 'ArrowDown')), [R.data, R.deep].sort());
+  assert.deepEqual(pickedOf(extendSelection(m, rows, 'ArrowUp')), [R.claude, R.data].sort());
+  assert.deepEqual(pickedOf(extendSelection(m, rows, 'Home')), [R.claude, R.data].sort());
+  assert.deepEqual(pickedOf(extendSelection(m, rows, 'End')), [R.data, R.deep, R.a, R.readme].sort());
+  assert.equal(extendSelection(m, rows, 'ArrowLeft'), null);
+  const top = select(pickTree(), R.claude);
+  assert.equal(extendSelection(top, rows, 'ArrowUp'), top);
+  // A second Shift+Down runs on from the same anchor.
+  const two = extendSelection(extendSelection(m, rows, 'ArrowDown')!, rows, 'ArrowDown')!;
+  assert.deepEqual(pickedOf(two), [R.data, R.deep, R.a].sort());
+  assert.equal(two.anchor, R.data);
+});
+
+test('pickedRows leaves out a picked row under a folded folder, in screen order (M9 fix 982)', () => {
+  const m = togglePick(togglePick(select(pickTree(), R.readme), R.a), R.claude);
+  assert.deepEqual(pickedRows(m, walk(m).rows).map((r) => r.path), [R.claude, R.a, R.readme]);
+  const folded = toggleFolder(m, R.data);
+  assert.deepEqual(pickedRows(folded, walk(folded).rows).map((r) => r.path), [R.claude, R.readme]);
+});
+
+test('dragSet is the row alone outside the set and the set in screen order without a child of a picked folder (M9 fix 982)', () => {
+  const rows = walk(pickTree()).rows;
+  const m = pickRange(select(pickTree(), R.data), rows, R.a);
+  assert.deepEqual(dragSet(m, rows, R.readme), [R.readme]);
+  assert.deepEqual(dragSet(m, rows, R.a), [R.data]);
+  const two = togglePick(select(pickTree(), R.readme), R.deep);
+  assert.deepEqual(dragSet(two, rows, R.readme), [R.deep, R.readme]);
+  assert.deepEqual(dragSet(select(pickTree(), R.a), rows, R.a), [R.a]);
+});
+
+test('rowAfterRemovals for a set in the middle, at the end and the whole list (M9 fix 982)', () => {
+  const rows = walk(pickTree()).rows;
+  assert.equal(rowAfterRemovals(rows, [R.deep, R.a]), R.readme);
+  assert.equal(rowAfterRemovals(rows, [R.a, R.readme]), R.deep);
+  // A removed folder takes its open children with it.
+  assert.equal(rowAfterRemovals(rows, [R.data, R.readme]), R.claude);
+  assert.equal(rowAfterRemovals(rows, [R.claude, R.data, R.readme]), null);
+  assert.equal(rowAfterRemovals(rows, []), null);
+});
+
+test("trashNote's four shapes and null (M9 fix 982)", () => {
+  assert.equal(trashNote(['C:\\w\\a.txt'], []), 'a.txt moved to the recycle bin');
+  assert.equal(trashNote(['C:\\w\\a.txt', 'C:\\w\\b.txt'], []), '2 items moved to the recycle bin');
+  assert.equal(trashNote([], [{ path: 'C:\\w\\c.txt', why: 'Unsaved edits' }]), 'c.txt could not go: Unsaved edits');
+  assert.equal(trashNote(['C:\\w\\a.txt'], [{ path: 'C:\\w\\c.txt', why: 'x' }, { path: 'C:\\w\\d', why: 'y' }]), 'a.txt moved to the recycle bin; 2 could not go, c.txt: x');
+  assert.equal(trashNote([], []), null);
+});
+
+test('renameInModel moves picked and anchor; setRoot empties them (M9 fix 982)', () => {
+  const m = togglePick(select(pickTree(), R.deep), R.a);
+  const moved = renameInModel(m, R.data, 'C:\\repo\\info');
+  assert.deepEqual(pickedOf(moved), ['C:\\repo\\info\\a.json', 'C:\\repo\\info\\deep']);
+  assert.equal(moved.anchor, 'C:\\repo\\info\\a.json');
+  const rooted = setRoot(m, 'C:\\other');
+  assert.deepEqual(pickedOf(rooted), []);
+  assert.equal(rooted.anchor, null);
 });

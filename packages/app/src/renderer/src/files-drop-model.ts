@@ -1,5 +1,5 @@
 import type { MoveMode, MoveOutcome } from '../../preload/api.ts';
-import { folderName, parentPath } from './files-model.ts';
+import { folderName, normalizePath, parentPath } from './files-model.ts';
 
 // A drop from Explorer on the Files rail (M9 fix 953): where it lands,
 // how, what the cursor shows and the note after. Pure, so node:test runs
@@ -15,6 +15,8 @@ export interface RailDrop {
   over(x: number, y: number, keys: DropKeys): 'move' | 'copy' | 'none';
   leave(): void;
   drop(paths: string[], x: number, y: number, keys: DropKeys): void;
+  // M9 fix 981: the folder a drop at the point would land in, or null when none is in view; a drag from the tree asks it before lighting anything.
+  dirAt(x: number, y: number): string | null;
 }
 
 // The effect the hover answers with no key held. Main does the whole move
@@ -28,11 +30,30 @@ export interface RailDrop {
 // too.
 export const HOVER_MOVE_EFFECT: 'move' | 'copy' = 'copy';
 
+// How long a drag held over a closed folder row waits before the folder opens (M9 fix 983), long enough that a drag crossing the tree opens nothing. The set-aside tab-strip entry of 2026-10-14 recommends the same number; if it lands it imports this one.
+export const SPRING_OPEN_MS = 600;
+
+// The folder a drag over the row would spring open: a closed folder row's
+// path, else null. The rail's own folder has no row, so it never springs.
+export function springDirFor(hit: { path: string; kind: 'dir' | 'file' } | null, expanded: ReadonlySet<string>): string | null {
+  if (hit === null || hit.kind !== 'dir') return null;
+  return expanded.has(normalizePath(hit.path)) ? null : hit.path;
+}
+
 // A folder row is that folder, a file row its folder, nothing under the
 // point the rail's own folder.
 export function dropDirFor(hit: { path: string; kind: 'dir' | 'file' } | null, root: string): string {
   if (hit === null) return root;
   return hit.kind === 'dir' ? hit.path : parentPath(hit.path);
+}
+
+// M9 fix 981: what a drag from the tree moves into dir: every path but one
+// already in dir and the folder dir itself, compared case-insensitively on
+// normalized paths. Empty means the drop does nothing and says nothing.
+export function treeDropPaths(paths: readonly string[], dir: string): string[] {
+  const key = (p: string) => normalizePath(p).toLowerCase();
+  const into = key(dir);
+  return paths.filter((p) => key(p) !== into && key(parentPath(p)) !== into);
 }
 
 // Explorer's keys: Ctrl copies, Shift moves, neither is the drive's rule.

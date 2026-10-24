@@ -41,7 +41,8 @@ export type SessionState =
 // next event releases.
 // trust (M9 fix 808): a starting Claude at its folder's trust dialog,
 // read off the screen by the daemon, since no hook fires before it.
-export type NeedsInputReason = 'permission' | 'agent-permission' | 'elicitation' | 'question' | 'trust';
+// switch (M9 fix 976): a Claude at rest at Claude Code's confirmation before an effort or model switch, read off the screen by the daemon.
+export type NeedsInputReason = 'permission' | 'agent-permission' | 'elicitation' | 'question' | 'trust' | 'switch';
 
 // The phases a checkpoint can name, Orca's board columns. A checkpoint is a
 // comment a session writes on itself with `emmer set` (or a person writes

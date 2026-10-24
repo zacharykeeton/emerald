@@ -4978,6 +4978,36 @@ try {
     await stage(6, 'seats-done', 'The three seats report and stop; their worktrees and branches are still there.', null, 'P');
     const X1 = named('X1', commitIn(gitBt, btRepo, 'X1', 'backlog: an entry from another session'));
     await stage(7, 'commit-on-main-from-elsewhere', "Another session (or the person, by hand) commits X1 on main; main's head moves past where the lead last saw it.", X1, 'X1');
+    // M9 fix 991: the list lifts the seats above the lead's row as Graph
+    // does. Not pushed to `reads`, so frames.json and the later frames'
+    // row totals do not change.
+    await s.evalJs(`document.querySelector('.files-rail .commits-switch [data-view="list"]').click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.view === 'list' && document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, 'the list, ready', 10000);
+    const listRead = await readRail();
+    expect(ids(listRead).slice(0, 5).join(' ') === 'seat-a seat-b seat-c lead X1', `F7 in the list: the seats stack above the lead's row as in Graph (M9 fix 991) (${ids(listRead).join(' ')})`);
+    await s.evalJs(`document.querySelector('.files-rail .commits-switch [data-view="graph"]').click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.view === 'graph' && document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, 'Graph again', 10000);
+    step("M9 fix 991: the list stacks a batch's seats above the lead's row as Graph does, the write graph lifting none");
+    // M9 fix 992: a hover on X1's square opens the lead's card, which names
+    // the square and its author. Two tries, the fix 175 pattern.
+    const squareSel = `.lane-popover[data-session-id=${JSON.stringify(lead.id)}] .lane-card-squares`;
+    for (let attempt = 0; ; attempt += 1) {
+      await settled(`.files-rail ${nodeSel(X1)}`);
+      await hoverOver(`.files-rail ${nodeSel(X1)}`);
+      try {
+        await s.waitFor(`!!document.querySelector(${JSON.stringify(squareSel)})`, "the square's hover names it on the session's card", 3000);
+        break;
+      } catch (err) {
+        if (attempt === 1) throw err;
+        console.log('[verify] note: the square hover opened nothing the first time; trying again');
+        await away();
+      }
+    }
+    const squareText = await s.evalJs(`document.querySelector(${JSON.stringify(squareSel)}).textContent`);
+    expect(squareText === `square at ${X1.slice(0, 7)}: a commit made outside this session, by verify`, `the card's square line (${JSON.stringify(squareText)})`);
+    console.log(`[verify] fix 992 frame: ${await s.screenshot('m9-fix992-square-card.png')}`);
+    await away();
+    step("M9 fix 992: a hover on a square opens its session's card, which names the square and its author");
     const MA = await merge('m9-seat-a', 'MA', 'Merge m9-seat-a');
     await stage(8, 'first-merge', 'The lead merges m9-seat-a into main: MA.', MA, 'MA');
     await merge('m9-seat-b', 'MB', 'Merge m9-seat-b');

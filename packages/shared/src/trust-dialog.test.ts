@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trustDialog, trustKeys, trustParagraphs } from './trust-dialog.ts';
+import { switchDialog, trustDialog, trustKeys, trustParagraphs } from './trust-dialog.ts';
 
 // The trust dialog as Claude Code 2.1.302 drew it for a fresh folder under
 // %TEMP%, read off the daemon's screen at 120 x 30 (M9 fix 808's capture),
@@ -152,4 +152,67 @@ test('trustDialog is null for a numbered permission dialog and for the old numbe
   // Yes alone, or No too far from it, is no dialog.
   assert.equal(trustDialog(['   Yes, I trust this folder']), null);
   assert.equal(trustDialog([' ❯ No, exit', '', '', '', '', '   Yes, I trust this folder']), null);
+});
+
+// M9 fix 976: Claude Code 2.1.310's switch confirmation as its bundle draws
+// it (component bfe over the shared confirm dr): the confirm row first,
+// digits unless overDraft hides them. A capture on a real Claude showed no
+// dialog (the typed /effort took the level at once), so the rows are the
+// bundle's strings.
+const EFFORT_ROWS = [
+  'old output',
+  RULE,
+  ' Change effort level?',
+  ' Your next response will be slower and use more tokens',
+  '',
+  ' This conversation is cached for the current effort level. Switching to high means the full history gets re-read on your next message.',
+  '',
+  ' ❯ 1. Yes, switch to high',
+  '   2. No, go back',
+  '',
+  ' Enter to confirm · Esc to cancel',
+];
+const MODEL_ROWS = [
+  RULE,
+  ' Switch model?',
+  ' Your next response will be slower and use more tokens',
+  '',
+  ' This conversation is cached for the current model. Switching to Opus 5.5 means the full history gets re-read on your next message.',
+  '',
+  '   Yes, switch to Opus 5.5',
+  ' ❯ No, go back',
+];
+
+test('switchDialog reads the numbered effort dialog: title, both options in order, their digits, the pointer on Yes (M9 fix 976)', () => {
+  assert.deepEqual(switchDialog(EFFORT_ROWS), {
+    title: 'Change effort level?',
+    options: [
+      { label: 'Yes, switch to high', pick: 'yes', key: '1', pointer: true },
+      { label: 'No, go back', pick: 'no', key: '2', pointer: false },
+    ],
+  });
+});
+
+test('switchDialog reads the digitless model dialog with the pointer on No, and trustKeys answers it', () => {
+  const d = switchDialog(MODEL_ROWS);
+  assert.deepEqual(d, {
+    title: 'Switch model?',
+    options: [
+      { label: 'Yes, switch to Opus 5.5', pick: 'yes', key: null, pointer: false },
+      { label: 'No, go back', pick: 'no', key: null, pointer: true },
+    ],
+  });
+  assert.equal(trustKeys(d!, 'yes'), '\x1b[A\r');
+  assert.equal(trustKeys(d!, 'no'), '\r');
+  // The stubs draw the pointer as >.
+  assert.equal(switchDialog(['Switch model?', '  Yes, switch to Opus 5.5', '> No, go back'])?.options[1]?.pointer, true);
+});
+
+test('switchDialog is null under a prompt box, for the trust dialog, and without its title', () => {
+  // A reply quoting the rows, with the prompt box under them.
+  assert.equal(switchDialog([...EFFORT_ROWS, RULE, '❯ ', RULE]), null);
+  assert.equal(switchDialog(CAPTURED), null);
+  assert.equal(switchDialog(EFFORT_ROWS.filter((r) => r !== ' Change effort level?')), null);
+  assert.equal(switchDialog([' Change effort level?', '   2. No, go back']), null);
+  assert.equal(switchDialog([]), null);
 });

@@ -122,7 +122,11 @@ export const PROTOCOL_VERSION = 1;
 //  75: M9 fix 936, browser on file.open and file.open.requested, an absolute .html or .htm path the window renders in a browser pane on emerald-file:, its root the Files rail's folder when the file is under it, else the file's own
 //  76: M9 fix 969, openedBy on a browser view, the EMERALD_SESSION_ID of the session whose emmer browser open made the pane, by which emmer browser close puts away only a pane its own session opened
 //  76: M9 fix 970, upload with a CSS selector in place of a ref on browser.run (emmer browser upload --selector), for a hidden file input, relayed to app windows at level 76 alone
-export const DAEMON_FEATURE_LEVEL = 76;
+//  77: M9 fix 988, opener on file.open and file.open.requested, the EMERALD_SESSION_ID of the session whose emmer open <url> or --browser made the pane, kept on the view as openedBy
+//  77: M9 fix 986, zoom on a browser view, the page's own whole zoom level, kept only when not 0 and dropped outside the app's zoom steps
+//  77: M9 fix 976, needs-input with the reason switch on SessionInfo, a Claude session at rest at Claude Code's Change effort level? or Switch model? confirmation read off its screen
+//  77: M9 fix 996, shells on the hello found again at each app hello on the PATH the registry holds then, waiting at most 500 ms for the read, so a shell installed since the daemon started is offered at the window's next connect; a new session's whole environment from the registry at its spawn
+export const DAEMON_FEATURE_LEVEL = 77;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -186,8 +190,8 @@ export interface Requests {
   // file.open from one that predates it; the CLI says none.
   // token (M9 fix 612) is daemon.json's pipeToken; a daemon that has one
   // refuses a hello without it, or with another, and closes the connection.
-  // shells (M9 fix 624) are the shells the daemon found at its start, in
-  // SHELL_IDS order, the first the default New shell starts; an older
+  // shells (M9 fix 624) are the shells the daemon found, found again on the
+  // registry's PATH at each app hello since fix 996, in SHELL_IDS order, the first the default New shell starts; an older
   // daemon leaves it out.
   'hello':          { req: { client: 'app' | 'cli'; protocolVersion: number; featureLevel?: number; token?: string };            res: { daemonPid: number; daemonStartedAt?: number; home?: string; daemonVersion: string; featureLevel?: number; feed?: { dir: string; port: number } | null; shells?: ShellOption[] } };
   // removed (M57): the removed sessions after the listed ones, each with
@@ -331,7 +335,10 @@ export interface Requests {
   // window renders in a browser pane on emerald-file:, its root the Files
   // rail's folder when the file is under it, else the file's own folder;
   // never with url or a scheme.
-  'file.open':      { req: { path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }; res: { apps: number; known?: boolean; besideFound?: boolean; besidePane?: string; besideTab?: string; answered?: boolean } };
+  // M9 fix 988: opener is the EMERALD_SESSION_ID of the session whose
+  // emmer open <url> or --browser asked, kept on the browser view as
+  // openedBy so emmer browser close takes the pane; with url or browser only.
+  'file.open':      { req: { path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean; opener?: string }; res: { apps: number; known?: boolean; besideFound?: boolean; besidePane?: string; besideTab?: string; answered?: boolean } };
   // The window's answer to a file.open.requested push that carried an
   // openId (M9 fix 375): whether the scheme named is on its list,
   // whether the session named by beside was on a pane (fix 376), and
@@ -428,7 +435,8 @@ export type ServerMessage =
   // (M9 fix 582), the openId the window answers with.
   // M9 fix 659: url says path holds a URL the browser pane takes.
   // M9 fix 936: browser says path is an .html file for a browser pane.
-  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }
+  // M9 fix 988: opener, the session the browser pane is recorded as opened by.
+  | { type: 'file.open.requested'; path: string; pane: boolean; openId?: number; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean; opener?: string }
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.

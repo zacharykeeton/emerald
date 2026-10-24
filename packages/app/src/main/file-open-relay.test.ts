@@ -152,6 +152,20 @@ test('a page from the disk rides the relay with browser set (M9 fix 936)', () =>
   assert.equal(openExtraOf(delivered[0]!).browser, true);
 });
 
+// M9 fix 988: opener, the session that asked, rides the relay when a string.
+test('the opener rides the relay when it is a string (M9 fix 988)', () => {
+  const { client, delivered, relay } = setup();
+  relay.ready();
+  client.emit('message', { type: 'file.open.requested', path: 'http://localhost:3000/', pane: true, url: true, opener: 'abc-1' });
+  client.emit('message', { type: 'file.open.requested', path: 'http://localhost:3000/', pane: true, url: true, opener: 3 });
+  assert.deepEqual(delivered, [
+    { path: 'http://localhost:3000/', pane: true, url: true, opener: 'abc-1' },
+    { path: 'http://localhost:3000/', pane: true, url: true },
+  ]);
+  assert.equal(openExtraOf(delivered[0]!).opener, 'abc-1');
+  assert.equal(openExtraOf(delivered[1]!).opener, undefined);
+});
+
 test('a folder from a launch rides with its kind, and a push never carries one (M9 fix 853)', () => {
   const { client, delivered, relay, log } = setup();
   relay.ready();

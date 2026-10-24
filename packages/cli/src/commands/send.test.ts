@@ -9,6 +9,7 @@ import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
 import { stdinText } from '../args.ts';
 import { CliError, EXIT } from '../cli-error.ts';
 import { captureOutput } from '../command.ts';
+import { queuedLine } from '../mod-route.ts';
 import send from './send.ts';
 
 // M9 fix 855: emmer send takes its text from stdin or a file, verbatim.
@@ -55,6 +56,10 @@ function session(): SessionInfo {
 }
 
 const inputs: string[] = [];
+// M9 fix 995: the row the fake lists, and what its session.submit answers.
+let listed: Partial<SessionInfo> = {};
+let submitVia: 'mod' | 'typed' = 'mod';
+const submits: string[] = [];
 const sockets = new Set<net.Socket>();
 let server: net.Server;
 
@@ -65,11 +70,15 @@ before(async () => {
     const decoder = new JsonLinesDecoder();
     sock.on('data', (chunk: Buffer) => {
       for (const raw of decoder.push(chunk)) {
-        const msg = raw as { id?: number; type: string; data?: string };
+        const msg = raw as { id?: number; type: string; data?: string; text?: string };
         const reply = (result: unknown) => sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: true, result }));
         if (msg.type === 'hello') reply({ daemonPid: 1, daemonVersion: 'fake', featureLevel: 99 });
-        else if (msg.type === 'session.list') reply({ sessions: [session()] });
+        else if (msg.type === 'session.list') reply({ sessions: [{ ...session(), ...listed }] });
         else if (msg.type === 'pty.input') inputs.push(msg.data ?? '');
+        else if (msg.type === 'session.submit') {
+          submits.push(msg.text ?? '');
+          reply({ via: submitVia });
+        }
         else sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: false, error: { code: 'bad-request', message: `fake daemon does not do ${msg.type}` } }));
       }
     });
@@ -86,6 +95,9 @@ after(() => {
 
 beforeEach(() => {
   inputs.length = 0;
+  submits.length = 0;
+  listed = {};
+  submitVia = 'mod';
 });
 
 async function quietly(run: () => Promise<unknown>): Promise<string> {
@@ -147,4 +159,47 @@ test('send with text words and --stdin is a usage error, and an empty --stdin is
   assert.equal(err.exitCode, EXIT.usage);
   assert.equal(err.message, 'missing text (or pass --enter alone to press Enter, --interrupt for Ctrl+C)');
   assert.deepEqual(inputs, []);
+});
+
+// M9 fix 995: a send into a Claude mid-turn says it is queued.
+const MOD_WORDS = /^queued behind a turn running (under 1m|\d+m); it goes in when that turn ends$/;
+
+test('queuedLine words a working Claude by its route and the turn age, and nothing else', () => {
+  const now = 10 * 60_000;
+  const working: SessionInfo = { ...session(), kind: 'claude', state: 'working', stateSince: now - 7.5 * 60_000 };
+  assert.equal(queuedLine(working, 'mod', now), 'queued behind a turn running 7m; it goes in when that turn ends');
+  assert.equal(queuedLine(working, 'typed', now), "queued into a turn running 7m; it goes in at the turn's next tool call, or when that turn ends");
+  assert.equal(queuedLine({ ...working, stateSince: now - 30_000 }, 'mod', now), 'queued behind a turn running under 1m; it goes in when that turn ends');
+  assert.equal(queuedLine({ ...working, stateSince: now - 60_000 }, 'mod', now), 'queued behind a turn running 1m; it goes in when that turn ends');
+  assert.equal(queuedLine({ ...working, state: 'idle' }, 'mod', now), null);
+  assert.equal(queuedLine({ ...working, state: 'waiting' }, 'mod', now), null);
+  assert.equal(queuedLine({ ...working, kind: 'shell' }, 'mod', now), null);
+});
+
+// Part 2: a working Claude is typed whatever the mod would answer, with the
+// Enter pause, so the line enters the turn at its next tool round.
+test('send --enter to a working Claude makes no submit, types the text and Enter with the pause, and prints the typed form', async () => {
+  listed = { kind: 'claude', state: 'working', stateSince: Date.now() - 7.5 * 60_000 };
+  const t0 = Date.now();
+  const out = await quietly(() => send.run(['alpha', 'hello', '--enter']));
+  assert.deepEqual(submits, []);
+  assert.deepEqual(inputs, ['hello', '\r']);
+  assert.ok(Date.now() - t0 >= 1400, `took ${Date.now() - t0} ms`);
+  assert.equal(out, "queued into a turn running 7m; it goes in at the turn's next tool call, or when that turn ends\n");
+});
+
+test('send --enter to an idle Claude or a working shell prints sent as before', async () => {
+  listed = { kind: 'claude', state: 'idle' };
+  let out = await quietly(() => send.run(['alpha', 'hello', '--enter']));
+  assert.equal(out, 'sent "hello" + Enter to a1b2c3d4 alpha through the emerald mod\n');
+  listed = { kind: 'shell', state: 'working', stateSince: Date.now() - 30_000 };
+  out = await quietly(() => send.run(['alpha', 'dir', '--enter']));
+  assert.equal(out, 'sent "dir" + Enter to a1b2c3d4 alpha\n');
+  assert.doesNotMatch(out, MOD_WORDS);
+});
+
+test('send --interrupt --enter to a working Claude keeps sent, since its Ctrl+C ends the turn', async () => {
+  listed = { kind: 'claude', state: 'working', stateSince: Date.now() - 30_000 };
+  const out = await quietly(() => send.run(['alpha', 'hello', '--enter', '--interrupt']));
+  assert.match(out, /^sent Ctrl\+C \+ "hello" \+ Enter to a1b2c3d4 alpha/);
 });

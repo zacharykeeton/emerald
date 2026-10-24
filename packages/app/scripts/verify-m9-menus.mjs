@@ -32,7 +32,7 @@ const chooseMenu = async (s, label) => {
 };
 const openMenuOn = async (s, paneId) => {
   const c = await centerOf(s, `[data-pane-id=${JSON.stringify(paneId)}]`);
-  await s.rightClick(c.x, c.y);
+  await s.rightClick(c.x, c.y, SHIFT);
   await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(paneId)}`, `menu on pane ${paneId.slice(0, 8)}`);
 };
 
@@ -225,32 +225,46 @@ try {
   expect((await panes(s)) === 3, 'still three panes');
 
   // A shell in pane 3 (focused): the title bar gets the buttons, and the
-  // menu opens over the terminal too.
+  // menu opens over the terminal on a Shift+right-click (M9 fix 989).
   await startSessionByKey(s, { kind: 'shell', cwd: os.homedir() });
   await s.waitFor(`document.querySelectorAll('.term-host').length === 1`, 'shell in pane 3');
   await sleep(300);
-  const c = await centerOf(s, `[data-pane-id=${JSON.stringify(p3)}] .term-host`);
-  await s.rightClick(c.x, c.y);
-  await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(p3)}`, 'menu over the terminal');
-  await s.screenshot('m9-menus-menu.png');
-  await s.key('Escape', 'Escape', 27);
-  await s.waitFor(`!document.querySelector('.pane-menu')`, 'menu closed');
-  // Five since M63: split right, split down, the shade, hide and close.
-  expect((await s.evalJs(`document.querySelectorAll('[data-pane-id=${JSON.stringify(p3)}] .pane-title-actions button').length`)) === 6, 'six title bar buttons (the focus button among them since M9 fix 181)');
   layout = await getLayout(s);
   const s3 = leaves(layout).find((p) => p.id === p3).sessionId;
-  // M9 fix 589: a half-typed line in a shell under the pane menu is kept
-  // when the menu's Escape closes it. The menu is opened by a dispatched
-  // contextmenu on the term-host, since the terminal's own right-click
-  // pastes into the line (fix 441); the expression only evaluates to
-  // 280091 if the typed half survived the Escape (PSReadLine reverts the
-  // line on an Escape that reaches it).
+  // The prompt first, so fix 989's paste lands at a live prompt.
   const promptBy = Date.now() + 10000;
   while (!/PS [^\n]*>/.test(await read(s, s3)) && Date.now() < promptBy) await sleep(200);
   expect(/PS [^\n]*>/.test(await read(s, s3)), 'the shell in pane 3 shows its prompt');
+  // M9 fix 989: a plain right-click on the terminal pastes the window's own
+  // clipboard (private under the harness, fix 493) and opens no pane menu;
+  // Shift+right-click opens the menu and pastes nothing.
+  const word989 = 'menus989-' + Date.now();
+  await s.evalJs(`window.emerald.clipboard.write(${JSON.stringify(word989)})`);
+  const buffer989 = `(() => { const b = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p3)}] .term-host`)}).emeraldTerm.buffer.active; let text = ''; for (let y = 0; y < b.length; y++) text += b.getLine(y)?.translateToString(true) ?? ''; return text; })()`;
+  const c = await centerOf(s, `[data-pane-id=${JSON.stringify(p3)}] .term-host`);
+  await s.rightClick(c.x, c.y);
+  await s.waitFor(`${buffer989}.includes(${JSON.stringify(word989)})`, 'fix 989: a right-click on the terminal pastes the clipboard', 3000);
+  await sleep(400);
+  expect(!(await s.evalJs(`!!document.querySelector('.pane-menu')`)), 'fix 989: a right-click on the terminal pasted and opened no pane menu');
+  await s.screenshot('m9-menus-989-paste.png');
+  await s.rightClick(c.x, c.y, SHIFT);
+  await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(p3)}`, 'fix 989: Shift+right-click opens the pane menu over the terminal');
+  await s.screenshot('m9-menus-menu.png');
+  await sleep(300);
+  expect((await s.evalJs(buffer989)).split(word989).length - 1 === 1, 'fix 989: the Shift+right-click pasted nothing');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.pane-menu')`, 'menu closed');
+  step('M9 fix 989: a right-click on a shell pastes with no pane menu, and Shift+right-click opens the menu with nothing pasted');
+  // Five since M63: split right, split down, the shade, hide and close.
+  expect((await s.evalJs(`document.querySelectorAll('[data-pane-id=${JSON.stringify(p3)}] .pane-title-actions button').length`)) === 6, 'six title bar buttons (the focus button among them since M9 fix 181)');
+  // M9 fix 589: a half-typed line in a shell under the pane menu is kept
+  // when the menu's Escape closes it. The menu is opened by a dispatched
+  // Shift+contextmenu on the term-host (fix 989); the expression only evaluates to
+  // 280091 if the typed half survived the Escape (PSReadLine reverts the
+  // line on an Escape that reaches it).
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p3)}] .xterm-helper-textarea').focus()`);
-  // The real right-click above pasted the clipboard into the line (fix
-  // 441), which the menu's Escape now leaves; an Escape with no menu up
+  // The plain right-click above pasted the word (fix 989), which the
+  // menu's Escape now leaves; an Escape with no menu up
   // reverts whatever is there before the half line is typed.
   await s.key('Escape', 'Escape', 27);
   await sleep(300);
@@ -259,7 +273,7 @@ try {
   while (!(await read(s, s3)).includes('40013') && Date.now() < halfBy) await sleep(100);
   expect((await read(s, s3)).includes('40013'), 'the half line is echoed');
   await s.evalJs(
-    `(() => { const h = document.querySelector('[data-pane-id=${JSON.stringify(p3)}] .term-host'); const b = h.getBoundingClientRect(); h.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); })()`,
+    `(() => { const h = document.querySelector('[data-pane-id=${JSON.stringify(p3)}] .term-host'); const b = h.getBoundingClientRect(); h.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, shiftKey: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); })()`,
   );
   await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(p3)}`, 'the pane menu over the half line');
   expect(

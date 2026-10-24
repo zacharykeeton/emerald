@@ -314,6 +314,21 @@ test('--if-idle refuses a working session, exit 1, and sends nothing (M9 fix 741
   assert.deepEqual(inputs, []);
 });
 
+// M9 fix 995: a prompt into a Claude mid-turn says so, queued: true on the
+// outcome; one to an idle Claude carries no queued key at all.
+test('a working Claude gives an outcome with queued: true, an idle one no queued key', async () => {
+  scenario('working', turns, { kind: 'claude', stateSince: Date.now() - 90_000 });
+  let out = await runPrompt({ ref: 'fix-login', text: 'and then', force: false, timeoutMs: 5000 });
+  assert.equal(out.queued, true);
+  // Part 2: typed into the running turn, never submitted to the mod.
+  assert.deepEqual(submits, []);
+  assert.deepEqual(inputs, ['and then', '\r']);
+  assert.equal(out.via, 'typed');
+  scenario('idle', turns, { kind: 'claude' });
+  out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.equal('queued' in out, false);
+});
+
 // M9 fix 855: the prompt's text from stdin or a file.
 test('emmer prompt --stdin sends the piped text less its trailing newline, and refuses it beside text words or --saved', async () => {
   scenario('idle', (push) => {

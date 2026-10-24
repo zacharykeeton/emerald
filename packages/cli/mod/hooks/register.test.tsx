@@ -140,6 +140,40 @@ test('a dropped submit posts ModSubmit not entered with the engine\'s reason, an
   ]);
 });
 
+// M9 fix 995: a line streamed while a main turn runs says at once that it
+// waits for the turn's end; with no turn and nothing chained only the
+// final word goes; a subagent's turn is not the row's.
+test('a line streamed during a main turn posts queued before its final word (M9 fix 995)', async ($, on) => {
+  mock.env(on, CHANNEL);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on);
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }));
+  answeringChannel(on, ['{"text":"mid-turn","submitId":"s9-1"}'], (text) => ({ text }));
+  await $.turn.start({ text: 'a long turn', turnId: 't-995' });
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 't-995', reason: 'answer' });
+  await clock.settle();
+  const said = words(posted);
+  expect(said[0]).toEqual(expect.objectContaining({ submit_id: 's9-1', entered: true, queued: true }));
+  expect(said[said.length - 1]).toEqual(expect.objectContaining({ submit_id: 's9-1', entered: true }));
+  expect(said[said.length - 1].queued).toBe(undefined);
+  expect(said.length).toBe(2);
+});
+
+test('a line streamed with no turn running, or during a subagent turn, posts only its final word (M9 fix 995)', async ($, on) => {
+  mock.env(on, CHANNEL);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on);
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }));
+  answeringChannel(on, ['{"text":"at rest","submitId":"s9-2"}'], (text) => ({ text }));
+  await $.turn.start({ text: 'a subagent', turnId: 't-agent', agentId: 'agent-1' });
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  expect(words(posted)).toEqual([expect.objectContaining({ submit_id: 's9-2', entered: true })]);
+  expect(words(posted)[0].queued).toBe(undefined);
+});
+
 test('a submit with no submitId (an older daemon) posts no word (M9 fix 781)', async ($, on) => {
   mock.env(on, CHANNEL);
   const clock = mock.clock(on);

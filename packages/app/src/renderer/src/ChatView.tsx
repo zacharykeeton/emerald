@@ -9,7 +9,7 @@ import { shellWords } from './chat-model.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
 import type { ReactNode } from 'react';
 import type { ChatMode, FoldItem, PendingItem, SlashRow } from './chat-model.ts';
-import { CARRY_MS, CARRY_POLL_MS, carryRead, stopCarry } from './chat-model.ts';
+import { CARRY_MS, CARRY_POLL_MS, carryRead, pickRoute, stopCarry } from './chat-model.ts';
 import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
 import { isPasteKey } from './keys-model.ts';
 import type { MentionRow } from './ChatMenus.tsx';
@@ -27,6 +27,7 @@ import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
+import { switchDialog, trustKeys } from '@emerald/shared';
 import { answerOptions, askQuestion, askReview, ghostSuggestion, promptExcerpt } from './screen-prompt-model.ts';
 import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
 import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
@@ -37,8 +38,12 @@ import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { SessionMark } from './session-mark.tsx';
 import { copyAndNote } from './actions.ts';
+import { strayLanded } from './chat-model.ts';
 import { PaneNote } from './CheatSheet.tsx';
 import { TrustCard } from './TrustCard.tsx';
+// M9 fix 974: the usage band.
+import { usageWarning } from './usage-model.ts';
+import { dismissUsageWarning, usageAgeText, useUsageAge, useUsageReading, useUsageWarningDismissed } from './usage-reading.ts';
 import { acknowledgeAttention, getUiState, openReviewTab, setChatFace, setChatMode, useUi } from './ui.ts';
 import { getState } from './store.ts';
 
@@ -94,12 +99,17 @@ const chatDrafts = new Map<string, string>();
 // an exited session.
 const CARRY_STATES: ReadonlySet<SessionState> = new Set<SessionState>(['idle', 'done', 'waiting', 'working', 'errored']);
 const CARRY_BLOCKED = "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it";
+// M9 fix 972: a pick or a box `/` command refused because the input holds
+// text that cannot move into the box.
+const PICK_BLOCKED = "Claude Code's input holds text; send or clear it in the terminal first";
 // The scroll sticks to the end while the person is within this of it.
 const STICK_PX = 24;
 // The view menu's words beside each mode (M9 fix 714).
 const VIEW_HINTS: Readonly<Record<ChatMode, string>> = { normal: 'steps folded', thinking: 'and the thinking', verbose: 'every step' };
 
 const timeOf = (at: number | null): string | null => (at === null ? null : new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
+// M9 fix 979: a reply's tooltip, the date with the time, since a reply from an earlier day reads the same HH:MM.
+const fullTimeOf = (at: number | null): string | null => (at === null ? null : new Date(at).toLocaleString([], { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }));
 
 export function ChatView({ paneId, session, focused, shaded }: { paneId: string; session: SessionInfo; focused: boolean; shaded: boolean }) {
   const path = session.transcriptPath ?? null;
@@ -144,6 +154,8 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           if ('error' in r) return;
           const was = fedRef.current;
           const into = r.fresh ? freshFed() : was;
+          // M9 fix 977: a read that began mid-file takes its first custom-title as the title it already had.
+          if (r.fresh && r.cut) into.steps.titleQuiet = true;
           stepFold(into.steps, r.text);
           queueFold(into.queue, r.text);
           effortFold(into.effort, r.text);
@@ -234,6 +246,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       clearInterval(timer);
     };
   }, [session.id, shaded, asking]);
+  // M9 fix 974: the band over the box when a usage window is nearly spent,
+  // off the strip's reading and never while the strip calls it stale or
+  // nobody is polling it.
+  const usageRead = useUsageReading();
+  const usageStale = usageAgeText(useUsageAge());
+  const usageDismissed = useUsageWarningDismissed();
+  const warning = usageWarning(usageStale === null ? usageRead : null, now, usageDismissed);
   const spinner = working && screen !== null ? spinnerOf(screen.rows) : null;
   // M9 fix 769: the engine's own word where the mod posts it (the pty's
   // guess is off then), else the pty scanner's or the screen's.
@@ -510,6 +529,20 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     if (shownPending.length !== pending.length) setPending(shownPending);
   }, [shownPending, pending]);
   useEffect(() => setPending([]), [session.id]);
+  // M9 fix 980: a landed message no pending key matches while a send
+  // waits is named in the console, its first 40 characters, so a new
+  // wrapper round sent text shows in the log. The keys seen start at the
+  // first read of each session, so opening a conversation names nothing.
+  const seenKeys = useRef<{ id: string; keys: Set<string> } | null>(null);
+  useEffect(() => {
+    const seen = seenKeys.current;
+    if (seen === null || seen.id !== session.id) {
+      seenKeys.current = { id: session.id, keys: new Set(landed.keys()) };
+      return;
+    }
+    for (const key of strayLanded(seen.keys, landed, pending)) console.warn(`[emerald] chat: a message landed while a sent one waits and matched no pending key: ${JSON.stringify(key.slice(0, 40))}`);
+    for (const key of landed.keys()) seen.keys.add(key);
+  }, [landed, pending, session.id]);
   const quiet = !working && !asking;
   const quietSince = useRef<number | null>(quiet ? Date.now() : null);
   const wasQuiet = useRef(quiet);
@@ -569,6 +602,24 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     setBox('');
     lastSent.current = Date.now();
     setChips([]);
+    // M9 fix 972: a `/` command with no chips reads Claude Code's input
+    // first, as a pick does, so a draft sitting there moves into the box
+    // (emptied above, so the draft lands alone) rather than going with it.
+    if (prompt.trimStart().startsWith('/') && !typed) {
+      void inputFirst().then((ok) => {
+        if (ok) dispatch(prompt, typed);
+        else if (alive.current && sessionRef.current === session.id) {
+          const now = boxRef.current?.value ?? '';
+          const next = now === '' ? prompt : `${prompt}\n${now}`;
+          setBox(next);
+          pendingCaret.current = next.length;
+        }
+      });
+      return;
+    }
+    dispatch(prompt, typed);
+  };
+  const dispatch = (prompt: string, typed: boolean) => {
     const menu = opensMenu(prompt);
     // M9 fix 782: a send drops the refused and unseen bubbles, then draws
     // its own unless it is a command or empty.
@@ -732,6 +783,31 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       carryingRef.current = false;
     }
   };
+  // M9 fix 972: before a pick or a box `/` command types, Claude Code's
+  // input is read and anything in it moves into the box, so the command's
+  // Enter submits the command alone. True when the command may type. An
+  // open ask's `❯ 1.` row reads as the prompt row, so an ask (and a
+  // session that is not Claude's) types with no read; a failed read types
+  // as before the guard.
+  const inputFirst = async (): Promise<boolean> => {
+    if (markKind(session) !== 'claude' || askingRef.current) return true;
+    try {
+      const route = pickRoute(carryRead(await window.emerald.request('pty.screen', { sessionId: session.id })));
+      if (route === 'type') return true;
+      if (route === 'refuse') {
+        setRefusal(PICK_BLOCKED);
+        return false;
+      }
+      if (await carryInput()) return true;
+      // carryInput's own refusal stays when it set one; a carry already
+      // running set none.
+      setRefusal((r) => r ?? PICK_BLOCKED);
+      return false;
+    } catch (err) {
+      console.warn('[emerald] pick input read failed', err);
+      return true;
+    }
+  };
   // M9 fix 744: the model chip's menu, the models and a row of the effort
   // levels. A pick is typed as the box sends a prompt, but not through
   // send, whose terminal-command read would open the fallback bar for
@@ -749,16 +825,22 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   };
   const pickModel = (alias: string) => {
     setModelMenu(null);
-    void sendPrompt(session.id, `/model ${alias}`).then((outcome) => {
-      if (outcome.kind === 'refused') setRefusal(outcome.reason);
+    void inputFirst().then((ok) => {
+      if (ok)
+        void sendPrompt(session.id, `/model ${alias}`).then((outcome) => {
+          if (outcome.kind === 'refused') setRefusal(outcome.reason);
+        });
     });
   };
   const pickEffort = (level: string) => {
     setModelMenu(null);
     const live = session.effort ?? null;
-    void sendPrompt(session.id, `/effort ${level}`).then((outcome) => {
-      if (outcome.kind === 'refused') setRefusal(outcome.reason);
-      else setEffortPick({ level, assistants: fedRef.current.effort.assistants, live });
+    void inputFirst().then((ok) => {
+      if (ok)
+        void sendPrompt(session.id, `/effort ${level}`).then((outcome) => {
+          if (outcome.kind === 'refused') setRefusal(outcome.reason);
+          else setEffortPick({ level, assistants: fedRef.current.effort.assistants, live });
+        });
     });
   };
   const shownEffort = effortShown(session.effort ?? null, fed.effort, effortPick);
@@ -1202,6 +1284,21 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       {!exited && (
       <div className="chat-dock">
         <div className="chat-dock-inner">
+          {warning !== null && (
+            <div className="chat-usage-warning" data-key={warning.key} data-threshold={warning.threshold}>
+              <span className="chat-usage-warning-text">{warning.text}</span>
+              <button
+                type="button"
+                className="chat-usage-warning-dismiss"
+                aria-label="Dismiss the usage warning"
+                title="Hide until the next mark or the reset"
+                onMouseDown={keepKeys}
+                onClick={() => dismissUsageWarning(warning.dismissKey)}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {fallback !== null && (
             <div className="chat-fallback">
               <span className="chat-fallback-text">The terminal is showing a menu this view cannot draw</span>
@@ -1570,7 +1667,11 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
-  const options: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  const read: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  // M9 fix 976: the switch confirmation drawn without digits offers its two
+  // options all the same, each answered by the pointer's arrows and Enter.
+  const switched = session.needsInputReason === 'switch' && review === null && ask === null && read.length === 0 && shown !== null ? switchDialog(shown.rows) : null;
+  const options: (AnswerOption | AskOption)[] = switched === null ? read : switched.options.map((o, i) => ({ key: String(i + 1), label: o.label }));
   // M9 fix 879: a dialog with a Cancel of its own (the review's) draws no
   // second one; Escape there cancels the ask as Cancel does (read on
   // 2.1.302), and the card's Escape key still sends it.
@@ -1657,6 +1758,13 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   // tab, and a landed visit with it.
   const pressOption = (key: string) => {
     if (pressed !== null) return;
+    if (switched !== null) {
+      const option = switched.options[Number(key) - 1];
+      const keys = option === undefined ? null : trustKeys(switched, option.pick);
+      // No pointer read: a key could land anywhere, so nothing is sent.
+      if (keys !== null) press(keys);
+      return;
+    }
     if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
     press(optionKeys(ask, key));
   };
@@ -1927,7 +2035,7 @@ function ChatStep({ step, paneId, session, time }: { step: Step; paneId: string;
     );
   }
   if (step.kind === 'text' || step.kind === 'update') {
-    return <ChatReply step={step} paneId={paneId} session={session} />;
+    return <ChatReply step={step} paneId={paneId} session={session} time={timeOf(step.at)} fullTime={fullTimeOf(step.at)} />;
   }
   if (step.kind === 'command') {
     // M9 fix 798: what a command printed, its first line as a centred

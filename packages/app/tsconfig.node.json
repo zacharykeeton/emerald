@@ -32,6 +32,7 @@
     "electron.vite.config.ts",
     "src/main/**/*",
     "src/preload/**/*",
+    "src/renderer/src/claude-commands.ts",
     "src/renderer/src/daemon-model.ts",
     "src/renderer/src/files-model.ts",
     "src/renderer/src/git-changes-model.ts",

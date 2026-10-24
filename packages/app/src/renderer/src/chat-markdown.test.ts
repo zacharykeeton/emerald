@@ -23,6 +23,13 @@ test('a reply renders as Markdown with its paths live (M9 fix 716)', () => {
   assert.equal(renderReply('Done.', 'C:\\repo', () => undefined).html, '<p>Done.</p>');
 });
 
+test('a fenced block sits in a wrapper with an empty copy button outside its pre (M9 fix 978)', () => {
+  const { html } = renderReply('Run:\n\n```ts\nconst x = 1;\n```', 'C:\\repo', () => undefined);
+  assert.ok(html.includes('<div class="chat-code"><button type="button" class="chat-code-copy" aria-label="Copy" title="Copy"></button><pre><code class="language-ts">const x = 1;\n</code></pre></div>'), html);
+  const nested = renderReply('- a\n\n  ```\n  b\n  ```', 'C:\\repo', () => undefined).html;
+  assert.equal(nested.match(/class="chat-code"/g)?.length, 1, nested);
+});
+
 test('a reply image resolves against the session folder (M9 fix 716)', () => {
   const { html } = renderReply('![shot](img/a.png)', 'C:\\repo', () => undefined);
   assert.ok(html.includes('src="file:///C:/repo/img/a.png"'), html);

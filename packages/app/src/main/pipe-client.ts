@@ -82,7 +82,7 @@ export interface DaemonInfo {
   // Set when the daemon serves another home than this window's (M9 fix
   // 495); null when they agree or either side does not say.
   otherHome: { theirs: string; mine: string } | null;
-  // The shells the daemon found at its start (M9 fix 624), the first the
+  // The shells the daemon found at the connect (M9 fix 624), the first the
   // default; empty from a daemon older than level 61.
   shells: ShellOption[];
 }

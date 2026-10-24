@@ -217,29 +217,31 @@ export class ShellLauncher implements SessionLauncher {
   }
 
   // The mod's variable for a launch, or nothing with no mod.
-  private modEnv(): Record<string, string> {
-    return this.modDir === null ? {} : { CLAUDE_CODE_PLUGIN_DIRS: pluginDirs(this.modDir, this.env['CLAUDE_CODE_PLUGIN_DIRS']) };
+  private modEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+    return this.modDir === null ? {} : { CLAUDE_CODE_PLUGIN_DIRS: pluginDirs(this.modDir, env['CLAUDE_CODE_PLUGIN_DIRS']) };
   }
 
-  command(extraArgs: string[], shell?: ShellOption | null): LaunchCommand {
+  // `env` is the session's own (M9 fix 996): the mod's variable, cmd's
+  // PROMPT and the fallback pwsh are read off it.
+  command(extraArgs: string[], shell?: ShellOption | null, env: NodeJS.ProcessEnv = this.env): LaunchCommand {
     switch (shell?.id) {
       case 'gitbash':
-        if (extraArgs.length > 0) return this.withMod({ file: shell.file, args: extraArgs });
-        return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } });
+        if (extraArgs.length > 0) return this.withMod({ file: shell.file, args: extraArgs }, env);
+        return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } }, env);
       case 'cmd':
-        return this.withMod({ file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(process.env['PROMPT']) } });
+        return this.withMod({ file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(env['PROMPT']) } }, env);
       default: {
-        const file = shell?.file ?? findOnPath('pwsh.exe') ?? 'powershell.exe';
+        const file = shell?.file ?? findOnPath('pwsh.exe', env) ?? 'powershell.exe';
         const args = extraArgs.length === 0 ? ['-NoExit', '-Command', PROMPT_WRAPPER] : extraArgs;
-        return this.withMod({ file, args: ['-NoLogo', ...args] });
+        return this.withMod({ file, args: ['-NoLogo', ...args] }, env);
       }
     }
   }
 
   // With no mod the command is as it was, so a launch's whole-object
   // compare holds.
-  private withMod(cmd: LaunchCommand): LaunchCommand {
-    const mod = this.modEnv();
+  private withMod(cmd: LaunchCommand, env: NodeJS.ProcessEnv): LaunchCommand {
+    const mod = this.modEnv(env);
     if (Object.keys(mod).length === 0) return cmd;
     return { ...cmd, env: { ...cmd.env, ...mod } };
   }

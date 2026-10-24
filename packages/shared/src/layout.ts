@@ -82,7 +82,8 @@ export type FilePaneView = { kind: 'file'; path: string; view?: FileTabView };
 // absolute folder it is served from, kept only beside such a url, so main
 // can serve it again after a restart.
 // M9 fix 969: openedBy, the EMERALD_SESSION_ID of the session whose emmer browser open made the pane, absent for a pane the person opened (and for one from emmer open <url>); emmer browser close puts away only a pane whose openedBy is the caller's.
-export type BrowserPaneView = { kind: 'browser'; url: string; root?: string; profile?: string; toolbar?: false; openedBy?: string };
+// M9 fix 986: zoom, the page's own whole zoom level when it differs from the window's, kept only when not 0 and within the app's zoom steps, so a quit and relaunch brings the page back at it.
+export type BrowserPaneView = { kind: 'browser'; url: string; root?: string; profile?: string; toolbar?: false; openedBy?: string; zoom?: number };
 export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView;
 
 export type LayoutNode =

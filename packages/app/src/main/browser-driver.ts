@@ -33,6 +33,9 @@ export interface DriverOptions {
   // Whether the contents is one of the app's windows, the only senders a
   // guest registration is taken from (one window before M9 fix 866).
   isWindow: (contents: WebContents) => boolean;
+  // M9 fix 986: a page's own level after its Ctrl+wheel step, for the
+  // window to keep on the pane's record across a quit.
+  zoomed: (paneId: string, level: number) => void;
 }
 
 export interface BrowserDriver {
@@ -180,6 +183,9 @@ export function wireBrowserDriver(client: DriverClient, opts: DriverOptions): Br
       if (now - lastZoomAt < 8) return;
       lastZoomAt = now;
       contents.setZoomLevel(stepZoomLevel(Math.round(contents.getZoomLevel()), direction === 'in' ? 1 : -1));
+      // M9 fix 986: the window keeps the stepped level on the pane's record.
+      const h = holder();
+      if (h !== null) opts.zoomed(h[0], contents.getZoomLevel());
     });
     // M9 fix 931: a reload or a link within the site keeps the page's own
     // zoom; Chromium puts a guest back at the window's level on each load.

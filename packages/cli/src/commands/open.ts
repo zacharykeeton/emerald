@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { browserUrl, looksLikeUrl } from '@emerald/shared';
+import { BROWSER_OPENER, browserUrl, looksLikeUrl } from '@emerald/shared';
 import { parse, positionals } from '../args.ts';
 import { CliError, EXIT, NO_WINDOW, usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
@@ -37,7 +37,9 @@ import { sessionRefFor } from './set.ts';
 // --browser sends an .html or .htm path with browser set, in a pane
 // always, and the window renders it on emerald-file: from the rail's
 // folder or the file's own; an emerald-file: URL is refused, since only
-// the window mints its root id.
+// the window mints its root id. M9 fix 988: a URL or a --browser page
+// carries this session's EMERALD_SESSION_ID as opener, so the pane is
+// recorded as this session's and emmer browser close takes it.
 const options = {
   pane: { type: 'boolean', default: false },
   beside: { type: 'string' },
@@ -56,6 +58,8 @@ const EXTRAS_LEVEL = 55;
 const URL_LEVEL = 62;
 // The first daemon that takes browser on file.open, an .html file rendered in a browser pane (M9 fix 936).
 const BROWSER_OPEN_LEVEL = 75;
+// The first daemon that takes opener on file.open (M9 fix 988): a browser pane from emmer open <url> or --browser is recorded as this session's, so emmer browser close takes it; to an older daemon none is sent and the pane stays the person's.
+const OPENER_LEVEL = 77;
 
 // What a window that did not answer says (M9 fix 582); 3 s is the
 // daemon's FILE_OPEN_ACK_MS. A daemon or a window older than level 58
@@ -108,7 +112,9 @@ export async function runOpen(argv: string[]): Promise<number> {
     // The session named, or the one this runs in, as one id; a name or a
     // prefix that matches nothing is refused here, before the window.
     const beside = besideRef === undefined ? undefined : resolveSession((await client.request('session.list', {})).sessions, besideRef);
-    const { apps, known, besideFound, besidePane, besideTab, answered } = await client.request('file.open', { path: target, pane, ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside: beside.id }), ...(page === null ? {} : { url: true }), ...(v.browser ? { browser: true } : {}) });
+    const ownId = process.env['EMERALD_SESSION_ID'];
+    const opener = (page !== null || v.browser) && level >= OPENER_LEVEL && ownId !== undefined && BROWSER_OPENER.test(ownId) ? ownId : undefined;
+    const { apps, known, besideFound, besidePane, besideTab, answered } = await client.request('file.open', { path: target, pane, ...(scheme === undefined ? {} : { scheme }), ...(beside === undefined ? {} : { beside: beside.id }), ...(page === null ? {} : { url: true }), ...(v.browser ? { browser: true } : {}), ...(opener === undefined ? {} : { opener }) });
     if (apps === 0) throw new CliError(NO_WINDOW, EXIT.noWindow);
     const besideWord = beside === undefined ? '' : ` ${beside.name} (${shortId(beside.id)})`;
     // Which of the session's panes the window picked (M9 fix 404): the

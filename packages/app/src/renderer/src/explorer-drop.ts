@@ -69,6 +69,11 @@ export function setRailDrop(r: RailDrop | null): void {
 }
 
 const railAt = (x: number, y: number): boolean => document.elementFromPoint(x, y)?.closest('.files-rail') != null;
+
+// M9 fix 981: the rail's side of a drop, for a drag from the tree (pane-drag.ts), when the rail is under the point.
+export function railDropAt(x: number, y: number): RailDrop | null {
+  return rail !== null && railAt(x, y) ? rail : null;
+}
 const keysOf = (e: DragEvent): DropKeys => ({ ctrl: e.ctrlKey, shift: e.shiftKey });
 
 type DragKind = 'file' | 'folder' | 'unknown';

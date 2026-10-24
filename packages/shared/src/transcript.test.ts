@@ -398,6 +398,26 @@ test('queuedOf: a prompt line equal to a held message takes it', () => {
   assert.deepEqual(queuedOf([qop('enqueue', 'a'), qop('enqueue', 'b'), prompt].join('\n')).map((m) => m.text), ['a']);
 });
 
+// 2026-10-23: a message the chat box pasted lands wrapped in
+// <pasted_content id="..."> tags, the closing tag carrying the id too.
+import { unwrapPasted } from './transcript.ts';
+const PASTED = '<pasted_content id="18cb">fix the\nfooter</pasted_content id="18cb">';
+
+test('unwrapPasted: the tags go, open and close, with or without an id; other text is untouched', () => {
+  assert.equal(unwrapPasted(PASTED), 'fix the\nfooter');
+  assert.equal(unwrapPasted('see <pasted_content id="a1">this</pasted_content> please'), 'see this please');
+  assert.equal(unwrapPasted('plain <b>text</b>'), 'plain <b>text</b>');
+});
+
+test('a pasted message reads unwrapped as a prompt, a queued message and a queued step, and its prompt line takes its enqueue', () => {
+  assert.deepEqual(parseSteps(user(PASTED, '2026-10-15T14:00:00.000Z')).map((t) => t.prompt), ['fix the\nfooter']);
+  assert.deepEqual(parseTurns(user(PASTED, '2026-10-15T14:00:00.000Z')).map((t) => t.prompt), ['fix the\nfooter']);
+  assert.deepEqual(queuedOf(qop('enqueue', PASTED)).map((m) => m.text), ['fix the\nfooter']);
+  assert.deepEqual(queuedOf([qop('enqueue', PASTED), qop('remove', PASTED)].join('\n')), []);
+  const prompt = line({ type: 'user', isSidechain: false, message: { role: 'user', content: PASTED }, timestamp: '2026-10-15T14:01:00.000Z' });
+  assert.deepEqual(queuedOf([qop('enqueue', PASTED), prompt].join('\n')), []);
+});
+
 test('queueFold: a fold over the text split at every line boundary equals the whole', () => {
   const lines = [qop('enqueue', NOTE), qop('enqueue', 'a'), qop('enqueue', 'b'), qop('dequeue'), qop('popOne', 'b'), qop('enqueue', 'c')];
   const whole = lines.join('\n') + '\n';
@@ -581,6 +601,76 @@ test('parseSteps: a /rename before any prompt opens a bare turn holding its note
   assert.deepEqual(turns[0]!.steps.map((s) => (s.kind === 'command' ? s.text : s.kind)), ['Session renamed to: story time']);
 });
 
+// M9 fix 977: a /rename writes a custom-title line (no time, no uuid) and,
+// at rest only, the stdout; Claude Code writes the same title again every
+// turn.
+const titleLine = (title: string) => line({ type: 'custom-title', customTitle: title, sessionId: 'sim-977' });
+const agentName = (name: string) => line({ type: 'agent-name', agentName: name, sessionId: 'sim-977' });
+const notesOf = (turn: StepTurn) => turn.steps.filter((s) => s.kind === 'command');
+
+test('parseSteps: a /rename at rest, title then stdout, draws one note at the stdout\'s time (M9 fix 977)', () => {
+  const at = '2026-10-16T14:10:01.000Z';
+  const text = [user('hello', '2026-10-16T14:00:00.000Z'), turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'), titleLine('X'), agentName('X'), sys('<command-name>/rename</command-name>', '2026-10-16T14:10:00.000Z'), sys('<local-command-stdout>Session renamed to: X</local-command-stdout>', at)].join('\n');
+  const turns = parseFolded(text);
+  assert.deepEqual(notesOf(turns[0]!), [{ kind: 'command', text: 'Session renamed to: X', at: Date.parse(at) }]);
+});
+
+const working = [
+  user('do the work', '2026-10-16T14:00:00.000Z'),
+  turnLine([toolUse('r1', 'Bash', { command: 'echo r1', description: 'Run it' })], '2026-10-16T14:00:01.000Z'),
+  titleLine('X'),
+  agentName('X'),
+  result('r1', 'r1', '2026-10-16T14:00:02.000Z'),
+  turnLine([{ type: 'text', text: 'Done.' }], '2026-10-16T14:00:03.000Z'),
+];
+
+test('parseSteps: a /rename while Claude works draws its note off the custom-title line, between the call and the reply', () => {
+  const turns = parseFolded(working.join('\n'));
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps.map((s) => s.kind), ['tool', 'command', 'text']);
+  assert.deepEqual(notesOf(turns[0]!), [{ kind: 'command', text: 'Session renamed to: X', at: null }]);
+});
+
+test('parseSteps: the same title written again in a later turn draws nothing', () => {
+  const text = [...working, user('again', '2026-10-16T14:01:00.000Z'), titleLine('X'), turnLine([{ type: 'text', text: 'Again.' }], '2026-10-16T14:01:01.000Z')].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 2);
+  assert.equal(notesOf(turns[0]!).length, 1);
+  assert.equal(notesOf(turns[1]!).length, 0);
+});
+
+test('parseSteps: the stdout before its custom-title draws one note', () => {
+  const at = '2026-10-16T14:10:01.000Z';
+  const text = [user('hello', '2026-10-16T14:00:00.000Z'), sys('<local-command-stdout>Session renamed to: X</local-command-stdout>', at), titleLine('X')].join('\n');
+  assert.deepEqual(notesOf(parseFolded(text)[0]!), [{ kind: 'command', text: 'Session renamed to: X', at: Date.parse(at) }]);
+});
+
+test('parseSteps: a file renamed before its first prompt opens one bare turn holding one note at the stdout\'s time', () => {
+  const at = '2026-10-16T14:10:01.000Z';
+  const text = [titleLine('X'), agentName('X'), sys('<command-name>/rename</command-name>', '2026-10-16T14:10:00.000Z'), sys('<local-command-stdout>Session renamed to: X</local-command-stdout>', at)].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]!.prompt, '');
+  assert.deepEqual(turns[0]!.steps, [{ kind: 'command', text: 'Session renamed to: X', at: Date.parse(at) }]);
+});
+
+test('stepFold: a read begun mid-file takes its first custom-title silently, and draws the next', () => {
+  const state = stepState();
+  state.titleQuiet = true;
+  stepFold(state, [titleLine('X'), user('next', '2026-10-16T14:00:00.000Z'), titleLine('Y')].join('\n'));
+  const turns = stepList(state);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(notesOf(turns[0]!).map((s) => (s.kind === 'command' ? s.text : '')), ['Session renamed to: Y']);
+});
+
+test('stepFork carries the title, so the mod\'s rows do not draw it again', () => {
+  const state = stepState();
+  stepFold(state, working.join('\n'));
+  const fork = stepFork(state);
+  stepFold(fork, titleLine('X'));
+  assert.equal(notesOf(stepList(fork).at(-1)!).length, 1);
+});
+
 test('parseSteps: /effort as user lines is a prompt and its confirmation one note', () => {
   const said = 'Set effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing';
   const text = [
@@ -591,6 +681,16 @@ test('parseSteps: /effort as user lines is a prompt and its confirmation one not
   assert.equal(turns.length, 1);
   assert.equal(turns[0]!.prompt, '/effort medium');
   assert.deepEqual(turns[0]!.steps, [{ kind: 'command', text: said, at: Date.parse('2026-10-16T14:10:01.000Z') }]);
+});
+
+test('parseSteps: a No on the switch confirmation, Kept effort level as, draws no note (M9 fix 976)', () => {
+  const text = [
+    user('<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>high</command-args>', '2026-10-16T14:10:00.000Z'),
+    user('<local-command-stdout>Kept effort level as medium</local-command-stdout>', '2026-10-16T14:10:01.000Z'),
+  ].join('\n');
+  const turns = parseFolded(text);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0]!.steps, []);
 });
 
 test('parseSteps: an empty output, a dialog\'s leftover and /compact\'s hint add nothing; a stderr is kept', () => {
@@ -739,17 +839,18 @@ test('parseSteps: a summary with no compaction open adds nothing (M9 fix 920)', 
 });
 
 // M9 fix 956: Claude Code's six lines for a /compact typed in the box or the terminal, all on one promptId but the boundary.
-const typedCompact = (p = 'p956') =>
+// M9 fix 993: rest is the promptId of the four lines after the boundary, which Claude Code 2.1.306 once wrote on an id of its own.
+const typedCompact = (p = 'p956', rest = p) =>
   [
     user('hello', '2026-10-16T14:00:00.000Z'),
     turnLine([{ type: 'text', text: 'Hi.' }], '2026-10-16T14:00:05.000Z'),
     ...[
     user('/compact', '2026-10-16T14:10:00.000Z', { promptId: p }),
     boundary('2026-10-16T14:10:18.000Z', { trigger: 'manual', preTokens: 64000 }),
-    user(summaryText, '2026-10-16T14:10:17.000Z', { isCompactSummary: true, isVisibleInTranscriptOnly: true, promptId: p }),
-    user('<local-command-caveat>Caveat: the messages below were generated by the user while running local commands.</local-command-caveat>', '2026-10-16T14:10:00.005Z', { isMeta: true, promptId: p }),
-    user('<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>', '2026-10-16T14:10:00.005Z', { promptId: p }),
-    user('<local-command-stdout>\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m</local-command-stdout>', '2026-10-16T14:10:19.000Z', { promptId: p }),
+    user(summaryText, '2026-10-16T14:10:17.000Z', { isCompactSummary: true, isVisibleInTranscriptOnly: true, promptId: rest }),
+    user('<local-command-caveat>Caveat: the messages below were generated by the user while running local commands.</local-command-caveat>', '2026-10-16T14:10:00.005Z', { isMeta: true, promptId: rest }),
+    user('<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>', '2026-10-16T14:10:00.005Z', { promptId: rest }),
+    user('<local-command-stdout>\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m</local-command-stdout>', '2026-10-16T14:10:19.000Z', { promptId: rest }),
   ],
   ].join('\n');
 
@@ -762,9 +863,24 @@ test('parseSteps and parseTurns: a typed /compact is one prompt, its note and su
   assert.equal(note.kind === 'compact' ? note.text : null, 'Conversation compacted · 64k tokens');
   assert.equal(note.kind === 'compact' ? note.summary : null, summaryText);
   assert.deepEqual(parseTurns(typedCompact()).map((t) => t.prompt), ['hello', '/compact']);
-  // A <command-name>/compact line on another promptId still opens a turn: the rule needs the id.
-  const other = typedCompact() + '\n' + user('<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>', '2026-10-16T14:20:00.000Z', { promptId: 'other' });
+  // A <command-name>/compact line on another promptId with no compaction since the prompt still opens a turn: the rule needs the id or the boundary.
+  const other = [
+    user('hello', '2026-10-16T14:00:00.000Z'),
+    user('/compact', '2026-10-16T14:10:00.000Z', { promptId: 'a' }),
+    user('<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>', '2026-10-16T14:20:00.000Z', { promptId: 'b' }),
+  ].join('\n');
   assert.deepEqual(parseTurns(other).map((t) => t.prompt), ['hello', '/compact', '/compact']);
+});
+
+test('parseSteps and parseTurns: a typed /compact written on two promptIds is one prompt (M9 fix 993)', () => {
+  const folded = parseFolded(typedCompact('p993a', 'p993b'));
+  assert.equal(folded.length, 2);
+  assert.equal(folded[1]!.prompt, '/compact');
+  assert.deepEqual(folded[1]!.steps.map((s) => s.kind), ['compact']);
+  const note = folded[1]!.steps[0]!;
+  assert.equal(note.kind === 'compact' ? note.text : null, 'Conversation compacted · 64k tokens');
+  assert.equal(note.kind === 'compact' ? note.summary : null, summaryText);
+  assert.deepEqual(parseTurns(typedCompact('p993a', 'p993b')).map((t) => t.prompt), ['hello', '/compact']);
 });
 
 test('compactNoteText: the trigger and the size to the nearest thousand (M9 fix 920)', () => {

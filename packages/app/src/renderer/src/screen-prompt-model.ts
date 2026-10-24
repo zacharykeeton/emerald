@@ -6,6 +6,8 @@
 // characters are stripped before a row is judged blank or read for an
 // option.
 
+import { switchDialog } from '@emerald/shared';
+
 export interface AnswerOption {
   // The key the button sends: the option's digit, or y and n.
   key: string;
@@ -455,6 +457,9 @@ export function dialogKey(rows: readonly string[], cursor: { x: number; y: numbe
       options.map((o) => o.label),
     ]);
   }
+  // M9 fix 976: the switch confirmation drawn without digits.
+  const switched = switchDialog(rows);
+  if (switched !== null) return JSON.stringify(['switch', switched.title, switched.options.map((o) => o.label)]);
   return null;
 }
 

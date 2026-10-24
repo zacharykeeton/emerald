@@ -479,6 +479,7 @@ const browserDriver = wireBrowserDriver(client, {
   home: path.resolve(emeraldHomeOf(process.env)),
   push: (paneId, state) => sendAll('emerald:browser-drive', paneId, state),
   isWindow: isWindowContents,
+  zoomed: (paneId, level) => sendAll('emerald:browser-zoom', paneId, level),
 });
 
 // The install's marker (M9 fix 282, install-gap.ts): written at the
@@ -1436,6 +1437,9 @@ app.on('web-contents-created', (_event, contents) => {
       if (guestNavigationAllowed(e.url, from) || !isLocalPageUrl(e.url)) return;
       e.preventDefault();
       log(`browser: navigation refused: ${e.url}`);
+      // M9 fix 987: the pane's error line says a frame was refused, rather than the page showing an empty frame alone.
+      const host = contents.hostWebContents;
+      if (host !== null && host !== undefined && !host.isDestroyed()) host.send('emerald:guest-refused', { webContentsId: contents.id, url: e.url, frame: true });
     });
     contents.on('before-input-event', (e, input) => onGuestInput(contents, e, input));
     // A press or a key in the page, for presence (the window's own

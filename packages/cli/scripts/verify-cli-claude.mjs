@@ -42,8 +42,9 @@ fs.writeFileSync(logFile, '');
 // session's exit and the plain `claude -p` each measured 37 to 41 s on a
 // quiet-ish box, so a 40 s wait and a 100 s watchdog barely fit two of
 // them; both waits are 90 s and the watchdog 300 s now. M9 fix 776's
-// early session costs a third short turn.
-const WATCHDOG_S = 360;
+// early session costs a third short turn. M9 fix 995's long session holds
+// a turn on a 20 s ping and took about a minute in its probe.
+const WATCHDOG_S = 480;
 setTimeout(() => {
   log(`WATCHDOG: run exceeded ${WATCHDOG_S} s`);
   stopDaemonHard();
@@ -239,6 +240,54 @@ try {
   r = emerald('wait', 'early', '--for', 'exited', '--timeout', '10000');
   expect(r.code === 0, 'early exited');
   log('M9 fix 741: a send --enter to a hosted Claude goes in through its mod; one under --safe-mode is typed; M9 fix 776: one sent the moment the session went idle waits for the channel');
+
+  // M9 fix 995: a send --enter into a turn that runs a long tool call is
+  // typed, says it is queued into the turn, and Claude Code takes it into
+  // that turn at its next tool round (a queue-operation remove absorbed
+  // mid-turn) rather than in a turn of its own after.
+  j = emeraldJson('new', repoRoot, '--name', 'long', '--json', '--', '--allowedTools', 'Bash(ping:*)');
+  const long = j.json?.session;
+  expect(j.code === 0 && long?.kind === 'claude', 'new: the long session');
+  r = emerald('wait', 'long', '--for', 'idle', '--timeout', '15000');
+  expect(r.code === 0, `long went idle (${r.out.trim()})`);
+  r = emerald('send', 'long', 'Use the Bash tool to run this exact command in the foreground, not in the background: ping -n 21 127.0.0.1. Then reply with the word long-995.', '--enter');
+  expect(r.code === 0, `the ping prompt went in (${r.out.trim()})`);
+  const longRow = () => emeraldJson('ls', '--json').json?.sessions.find((s) => s.id === long.id);
+  const transcriptOf = (row) => (row?.transcriptPath && fs.existsSync(row.transcriptPath) ? fs.readFileSync(row.transcriptPath, 'utf8') : '');
+  let bashAt = 0;
+  for (const deadline = Date.now() + 60000; Date.now() < deadline; await new Promise((res) => setTimeout(res, 500))) {
+    const row = longRow();
+    if (row?.state === 'working' && /"type":"tool_use"[^\n]*"name":"Bash"/.test(transcriptOf(row))) {
+      bashAt = Date.now();
+      break;
+    }
+  }
+  expect(bashAt > 0, 'long is working on its Bash call');
+  await new Promise((res) => setTimeout(res, 2000));
+  const text995 = 'Also end your reply with the word absorbed-995.';
+  r = emerald('send', 'long', text995, '--enter');
+  expect(r.code === 0 && /^queued into a turn running (under 1m|\d+m); it goes in at the turn's next tool call, or when that turn ends$/m.test(r.out), `a send into the running turn says it is queued into it (${r.out.trim()})`);
+  r = emerald('wait', 'long', '--for', 'done', '--timeout', '90000');
+  expect(r.code === 0, `long finished its turn (${r.out.trim()})`);
+  const lines995 = transcriptOf(longRow()).split('\n').filter(Boolean);
+  expect(lines995.some((l) => l.includes('"queue-operation"') && l.includes('"remove"') && l.includes('absorbed_mid_turn') && l.includes('absorbed-995')), 'the transcript took the line into the turn (queue-operation remove, absorbed_mid_turn)');
+  expect(lines995.some((l) => l.includes('queued_command') && l.includes('absorbed-995')), 'and holds its queued_command attachment');
+  // The row's lastReply is the reply's first paragraph (it read long-995
+  // alone in the probe), so the marker is read off the turn's last text block.
+  const replies995 = lines995.flatMap((l) => {
+    try {
+      const e = JSON.parse(l);
+      return e.type === 'assistant' && Array.isArray(e.message?.content) ? e.message.content.filter((b) => b.type === 'text').map((b) => b.text) : [];
+    } catch {
+      return [];
+    }
+  });
+  expect((replies995[replies995.length - 1] ?? '').includes('absorbed-995'), `the turn's reply reads the line (${JSON.stringify(replies995[replies995.length - 1] ?? null)})`);
+  expect(hookLines(long.id).filter((e) => e.event === 'UserPromptSubmit').length === 2, 'one UserPromptSubmit for the absorbed line after the ping prompt, and no turn of its own');
+  r = emerald('kill', 'long');
+  r = emerald('wait', 'long', '--for', 'exited', '--timeout', '10000');
+  expect(r.code === 0, 'long exited');
+  log('M9 fix 995: a send into a long turn is typed, says queued, and enters that turn at its next tool round');
 
   // M9 fix 233: a Claude emerald did not start. This checkout's hook
   // wrapper is rendered for this Node, as an install does; a settings

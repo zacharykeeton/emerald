@@ -124,7 +124,7 @@ const centerOf = (s, selector) =>
   s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
 const chooseMenu = async (s, paneId, label) => {
   const c = await centerOf(s, `[data-pane-id=${JSON.stringify(paneId)}]`);
-  await s.rightClick(c.x, c.y);
+  await s.rightClick(c.x, c.y, SHIFT);
   await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(paneId)}`, `menu on pane ${paneId.slice(0, 8)}`);
   await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
 };
@@ -515,7 +515,7 @@ try {
   // always shown, disabled at the default with a title saying so.
   const menuItemState = async (paneId, label) => {
     const c = await centerOf(s, `[data-pane-id=${JSON.stringify(paneId)}]`);
-    await s.rightClick(c.x, c.y);
+    await s.rightClick(c.x, c.y, SHIFT);
     await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(paneId)}`, `menu on pane ${paneId.slice(0, 8)}`);
     const state = await s.evalJs(
       `(() => { const b = [...document.querySelectorAll('.pane-menu .menu-item')].find(x => x.querySelector('.menu-label').textContent === ${JSON.stringify(label)}); return b === undefined ? null : { disabled: b.disabled, title: b.title }; })()`,
@@ -4349,7 +4349,11 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     await s.evalJs(`document.querySelector(${JSON.stringify(bannerSel815 + ' .daemon-dismiss')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(crashSel815)})`, 'the crash banner put away by Not now', 3000);
     await s.send('Page.reload');
-    await s.waitFor(`document.querySelector('.daemon-banner') === null && !!document.querySelector('.sidebar')`, 'fix 832: the window back after the second reload with no banner', 15_000);
+    // The script's daemon reports level 1 throughout (fix 11), so the level
+    // banner is the one up once the window knows its daemon, and the crash
+    // banner would stand in its place; a read of any .daemon-banner only
+    // passed in the 50 ms between the sidebar and the daemon's info.
+    await s.waitFor(`!!document.querySelector('.sidebar') && !!document.querySelector('.daemon-banner[data-reason="level"]')`, 'fix 832: the window back after the second reload with the level banner and no crash banner', 15_000);
     await sleep(2000);
     expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(crashSel815)})`)), 'fix 832: after Not now a reload brings no crash banner');
     step('M9 fix 815: a daemon the window started that crashed (0xC0000374) brings the crash banner after the restart, its code in the tooltip, and Not now puts it away; a restart brings none; a reload keeps it until Not now (fix 832)');

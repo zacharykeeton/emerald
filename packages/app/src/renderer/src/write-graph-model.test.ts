@@ -57,4 +57,5 @@ test("writeGraphInput: a member's writes are a lane of their own forking off the
   assert.deepEqual(picture(g), ['own:s@0', 'a.md@0', 'ag1@1', 'y.md@1', 'x.md@1', 'b.md@0'], "the member's writes on a lane of their own in the block, its row above its newest");
   assert.ok(wires(g).includes('branch:1:4-5>0'), `the member's lane curves into the session's line at b.md (${wires(g).join(' ')})`);
   assert.deepEqual(g.lanes.map((l) => `${l.slot}:${l.memberId}`), ['0:null', '1:ag1']);
+  assert.deepEqual(picture(sessionGraph(input.commits, input.sessions, 'list', [FOLDER])), ['own:s@0', 'a.md@0', 'ag1@0', 'y.md@0', 'x.md@0', 'b.md@0'], "the list lifts no member in the write graph: its sessions have no branch head (M9 fix 991)");
 });

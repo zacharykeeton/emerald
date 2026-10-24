@@ -81,10 +81,10 @@ export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?
     });
     const untracked = untrackedPaths(others, root);
     const added = await countUntracked(root, untracked.filter((u) => !u.repo).map((u) => u.path), git);
-    for (const { path: p } of untracked) {
+    for (const { path: p, repo } of untracked) {
       const n = added.get(p.toLowerCase()) ?? null;
       // No count is no number on both sides, as the review's rows (M9 fix 917).
-      files.push({ path: p, code: '??', status: 'untracked', rel: relOf(p), added: n, removed: n === null ? null : 0 });
+      files.push({ path: p, code: '??', status: 'untracked', rel: relOf(p), added: n, removed: n === null ? null : 0, ...(repo ? { repo: true as const } : {}) });
     }
     files.sort((a, b) => a.rel.localeCompare(b.rel));
     return { root, files };

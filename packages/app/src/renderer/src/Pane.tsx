@@ -1676,9 +1676,14 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   // as Windows Terminal does, and pastes when there is none, through the
   // same read Ctrl+V takes. The browser's own menu has nothing to offer
   // on a canvas, so the default goes. On term.element, which moves with
-  // the terminal when adopt swaps the host.
+  // the terminal when adopt swaps the host. A Shift+right-click opens the
+  // pane menu instead (M9 fix 989).
   const onContextMenu = (ev: MouseEvent) => {
+    // M9 fix 989: Shift+right-click is the pane menu's over a terminal; it neither copies nor pastes and goes on to the pane's own handler.
+    if (ev.shiftKey) return;
     ev.preventDefault();
+    // M9 fix 989: a plain right-click is the terminal's alone, as in Windows Terminal, so the pane menu stays shut.
+    ev.stopPropagation();
     if (copySelection()) term.clearSelection();
     else pasteClipboard();
   };

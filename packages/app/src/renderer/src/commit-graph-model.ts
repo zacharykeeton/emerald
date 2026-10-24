@@ -1029,9 +1029,12 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // row, its stretch running down its own lane past it to its head; one
     // whose head is newer (it has committed past main) stays over its head.
     // A seat merged but still there is lifted too, until it goes. Only a
-    // session with a row of its own over its branch's head, in the graph
-    // (the write graph's sessions have no branch head to stack over).
-    const liftsMembers = hasOwnRow(s) && inRepo(s, roots) && !lineOnly(sessionId) && head !== undefined && anchor.above !== null;
+    // session with a row of its own over its branch's head, in the graph and
+    // the list alike (M9 fix 991: in the list the row simply moves, with no
+    // stretch, since the list has no member lanes to run one down); the write
+    // graph's sessions have no branch head to stack over, so `head` is
+    // undefined there and nothing lifts.
+    const liftsMembers = hasOwnRow(s) && inRepo(s, roots) && head !== undefined && anchor.above !== null;
     const placeMember = (m: TeamMember, above: number, kind: 'tip' | 'fork') => {
       const lifted = liftsMembers && above > anchor.above! && !onLine(sessionId, m.id);
       placed.push({ sessionId, session: s, member: m, above, kind, ...(lifted ? { at: anchor.above! } : {}) });

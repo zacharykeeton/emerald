@@ -31,7 +31,7 @@ const listed = [
   { id: '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'alpha', state: 'idle' },
   { id: '22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'beta', state: 'working' },
 ];
-const asked: Array<{ path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean }> = [];
+const asked: Array<{ path: string; pane: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean; opener?: string }> = [];
 let server: net.Server;
 const sockets = new Set<net.Socket>();
 
@@ -42,12 +42,12 @@ before(async () => {
     const decoder = new JsonLinesDecoder();
     sock.on('data', (chunk: Buffer) => {
       for (const raw of decoder.push(chunk)) {
-        const msg = raw as { id?: number; type: string; path?: string; pane?: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean };
+        const msg = raw as { id?: number; type: string; path?: string; pane?: boolean; scheme?: string | null; beside?: string; url?: boolean; browser?: boolean; opener?: string };
         const reply = (result: unknown) => sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: true, result }));
         if (msg.type === 'hello') reply({ daemonPid: 1, daemonVersion: 'fake', featureLevel: level });
         else if (msg.type === 'session.list') reply({ sessions: listed });
         else if (msg.type === 'file.open') {
-          asked.push({ path: msg.path ?? '', pane: msg.pane === true, ...(msg.scheme === undefined ? {} : { scheme: msg.scheme }), ...(msg.beside === undefined ? {} : { beside: msg.beside }), ...(msg.url === undefined ? {} : { url: msg.url }), ...(msg.browser === undefined ? {} : { browser: msg.browser }) });
+          asked.push({ path: msg.path ?? '', pane: msg.pane === true, ...(msg.scheme === undefined ? {} : { scheme: msg.scheme }), ...(msg.beside === undefined ? {} : { beside: msg.beside }), ...(msg.url === undefined ? {} : { url: msg.url }), ...(msg.browser === undefined ? {} : { browser: msg.browser }), ...(msg.opener === undefined ? {} : { opener: msg.opener }) });
           reply({
             apps,
             ...(msg.scheme === undefined || known === undefined ? {} : { known }),
@@ -420,4 +420,43 @@ test('--browser needs level 75 and an .html file, takes no URL or scheme, and an
     assert.equal(err.message, message);
   }
   assert.deepEqual(asked, []);
+});
+
+// M9 fix 988: a URL or a --browser page carries the session's id as
+// opener at level 77, so emmer browser close takes the pane it made.
+test('a URL and a --browser page ride file.open with this session as opener at level 77 (M9 fix 988)', async () => {
+  level = 77;
+  apps = 1;
+  answered = undefined;
+  besideFound = true;
+  besidePane = undefined;
+  besideTab = undefined;
+  asked.length = 0;
+  const lines = captureStdout();
+  const own = process.env['EMERALD_SESSION_ID'];
+  try {
+    process.env['EMERALD_SESSION_ID'] = listed[0]!.id;
+    assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
+    assert.equal(await runOpen(['site/page.html', '--browser']), EXIT.ok);
+    assert.equal(await runOpen(['C:\\a\\b.md', '--pane']), EXIT.ok);
+    level = 76;
+    assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
+    level = 77;
+    delete process.env['EMERALD_SESSION_ID'];
+    assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
+    process.env['EMERALD_SESSION_ID'] = 'a b';
+    assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
+  } finally {
+    lines.restore();
+    if (own === undefined) delete process.env['EMERALD_SESSION_ID'];
+    else process.env['EMERALD_SESSION_ID'] = own;
+  }
+  assert.deepEqual(asked, [
+    { path: 'http://localhost:3000/', pane: true, url: true, opener: listed[0]!.id },
+    { path: path.resolve('site/page.html'), pane: true, browser: true, opener: listed[0]!.id },
+    { path: 'C:\\a\\b.md', pane: true },
+    { path: 'http://localhost:3000/', pane: true, url: true },
+    { path: 'http://localhost:3000/', pane: true, url: true },
+    { path: 'http://localhost:3000/', pane: true, url: true },
+  ]);
 });

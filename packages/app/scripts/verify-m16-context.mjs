@@ -807,6 +807,12 @@ try {
   expect(restarted812.state === 'working', `fix 812: the compaction's SessionStart keeps the row at working, got ${JSON.stringify(restarted812)}`);
   await postLive({ hook_event_name: 'PostCompact', trigger: 'auto' });
   await waitClock((r) => r.state === 'idle' && reads('compacts in 44m', 'compact')(r), 'fix 812: an idle compaction ending puts the row back at idle with its clock');
+  // M9 fix 994: a typed /compact from idle, as Claude Code 2.1.306 fires it (no prompt hook, no Stop), puts the row back at idle when it ends.
+  await postLive({ hook_event_name: 'PreCompact', trigger: 'manual' });
+  await waitClock((r) => r.state === 'working', 'fix 994: a typed /compact puts the row at working');
+  await postLive({ hook_event_name: 'SessionStart', source: 'compact' });
+  await postLive({ hook_event_name: 'PostCompact', trigger: 'manual' });
+  await waitClock((r) => r.state === 'idle' && r.row?.kind === 'compact', 'fix 994: a typed /compact ending puts the row back at idle with its clock');
   // (5) A cold cache counts nothing, at done either.
   await postLive(cacheLine(250000, { warm: false, ttl: '1h', expires_at: null, requests: 8 }));
   await postLive({ hook_event_name: 'Stop', stop_hook_active: false });
@@ -821,7 +827,7 @@ try {
   await sleep(1000);
   const past = await clockRead();
   expect(none(past), `fix 772: a cache past its expiry reads no count, got ${JSON.stringify(past)}`);
-  step("M9 fix 772: an idle Claude row and its pane title count down to the idle compaction at 250k tokens on the hour's cache (compacts in 44m), to the cache's expiry under 200k or on the 5m TTL (cache cold in 50m, 4m), and clear at PreCompact, on a cold cache and past the time, and come back when an idle compaction ends (fix 812)");
+  step("M9 fix 772: an idle Claude row and its pane title count down to the idle compaction at 250k tokens on the hour's cache (compacts in 44m), to the cache's expiry under 200k or on the 5m TTL (cache cold in 50m, 4m), and clear at PreCompact, on a cold cache and past the time, and come back when an idle compaction or a typed /compact at idle ends (fixes 812 and 994)");
 
   // M9 fix 773: Keep whole while idle, on the same live claude, back at
   // idle with a warm hour's cache of 250k tokens. The row menu marks it,

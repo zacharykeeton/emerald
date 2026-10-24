@@ -270,6 +270,13 @@ export function browserToolbarSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= BROWSER_TOOLBAR_LEVEL;
 }
 
+// The level at which the daemon keeps a browser view's page zoom (M9 fix 986); an older daemon's validator drops the field, so the window writes none to it.
+export const BROWSER_ZOOM_LEVEL = 77;
+
+export function browserZoomKept(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= BROWSER_ZOOM_LEVEL;
+}
+
 // The level at which the daemon holds windows on the layout and answers window.open, window.close and window.front (M9 fix 865); an older one offers no New window and no Move to new window.
 export const WINDOWS_LEVEL = 73;
 

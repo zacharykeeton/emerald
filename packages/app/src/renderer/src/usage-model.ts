@@ -614,3 +614,44 @@ export function fitForm(needs: StripNeeds, width: number): StripForm {
   const need = stripNeeds(needs);
   return STRIP_FORMS.find((form) => need[form] <= width) ?? 'column-runway';
 }
+
+// M9 fix 974: the chat view's band when a window is nearly spent, at
+// Claude Code's own marks and in its words. A window past its reset is
+// skipped; each other window's mark is the highest at or under its
+// percent; a dismissal names the window, its reset and its mark, so the
+// band comes back at the next mark or after the reset. The highest
+// percent left wins, the first in reading order on a tie.
+export const USAGE_WARN_AT: readonly number[] = [75, 95];
+
+export interface UsageWarning {
+  key: string;
+  threshold: number;
+  text: string;
+  dismissKey: string;
+}
+
+function limitName(key: string): string {
+  if (key === 'five_hour') return 'session limit';
+  if (key === 'seven_day') return 'weekly limit';
+  if (key === 'one_day') return 'daily limit';
+  return `${labelFor(key)} limit`;
+}
+
+export function usageWarning(windows: readonly UsageWindow[] | null, now: number, dismissed: ReadonlySet<string>): UsageWarning | null {
+  if (windows === null) return null;
+  let best: { win: UsageWindow; threshold: number; dismissKey: string } | null = null;
+  for (const win of windows) {
+    if (win.resetsAt <= now) continue;
+    const marks = USAGE_WARN_AT.filter((m) => m <= win.percent);
+    if (marks.length === 0) continue;
+    const threshold = Math.max(...marks);
+    const dismissKey = `${win.key}:${win.resetsAt}:${threshold}`;
+    if (dismissed.has(dismissKey)) continue;
+    if (best === null || win.percent > best.win.percent) best = { win, threshold, dismissKey };
+  }
+  if (best === null) return null;
+  const { win, threshold, dismissKey } = best;
+  const r = runway(win, now);
+  const tail = r !== null && r.short ? ` · ${runwayText(r, now)}` : '';
+  return { key: win.key, threshold, dismissKey, text: `You've used ${Math.floor(win.percent)}% of your ${limitName(win.key)} · ${resetWhen(win, now)}${tail}` };
+}

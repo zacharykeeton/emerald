@@ -22,6 +22,11 @@ const api: EmeraldApi = {
       return () => ipcRenderer.off('emerald:browser-take-focus', listener);
     },
     tookFocus: (token, ok) => ipcRenderer.send('emerald:browser-took-focus', token, ok),
+    onZoom: (handler) => {
+      const listener = (_e: IpcRendererEvent, paneId: string, level: number) => handler(paneId, level);
+      ipcRenderer.on('emerald:browser-zoom', listener);
+      return () => ipcRenderer.off('emerald:browser-zoom', listener);
+    },
   },
   keys: {
     configure: (chords, prefix) => ipcRenderer.send('emerald:keys-configure', chords, prefix),
@@ -37,7 +42,7 @@ const api: EmeraldApi = {
       return () => ipcRenderer.off('emerald:guest-input', listener);
     },
     onGuestRefused: (handler) => {
-      const listener = (_e: IpcRendererEvent, refused: { webContentsId: number; url: string }) => handler(refused);
+      const listener = (_e: IpcRendererEvent, refused: { webContentsId: number; url: string; frame?: true }) => handler(refused);
       ipcRenderer.on('emerald:guest-refused', listener);
       return () => ipcRenderer.off('emerald:guest-refused', listener);
     },

@@ -110,9 +110,73 @@ export function trustParagraphs(lines: readonly string[]): string[] {
   return out;
 }
 
+// M9 fix 976: Claude Code's confirmation before a switch of effort level or model that would re-read a cached conversation, read off a resting session's screen; no hook fires while it is up.
+export interface SwitchDialog {
+  title: 'Change effort level?' | 'Switch model?';
+  options: { label: string; pick: 'yes' | 'no'; key: string | null; pointer: boolean }[];
+}
+
+const SWITCH_TITLES = ['Change effort level?', 'Switch model?'] as const;
+const SWITCH_NO = 'No, go back';
+const SWITCH_YES = 'Yes, switch to ';
+
+// A row as a switch option: its words, the digit it is answered by (null
+// on the shape drawn without digits) and whether it holds the pointer
+// (`❯`, or `>` as the verify stubs draw it).
+function switchOption(row: string): { text: string; key: string | null; pointer: boolean } {
+  let text = unframed(row);
+  const pointer = /^[❯>]/.test(text);
+  if (pointer) text = text.slice(1).trimStart();
+  const digit = /^(\d)\.\s+/.exec(text);
+  if (digit !== null) text = text.slice(digit[0].length);
+  return { text, key: digit === null ? null : digit[1]!, pointer };
+}
+
+export function switchDialog(rows: readonly string[]): SwitchDialog | null {
+  let no = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (switchOption(rows[i]!).text === SWITCH_NO) {
+      no = i;
+      break;
+    }
+  }
+  if (no < 0) return null;
+  let yes = -1;
+  for (let i = Math.max(0, no - 3); i <= Math.min(rows.length - 1, no + 3); i++) {
+    if (i !== no && switchOption(rows[i]!).text.startsWith(SWITCH_YES)) {
+      yes = i;
+      break;
+    }
+  }
+  if (yes < 0) return null;
+  const top = Math.min(yes, no);
+  const bottom = Math.max(yes, no);
+  let title: SwitchDialog['title'] | null = null;
+  for (let i = top - 1; i >= Math.max(0, top - 12); i--) {
+    const text = unframed(rows[i]!);
+    const found = SWITCH_TITLES.find((t) => t === text);
+    if (found !== undefined) {
+      title = found;
+      break;
+    }
+  }
+  if (title === null) return null;
+  // The dialog takes the prompt box's place, so a prompt box under the
+  // options is a reply quoting them, not the dialog.
+  for (let i = bottom + 1; i < rows.length; i++) {
+    if (/^[❯>](\s|$)/.test(unframed(rows[i]!))) return null;
+  }
+  const options = [top, bottom].map((i) => {
+    const o = switchOption(rows[i]!);
+    return { label: o.text, pick: (i === yes ? 'yes' : 'no') as 'yes' | 'no', key: o.key, pointer: o.pointer };
+  });
+  return { title, options };
+}
+
 // The keys that move the pointer to the picked option and confirm it; null
 // when no option holds the pointer, since then a key could land anywhere.
-export function trustKeys(dialog: TrustDialog, pick: 'yes' | 'no'): string | null {
+// The switch dialog (M9 fix 976) is answered the same way.
+export function trustKeys(dialog: { options: readonly { pick: 'yes' | 'no'; pointer: boolean }[] }, pick: 'yes' | 'no'): string | null {
   const from = dialog.options.findIndex((o) => o.pointer);
   const to = dialog.options.findIndex((o) => o.pick === pick);
   if (from < 0 || to < 0) return null;

@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { allPanes, browserPartition, findPane, focusPane, guestNavigationAllowed, isLocalPageUrl, paneUrl, setPaneView } from '@emerald/shared';
 import type { BrowserPaneView } from '@emerald/shared';
-import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, refusalLine, refusedLink, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl } from './browser-layer.ts';
+import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, refusalLine, refusedFrame, refusedLink, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl, withPageZoom, ZOOM_WRITE_MS, zoomToKeep } from './browser-layer.ts';
 import type { WebviewLike } from './browser-layer.ts';
+import { browserZoomKept } from './daemon-model.ts';
 import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
-import { editTab, useStore } from './store.ts';
+import { editTab, getState, useStore } from './store.ts';
 import { useUi } from './ui.ts';
 
 type NavigateEvent = Event & { url: string; isMainFrame?: boolean };
@@ -38,7 +39,7 @@ export function BrowserLayer() {
   const panes =
     layout === null
       ? []
-      : allPanes(layout).flatMap((p) => (p.view?.kind === 'browser' && p.view.url !== '' ? [{ id: p.id, url: p.view.url, profile: p.view.profile, root: p.view.root }] : []));
+      : allPanes(layout).flatMap((p) => (p.view?.kind === 'browser' && p.view.url !== '' ? [{ id: p.id, url: p.view.url, profile: p.view.profile, root: p.view.root, zoom: p.view.zoom }] : []));
   // M9 fix 896: each page from the disk's folder, for Back onto it once
   // its record has linked out to the web and dropped the root.
   if (layout !== null) for (const p of allPanes(layout)) if (p.view?.kind === 'browser') rememberLocalRoot(p.view);
@@ -59,6 +60,7 @@ export function BrowserLayer() {
   const urlOf = new Map(panes.map((p) => [p.id, p.url]));
   const profileOf = new Map(panes.map((p) => [p.id, p.profile]));
   const rootOf = new Map(panes.map((p) => [p.id, p.root]));
+  const zoomOf = new Map(panes.map((p) => [p.id, p.zoom]));
   const frameKey = [...frames].map(([p, f]) => `${p}=${f}`).join(',');
 
   useLayoutEffect(() => {
@@ -129,7 +131,7 @@ export function BrowserLayer() {
       {orderRef.current.map((frameId) => {
         const paneId = paneOf.get(frameId)!;
         const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
-        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} dropZone={dropZone} />;
+        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} zoom={zoomOf.get(paneId)} dropZone={dropZone} />;
       })}
     </div>
   );
@@ -146,6 +148,9 @@ interface FrameProps {
   // M9 fix 673: the page's own cookies and storage, read once at the
   // element's making, since a partition is fixed at the first attach.
   profile: string | undefined;
+  // M9 fix 986: the page's own zoom kept on the record, put back at the
+  // page's first dom-ready.
+  zoom: number | undefined;
   dropZone: string | null;
 }
 
@@ -154,7 +159,7 @@ interface FrameProps {
 // never reloads it, as a React-managed src would. The main process holds
 // the element to its partition and strips node and a preload from it
 // (browser-guard.ts); a page's new window goes to the system browser.
-function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
+function Frame({ frameId, paneId, url, root, profile, zoom, dropZone }: FrameProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<WebviewLike | null>(null);
   const profileRef = useRef(profile);
@@ -166,6 +171,8 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
   urlRef.current = url;
   const rootRef = useRef(root);
   rootRef.current = root;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
   const { error } = useFramePage(frameId);
 
   useEffect(() => {
@@ -196,12 +203,53 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
         void editTab((t) => setPaneView(t, target, withPageUrl(findPane(t, target)?.view, e.url)), target).catch(warn('browser url'));
       }
     };
+    // M9 fix 986: the page's own level written to the pane's record once a
+    // zoom step or a load has gone quiet, only when it changes the record
+    // and only to a daemon that keeps the field.
+    let restored = false;
+    let zoomTimer: ReturnType<typeof setTimeout> | null = null;
+    const writeZoom = () => {
+      zoomTimer = null;
+      if (!framePageState(frameId).ready || !browserZoomKept(getState().daemon)) return;
+      let z: number | undefined;
+      try {
+        z = zoomToKeep(page.getZoomLevel(), window.emerald.zoom.level());
+      } catch {
+        return;
+      }
+      const target = paneRef.current;
+      const layout = getState().layout;
+      const view = layout === null ? undefined : allPanes(layout).find((p) => p.id === target)?.view;
+      if (view?.kind !== 'browser' || view.zoom === z) return;
+      void editTab(
+        (t) => {
+          const v = findPane(t, target)?.view;
+          return v?.kind === 'browser' ? setPaneView(t, target, withPageZoom(v, z)) : t;
+        },
+        target,
+      ).catch(warn('browser zoom'));
+    };
+    const scheduleZoomWrite = () => {
+      if (zoomTimer !== null) clearTimeout(zoomTimer);
+      zoomTimer = setTimeout(writeZoom, ZOOM_WRITE_MS);
+    };
     const listeners: Array<[string, (ev: Event) => void]> = [
       [
         'dom-ready',
         () => {
           patchPageState(frameId, { ready: true });
           nav();
+          // M9 fix 986: the record's zoom put back at the first dom-ready
+          // alone, when the page still sits at the window's level (main's
+          // keptZoom at a window reload has set it already otherwise).
+          if (restored) return;
+          restored = true;
+          const kept = zoomRef.current;
+          try {
+            if (kept !== undefined && Math.round(page.getZoomLevel()) === Math.round(window.emerald.zoom.level())) page.setZoomLevel(kept);
+          } catch (err) {
+            warn('zoom restore')(err);
+          }
         },
       ],
       // M9 fix 668: Chromium refuses a file: link from an http page inside
@@ -222,8 +270,16 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
       ['did-navigate', navigated],
       ['did-navigate-in-page', navigated],
       // The history's own entry is not always committed by did-navigate,
-      // so Back and Forward are read again once the load settles.
-      ['did-stop-loading', nav],
+      // so Back and Forward are read again once the load settles; and a
+      // load across sites drops the page's zoom, which the record follows
+      // (fix 986).
+      [
+        'did-stop-loading',
+        () => {
+          nav();
+          scheduleZoomWrite();
+        },
+      ],
       ['page-title-updated', (ev) => patchPageState(frameId, { title: (ev as TitleEvent).title })],
       [
         'did-fail-load',
@@ -243,20 +299,26 @@ function Frame({ frameId, paneId, url, root, profile, dropZone }: FrameProps) {
     // and the focus guard while a command runs.
     const unwire = wireDrivenPage(page, () => paneRef.current);
     // M9 fix 967: main's guard is the one rule a link onto the disk meets, so its refusal is what the line says.
-    const offRefused = window.emerald.keys.onGuestRefused(({ webContentsId, url }) => {
+    const offRefused = window.emerald.keys.onGuestRefused(({ webContentsId, url, frame }) => {
       let mine = false;
       try {
         mine = page.getWebContentsId() === webContentsId;
       } catch {
         mine = false;
       }
-      if (mine) patchPageState(frameId, { error: refusalLine(url) });
+      if (mine) patchPageState(frameId, { error: frame === true ? refusedFrame(url) : refusalLine(url) });
+    });
+    // M9 fix 986: main's word after a Ctrl+wheel step on this pane's page.
+    const offZoom = window.emerald.browser.onZoom((zoomedPane) => {
+      if (zoomedPane === paneRef.current) scheduleZoomWrite();
     });
     // The element goes with the frame, which goes only when its pane
     // closes or stops being a page.
     return () => {
       unwire();
       offRefused();
+      offZoom();
+      if (zoomTimer !== null) clearTimeout(zoomTimer);
       pageRef.current = null;
       page.remove();
       dropPageState(frameId);

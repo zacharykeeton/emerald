@@ -1107,6 +1107,80 @@ try {
   await s.waitFor(`document.querySelectorAll('.tab-file').length === ${tabsBefore341.length}`, 'closed again');
   step('fix 341: emmer open puts a file in a pinned tab, --pane in a pane beside the focused one, and the Open a file… action runs the chooser into a pinned tab');
 
+  // M9 fix 990: the empty pane's File tile. A new layout tab's empty pane
+  // takes a pasted path: a folder and a missing path are refused on the
+  // line under the box, Shift+Enter opens a pinned tab, Browse… fills the
+  // box from the chooser (EMERALD_PICK_FILE answers notes.md) and opens
+  // nothing, and Enter fills the pane with the file view. The tab and every
+  // file tab it opens are closed, so the reads after it hold. The tab in
+  // front when the step starts can be a file tab (the profile's preview
+  // tab comes forward when fix 341's Ctrl+W closes its pinned one), and
+  // .tab-add makes the layout tab without bringing the panes forward, so
+  // the step shows its tab by a click and puts the old front tab back at
+  // the end: a path box under a hidden panes view takes no focus.
+  const front990 = await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab`);
+  console.log(`[verify] fix 990: the tab in front at the start is ${front990}`);
+  const layoutTabs990 = await s.evalJs(`document.querySelectorAll('.tab.tab-panes').length`);
+  await s.evalJs(`document.querySelector('.tab-add').click()`);
+  await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${layoutTabs990 + 1} && !!document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-kind[data-kind="file"]')`, 'a new layout tab with the File tile', 5000);
+  const tab990 = (await getTabs(s)).currentTabId;
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab990)}]`)}).click()`);
+  await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === 'panes' && !document.querySelector('.panes-view[data-hidden]')`, 'the new layout tab in front, the panes on show', 5000);
+  const fileTile990 = `.layout-tab:not([hidden]) .empty-pane .empty-kind[data-kind="file"]`;
+  const pathBox990 = `.layout-tab:not([hidden]) .empty-pane .empty-path`;
+  const note990 = `.layout-tab:not([hidden]) .empty-pane .empty-path-note`;
+  await s.evalJs(`document.querySelector(${JSON.stringify(fileTile990)}).click()`);
+  await s.waitFor(
+    `document.querySelector(${JSON.stringify(fileTile990)})?.getAttribute('aria-pressed') === 'true' && document.activeElement === document.querySelector(${JSON.stringify(pathBox990)}) && !document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-in-block')`,
+    'the File tile pressed, its path box with the keyboard where the folders were',
+    3000,
+  ).catch(async (e) => {
+    console.log('[verify] fix 990 diag', JSON.stringify(await s.evalJs(`(() => { const a = document.activeElement; const p = document.querySelector(${JSON.stringify(pathBox990)}); return { pressed: [...document.querySelectorAll('.layout-tab:not([hidden]) .empty-pane .empty-kind')].map((t) => t.dataset.kind + ':' + t.getAttribute('aria-pressed')), active: a ? a.tagName + '.' + a.className : null, front: document.querySelector('.tab-strip').dataset.activeTab, panesHidden: !!document.querySelector('.panes-view[data-hidden]'), boxVisibility: p ? getComputedStyle(p).visibility : null }; })()`)));
+    throw e;
+  });
+  await s.screenshot('tabs-990-file-tile.png');
+  const pathEnter990 = async (text, mods = 0) => {
+    await s.evalJs(`(() => { const i = document.querySelector(${JSON.stringify(pathBox990)}); i.focus(); i.select(); })()`);
+    await s.type(text);
+    await s.key('Enter', 'Enter', 13, mods);
+  };
+  const noteIs990 = (text) => `document.querySelector(${JSON.stringify(note990)})?.textContent === ${JSON.stringify(text)} && document.querySelector(${JSON.stringify(note990)})?.hasAttribute('data-error') && !!document.querySelector(${JSON.stringify(pathBox990)})`;
+  await pathEnter990(`"${seed}"`);
+  await s.waitFor(noteIs990(`A folder, not a file: ${seed}`), 'a folder is refused on the line under the box', 3000);
+  await s.screenshot('tabs-990-folder-refused.png');
+  const missing990 = path.join(seed, 'missing-990.txt');
+  await pathEnter990(`"${missing990}"`);
+  await s.waitFor(noteIs990(`Path not found: ${missing990}`), 'a missing path is refused on the line under the box', 3000);
+  await pathEnter990(`"${hello}"`, SHIFT);
+  await s.waitFor(activePinned(hello), 'Shift+Enter opened the file as a pinned, active tab', 5000);
+  await s.key('w', 'KeyW', 87, CTRL);
+  // Ctrl+W brings forward whichever tab the strip's history names, which
+  // can be the profile's file tab rather than the panes, so the layout tab
+  // is shown by a click before the empty pane is read.
+  await s.waitFor(`document.querySelectorAll('.tab-file').length === ${tabsBefore341.length}`, 'Ctrl+W closed the pinned tab', 5000);
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab990)}]`)}).click()`);
+  await s.waitFor(
+    `document.querySelector('.tab-strip').dataset.activeTab === 'panes' && !document.querySelector('.panes-view[data-hidden]') && document.querySelector(${JSON.stringify(fileTile990)})?.getAttribute('aria-pressed') === 'true' && document.querySelector(${JSON.stringify(pathBox990)})?.value === ''`,
+    'the panes back with File still picked and the box emptied',
+    5000,
+  );
+  await s.evalJs(`document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-browse').click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(pathBox990)})?.value === ${JSON.stringify(notes)} && document.activeElement === document.querySelector(${JSON.stringify(pathBox990)})`, 'Browse… put the chooser’s pick in the box, which has the keyboard', 5000);
+  expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore341.length, 'Browse… filled the box and opened nothing');
+  await pathEnter990(`"${index}"`);
+  await s.waitFor(`!!document.querySelector('.layout-tab:not([hidden]) .pane[data-view="file"]')`, 'Enter filled the pane with the file view', 5000);
+  const leaves990 = leaves(await getLayout(s));
+  expect(leaves990.length === 1 && leaves990[0].view?.kind === 'file' && leaves990[0].view.path === index, `the tab's one pane holds the file, got ${JSON.stringify(leaves990.map((l) => l.view))}`);
+  expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore341.length, 'Enter filled the pane, no tab');
+  await s.screenshot('tabs-990-file-pane.png');
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab990)}] .tab-close`)}).click()`);
+  await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${layoutTabs990}`, 'the File step’s layout tab closed', 5000);
+  if (front990 !== 'panes') {
+    await s.evalJs(`[...document.querySelectorAll('.tab-file')].find((t) => t.dataset.tab === ${JSON.stringify(front990)})?.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === ${JSON.stringify(front990)}`, 'the tab in front at the start back in front', 5000);
+  }
+  step('fix 990: the File tile refuses a folder and a missing path on its line, Shift+Enter opens a pinned tab, Browse… fills the box, and Enter fills the pane with the file');
+
   // M9 fix 527: an `emmer open` sent while the window reloads is held by
   // the main process until the new page says it listens, then opened.
   // A busy-wait registered for the next document (M9 fix 550) runs after

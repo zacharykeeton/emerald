@@ -119,6 +119,8 @@ export function parseTurns(text: string): Turn[] {
   let turn: Turn | null = null;
   // M9 fix 956: the promptId of the last prompt that opened a turn, for repeatsPrompt.
   let lastId: string | null = null;
+  // M9 fix 993: a compact boundary since the last prompt opened its turn, for repeatsPrompt.
+  let compacted = false;
   for (const raw of text.split('\n')) {
     const o = parseObject(raw);
     if (o === null || o['isSidechain'] === true) continue;
@@ -127,16 +129,19 @@ export function parseTurns(text: string): Turn[] {
     if (command !== null) {
       turn = { prompt: command, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0, bash: true };
       turns.push(turn);
+      compacted = false;
       continue;
     }
     const prompt = notificationOf(o, at) === null ? promptOf(o) : null;
-    if (prompt !== null && turn !== null && !turn.bash && repeatsPrompt(o, prompt, lastId, turn.prompt)) continue;
+    if (prompt !== null && turn !== null && !turn.bash && repeatsPrompt(o, prompt, lastId, turn.prompt, compacted)) continue;
     if (prompt !== null) {
       lastId = typeof o['promptId'] === 'string' ? o['promptId'] : null;
+      compacted = false;
       turn = { prompt, at, endAt: null, reply: null, toolCalls: 0, filesEdited: [], filesRead: [], commits: 0, bash: false };
       turns.push(turn);
       continue;
     }
+    if (isCompactBoundary(o)) compacted = true;
     if (turn === null) continue;
     if (at !== null && movesEnd(o) && (turn.endAt === null || at > turn.endAt)) turn.endAt = at;
     if (o['type'] !== 'assistant') continue;
@@ -355,10 +360,13 @@ export interface StepState {
   promptId: string | null;
   promptUuid: string | null;
   uuids: Set<string>;
+  // M9 fix 977: the session's title as the last custom-title line or rename note set it, and whether the next custom-title met is a silent baseline (a read that began mid-file, where that title may be hours old).
+  title: string | null;
+  titleQuiet: boolean;
 }
 
 export function stepState(): StepState {
-  return { turns: [], turn: null, tools: new Map(), promptId: null, promptUuid: null, uuids: new Set() };
+  return { turns: [], turn: null, tools: new Map(), promptId: null, promptUuid: null, uuids: new Set(), title: null, titleQuiet: false };
 }
 
 // Every whole line of text folded in turn; a caller folding a tail hands
@@ -393,7 +401,7 @@ export function stepFork(state: StepState): StepState {
     turn = { ...state.turn, steps, images: [...state.turn.images] };
     turns[turns.length - 1] = turn;
   }
-  return { turns, turn, tools, promptId: state.promptId, promptUuid: state.promptUuid, uuids: new Set() };
+  return { turns, turn, tools, promptId: state.promptId, promptUuid: state.promptUuid, uuids: new Set(), title: state.title, titleQuiet: state.titleQuiet };
 }
 
 // One parsed transcript line folded into the state.
@@ -467,9 +475,40 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
       return;
     }
   }
+  // M9 fix 977: a /rename typed while Claude works writes only a
+  // custom-title line, so the title itself draws the rename note; one at
+  // rest writes the title and then the stdout, which then finds its note
+  // drawn. Claude Code writes the same title again every turn, which the
+  // compare ignores.
+  if (o['type'] === 'custom-title') {
+    const raw = o['customTitle'];
+    const title = typeof raw === 'string' ? raw.trim() : '';
+    if (title === '' || title === state.title) return;
+    state.title = title;
+    if (state.titleQuiet) {
+      state.titleQuiet = false;
+      return;
+    }
+    const text = RENAMED + title;
+    if (turn !== null && lastRename(turn)?.step.text === text) return;
+    const note: Step = { kind: 'command', text, at };
+    if (turn === null) openBareTurn(state, note, at);
+    else turn.steps.push(note);
+    return;
+  }
   const said = commandNoteOf(o);
   if (said === 'drop') return;
   if (said !== null) {
+    if (said.text.startsWith(RENAMED)) {
+      state.title = said.text.slice(RENAMED.length).trim();
+      state.titleQuiet = false;
+      // The note the custom-title line drew, given this line's time.
+      const drawn = turn === null ? null : lastRename(turn);
+      if (turn !== null && drawn !== null && drawn.step.text === said.text) {
+        if (drawn.step.at === null && at !== null) turn.steps[drawn.index] = { ...drawn.step, at };
+        return;
+      }
+    }
     // The note does not move the turn's endAt, so a rename ten minutes
     // after a reply does not stretch the turn's length on its prompt row.
     const note: Step = { kind: 'command', text: said.text, at, ...(said.url === undefined ? {} : { url: said.url }) };
@@ -479,7 +518,7 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     return;
   }
   const prompt = promptOf(o);
-  if (prompt !== null && state.turn !== null && repeatsPrompt(o, prompt, state.promptId, state.turn.prompt)) return;
+  if (prompt !== null && state.turn !== null && repeatsPrompt(o, prompt, state.promptId, state.turn.prompt, state.turn.steps.some((s) => s.kind === 'compact'))) return;
   if (prompt !== null) {
     turn = { prompt, at, endAt: null, steps: [], images: imagesOf(o) };
     state.turn = turn;
@@ -734,6 +773,16 @@ export interface QueueState {
 
 const MACHINE_QUEUED = ['<task-notification>', '<agent-message', '<cross-session-message'];
 
+// Claude Code writes a pasted message (the chat box sends by bracketed
+// paste) wrapped in <pasted_content id="..."> tags, the closing tag
+// carrying the id too, on its prompt line and its enqueue alike. The
+// person's words are what is inside: drawn without the tags, and keyed
+// without them so the box's pending bubble matches its landed prompt and
+// does not sit at Sending beside it (2026-10-23).
+export function unwrapPasted(text: string): string {
+  return text.includes('<pasted_content') ? text.replace(/<\/?pasted_content(?:\s+id="[^"]*")?>/g, '') : text;
+}
+
 export function queueState(): QueueState {
   return { items: [] };
 }
@@ -741,7 +790,7 @@ export function queueState(): QueueState {
 export function queueFold(state: QueueState, text: string): void {
   const take = (content: unknown) => {
     if (typeof content !== 'string') return;
-    const k = state.items.findIndex((i) => i.content === content);
+    const k = state.items.findIndex((i) => i.content === unwrapPasted(content));
     if (k >= 0) state.items.splice(k, 1);
   };
   for (const raw of text.split('\n')) {
@@ -750,7 +799,7 @@ export function queueFold(state: QueueState, text: string): void {
     if (o['type'] === 'queue-operation') {
       const op = o['operation'];
       if (op === 'enqueue') {
-        const content = typeof o['content'] === 'string' ? o['content'] : null;
+        const content = typeof o['content'] === 'string' ? unwrapPasted(o['content']) : null;
         const mine = content !== null && !MACHINE_QUEUED.some((m) => content.startsWith(m));
         state.items.push({ content, at: lineTime(o), mine });
       } else if (op === 'dequeue') state.items.shift();
@@ -784,6 +833,7 @@ function queuedStepOf(a: unknown): Step | null {
   let text = '';
   if (typeof prompt === 'string') text = prompt;
   else if (Array.isArray(prompt)) text = prompt.filter((p): p is { type: 'text'; text: string } => isObject(p) && p['type'] === 'text' && typeof p['text'] === 'string').map((p) => p.text).join('\n');
+  text = unwrapPasted(text);
   if (text.trim() === '') return null;
   return { kind: 'queued', text, at: lineTime(a) };
 }
@@ -807,7 +857,7 @@ function imagesOf(o: Record<string, unknown>): { mediaType: string; data: string
 // a meta line, not a tool result, and a slash command as the command and
 // its arguments (the same reading the Sessions rows give a prompt).
 // What a dialog closed with no pick prints (Claude Code 2.1.302's onDone(..., { display: "system" }) strings), and /compact's ctrl+o hint: nothing happened that the conversation needs to say.
-export const COMMAND_LEFTOVER = /^(?:.+ dialog dismissed|.+ cancell?ed\.?|Cancelled .+|Kept model as .+|Artifacts panel closed|Theme picker dismissed|Cloud session details dismissed|No IDE selected\.|Exited without opening IDE|Compacted\b[\s\S]*)$/;
+export const COMMAND_LEFTOVER = /^(?:.+ dialog dismissed|.+ cancell?ed\.?|Cancelled .+|Kept model as .+|Kept effort level as .+|Artifacts panel closed|Theme picker dismissed|Cloud session details dismissed|No IDE selected\.|Exited without opening IDE|Compacted\b[\s\S]*)$/;
 
 // M9 fix 798: a command's printed output, from either shape Claude Code
 // writes it in: a system local_command line, or a user line (a /model,
@@ -846,9 +896,15 @@ function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string
   return text === '' || COMMAND_LEFTOVER.test(text) ? 'drop' : { text };
 }
 
-// M9 fix 956: a /compact typed in the box or the terminal is written twice on one promptId, the plain prompt first and a <command-name> line after the summary; the second is the same prompt again, not a new one. True for a user line holding <command-name> whose promptId is the last prompt's and whose command reads as that prompt's text.
-export function repeatsPrompt(o: Record<string, unknown>, prompt: string, lastId: string | null, lastPrompt: string | null): boolean {
-  if (lastId === null || lastPrompt === null || o['promptId'] !== lastId || prompt !== lastPrompt) return false;
+// M9 fix 993: a compaction's boundary line, which parseTurns and countPrompts note for repeatsPrompt.
+export function isCompactBoundary(o: Record<string, unknown>): boolean {
+  return o['type'] === 'system' && o['subtype'] === 'compact_boundary';
+}
+
+// M9 fix 956: a /compact typed in the box or the terminal is written twice, the plain prompt first and a <command-name> line after the summary; the second is the same prompt again, not a new one. True for a user line holding <command-name> whose promptId is the last prompt's and whose command reads as that prompt's text. M9 fix 993: Claude Code 2.1.306 once wrote the second line on a promptId of its own, so a compaction since the prompt opened its turn marks the repeat as surely as a shared id.
+export function repeatsPrompt(o: Record<string, unknown>, prompt: string, lastId: string | null, lastPrompt: string | null, compacted: boolean): boolean {
+  if (lastPrompt === null || prompt !== lastPrompt) return false;
+  if (!compacted && (lastId === null || o['promptId'] !== lastId)) return false;
   return (userTextOf(o) ?? '').includes('<command-name>');
 }
 
@@ -866,7 +922,7 @@ function promptOf(o: Record<string, unknown>): string | null {
     text = first === undefined ? null : first.text;
   }
   if (text === null) return null;
-  const trimmed = text.trim();
+  const trimmed = unwrapPasted(text).trim();
   if (trimmed === '' || trimmed.startsWith('<local-command') || trimmed.startsWith('<bash-')) return null;
   const name = /<command-name>([^<]*)<\/command-name>/.exec(trimmed);
   if (name === null) return trimmed;
@@ -934,6 +990,17 @@ function taskNote(text: string, at: number | null): Step {
   const summary = field('summary');
   const shown = summary ?? (status !== null ? `Background task ${status}` : 'Background task finished');
   return { kind: 'notification', source: 'task', text: shown, tone: status === 'failed' || status === 'killed' ? 'error' : 'quiet', output: field('output-file'), title: shown, at };
+}
+
+// M9 fix 977: what /rename prints, and the turn's last note of it.
+const RENAMED = 'Session renamed to: ';
+
+function lastRename(turn: StepTurn): { index: number; step: Extract<Step, { kind: 'command' }> } | null {
+  for (let i = turn.steps.length - 1; i >= 0; i--) {
+    const step = turn.steps[i]!;
+    if (step.kind === 'command' && step.text.startsWith(RENAMED)) return { index: i, step };
+  }
+  return null;
 }
 
 // A turn with no prompt, opened by a line that lands before any prompt

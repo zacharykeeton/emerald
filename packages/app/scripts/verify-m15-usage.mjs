@@ -52,7 +52,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm15-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m15';
-const { expect, freshPort, killTree, launch, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { expect, freshPort, getLayout, killTree, launch, leaves, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
@@ -1034,6 +1034,104 @@ try {
   await s.screenshot('m9-295-runway.png');
   await leaveUsageCard(s);
   step('M9 fix 295: a window whose pace runs out before the reset goes to the error tone on the strip and says so on the card; M9 fix 347: its ceiling marks the bar where the pace hits 100');
+
+  // M9 fix 974: a shell playing Claude on its chat face, under a reading
+  // with the week at 92, shows the CLI's warning as a band over the box;
+  // a dismissal holds through 93 (the same mark) and the band comes back
+  // at 96 (the next). The helpers are verify-m9-chat.mjs's.
+  {
+    const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
+    const paneSel = (id) => `.pane[data-pane-id=${JSON.stringify(id)}]`;
+    const record = async (id) => (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === id);
+    const waitRecord = async (id, pred, what, ms) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        const r = await record(id);
+        if (r !== undefined && pred(r)) return r;
+        await sleep(200);
+      }
+      throw new Error(`timed out waiting for ${what} (record ${JSON.stringify(await record(id))?.slice(0, 300)})`);
+    };
+    const toChat = async (paneId) => {
+      if ((await s.evalJs(`${q(paneSel(paneId))}.dataset.face ?? null`)) !== 'chat') await s.evalJs(`${q(paneSel(paneId) + ' .pane-face-toggle')}.click()`);
+      await s.waitFor(`${q(paneSel(paneId))}.dataset.face === 'chat'`, 'the stub on the chat face');
+    };
+    const bindPane = async (paneId, sessionId) => {
+      const lay = await getLayout(s);
+      const rec = (n) => (n.kind === 'pane' ? (n.id === paneId ? { ...n, sessionId } : n) : { ...n, first: rec(n.first), second: rec(n.second) });
+      await zreq(s, 'layout.set', { layout: { ...lay, root: rec(lay.root), focusedPaneId: paneId } });
+    };
+    const emeraldHome = process.env['EMERALD_HOME'];
+    const hookPoster = (sessionId, { simId, cwd, transcript }) => async (payload) => {
+      const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+      const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+        method: 'POST',
+        headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': sessionId },
+        body: JSON.stringify({ session_id: simId, cwd, transcript_path: transcript, ...payload }),
+      });
+      expect(res.status === 204, `sink answered 204 for ${payload.hook_event_name}`);
+    };
+    const startStub = async (post, id, prompt) => {
+      await post({ hook_event_name: 'SessionStart', source: 'startup' });
+      await post({ hook_event_name: 'UserPromptSubmit', prompt });
+      await post({ hook_event_name: 'Stop', stop_hook_active: false });
+      return waitRecord(id, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), `the stub bound with its transcript after ${JSON.stringify(prompt)}`, 10000);
+    };
+    // The resets are read once: a dismissal names the window's reset, and
+    // the endpoint's reset stays put between readings.
+    const fiveReset = at(4 * HOUR);
+    const weekReset = at(6 * DAY + 12 * HOUR + 20 * MIN);
+    const weekAt = (pct) => ({ status: 200, body: { five_hour: { utilization: 10, resets_at: fiveReset }, seven_day: { utilization: pct, resets_at: weekReset } } });
+    const refreshTo = async (pct) => {
+      reply = weekAt(pct);
+      const asked = requests.length;
+      await clickRefresh(s);
+      const by = Date.now() + 5000;
+      while (Date.now() < by && requests.length === asked) await sleep(100);
+      expect(requests.length > asked, `the refresh asked the stub for ${pct}`);
+    };
+    await refreshTo(92);
+    const dir = path.join(emeraldHome, 'usage-974');
+    fs.mkdirSync(dir, { recursive: true });
+    const transcript = path.join(dir, 'fixture.jsonl');
+    const line = (o) => JSON.stringify({ isSidechain: false, ...o });
+    fs.writeFileSync(
+      transcript,
+      [
+        line({ type: 'user', message: { role: 'user', content: 'send me' }, timestamp: '2026-10-24T14:02:00.000Z' }),
+        line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Ready.' }] }, timestamp: '2026-10-24T14:02:01.000Z' }),
+      ].join('\n') + '\n',
+    );
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: dir, cols: 120, rows: 30 });
+    const stubId = spawned.session.id;
+    const paneId = leaves(await getLayout(s))[0].id;
+    await bindPane(paneId, stubId);
+    await s.waitFor(`!!${q(paneSel(paneId) + ' .term-host')}`, 'the stub in the pane', 10000);
+    await startStub(hookPoster(stubId, { simId: 'sim-usage-974', cwd: dir, transcript }), stubId, 'send me');
+    await s.waitFor(`!!${q(paneSel(paneId) + ' .pane-face-toggle')}`, 'the face button on the stub', 10000);
+    await toChat(paneId);
+    const band = paneSel(paneId) + ' .chat-usage-warning';
+    const bandRead = () => s.evalJs(`(() => { const b = ${q(band)}; return b === null ? null : { text: b.querySelector('.chat-usage-warning-text')?.textContent ?? null, threshold: b.dataset.threshold ?? null }; })()`);
+    try {
+      await s.waitFor(`/^You've used 92% of your weekly limit · resets .+, in 6d 12h$/.test(${q(band + ' .chat-usage-warning-text')}?.textContent ?? '') && ${q(band)}.dataset.threshold === '75'`, 'the band at 92', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await bandRead())}`);
+    }
+    await s.screenshot('m9-974-band.png');
+    await s.evalJs(`${q(band + ' .chat-usage-warning-dismiss')}.click()`);
+    await s.waitFor(`!${q(band)}`, 'the band gone on its dismiss', 3000);
+    await refreshTo(93);
+    await sleep(1500);
+    expect((await bandRead()) === null, `no band at 93 after the 75 mark's dismissal, got ${JSON.stringify(await bandRead())}`);
+    await refreshTo(96);
+    try {
+      await s.waitFor(`/^You've used 96% of your weekly limit · resets .+, in 6d 12h$/.test(${q(band + ' .chat-usage-warning-text')}?.textContent ?? '') && ${q(band)}.dataset.threshold === '95'`, 'the band at 96', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: got ${JSON.stringify(await bandRead())}`);
+    }
+    await zreq(s, 'session.kill', { sessionId: stubId });
+  }
+  step('fix 974: the chat view\'s band says You\'ve used 92% of your weekly limit, a dismissal holds through 93 and the band comes back at 96');
 
   // The renderer never saw the token.
   const leaked = await s.evalJs(`document.documentElement.outerHTML.includes(${JSON.stringify(TOKEN)})`);

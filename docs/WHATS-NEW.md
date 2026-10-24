@@ -2,6 +2,36 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 972 to 996, 2026-10-24
+
+Twenty-five fixes: the chat view's model and effort picks that no longer send what sits in Claude Code's input, a warning when a usage window is nearly spent, Claude Code's switch confirmations as a card, a copy button on code and a time on replies, the Files tree's own drags and several rows picked at once, a right-click on a terminal that only pastes, an empty pane that opens a file from a path, the browser pane's zoom kept across a restart, and a new session that gets the machine's whole environment. The daemon goes from level 76 to 77, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**Pick a model or an effort without sending your draft.** A pick from the chat view's model chip, or a `/` command sent from the chat box, now reads Claude Code's own input first: anything typed there moves into the chat box, so the command goes alone. If the input holds something the box cannot take, the hint line says "Claude Code's input holds text; send or clear it in the terminal first".
+
+**A warning before a usage window runs out.** When the five-hour or weekly window passes 75 or 95 percent, as Claude Code's own warning does, a band above the chat box says so and when it resets. Its × hides it until the next mark or the reset.
+
+**Several rows at once in the Files tree.** Ctrl+click adds or takes out a row, Shift+click (or Shift with Up, Down, Home and End) picks a run of rows, and Escape clears the set. Drag the set onto a folder to move it there; Delete sends the whole set to the recycle bin. A single row dragged within the tree now moves into the folder under the mouse, and a folder held under a drag for a moment springs open.
+
+**A right-click in a terminal pastes.** A right-click on a terminal copies the selection or pastes, with no pane menu on top; Shift+right-click opens the pane menu there.
+
+**Open a file from an empty pane.** An empty pane has a fourth tile, File: paste or type a path (a relative one reads against the selected folder) and Enter fills the pane with the file, Shift+Enter opens it as a pinned tab, and Browse… puts the chosen path in the box.
+
+### Details
+
+**The chat view.** A code block in Claude's replies has a copy button at its top right, dim until you hover it. Hover a reply to see its time under the bubble; the tooltip gives the date. Claude Code's "Change effort level?" and "Switch model?" confirmations show as a card with their options, when Claude Code asks them. A `/rename` sent while Claude works draws its divider. A `/compact` is one prompt bubble however Claude Code writes it, and one typed at rest puts the row back at rest when it ends.
+
+**Sending into a working session.** `emmer send` and `emmer prompt` into a Claude in a long turn say it is queued behind the turn; the message is typed and reaches Claude at its next tool round.
+
+**The Files rail.** A repository nested in the folder is one row in the Changed list, marked as a repository; clicking it opens its own review.
+
+**The commit graph.** The list view stacks a batch's seats above the lead's row, as Graph does. Hovering a square opens the session's card with a line naming the commit and who made it outside the session.
+
+**The browser pane.** A page's zoom is kept across a quit and relaunch. When a frame inside a page tries to open a page from the disk, the error line says so. `emmer open <url>` and `--browser` record the session that opened the pane, so `emmer browser close` from that session puts it away.
+
+**A new session sees the machine's environment.** A new shell or Claude session gets every variable the registry holds, as a new Windows Terminal tab does, not only PATH, and a shell installed since the daemon started is offered at the window's next connect.
+
 ## Fixes 944 to 971, 2026-10-21
 
 Twenty-eight fixes: the commit graph through a batch (every seat on its own branch, stacked above main, squares for what someone else committed), the pane drop between windows made to work, a drop from Explorer that moves the file into the Files tree, the tree's last keys, the chat view's and the Sessions tab's small items, the shade's card, the browser pane and its CLI, and a new shell that sees a tool installed since the daemon started. The daemon goes from level 75 to 76, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

@@ -42,6 +42,13 @@ test('the launcher runs Git Bash with the rc, cmd with the PROMPT, and keeps the
   for (const other of [launcher.command([], gitbash), c]) assert.ok(!other.args.includes(PROMPT_WRAPPER), "fix 505's Enter handler stays PowerShell's");
 });
 
+test("the default shell's pwsh is found on the session's own environment when the launch hands one in (M9 fix 996)", () => {
+  const dir = mkTemp('emerald-996-');
+  fs.writeFileSync(path.join(dir, 'pwsh.exe'), '');
+  const launcher = new ShellLauncher({ bashrcPath: 'C:\\h\\emerald.bashrc', env: {} });
+  assert.equal(launcher.command([], null, { Path: dir }).file, path.join(dir, 'pwsh.exe'));
+});
+
 test("pluginDirs puts the mod first, keeps another tool's folders and drops an inherited emerald mod (M9 fix 833)", () => {
   const isMod = (dir: string) => dir.toLowerCase() === 'c:\\installed\\cli\\mod';
   assert.equal(pluginDirs('C:\\e\\cli\\mod', undefined, isMod), 'C:\\e\\cli\\mod');

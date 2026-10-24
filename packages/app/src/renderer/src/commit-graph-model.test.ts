@@ -516,8 +516,8 @@ test("sessionGraph (M9 fix 151): the session's row sits over the head of its bra
   assert.deepEqual(dotsOf(g), ['s@0:9'], 'the start bar alone');
   const own = g.items[1]!;
   assert.ok(own.kind === 'agent' && own.member === null && own.tipRow === 3 && own.tipLane === 1 && own.restRow === null, "the own row's tip is D's row on lane 1");
-  // The list: one lane, the stretch straight, no member lifted.
-  assert.deepEqual(wires(sessionGraph(ff, [s], 'list', ROOTS, 'main')), ['session:0:2-9', 'pending:0:0-2~', 'pending:0:1-2~']);
+  // The list: one lane, the stretch straight, b lifted above the session's own row with no stretch of its own (M9 fix 991).
+  assert.deepEqual(wires(sessionGraph(ff, [s], 'list', ROOTS, 'main')), ['session:0:3-9', 'pending:0:1-3~', 'pending:0:2-3~']);
   // The head is the session's own newest commit: as before.
   const own2 = [c('S2', ['main'], null, ['S1']), c('S1', [], null, ['Z']), c('Z')];
   const g2 = sessionGraph(own2, [claude({ id: 's', createdAt: 5, commits: claim(['S2', 'S1']), startHead: 'Z' })], 'graph', ROOTS, 'main');
@@ -669,6 +669,18 @@ test("sessionGraph (M9 fix 944): with main two commits past the seats' fork poin
   const g2 = sessionGraph(past, [{ ...lead, team: [seatA(['A1']), seatB([]), seatC([])] }], 'graph', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
   assert.equal(rowOfMember(g2, 'a'), rowOfHash(g2, 'A1') - 1, 'a seat newer than main stays over its head');
   assert.ok(rowOfMember(g2, 'b') < rowOfHash(g2, 'M2') && rowOfMember(g2, 'c') < rowOfHash(g2, 'M2'), 'the others still above main');
+});
+
+test("sessionGraph (M9 fix 991): in the list the seats older than main's head stack above the lead's row, with no stretch of their own", () => {
+  const log = [c('X1', ['main'], null, ['P']), c('B2', ['m9-seat-b'], null, ['B1']), c('A2', ['m9-seat-a'], null, ['A1']), c('C1', ['m9-seat-c'], null, ['P']), c('B1', [], null, ['P']), c('A1', [], null, ['P']), ...batchBase];
+  const g = sessionGraph(log, [batchLead], 'list', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.deepEqual(picture(g), ['a@0', 'b@0', 'c@0', 'own:lead@0', 'X1#@0', 'B2@0', 'A2@0', 'C1@0', 'B1@0', 'A1@0', 'P@0', 'D0@1', 'Z2@1', 'Z1@1']);
+  assert.deepEqual(wires(g), ['session:0:4-11', 'pending:0:3-4~', 'outside:1:11-13']);
+  // A seat newer than main stays over its head in the list too.
+  const past = [c('A1', ['m9-seat-a'], null, ['P']), c('M2', ['main'], null, ['M1']), c('M1', [], null, ['P']), ...batchBase];
+  const lead = claude({ id: 'lead', createdAt: 5, startHead: 'D0', commits: claim(['P']), team: [seatA(['A1']), seatB([]), seatC([])] });
+  const g2 = sessionGraph(past, [lead], 'list', BATCH_ROOTS, 'main', new Map(), { checkouts: BATCH_CHECKOUTS });
+  assert.equal(rowOfMember(g2, 'a'), rowOfHash(g2, 'A1') - 1, 'a seat newer than main stays over its head');
 });
 
 test("sessionGraph (M9 fix 944): the lead's commit on a seat's branch before the seat has one is on the seat's lane, the seat's row over it", () => {

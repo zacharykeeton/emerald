@@ -18,9 +18,10 @@ function option(id: ShellId, file: string): ShellOption {
 // The shells a plain shell session can run on this box (M9 fix 624), in
 // SHELL_IDS order; the first is the default New shell starts, so pwsh when
 // it is on the PATH and Windows PowerShell otherwise, exactly the choice the
-// launcher made before the fix. Found once at the daemon's start and
+// launcher made before the fix. Found at the daemon's start and again on
+// the registry's PATH at each spawn and app hello (M9 fix 996), and
 // reported on the hello: a pwsh or a Git Bash installed after the daemon
-// started is picked up at its next start.
+// started is picked up at the next spawn or window connect.
 //
 // Git Bash is looked for only where Git for Windows puts it, never as a
 // bash.exe off the PATH: on a box with WSL that is System32\bash.exe (and

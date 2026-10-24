@@ -7,21 +7,65 @@ import { folderName } from '@emerald/shared';
 import type { ShellId, ShellOption } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
 import { normalizeFolder, RECENT_FOLDERS_MAX } from './new-session-model.ts';
+import { normalizePath } from './files-model.ts';
 
 export type EmptyKind = 'shell' | 'claude';
 
 // The tiles Tab walks (M9 fix 666): the Browser tile is not a kind, since it
 // starts on its click and has no folder, so it stays out of EmptyKind and
-// the stored kind.
-export type EmptyTile = EmptyKind | 'browser';
+// the stored kind. The File tile (M9 fix 990) is the same: a pick with a
+// path box, no kind.
+export type EmptyTile = EmptyKind | 'browser' | 'file';
 
 // The tile Tab (delta 1) or Shift+Tab (-1) lands on, in the order shell,
-// claude, browser, wrapping at both ends; browser is skipped when the
-// daemon does not keep the kind.
-export function nextTile(tile: EmptyTile, delta: 1 | -1, browser: boolean): EmptyTile {
-  const order: EmptyTile[] = browser ? ['shell', 'claude', 'browser'] : ['shell', 'claude'];
+// claude, browser, file, wrapping at both ends; browser and file are each
+// skipped when the daemon does not keep their view.
+export function nextTile(tile: EmptyTile, delta: 1 | -1, has: { browser: boolean; file: boolean }): EmptyTile {
+  const order: EmptyTile[] = ['shell', 'claude'];
+  if (has.browser) order.push('browser');
+  if (has.file) order.push('file');
   const at = order.indexOf(tile);
   return order[(Math.max(0, at) + delta + order.length) % order.length]!;
+}
+
+// A pasted path with its spaces and one pair of matching surrounding
+// quotes taken off (M9 fix 990): Explorer's Copy as path adds the double
+// ones. A lone quote stays, since it is not a pair.
+export function cleanPath(raw: string): string {
+  let out = raw.trim();
+  if (out.length >= 2 && (out[0] === '"' || out[0] === "'") && out[out.length - 1] === out[0]) out = out.slice(1, -1).trim();
+  return out;
+}
+
+// The file a cleaned path names (M9 fix 990): a drive or UNC path as it
+// is, one leading separator on the folder's drive, anything else from the
+// folder; then . dropped and .. folded, never past the root. null when
+// there is nothing to read it from.
+export function resolvePath(clean: string, folder: string | null): string | null {
+  if (clean === '') return null;
+  let full: string;
+  if (/^[A-Za-z]:[\\/]/.test(clean) || /^[\\/]{2}/.test(clean)) full = clean;
+  else if (/^[\\/]/.test(clean)) {
+    if (folder === null || !/^[A-Za-z]:/.test(folder)) return null;
+    full = folder.slice(0, 2) + clean;
+  } else if (folder === null) return null;
+  else full = `${folder}\\${clean}`;
+  const unc = /^[\\/]{2}/.test(full);
+  const parts = full.split(/[\\/]+/).filter((p) => p !== '');
+  // The root's segments are never folded away: the drive, or the server
+  // and share.
+  const rootCount = unc ? 2 : 1;
+  const out = parts.slice(0, rootCount);
+  for (const p of parts.slice(rootCount)) {
+    if (p === '.') continue;
+    if (p === '..') {
+      if (out.length > rootCount) out.pop();
+      continue;
+    }
+    out.push(p);
+  }
+  if (unc) return normalizePath('\\\\' + out.join('\\'));
+  return normalizePath(out.length === 1 ? out[0] + '\\' : out.join('\\'));
 }
 
 // The kind a fresh empty pane has selected: the split default when the

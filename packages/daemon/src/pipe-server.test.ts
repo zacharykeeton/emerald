@@ -777,6 +777,68 @@ test('session.submit answers typed when the mod says its prompt did not enter, m
   }
 });
 
+// M9 fix 995: a submit queued behind a turn. The mod's queued word answers
+// the send at once; the entry outlives the answer, so the final word, or
+// the channel's close, is logged however late it comes.
+test('a queued submit is answered at once and its late word is logged (M9 fix 995)', async () => {
+  const pipe = `${PIPE}-995`;
+  const lines: string[] = [];
+  const log = { info: (msg: string) => lines.push(msg), warn() {}, error() {} };
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log, modSubmitAckMs: 300 });
+  await own.listen();
+  const cli = await PipeClient.connect(pipe);
+  const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  const id8 = session.id.slice(0, 8);
+  const channel = await PipeClient.connect(pipe);
+  const nextPush = async (c: PipeClient) => (await waitFor(c, (m) => m.type === 'mod.submit')) as { sessionId: string; submitId: string };
+  try {
+    await channel.request('mod.channel', { sessionId: session.id });
+    // (1) The mod's queued word: mod in well under the bound; its final word later.
+    let heard = nextPush(channel);
+    void heard.then((p) => own.modSubmitAnswered(p.sessionId, p.submitId, true, null, true));
+    const t = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'queued' }), { via: 'mod' });
+    assert.ok(Date.now() - t < 250, `answered on the queued word, took ${Date.now() - t} ms`);
+    assert.ok(lines.includes(`mod submit for ${id8}: queued behind the turn, by the mod's word`), lines.join(' | '));
+    let p = await heard;
+    own.modSubmitAnswered(p.sessionId, p.submitId, true, null);
+    assert.ok(lines.includes(`mod submit for ${id8} entered after 0 s`), lines.join(' | '));
+
+    // (2) No word while the session works: queued behind the turn at the bound, the late word logged.
+    manager.applyHook(session.id, { hook_event_name: 'SessionStart', session_id: 'c995', source: 'startup', cwd: process.cwd() }, Date.now());
+    manager.applyHook(session.id, { hook_event_name: 'UserPromptSubmit', session_id: 'c995', prompt: 'a long turn' }, Date.now());
+    assert.equal(manager.get(session.id).info.state, 'working');
+    heard = nextPush(channel);
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod' });
+    assert.ok(lines.includes(`mod submit for ${id8}: no word from the mod in 300 ms, queued behind the turn`), lines.join(' | '));
+    p = await heard;
+    own.modSubmitAnswered(p.sessionId, p.submitId, true, null);
+    assert.equal(lines.filter((l) => l === `mod submit for ${id8} entered after 0 s`).length, 2, lines.join(' | '));
+
+    // (3) A late drop is logged and nothing is typed.
+    heard = nextPush(channel);
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'dropped' }), { via: 'mod' });
+    p = await heard;
+    own.modSubmitAnswered(p.sessionId, p.submitId, false, 'gone');
+    assert.ok(lines.includes(`mod submit for ${id8} not entered after 0 s (gone): nothing typed`), lines.join(' | '));
+
+    // (4) A kept entry whose channel closes never entered.
+    heard = nextPush(channel);
+    void heard.then((q) => own.modSubmitAnswered(q.sessionId, q.submitId, true, null, true));
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'orphan' }), { via: 'mod' });
+    channel.close();
+    await once(channel, 'close');
+    const deadline = Date.now() + 2000;
+    while (!lines.some((l) => l.includes('never entered')) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(lines.includes(`mod submit for ${id8} never entered: the mod channel closed after 0 s`), lines.join(' | '));
+  } finally {
+    channel.close();
+    await cli.request('session.kill', { sessionId: session.id }).catch(() => undefined);
+    cli.close();
+    await own.close();
+  }
+});
+
 // M9 fix 659: url says the path is a page for the browser pane; the
 // daemon holds it to what browserUrl writes, refuses a scheme beside it,
 // and the push carries url so the window opens a browser view.
@@ -826,6 +888,35 @@ test('file.open with browser relays an .html path and refuses a relative path, a
     await assert.rejects(cli.request('file.open', { path: 'http://localhost:3000/', pane: true, url: true, browser: true }), { code: 'bad-request', message: 'browser and url together' });
     await assert.rejects(cli.request('file.open', { path: 'C:\\a.html', pane: true, browser: true, scheme: 'Dracula' }), { code: 'bad-request', message: 'a browser page takes no scheme' });
     await assert.rejects(cli.request('file.open', { path: 'emerald-file://abc/page.html', pane: true, url: true }), { code: 'bad-request', message: 'url needs an http or https URL in path' });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 988: opener, the session whose emmer open asked, rides the push
+// beside a url or a page from the disk, and is refused anywhere else or
+// in a shape BROWSER_OPENER does not take.
+test('file.open relays an opener beside a url or a browser page and refuses it on a plain file or in a bad shape (M9 fix 988)', async () => {
+  const pipe = `${PIPE}-open-opener`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION });
+    await app.request('subscribe', { topics: ['app'] });
+    const opener = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    let requested = waitFor(app, (m) => m.type === 'file.open.requested');
+    assert.deepEqual(await cli.request('file.open', { path: 'http://localhost:3000/', pane: true, url: true, opener }), { apps: 1 });
+    assert.deepEqual(await requested, { type: 'file.open.requested', path: 'http://localhost:3000/', pane: true, url: true, opener });
+    requested = waitFor(app, (m) => m.type === 'file.open.requested');
+    assert.deepEqual(await cli.request('file.open', { path: 'C:\\site\\page.html', pane: true, browser: true, opener }), { apps: 1 });
+    assert.deepEqual(await requested, { type: 'file.open.requested', path: 'C:\\site\\page.html', pane: true, browser: true, opener });
+    await assert.rejects(cli.request('file.open', { path: 'C:\\notes.md', pane: true, opener }), { code: 'bad-request', message: 'opener is for a url or a browser page' });
+    await assert.rejects(cli.request('file.open', { path: 'http://localhost:3000/', pane: true, url: true, opener: 'a b' }), { code: 'bad-request', message: 'opener must be a session id' });
     app.close();
     cli.close();
   } finally {
@@ -1346,27 +1437,30 @@ test('a row the mod kept goes to a level 66 window subscribed to sessions as tra
   }
 });
 
-test('session.spawn and session.resume wait on the server\'s spawnPath, and a refused spawn never asks it (M9 fix 971)', async () => {
+test("session.spawn and session.resume wait on the server's spawnEnv, a refused spawn and a cli hello never ask it, and an app hello finds the shells on it (M9 fixes 971 and 996)", async () => {
   const ownManager = new SessionManager(silentLogger);
   const ownLayouts = new LayoutStore(path.join(mkTemp('emerald-pipe-971-'), 'state.json'), silentLogger);
   ownLayouts.load();
   let asked = 0;
+  let layer: Record<string, string> | null = null;
   const own = new PipeServer(ownManager, ownLayouts, {
     pipePath: `${PIPE}-971`,
     daemonVersion: 'test',
     log: silentLogger,
-    spawnPath: () => {
+    spawnEnv: () => {
       asked++;
-      return Promise.resolve(null);
+      return Promise.resolve(layer);
     },
   });
   await own.listen();
   const client = await PipeClient.connect(`${PIPE}-971`);
+  let app: PipeClient | null = null;
   try {
     await client.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    assert.equal(asked, 0, 'a cli hello makes no read');
     const cwd = process.cwd();
     await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'zsh' as never, cols: 80, rows: 24 }), { code: 'bad-request' });
-    assert.equal(asked, 0, 'a refused spawn reads no PATH');
+    assert.equal(asked, 0, 'a refused spawn makes no read');
     const { session } = await client.request('session.spawn', { kind: 'shell', cwd, cols: 80, rows: 24 });
     assert.equal(asked, 1);
     const exited = once(ownManager, 'exit');
@@ -1375,9 +1469,40 @@ test('session.spawn and session.resume wait on the server\'s spawnPath, and a re
     const resumed = await client.request('session.resume', { sessionId: session.id, cols: 80, rows: 24 });
     assert.equal(asked, 2);
     assert.equal(resumed.session.id, session.id);
+    const withPwsh = mkTemp('emerald-pipe-996-');
+    fs.writeFileSync(path.join(withPwsh, 'pwsh.exe'), '');
+    layer = { Path: withPwsh };
+    app = await PipeClient.connect(`${PIPE}-971`);
+    const hello = await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION });
+    assert.equal(asked, 3, 'an app hello reads');
+    assert.equal(hello.shells?.[0]?.id, 'pwsh', 'the pwsh on the Path the read answered');
   } finally {
     client.close();
+    app?.close();
     ownManager.killAll();
+    await own.close();
+  }
+});
+
+test('an app hello whose read never lands answers the shells it holds within the wait (M9 fix 996)', async () => {
+  const ownManager = new SessionManager(silentLogger);
+  const ownLayouts = new LayoutStore(path.join(mkTemp('emerald-pipe-996-'), 'state.json'), silentLogger);
+  ownLayouts.load();
+  const own = new PipeServer(ownManager, ownLayouts, {
+    pipePath: `${PIPE}-996`,
+    daemonVersion: 'test',
+    log: silentLogger,
+    spawnEnv: () => new Promise(() => {}),
+  });
+  await own.listen();
+  const client = await PipeClient.connect(`${PIPE}-996`);
+  try {
+    const started = Date.now();
+    const hello = await client.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION });
+    assert.ok(Date.now() - started < 1500, `answered in ${Date.now() - started} ms`);
+    assert.deepEqual(hello.shells, ownManager.installedShells());
+  } finally {
+    client.close();
     await own.close();
   }
 });

@@ -248,6 +248,8 @@ export function waitingOnText(session: Pick<SessionInfo, 'state' | 'needsInputRe
       return 'Waiting for your answer';
     case 'trust':
       return 'Trust this folder?';
+    case 'switch':
+      return 'Confirm a switch';
     default:
       return 'Waiting on you';
   }
@@ -273,6 +275,8 @@ export function needsInputWords(reason: SessionInfo['needsInputReason']): string
       return 'a question';
     case 'trust':
       return 'folder trust';
+    case 'switch':
+      return 'confirm a switch';
     default:
       return 'unknown';
   }
@@ -290,6 +294,8 @@ function needsInputDetail(reason: SessionInfo['needsInputReason']): string {
       return 'Claude asked you a question.';
     case 'trust':
       return 'Claude Code asks whether to trust this folder before it starts.';
+    case 'switch':
+      return 'Claude Code asks you to confirm a switch of effort level or model before your next message.';
     default:
       return 'Claude is waiting on you.';
   }

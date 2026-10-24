@@ -19,7 +19,7 @@ import type { Logger } from './log.ts';
 import { startLoopDelayLog } from './loop-delay.ts';
 import { setGitRunnerLog } from './git-runner.ts';
 import { LayoutStore } from './layout-store.ts';
-import { SpawnPath } from './spawn-path.ts';
+import { SpawnEnv } from './spawn-path.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
 import { ConflictWatch } from './conflicts.ts';
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       compactAsk: (id, trigger) => manager?.compactAsk(id, trigger) ?? null,
       // The mod's word on a submit, to the send waiting for it (M9 fix 781);
       // the server is built below, before any session can have a mod.
-      onModSubmit: (id, submitId, entered, drop) => server.modSubmitAnswered(id, submitId, entered, drop),
+      onModSubmit: (id, submitId, entered, drop, queued) => server.modSubmitAnswered(id, submitId, entered, drop, queued),
     },
   );
   // The live rotation (M9 fix 429): the load rotates only at the start,
@@ -174,14 +174,16 @@ async function main(): Promise<void> {
             scriptPath: loadScriptPath(),
           },
         };
-  // Found once (M9 fix 624): the hello reports them for the daemon's life.
+  // Found at the start (M9 fix 624), and found again on the registry's
+  // PATH at each spawn and app hello (M9 fix 996).
   const shells = findShells();
   log.info('shells found', { shells: shells.map((o) => o.id) });
-  // A new session's PATH is the registry's at its spawn (M9 fix 971);
-  // EMERALD_SPAWN_PATH=inherit keeps the daemon's own, for a harness that
-  // puts a stub on it (verify:cli's claude.cmd).
-  const spawnPath = process.env['EMERALD_SPAWN_PATH'] === 'inherit' ? null : new SpawnPath({ log });
-  log.info(spawnPath === null ? "spawn PATH: the daemon's own (EMERALD_SPAWN_PATH=inherit)" : 'spawn PATH: read from the registry at each spawn');
+  // A new session's environment is the registry's at its spawn (M9 fix
+  // 971 its PATH, fix 996 the whole of it); EMERALD_SPAWN_PATH=inherit
+  // keeps the daemon's own and its shells, for a harness that puts a stub
+  // on it (verify:cli's claude.cmd).
+  const spawnEnv = process.env['EMERALD_SPAWN_PATH'] === 'inherit' ? null : new SpawnEnv({ log });
+  log.info(spawnEnv === null ? "spawn env: the daemon's own (EMERALD_SPAWN_PATH=inherit)" : 'spawn env: read from the registry at each spawn');
   // The emerald mod (M9 fix 725), read once: EMERALD_CLAUDE_MOD=0 takes a
   // daemon restart, like every other knob here.
   const claudeMod = resolveClaudeModDir(process.env);
@@ -273,7 +275,7 @@ async function main(): Promise<void> {
     modSeen: (id) => hooks.modSeenFor(id),
     // daemon.stop has kept the screens already (M9 fix 159).
     onStop: () => shutdown('daemon.stop', true),
-    ...(spawnPath === null ? {} : { spawnPath: () => spawnPath.read() }),
+    ...(spawnEnv === null ? {} : { spawnEnv: () => spawnEnv.read() }),
     ...(Number.isInteger(levelOverride) && levelOverride > 0 ? { featureLevel: levelOverride } : {}),
   });
 

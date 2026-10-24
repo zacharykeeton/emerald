@@ -233,7 +233,7 @@ try {
       s.evalJs(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.focus(); const c = getComputedStyle(el); return { active: document.activeElement === el, border: c.borderColor }; })()`);
     const paneMenu = async (label) => {
       const c = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(focusedSel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-      await s.rightClick(c.x, c.y);
+      await s.rightClick(c.x, c.y, SHIFT);
       await s.waitFor(`!!document.querySelector('.pane-menu')`, `the pane menu for ${label}`);
       await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
     };

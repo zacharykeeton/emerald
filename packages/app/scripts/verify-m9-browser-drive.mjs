@@ -154,6 +154,17 @@ const cliAs = (id, ...args) =>
     child.stderr.on('data', (d) => (err += d));
     child.on('close', (code) => resolve({ code, out: out.replace(/\r?\n$/, ''), err: err.replace(/\r?\n$/, '') }));
   });
+// emmer open as a session of the given id (M9 fix 988).
+const openAs = (id, ...args) =>
+  new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliMain, 'open', ...args], { env: { ...process.env, EMERALD_SESSION_ID: id }, windowsHide: true });
+    child.stdin.end();
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('close', (code) => resolve({ code, out: out.replace(/\r?\n$/, ''), err: err.replace(/\r?\n$/, '') }));
+  });
 const cli = (...args) => cliAs(ownId, ...args);
 // The same with text piped to its stdin (M9 fix 854's --stdin).
 const cliIn = (input, ...args) =>
@@ -819,6 +830,53 @@ try {
   console.log(`[969] guests after the close: ${(await guestTargets()).length}`);
   console.log(`[969] the shell keeps the keyboard after the close: ${await activeIsShell()}`);
   step("M9 fix 969: emmer browser close puts away the pane this session opened, and refuses one from outside emerald and another session's");
+
+  // (s) M9 fix 988: a pane from emmer open <url> or --browser carries the
+  // session that asked as its opener, so its emmer browser close takes
+  // it; one opened from outside emerald stays the person's.
+  const newBrowserPane = async (before) => {
+    const deadline = Date.now() + 8000;
+    let fresh = [];
+    while (fresh.length === 0 && Date.now() < deadline) {
+      fresh = (await browserPanes()).filter((p) => !before.includes(p.id));
+      if (fresh.length === 0) await sleep(100);
+    }
+    expect(fresh.length === 1, `one new browser pane (${JSON.stringify(fresh.map((p) => p.view))})`);
+    return fresh[0];
+  };
+  const closeTaken = async (pane, what) => {
+    const res = await cli('--pane', pane.id, 'close');
+    expect(res.code === 0 && new RegExp(`^closed pane ${pane.id.slice(0, 8)} on tab .+$`).test(res.out), `close the pane ${what} (${said(res)})`);
+    const deadline = Date.now() + 5000;
+    while ((await browserPanes()).some((p) => p.id === pane.id) && Date.now() < deadline) await sleep(100);
+    const after = await browserPanes();
+    expect(!after.some((p) => p.id === pane.id) && after.some((p) => p.id === second.id), `the pane ${what} is gone and the profile b pane stays (${JSON.stringify(after.map((p) => p.id))})`);
+  };
+  let ids = (await browserPanes()).map((p) => p.id);
+  r = await openAs(ownId, origin + '/two');
+  expect(r.code === 0 && r.out === `opened ${origin}/two in a pane`, `emmer open <url> as this session (${said(r)})`);
+  const urlPane = await newBrowserPane(ids);
+  expect(urlPane.view.openedBy === ownId, `the emmer open <url> pane carries this session's id (${JSON.stringify(urlPane.view)})`);
+  await closeTaken(urlPane, 'emmer open <url> made');
+  const pageDir = path.join(os.tmpdir(), 'emerald-verify', 'page-988');
+  fs.mkdirSync(pageDir, { recursive: true });
+  const page988 = path.join(pageDir, 'page.html');
+  fs.writeFileSync(page988, '<!doctype html><html><head><title>Page 988</title></head><body><p>988</p></body></html>');
+  ids = (await browserPanes()).map((p) => p.id);
+  r = await openAs(ownId, page988, '--browser');
+  expect(r.code === 0 && r.out === `opened ${page988} in a pane`, `emmer open page.html --browser as this session (${said(r)})`);
+  const localPane = await newBrowserPane(ids);
+  expect(localPane.view.url.startsWith('emerald-file://') && localPane.view.openedBy === ownId, `the --browser pane is on emerald-file: with this session's id (${JSON.stringify(localPane.view)})`);
+  await closeTaken(localPane, '--browser made');
+  ids = (await browserPanes()).map((p) => p.id);
+  r = await openAs('', origin + '/two');
+  expect(r.code === 0 && r.out === `opened ${origin}/two in a pane`, `emmer open <url> from outside emerald (${said(r)})`);
+  const theirs = await newBrowserPane(ids);
+  expect(!('openedBy' in theirs.view), `the pane opened from outside emerald has no opener (${JSON.stringify(theirs.view)})`);
+  r = await cli('--pane', theirs.id, 'close');
+  expect(r.code === 1 && r.err === `emmer: pane ${theirs.id.slice(0, 8)} was not opened by this session; the person closes it`, `close of the person's pane is refused (${said(r)})`);
+  fs.rmSync(pageDir, { recursive: true, force: true });
+  step('M9 fix 988: a pane from emmer open <url> or --browser is recorded as the session\'s that asked, so its emmer browser close takes it, and one opened from outside emerald stays the person\'s');
 
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[672] window console: ${line}`);
   step('PASS');

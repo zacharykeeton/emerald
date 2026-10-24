@@ -21,7 +21,7 @@ import type { RowCost } from './commit-price-model.ts';
 import { askUsage, useConversationUsage } from './commit-usage.ts';
 import { folderName } from './files-model.ts';
 import { outsideKind } from './lane-card-model.ts';
-import type { CardBar, LaneCardAgent, LaneCardSession } from './lane-card-model.ts';
+import type { CardBar, CardSquare, LaneCardAgent, LaneCardSession } from './lane-card-model.ts';
 import { OutsideCard } from './OutsideCard.tsx';
 import { PersonCard } from './PersonCard.tsx';
 import { RemoteCard } from './RemoteCard.tsx';
@@ -487,9 +487,12 @@ export function CommitsPanel({ folder, branch, createdAt, tick, onExpand, onOpen
         const it = model.items[d.row];
         return it !== undefined && it.kind === 'commit' ? [{ kind: d.kind, hash: it.commit.hash, ...(d.landing === true ? { landing: true as const } : {}) }] : [];
       });
+  // The block's squares, newest first (items run newest first), for the
+  // session card's line naming them with their authors (M9 fix 992).
+  const squaresOf = (sessionId: string): CardSquare[] => model.items.flatMap((it) => (it.kind === 'commit' && it.foreign === true && it.sessionId === sessionId ? [{ hash: it.commit.hash, author: it.commit.author }] : []));
   const cardFor = (session: LaneCardSession, agent?: LaneCardAgent): LaneCardAnchor => {
     const id = agent === undefined ? `lane:${session.id}` : `lane:${session.id}:${agent.memberId}`;
-    return { id, card: (props) => <LaneCard session={session} shown={graph.commits} now={now} anchorId={id} agent={agent ?? null} layout={layoutOf(session.id)} lines={linesOf(session.id)} bars={barsOf(session.id)} {...props} /> };
+    return { id, card: (props) => <LaneCard session={session} shown={graph.commits} now={now} anchorId={id} agent={agent ?? null} layout={layoutOf(session.id)} lines={linesOf(session.id)} bars={barsOf(session.id)} squares={squaresOf(session.id)} {...props} /> };
   };
   // A removed session's lane opens its card too (M9 fix 111): the store
   // keeps the removed records apart, and the card reads the same fields.

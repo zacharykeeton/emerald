@@ -528,6 +528,14 @@ test('askReview: the Review your answers tab, each question with its answer, Sub
   assert.notEqual(dialogKey(REVIEW_ONE, { x: 0, y: 11 }), dialogKey(MULTI_SUBMIT, { x: 0, y: 16 }));
 });
 
+// M9 fix 976: the switch confirmation drawn without digits keys as a
+// dialog, so a press on it ends as any other.
+test('dialogKey reads the digitless switch confirmation', () => {
+  const rows = [' Switch model?', '', '   Yes, switch to Opus 5.5', ' ❯ No, go back'];
+  assert.equal(answerOptions(rows).length, 0);
+  assert.notEqual(dialogKey(rows, { x: 0, y: 3 }), null);
+});
+
 // M9 fix 801: one press per dialog, told by the dialog's key.
 test('dialogKey: one key per dialog, the pointer left out; null with no dialog (fix 801)', () => {
   const tabs = dialogKey(ASK_TABS, { x: 0, y: 0 });

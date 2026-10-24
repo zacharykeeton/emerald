@@ -3,8 +3,8 @@ import { formatSpanLength, markKind, paneShowingIn, workingMotion } from '@emera
 import type { GitCommit } from '../../preload/api.ts';
 import { resumeSessionBeside, resumeTranscript, showSession, showSessionAuto } from './actions.ts';
 import { useSessionDebt } from './activity-data.ts';
-import { barLines, commitsLine, laneCardModel } from './lane-card-model.ts';
-import type { CardBar, LaneCardAgent, LaneCardSession } from './lane-card-model.ts';
+import { barLines, commitsLine, laneCardModel, squareLine } from './lane-card-model.ts';
+import type { CardBar, CardSquare, LaneCardAgent, LaneCardSession } from './lane-card-model.ts';
 import { PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
 import { colorSwatches } from './session-color.ts';
@@ -69,6 +69,8 @@ interface Props extends CardProps {
   lines?: CardLines | null | undefined;
   // The bars on the block's lanes (M9 fix 152), newest row first.
   bars?: readonly CardBar[] | undefined;
+  // The block's squares with their authors (M9 fix 992), newest first.
+  squares?: readonly CardSquare[] | undefined;
 }
 
 // The bar lines (M9 fix 152), on every block's card that has a bar. The
@@ -151,11 +153,12 @@ export function LayoutAction({ layout, onClose }: { layout: CardLayout | null | 
   );
 }
 
-export function LaneCard({ session, shown, now, anchorId, agent, layout, lines, bars, anchor, onClose, onEnter, onLeave }: Props): ReactNode {
+export function LaneCard({ session, shown, now, anchorId, agent, layout, lines, bars, squares, anchor, onClose, onEnter, onLeave }: Props): ReactNode {
   // The forecast (M9 fix 320) off the store, so the graph's card and
   // the row's read one report.
   const { conflicts, sessions } = useStore('conflicts', 'sessions');
   const model = laneCardModel(session, shown ?? [], now, { report: conflicts, peers: conflictPeers(sessions) });
+  const square = squareLine(squares ?? []);
   const debt = useSessionDebt(session.id);
   const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
   // On a pane already: focus it there; else place it the way a
@@ -230,6 +233,7 @@ export function LaneCard({ session, shown, now, anchorId, agent, layout, lines, 
         </div>
       )}
       <BarLines bars={bars} />
+      {square !== null && <div className="lane-card-squares">{square}</div>}
       {model.actions.color && (
         <div className="lane-card-colour">
           <Swatches item={colorSwatches(session, onClose)} />

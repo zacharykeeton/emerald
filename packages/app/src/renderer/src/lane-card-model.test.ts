@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { barLines, commitsLine, fetchedLine, historyCardModel, historyCommitsLine, historyLine, laneCardModel, outsideCardModel, outsideKind, outsideLine, personCardModel, personLine, remoteCardModel, remoteLine } from './lane-card-model.ts';
+import { barLines, commitsLine, fetchedLine, historyCardModel, historyCommitsLine, historyLine, laneCardModel, outsideCardModel, outsideKind, outsideLine, personCardModel, personLine, remoteCardModel, remoteLine, squareLine } from './lane-card-model.ts';
 import type { LaneCardSession } from './lane-card-model.ts';
 import { aSession } from './test-support.ts';
 
@@ -138,6 +138,16 @@ test('barLines (M9 fix 152): a start bar and the fork bars each get a line, the 
   ]);
   assert.equal(mixed.landing, '2 bars where a fork lands on this line (bcee417, a5393e9)');
   assert.equal(mixed.ending, '1 bar ending a lane at the commit it came from (5ab9a35)');
+});
+
+test('squareLine (M9 fix 992): a block\'s squares named with their authors, the hashes cut to three, none for a block with none', () => {
+  assert.equal(squareLine([]), null);
+  assert.equal(squareLine([{ hash: 'e6e114c92bad120993dffe980b1a19d14573051c', author: 'Ada' }]), 'square at e6e114c: a commit made outside this session, by Ada');
+  assert.equal(squareLine([{ hash: 'e6e114c92bad120993dffe980b1a19d14573051c', author: 'Ada' }, { hash: 'bcee417b881f634ad5a84dc662710f2b48ca9b9c', author: 'Ada' }]), '2 squares: commits made outside this session, by Ada (e6e114c, bcee417)');
+  assert.equal(squareLine([{ hash: 'e6e114c92bad120993dffe980b1a19d14573051c', author: 'Ada' }, { hash: 'bcee417b881f634ad5a84dc662710f2b48ca9b9c', author: 'Bo' }]), '2 squares: commits made outside this session, by Ada and Bo (e6e114c, bcee417)');
+  const authors = ['Ada', 'Bo', 'Ada', 'Cy', 'Di'];
+  const five = forks(5).map((f, i) => ({ hash: f.hash, author: authors[i]! }));
+  assert.equal(squareLine(five), '5 squares: commits made outside this session, by Ada, Bo, Cy and 1 more (aaaaaa1, aaaaaa2, aaaaaa3 and 2 more)');
 });
 
 function forks(n: number): Array<{ kind: 'fork'; hash: string }> {

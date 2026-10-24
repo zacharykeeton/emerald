@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { editCounts } from '@emerald/shared';
 import type { SessionInfo, Step } from '@emerald/shared';
 import { openBeside } from './actions.ts';
+import { copyAndNote } from './actions.ts';
 import { editHunk, lineOf } from './chat-hunk.ts';
 import type { PendingEdit } from './chat-hunk.ts';
 import { renderReply } from './chat-markdown.ts';
@@ -43,7 +44,7 @@ export function openWebLink(href: string, paneId: string, beside: boolean): void
 // opens it in a browser pane beside this one (M9 fix 863), and a
 // Ctrl+click on a path opens it in a file pane beside this one, at its
 // line (M9 fix 864).
-export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseEvent<HTMLElement>) => void; onAuxClick: (ev: MouseEvent<HTMLElement>) => void; onContextMenu: (ev: MouseEvent<HTMLElement>) => void }; menu: ReactNode } {
+export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseEvent<HTMLElement>) => void; onMouseDown: (ev: MouseEvent<HTMLElement>) => void; onAuxClick: (ev: MouseEvent<HTMLElement>) => void; onContextMenu: (ev: MouseEvent<HTMLElement>) => void }; menu: ReactNode } {
   const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   // React carries a portal's events up the component tree, so a click in
   // the path menu (its root carries data-path too) or a thumbnail's full
@@ -73,8 +74,24 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
     if (href === null || !/^https?:/i.test(href)) return;
     openWebLink(href, paneId, beside);
   };
+  // M9 fix 978: a fenced block's copy button copies the block whole, its
+  // one trailing newline trimmed, as every copy out of a pane is.
+  const copyCode = (ev: MouseEvent<HTMLElement>): boolean => {
+    if (!ours(ev)) return false;
+    const button = (ev.target as HTMLElement).closest('.chat-code-copy');
+    if (button === null) return false;
+    const text = (button.parentElement?.querySelector('pre code')?.textContent ?? '').replace(/\n$/, '');
+    if (text !== '') copyAndNote(text, paneId);
+    return true;
+  };
   const handlers = {
-    onClick: (ev: MouseEvent<HTMLElement>) => open(ev, ev.ctrlKey),
+    onClick: (ev: MouseEvent<HTMLElement>) => {
+      if (!copyCode(ev)) open(ev, ev.ctrlKey);
+    },
+    // The copy button keeps the box's focus, as the footer's chips do (keepKeys).
+    onMouseDown: (ev: MouseEvent<HTMLElement>) => {
+      if ((ev.target as HTMLElement).closest('.chat-code-copy') !== null) ev.preventDefault();
+    },
     onAuxClick: (ev: MouseEvent<HTMLElement>) => {
       if (ev.button === 1) open(ev, false);
     },
@@ -113,8 +130,10 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
 }
 
 // M9 fix 797: an update (Claude Code's ● progress line) is drawn as a
-// reply in every mode, its kind on data-kind.
-export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo }) {
+// reply in every mode, its kind on data-kind. Its time, from the step's
+// own stamp, shows under its right edge on hover, the date and time in
+// its tooltip (M9 fix 979).
+export function ChatReply({ step, session, time, fullTime }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo; time: string | null; fullTime: string | null }) {
   // Bumped when a stat lands, so the paths it settled are drawn as links.
   const [version, setVersion] = useState(0);
   const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
@@ -141,7 +160,7 @@ export function ChatReply({ step, session }: { step: Extract<Step, { kind: 'text
   }, [ask]);
   // The clicks are the turn's (usePathLinks), which this sits inside.
   return (
-    <div className="chat-step chat-reply" data-kind={step.kind}>
+    <div className="chat-step chat-reply" data-kind={step.kind} data-time={time ?? undefined} title={fullTime ?? undefined}>
       <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );

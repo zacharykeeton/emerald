@@ -15,6 +15,10 @@ export interface FilesModel {
   listings: ReadonlyMap<string, FileListing>;
   expanded: ReadonlySet<string>;
   selected: string | null;
+  // M9 fix 982: the rows picked with Ctrl+click and Shift+click; after a plain click, the arrows or type-ahead, the selected row alone. selected stays the focused row, which a Ctrl+click may have taken out of the set.
+  picked: ReadonlySet<string>;
+  // The row a Shift range runs from.
+  anchor: string | null;
 }
 
 export type Row =
@@ -35,7 +39,7 @@ export interface Pending {
 }
 
 export function emptyModel(): FilesModel {
-  return { root: null, listings: new Map(), expanded: new Set(), selected: null };
+  return { root: null, listings: new Map(), expanded: new Set(), selected: null, picked: new Set(), anchor: null };
 }
 
 // Forward slashes become backslashes, runs collapse, and a trailing
@@ -124,7 +128,7 @@ export function pathLabel(p: string): string {
 export function setRoot(m: FilesModel, root: string | null): FilesModel {
   const next = root === null ? null : normalizePath(root);
   if (next === m.root) return m;
-  return { ...m, root: next, selected: null };
+  return { ...m, root: next, selected: null, picked: new Set(), anchor: null };
 }
 
 export function applyListing(m: FilesModel, dir: string, listing: FileListing): FilesModel {
@@ -155,9 +159,84 @@ export function collapseAll(m: FilesModel): FilesModel {
   return m.expanded.size === 0 ? m : { ...m, expanded: new Set() };
 }
 
+// The row alone: selected, the whole picked set (M9 fix 982) and the
+// anchor. The same object when all three already say so.
 export function select(m: FilesModel, p: string | null): FilesModel {
   const next = p === null ? null : normalizePath(p);
-  return next === m.selected ? m : { ...m, selected: next };
+  const alone = next === null ? m.picked.size === 0 : m.picked.size === 1 && m.picked.has(next);
+  if (next === m.selected && alone && m.anchor === next) return m;
+  return { ...m, selected: next, picked: next === null ? new Set() : new Set([next]), anchor: next };
+}
+
+const entryRows = (rows: readonly Row[]) => rows.filter((r): r is Extract<Row, { type: 'entry' }> => r.type === 'entry');
+
+// Whether p is dir or under it, compared as renamedPath compares.
+const within = (p: string, dir: string): boolean => renamedPath(p, dir, dir) !== null;
+
+// M9 fix 982: a Ctrl+click: the path in or out of the picked set, the focused row and the anchor to it.
+export function togglePick(m: FilesModel, p: string): FilesModel {
+  const key = normalizePath(p);
+  const picked = new Set(m.picked);
+  if (picked.has(key)) picked.delete(key);
+  else picked.add(key);
+  return { ...m, picked, selected: key, anchor: key };
+}
+
+// M9 fix 982: a Shift+click: the entry rows from the anchor (else the selected row, else p) to p, inclusive, in screen order; p is focused and the anchor kept.
+export function pickRange(m: FilesModel, rows: readonly Row[], p: string): FilesModel {
+  const key = normalizePath(p);
+  const entries = entryRows(rows);
+  const to = entries.findIndex((r) => r.path === key);
+  const fromPath = m.anchor ?? m.selected ?? key;
+  let from = entries.findIndex((r) => r.path === fromPath);
+  if (to < 0) return m;
+  if (from < 0) from = to;
+  const [lo, hi] = from <= to ? [from, to] : [to, from];
+  const picked = new Set(entries.slice(lo, hi + 1).map((r) => r.path));
+  return { ...m, picked, selected: key, anchor: entries[from]!.path };
+}
+
+// M9 fix 982: Shift with ArrowUp, ArrowDown, Home or End: the range to the row the key alone would select; null for any other key, m itself where there is nowhere to go.
+export function extendSelection(m: FilesModel, rows: readonly Row[], key: string): FilesModel | null {
+  if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End') return null;
+  const moved = moveSelection(m, rows, key);
+  if (moved === null || moved === m || moved.selected === null) return m;
+  return pickRange(m, rows, moved.selected);
+}
+
+// M9 fix 982: the picked entry rows on screen, in screen order; one under a folded folder or gone from its listing is left out, which is how the set prunes itself.
+export function pickedRows(m: FilesModel, rows: readonly Row[]): Extract<Row, { type: 'entry' }>[] {
+  return entryRows(rows).filter((r) => m.picked.has(r.path));
+}
+
+// M9 fix 982: what a drag from row p carries: the picked set in screen order, less anything under another picked folder, when p is in a set of more than one; else p alone.
+export function dragSet(m: FilesModel, rows: readonly Row[], p: string): string[] {
+  const key = normalizePath(p);
+  const set = pickedRows(m, rows);
+  if (!m.picked.has(key) || set.length < 2) return [key];
+  const dirs = set.filter((r) => r.kind === 'dir').map((r) => r.path);
+  return set.map((r) => r.path).filter((q) => !dirs.some((d) => d !== q && within(q, d)));
+}
+
+// M9 fix 982: where the selection goes when Delete moves a set to the recycle bin: the first entry row after the last removed one that is neither removed nor under a removed folder, else the last such row before the first removed one, else none.
+export function rowAfterRemovals(rows: readonly Row[], paths: readonly string[]): string | null {
+  const entries = entryRows(rows);
+  const gone = (q: string) => paths.some((d) => within(q, d));
+  const idx = entries.map((r, i) => (gone(r.path) ? i : -1)).filter((i) => i >= 0);
+  if (idx.length === 0) return null;
+  for (let j = idx[idx.length - 1]! + 1; j < entries.length; j++) if (!gone(entries[j]!.path)) return entries[j]!.path;
+  for (let j = idx[0]! - 1; j >= 0; j--) if (!gone(entries[j]!.path)) return entries[j]!.path;
+  return null;
+}
+
+// M9 fix 982: the corner note after a Delete on a set, its parts joined by `; `, or null when there is nothing to say.
+export function trashNote(moved: readonly string[], held: readonly { path: string; why: string }[]): string | null {
+  const parts: string[] = [];
+  if (moved.length === 1) parts.push(`${folderName(moved[0]!)} moved to the recycle bin`);
+  else if (moved.length > 1) parts.push(`${moved.length} items moved to the recycle bin`);
+  if (held.length === 1) parts.push(`${folderName(held[0]!.path)} could not go: ${held[0]!.why}`);
+  else if (held.length > 1) parts.push(`${held.length} could not go, ${folderName(held[0]!.path)}: ${held[0]!.why}`);
+  return parts.length === 0 ? null : parts.join('; ');
 }
 
 // The keys the Files tree walks by once it has the keyboard (M9 fix 929),
@@ -353,7 +432,9 @@ export function renameInModel(m: FilesModel, from: string, to: string): FilesMod
     listings.set(parent, { ...own, entries: own.entries.map((e) => (e.name.toLowerCase() === oldName ? { ...e, name: newName } : e)) });
   }
   const selected = m.selected === null ? null : move(m.selected);
-  return { ...m, expanded, listings, selected };
+  const picked = new Set([...m.picked].map(move));
+  const anchor = m.anchor === null ? null : move(m.anchor);
+  return { ...m, expanded, listings, selected, picked, anchor };
 }
 
 // Where the name box selects to on mount (M9 fix 574): a file's stem,

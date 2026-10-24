@@ -15,5 +15,7 @@ export interface LaunchCommand {
 
 export interface SessionLauncher {
   // `extraArgs` come from the user (for example claude flags) and are appended.
-  command(extraArgs: string[], shell?: ShellOption | null): LaunchCommand;
+  // `env` is the session's own environment, which the executable is found
+  // on (M9 fix 996); absent is the one the launcher was built with.
+  command(extraArgs: string[], shell?: ShellOption | null, env?: NodeJS.ProcessEnv): LaunchCommand;
 }

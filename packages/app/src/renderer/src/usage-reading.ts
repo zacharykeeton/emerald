@@ -104,8 +104,29 @@ export function useFiveHourWindow(): { from: number; to: number } | null {
   return fiveHourBounds(useUsageReading());
 }
 
+// M9 fix 974: the chat view's usage warnings dismissed, by usageWarning's
+// dismissKey (window, reset and mark), held in memory for the window's
+// life so one dismissal hides the band in every chat pane and a reload
+// brings it back once.
+let dismissed: ReadonlySet<string> = new Set();
+
+export function dismissUsageWarning(key: string): void {
+  if (dismissed.has(key)) return;
+  dismissed = new Set([...dismissed, key]);
+  for (const l of listeners) l();
+}
+
+export function usageWarningDismissed(): ReadonlySet<string> {
+  return dismissed;
+}
+
+export function useUsageWarningDismissed(): ReadonlySet<string> {
+  return useSyncExternalStore(subscribe, usageWarningDismissed);
+}
+
 // For tests: forget the reading.
 export function resetUsageReading(): void {
   windows = null;
   age = NO_AGE;
+  dismissed = new Set();
 }

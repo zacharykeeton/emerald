@@ -14,3 +14,17 @@ export function refuseBusy(found: SessionInfo): void {
   if (found.state !== 'working' && found.state !== 'waiting') return;
   throw new CliError(`${shortId(found.id)} ${found.name} is ${describeState(found).text}; --if-idle sends only to a session that is not working`);
 }
+
+// M9 fix 995: what a send to a Claude mid-turn says in place of "sent",
+// since the text has not reached Claude yet. The mod's prompt waits for
+// the turn's end; a typed one enters at the turn's next tool round. Only a
+// Claude row: a shell reads working while a command runs and has no turn,
+// and a waiting session takes a submit at once (sendRoute, fix 911).
+export function queuedLine(found: SessionInfo, via: 'mod' | 'typed', now = Date.now()): string | null {
+  if (found.kind !== 'claude' || found.state !== 'working') return null;
+  const minutes = Math.floor((now - found.stateSince) / 60_000);
+  const age = minutes < 1 ? 'under 1m' : `${minutes}m`;
+  return via === 'mod'
+    ? `queued behind a turn running ${age}; it goes in when that turn ends`
+    : `queued into a turn running ${age}; it goes in at the turn's next tool call, or when that turn ends`;
+}

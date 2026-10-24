@@ -239,8 +239,9 @@ export interface HookSinkOptions {
   // one lets every compaction through.
   compactAsk?: (sessionId: string, trigger: string) => string | null;
   // The emerald mod's word on a submit the daemon pushed (M9 fix 781, its
-  // ModSubmit post): handed on, and no hooks.jsonl line is written.
-  onModSubmit?: (sessionId: string, submitId: string, entered: boolean, drop: string | null) => void;
+  // ModSubmit post): handed on, and no hooks.jsonl line is written. M9 fix
+  // 995: queued is the mod's early word on a prompt that waits for a turn.
+  onModSubmit?: (sessionId: string, submitId: string, entered: boolean, drop: string | null, queued: boolean) => void;
 }
 
 // The body of a /compact ask is `{ trigger }` and no more (M9 fix 773).
@@ -259,7 +260,7 @@ export class HookSink {
   private readonly fullPayloads: boolean;
   private expectsMod: (sessionId: string) => boolean = () => false;
   private compactAsk: (sessionId: string, trigger: string) => string | null = () => null;
-  private onModSubmit: (sessionId: string, submitId: string, entered: boolean, drop: string | null) => void = () => undefined;
+  private onModSubmit: (sessionId: string, submitId: string, entered: boolean, drop: string | null, queued: boolean) => void = () => undefined;
   private readonly modSeen = new Set<string>();
   private readonly modWarned = new Set<string>();
   // The lines that arrive while a rotation has the file closed, written
@@ -503,8 +504,8 @@ export class HookSink {
       // M9 fix 781: the mod's word on a submit goes to the waiting send and
       // nowhere else; it is no hook of the session's and moves no state.
       if ((payload as HookPayload).hook_event_name === MOD_SUBMIT) {
-        const word = payload as { submit_id?: unknown; entered?: unknown; drop?: unknown };
-        if (hook === MOD_HOOK_NAME && typeof word.submit_id === 'string') this.onModSubmit(sessionId, word.submit_id, word.entered === true, typeof word.drop === 'string' ? word.drop : null);
+        const word = payload as { submit_id?: unknown; entered?: unknown; drop?: unknown; queued?: unknown };
+        if (hook === MOD_HOOK_NAME && typeof word.submit_id === 'string') this.onModSubmit(sessionId, word.submit_id, word.entered === true, typeof word.drop === 'string' ? word.drop : null, word.queued === true);
         return;
       }
       if (this.isDuplicate(sessionId, foldKey(payload as HookPayload, overLimit, body), at, hook)) {

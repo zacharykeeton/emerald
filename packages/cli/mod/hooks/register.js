@@ -152,15 +152,24 @@ function postToolRunning($, e) {
   void postTurnEvent($, { hook_event_name: 'ToolRunning', tool_use_id: id }).catch(() => undefined);
 }
 
+// M9 fix 995: the running main-loop turn's id, or null, so a submit that
+// arrives mid-turn can say at once that it waits for the turn's end.
+let mainTurn = null;
+// Submits taken off the channel whose $.prompt.submit has not settled; one
+// behind another waits for the first's turn too.
+let submitsOut = 0;
+
 // A subagent's turns start too; only the main loop's is the row's.
 function postTurnStart($, e) {
   if (e.agentId !== undefined) return;
+  mainTurn = e.turnId ?? true;
   void postTurnEvent($, { hook_event_name: 'TurnStart', turn_id: e.turnId }).catch(() => undefined);
 }
 
 // A subagent's turn is posted too, since its usage is the person's cost,
 // under turn_agent_id: an agent_id would send it down the daemon's agent path.
 function postTurnComplete($, e) {
+  if (e.agentId === undefined) mainTurn = null;
   void postTurnEvent($, {
     hook_event_name: 'TurnComplete',
     turn_id: e.turnId,
@@ -276,7 +285,20 @@ async function streamPrompts($, argv) {
           continue;
         }
         if (typeof text !== 'string' || text === '') continue;
-        chain = chain.then(() => submitAndSay($, text, submitId)).catch(() => undefined);
+        // M9 fix 995: a plugin's prompt runs once the session is idle, so
+        // one that arrives mid-turn, or behind another still out, says so
+        // at once; entered: true so an older daemon answers mod, which is
+        // right for a prompt that will enter. The final word follows.
+        if (typeof submitId === 'string' && (mainTurn !== null || submitsOut > 0)) {
+          void postTurnEvent($, { hook_event_name: 'ModSubmit', submit_id: submitId, entered: true, queued: true }).catch(() => undefined);
+        }
+        submitsOut += 1;
+        chain = chain
+          .then(() => submitAndSay($, text, submitId))
+          .catch(() => undefined)
+          .finally(() => {
+            submitsOut -= 1;
+          });
       }
     }
   } catch {

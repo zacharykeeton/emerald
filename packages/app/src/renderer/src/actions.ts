@@ -315,15 +315,18 @@ export async function openBeside(view: PaneView, fromPaneId: string | null): Pro
 // beside the named session's pane or the focused one. M9 fix 936: with
 // browser the path is an .html file rendered in a browser pane on
 // emerald-file:.
-export async function openFileFromOutside(path: string, pane = false, extra: { scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean } = {}): Promise<void> {
+export async function openFileFromOutside(path: string, pane = false, extra: { scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean; opener?: string } = {}): Promise<void> {
   const page = extra.url === true;
   const p = page ? path : normalizePath(path);
   const local = extra.browser === true && !page;
+  // M9 fix 988: the session that asked is the browser pane's opener, so
+  // its emmer browser close takes the pane; a file view never takes it.
+  const openedBy = extra.opener === undefined ? {} : { openedBy: extra.opener };
   // M9 fix 936: --browser's page, built as the file tab's Browser button
   // builds it (the rail's folder when the file is under it, else its
   // own), and opened as any view from outside, so --beside works and the
   // use is recorded once, as cli-open.
-  const view: PaneView = page ? { kind: 'browser', url: p } : local ? localPageView(getState().layout, localPageRoot(p, railRoot()), p) : { kind: 'file', path: p };
+  const view: PaneView = page ? { kind: 'browser', url: p, ...openedBy } : local ? { ...localPageView(getState().layout, localPageRoot(p, railRoot()), p), ...openedBy } : { kind: 'file', path: p };
   if (page || local) pane = true;
   let known = true;
   let besideFound = true;

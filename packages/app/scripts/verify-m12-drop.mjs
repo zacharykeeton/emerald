@@ -780,6 +780,60 @@ try {
   );
   step('fix 953: Ctrl copies, a file already in the folder stays put, and a folder dropped on itself is refused');
 
+  // M9 fix 983: a folder held under a drag opens after 600 ms. The rail is
+  // on `seed` with into953 open and nothing lit; the folders are made on
+  // disk, so the watch on the root lists them.
+  const still983 = path.join(seed, 'still983');
+  const spring983 = path.join(seed, 'spring983');
+  const inner983 = path.join(spring983, 'inner983');
+  const a983 = path.join(src953, 'a983.txt');
+  fs.mkdirSync(still983, { recursive: true });
+  fs.mkdirSync(inner983, { recursive: true });
+  fs.writeFileSync(a983, 'a983');
+  const open983 = (p) => s.evalJs(`document.querySelector(${JSON.stringify(rowSel953(p))})?.dataset.expanded ?? null`);
+  await s.waitFor(
+    `${JSON.stringify([still983, spring983].map(rowSel953))}.every((sel) => document.querySelector(sel)?.dataset.kind === 'dir')`,
+    'the rows for still983 and spring983',
+    5000,
+  );
+  expect((await open983(still983)) === null && (await open983(spring983)) === null, 'both folders start closed');
+  await setDropFiles(s, [a983]);
+  // (a) Cancelled by a move.
+  await hover(s, await centerOf(s, rowSel953(still983)));
+  await hover(s, await centerOf(s, rowSel953(seedFile)));
+  await sleep(900);
+  expect((await open983(still983)) === null, 'a drag moved off still983 within 600 ms leaves it closed');
+  await drag(s, 'dragleave', await centerOf(s, rowSel953(seedFile)));
+  // (b) Opened by a hold.
+  const spot983 = await centerOf(s, rowSel953(spring983));
+  const t983 = Date.now();
+  await hover(s, spot983);
+  let closedReads983 = 0;
+  let openAt983 = -1;
+  while (Date.now() - t983 < 3000) {
+    const v = await open983(spring983);
+    const at = Date.now() - t983;
+    if (v === 'true') {
+      openAt983 = at;
+      break;
+    }
+    closedReads983++;
+    await drag(s, 'dragover', spot983);
+    await sleep(150);
+  }
+  expect(closedReads983 >= 1 && openAt983 >= 600, `spring983 read closed first and opened no earlier than 600 ms, got ${closedReads983} closed reads, open at ${openAt983}`);
+  // (c) Left open, dropped into the child.
+  await drag(s, 'dragleave', spot983);
+  await sleep(300);
+  expect((await open983(spring983)) === 'true', 'spring983 stays open after the drag leaves');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel953(inner983))})`, 'the row for inner983', 5000);
+  const innerSpot983 = await centerOf(s, rowSel953(inner983));
+  await hover(s, innerSpot983);
+  await drag(s, 'drop', innerSpot983);
+  await waitDisk953(() => read953(path.join(inner983, 'a983.txt')) === 'a983' && !fs.existsSync(a983), 'a983.txt moved into inner983');
+  await noteIs953('Moved a983.txt into inner983', 'the note says a983.txt moved into inner983');
+  step('fix 983: a folder held under a drag opens after 600 ms, not before, not once the drag moves off it, stays open after the drag leaves, and takes a drop into its child');
+
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);

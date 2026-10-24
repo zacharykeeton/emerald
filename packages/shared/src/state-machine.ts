@@ -155,7 +155,9 @@ export type SessionEvent =
   // a command must have run for its end to want a person.
   | { type: 'shell-mark'; mark: 'A' | 'C' | 'D'; code: number | null; at: number; doneAfterMs: number }
   // The daemon read Claude Code's folder trust dialog on the screen of a starting session, or read it gone (M9 fix 808).
-  | { type: 'trust'; shown: boolean; at: number };
+  | { type: 'trust'; shown: boolean; at: number }
+  // The daemon read Claude Code's switch confirmation on the screen of a Claude at rest, or read it gone (M9 fix 976).
+  | { type: 'switch'; shown: boolean; at: number };
 
 // applied-agent (M61): a known subagent's own Bash call, which the daemon
 // reads for where the agent works and what it committed and which touches
@@ -411,6 +413,13 @@ export function reduce(session: SessionInfo, event: SessionEvent): SessionInfo {
       // SessionStart moves nothing (M9 fix 808).
       if (event.shown) return session.state === 'starting' ? transition(session, 'needs-input', event.at, 'trust') : session;
       return session.state === 'needs-input' && session.needsInputReason === 'trust' ? transition(session, 'starting', event.at, null) : session;
+    case 'switch':
+      // Only a row at rest takes the dialog, and only the dialog's own ask
+      // goes back, to waiting when its list still runs, else idle: an
+      // answer is a look, so a done row does not go back to done (M9 fix
+      // 976).
+      if (event.shown) return session.state === 'idle' || session.state === 'done' || session.state === 'waiting' ? transition(session, 'needs-input', event.at, 'switch') : session;
+      return session.state === 'needs-input' && session.needsInputReason === 'switch' ? transition(session, session.waitingOn.length > 0 ? 'waiting' : 'idle', event.at, null) : session;
     default:
       return session;
   }
@@ -602,16 +611,17 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // The parent's own call answers nothing an agent asked: the prompt
     // stays on show until the agent's own event lands (M9 fix 109).
     if (name !== 'UserPromptSubmit' && awaitsAgent(next)) return next;
-    // An automatic compaction of a row at rest (M9 fix 812): the idle
-    // compactor's PreCompact found it idle, waiting or done, and its
-    // PostCompact puts it back there with its age, since nobody asked for
-    // a turn. A prompt, a Stop or an exit in between clears the record
-    // (here for the prompt, in transition for the others).
+    // A compaction of a row at rest (M9 fix 812, automatic; M9 fix 994, a
+    // typed /compact, which Claude Code 2.1.306 runs with no prompt hook
+    // and no Stop): the PreCompact found it idle, waiting or done, and its
+    // PostCompact puts it back there with its age, since no turn ran. A
+    // prompt, a Stop or an exit in between clears the record (here for the
+    // prompt, in transition for the others).
     const from = next.compactFrom ?? null;
     if (name === 'PostCompact' && from !== null) {
       return { ...transition(next, from.state, at, null), stateSince: from.since, compactFrom: null };
     }
-    if (name === 'PreCompact' && payload.trigger === 'auto' && (next.state === 'idle' || next.state === 'waiting' || next.state === 'done')) {
+    if (name === 'PreCompact' && (payload.trigger === 'auto' || payload.trigger === 'manual') && (next.state === 'idle' || next.state === 'waiting' || next.state === 'done')) {
       const moved = transition({ ...next, compactFrom: { state: next.state, since: next.stateSince } }, 'working', at, null);
       // The label reads waitingOn only at waiting, so the list rides the
       // compaction unseen and comes back with the row.

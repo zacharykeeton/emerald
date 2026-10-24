@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
 
 test('tileTitle: the folder by name, the whole folder for a drive root, none with no row (M9 fix 705)', () => {
   assert.equal(tileTitle('C:\\code\\emerald'), 'Double-click to start in emerald');
@@ -69,14 +69,34 @@ test('emptyKey: Enter starts, Tab flips, a digit picks a row, arrows move (M9 fi
   assert.equal(emptyKey(k('a'), 3), null);
 });
 
-test('nextTile walks shell, claude, browser and wraps, skipping browser without the kind (M9 fix 666)', () => {
-  assert.equal(nextTile('shell', 1, true), 'claude');
-  assert.equal(nextTile('claude', 1, true), 'browser');
-  assert.equal(nextTile('browser', 1, true), 'shell');
-  assert.equal(nextTile('shell', 1, false), 'claude');
-  assert.equal(nextTile('claude', 1, false), 'shell');
-  assert.equal(nextTile('shell', -1, true), 'browser');
-  assert.equal(nextTile('shell', -1, false), 'claude');
+test('nextTile walks shell, claude, browser, file and wraps, skipping what the daemon lacks (M9 fixes 666, 990)', () => {
+  const both = { browser: true, file: true };
+  assert.equal(nextTile('claude', 1, both), 'browser');
+  assert.equal(nextTile('browser', 1, both), 'file');
+  assert.equal(nextTile('file', 1, both), 'shell');
+  assert.equal(nextTile('shell', -1, both), 'file');
+  assert.equal(nextTile('claude', 1, { browser: false, file: true }), 'file');
+  assert.equal(nextTile('claude', 1, { browser: false, file: false }), 'shell');
+  assert.equal(nextTile('shell', -1, { browser: false, file: false }), 'claude');
+});
+
+test('cleanPath strips one pair of surrounding quotes and the spaces (M9 fix 990)', () => {
+  assert.equal(cleanPath('  "C:\\a b\\x.txt"  '), 'C:\\a b\\x.txt');
+  assert.equal(cleanPath("'C:\\x.txt'"), 'C:\\x.txt');
+  assert.equal(cleanPath('"C:\\x.txt'), '"C:\\x.txt');
+  assert.equal(cleanPath('C:\\x.txt'), 'C:\\x.txt');
+});
+
+test('resolvePath: absolute as given, relative from the folder, dots folded (M9 fix 990)', () => {
+  assert.equal(resolvePath('C:\\a\\x.txt', 'D:\\w'), 'C:\\a\\x.txt');
+  assert.equal(resolvePath('C:/a/./b/../x.txt', null), 'C:\\a\\x.txt');
+  assert.equal(resolvePath('src\\index.ts', 'C:\\w'), 'C:\\w\\src\\index.ts');
+  assert.equal(resolvePath('..\\y.txt', 'C:\\w\\sub'), 'C:\\w\\y.txt');
+  assert.equal(resolvePath('..\\..\\..\\x', 'C:\\w'), 'C:\\x');
+  assert.equal(resolvePath('\\top.txt', 'C:\\w'), 'C:\\top.txt');
+  assert.equal(resolvePath('\\\\srv\\share\\x.txt', null), '\\\\srv\\share\\x.txt');
+  assert.equal(resolvePath('x.txt', null), null);
+  assert.equal(resolvePath('', 'C:\\w'), null);
 });
 
 // M9 fix 647: the Shell tile starts the picked shell, or the default.

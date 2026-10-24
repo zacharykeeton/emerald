@@ -6,7 +6,7 @@ import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { connectHello } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
-import { refuseBusy } from '../mod-route.ts';
+import { queuedLine, refuseBusy } from '../mod-route.ts';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { resolveSession, shortId } from '../resolve.ts';
 import { CLAUDE_ENTER_DELAY_MS } from './send.ts';
@@ -46,9 +46,11 @@ export interface PromptOptions {
 // typed into the pty with the Enter pause.
 type Via = 'mod' | 'typed';
 
+// queued (M9 fix 995) is set, never false, when the session was a Claude
+// mid-turn, so the text waited for that turn.
 export type PromptOutcome =
-  | { kind: 'done'; session: SessionInfo; reply: string | null; waitedMs: number; via: Via }
-  | { kind: 'needs-input'; session: SessionInfo; waitedMs: number; via: Via };
+  | { kind: 'done'; session: SessionInfo; reply: string | null; waitedMs: number; via: Via; queued?: true }
+  | { kind: 'needs-input'; session: SessionInfo; waitedMs: number; via: Via; queued?: true };
 
 type Step = { kind: 'reached'; session: SessionInfo } | { kind: 'timeout' } | { kind: 'gone'; session: SessionInfo | null };
 
@@ -152,8 +154,11 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
     // Through the emerald mod when its channel is up (M9 fix 741), with no
     // pause; a forced answer to a dialog stays typed, since it is keys for
     // the dialog rather than a prompt.
+    // M9 fix 995: a Claude mid-turn is typed, as the chat box's sendRoute
+    // types it, so the text enters the running turn at its next tool round
+    // rather than waiting in the mod for the turn's end.
     let via: Via = 'typed';
-    if (found.kind === 'claude' && (hello.featureLevel ?? 1) >= MOD_CHANNEL_LEVEL && found.state !== 'needs-input' && modRoutable(text)) {
+    if (found.kind === 'claude' && (hello.featureLevel ?? 1) >= MOD_CHANNEL_LEVEL && found.state !== 'needs-input' && found.state !== 'working' && modRoutable(text)) {
       via = (await client.request('session.submit', { sessionId: found.id, text })).via;
     }
     if (via === 'typed') {
@@ -175,6 +180,10 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
       if (found.kind === 'claude') await sleep(CLAUDE_ENTER_DELAY_MS);
       client.send({ type: 'pty.input', sessionId: found.id, data: '\r' });
     }
+    // M9 fix 995: on stderr, since stdout is the reply.
+    const queuedWord = queuedLine(found, via);
+    if (queuedWord !== null) process.stderr.write(queuedWord + '\n');
+    const queued = queuedWord !== null ? { queued: true as const } : {};
     const started = Date.now();
 
     // Gate two: the session has to move. One already busy is taken as
@@ -193,8 +202,8 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
     if (settled.kind === 'timeout') throw new CliError(`timed out after ${opts.timeoutMs} ms waiting for the reply`, EXIT.timeout);
     if (settled.kind === 'gone') throw goneError(settled);
     const s = settled.session;
-    if (s.state === 'done') return { kind: 'done', session: s, reply: s.lastReply, waitedMs, via };
-    if (s.state === 'needs-input') return { kind: 'needs-input', session: s, waitedMs, via };
+    if (s.state === 'done') return { kind: 'done', session: s, reply: s.lastReply, waitedMs, via, ...queued };
+    if (s.state === 'needs-input') return { kind: 'needs-input', session: s, waitedMs, via, ...queued };
     throw new CliError(`${shortId(s.id)} ${s.name} ${describeState(s).text} after ${waitedMs} ms`);
   } finally {
     client.close();
@@ -236,7 +245,7 @@ const command: Command = {
     const outcome = await runPrompt({ ref, text, saved: parsed.values.saved, force: parsed.values.force, timeoutMs, ifIdle: parsed.values['if-idle'] });
     const s = outcome.session;
     if (parsed.values.json) {
-      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs, via: outcome.via });
+      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs, via: outcome.via, ...(outcome.queued ? { queued: true } : {}) });
       return EXIT.ok;
     }
     if (outcome.kind === 'done') println(outcome.reply ?? `${shortId(s.id)} ${s.name} is done with no reply text`);

@@ -206,7 +206,7 @@ try {
   await s.evalJs(`document.querySelector('.tab-file[data-review] .tab-close').click()`);
   await s.waitFor(`!document.querySelector('.review-tab') && !document.querySelector('.tab-file[data-review]')`, 'the tab closed');
   const pc = await s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .term-host').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-  await s.rightClick(pc.x, pc.y);
+  await s.rightClick(pc.x, pc.y, SHIFT);
   await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(p1)}`, 'the pane menu');
   await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find(b => b.querySelector('.menu-label').textContent === 'Review changes').click()`);
   await s.waitFor(`document.querySelector('.review-tab')?.dataset.state === 'ready' && document.querySelectorAll('.review-comment').length === 2`, 'the tab back from the pane menu with its two comments');

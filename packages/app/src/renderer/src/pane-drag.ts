@@ -9,6 +9,9 @@ import { editLayout, getState } from './store.ts';
 import { beginSessionDrag, beginViewDrag, endSessionDrag, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
 import { dropOutsideWindows } from './window-drop.ts';
 import type { DropTarget } from './ui.ts';
+import { railDropAt } from './explorer-drop.ts';
+import { treeDropPaths } from './files-drop-model.ts';
+import type { RailDrop } from './files-drop-model.ts';
 
 // Dragging a sidebar row, a pane by its title bar (M9 fix 73), or the
 // rail's Commits tab as a view (M52), onto a pane. Hand-rolled on window mousemove and
@@ -52,7 +55,15 @@ export function startSessionDrag(sessionId: string, press: MouseEvent, onBegin: 
   startDrag({ kind: 'session', sessionId }, press, onBegin, fromPaneId);
 }
 
-export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null): void {
+// M9 fix 981: a drag that began on a row of the Files tree: the paths a drop on the rail moves, and the ghost's words when no payload names it.
+export interface TreeDrag {
+  paths: readonly string[];
+  label: string;
+}
+
+// payload is null only for a drag that can reach no pane (a tree's folder
+// row, a picked set): it drops on the rail's folders alone (M9 fix 981).
+export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, tree: TreeDrag | null = null): void {
   if (active || press.button !== 0) return;
   active = true;
   const startX = press.clientX;
@@ -61,6 +72,9 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
   let ghost: HTMLDivElement | null = null;
   // The pointer is past the window's edge, the drag handed to main (M9 fix 927).
   let out = false;
+  // The rail a tree drag has called over on and not yet left (M9 fix 981):
+  // every such drag ends with exactly one drop or one leave on it.
+  let onRail: RailDrop | null = null;
 
   const teardown = () => {
     window.removeEventListener('mousemove', onMove);
@@ -71,6 +85,8 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
     ghost?.remove();
     ghost = null;
     endSessionDrag();
+    onRail?.leave();
+    onRail = null;
     // Escape or the blur ends the other window's zones too.
     if (out) window.emerald.windowDrag.back();
     out = false;
@@ -80,15 +96,26 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
   const begin = () => {
     dragging = true;
     onBegin();
-    if (payload.kind === 'session') beginSessionDrag(payload.sessionId);
+    if (payload === null) beginSessionDrag(null);
+    else if (payload.kind === 'session') beginSessionDrag(payload.sessionId);
     else beginViewDrag(payload.view);
     document.body.classList.add('dragging-session');
     ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
-    ghost.textContent = payload.kind === 'session' ? (getState().sessions.get(payload.sessionId)?.name ?? payload.sessionId) : viewName(payload.view);
+    ghost.textContent = payload === null ? (tree?.label ?? '') : payload.kind === 'session' ? (getState().sessions.get(payload.sessionId)?.name ?? payload.sessionId) : viewName(payload.view);
     document.body.appendChild(ghost);
     window.addEventListener('keydown', onKey, { capture: true });
     window.addEventListener('blur', cancel);
+  };
+
+  // The folder under the point and what a tree drag moves into it, or
+  // null when the rail is not under the point (M9 fix 981).
+  const railAim = (x: number, y: number): { rail: RailDrop; dir: string | null; paths: string[] } | null => {
+    if (tree === null) return null;
+    const rail = railDropAt(x, y);
+    if (rail === null) return null;
+    const dir = rail.dirAt(x, y);
+    return { rail, dir, paths: dir === null ? [] : treeDropPaths(tree.paths, dir) };
   };
 
   const onMove = (e: MouseEvent) => {
@@ -97,6 +124,26 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
       begin();
     }
     if (ghost !== null) ghost.style.transform = `translate(${e.clientX + GHOST_OFFSET}px, ${e.clientY + GHOST_OFFSET}px)`;
+    const aim = railAim(e.clientX, e.clientY);
+    if (aim !== null) {
+      setSessionDropTarget(null);
+      if (aim.dir !== null && aim.paths.length > 0) {
+        onRail = aim.rail;
+        aim.rail.over(e.clientX, e.clientY, { ctrl: e.ctrlKey, shift: e.shiftKey });
+      } else {
+        aim.rail.leave();
+        onRail = null;
+      }
+      return;
+    }
+    if (onRail !== null) {
+      onRail.leave();
+      onRail = null;
+    }
+    if (payload === null) {
+      setSessionDropTarget(null);
+      return;
+    }
     if (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
       if (!out) setSessionDropTarget(null);
       out = true;
@@ -117,9 +164,21 @@ export function startDrag(payload: DragPayload, press: MouseEvent, onBegin: () =
     const tabTarget = getUiState().sessionDrag?.tabTarget ?? null;
     const dropped = dragging;
     const handed = out;
+    // A release on the rail moves into its folder and never reaches
+    // dropPayload (M9 fix 981); taken before the teardown, which would
+    // leave the rail.
+    const aim = dropped ? railAim(e.clientX, e.clientY) : null;
+    if (aim !== null) {
+      onRail = null;
+      teardown();
+      if (aim.dir !== null && aim.paths.length > 0) aim.rail.drop(aim.paths, e.clientX, e.clientY, { ctrl: e.ctrlKey, shift: e.shiftKey });
+      else aim.rail.leave();
+      return;
+    }
     // Cleared first, so the teardown sends no back for a drag main is ending.
     out = false;
     teardown();
+    if (payload === null) return;
     if (dropped && handed) {
       // Another window made the drop, or none was under the pointer and
       // a window opens there (M9 fix 928).

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { UsageWindow } from '../../preload/api.ts';
 import { USAGE_FOLDED_TEXT, fiveHourBounds, fiveHourUsage, fiveHourWindow, markUsageFolded, resetUsageReading, setUsageAge, setUsageReading, usageAge, usageAgeText, usageReading } from './usage-reading.ts';
+import { dismissUsageWarning, usageWarningDismissed } from './usage-reading.ts';
 
 // M9 fix 321: the strip's reading, lifted into a store for the activity
 // view's five-hour unit.
@@ -56,4 +57,16 @@ test("the age's text is the strip's stale text, else the folded note, else none 
   assert.equal(usageAgeText(usageAge()), null);
   resetUsageReading();
   assert.deepEqual(usageAge(), { fetchedAt: null, stale: null, folded: false });
+});
+
+test('dismissUsageWarning adds its key and resetUsageReading forgets it (fix 974)', () => {
+  resetUsageReading();
+  assert.equal(usageWarningDismissed().size, 0);
+  dismissUsageWarning('seven_day:1:75');
+  assert.equal(usageWarningDismissed().has('seven_day:1:75'), true);
+  const held = usageWarningDismissed();
+  dismissUsageWarning('seven_day:1:75');
+  assert.equal(usageWarningDismissed(), held, 'the same key again is no change');
+  resetUsageReading();
+  assert.equal(usageWarningDismissed().has('seven_day:1:75'), false);
 });

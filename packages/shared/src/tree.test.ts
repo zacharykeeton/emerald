@@ -712,6 +712,16 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
     const dropped = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: '', openedBy })));
     assert.deepEqual((dropped.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: '' });
   }
+  // M9 fix 986: a whole zoom level within the app's steps is kept beside a
+  // profile, 0 leaves no key, and anything else is dropped, never refused.
+  for (const zoom of [2, -3, 5]) {
+    const zoomed = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', zoom })));
+    assert.deepEqual((zoomed.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/', profile: 'b', zoom });
+  }
+  for (const zoom of [0, '2', 1.5, -4, 6, null, true]) {
+    const dropped = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', zoom })));
+    assert.deepEqual((dropped.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'browser', url: 'http://localhost:3000/' });
+  }
   // M9 fix 896: a page from the disk is kept whole with its root, refused
   // without an absolute one, and a root beside a web url is dropped.
   const localUrl = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html';

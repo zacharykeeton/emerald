@@ -6,7 +6,7 @@ import { hidePaneHere, splitHere } from './actions.ts';
 import { readScope } from './activity-scope.ts';
 import { ActivityView } from './ActivityView.tsx';
 import { BrowserView } from './BrowserView.tsx';
-import { pageZoomAtDefault, resetPageZoom, useBrowserPage, withPageUrl, withToolbar } from './browser-layer.ts';
+import { pageZoomAtDefault, resetPageZoom, useBrowserPage, withPageUrl, withPageZoom, withToolbar } from './browser-layer.ts';
 import { driveMark, useBrowserDrive } from './browser-drive-store.ts';
 import { designTargetOf } from './design.ts';
 import { FileView } from './FileView.tsx';
@@ -199,7 +199,13 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
       case 'text-reset':
         return resetFontSize(paneId);
       case 'page-zoom-reset':
-        return resetPageZoom(paneId);
+        resetPageZoom(paneId);
+        // M9 fix 986: no event follows a reset, so the record's zoom goes here.
+        void editTab((t) => {
+          const v = findPane(t, paneId)?.view;
+          return v?.kind === 'browser' && v.zoom !== undefined ? setPaneView(t, paneId, withPageZoom(v, undefined)) : t;
+        }, paneId).catch(warn('page zoom'));
+        return;
       default:
         return;
     }

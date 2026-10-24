@@ -94,6 +94,15 @@ md.renderer.rules['text'] = (tokens, idx, _options, env) => {
   return out + md.utils.escapeHtml(content.slice(at));
 };
 
+// M9 fix 978: a fenced block sits in a wrapper with a copy button at its
+// top right, outside the pre so it stays put while the block scrolls
+// sideways. The button is empty (its glyph is CSS), so a reply's
+// textContent is what it was; the pre's own trailing newline is dropped
+// for the same reason, the wrapper's taking its place.
+const fence = md.renderer.rules['fence']!;
+md.renderer.rules['fence'] = (tokens, idx, options, env, self) =>
+  `<div class="chat-code"><button type="button" class="chat-code-copy" aria-label="Copy" title="Copy"></button>${fence(tokens, idx, options, env, self).trimEnd()}</div>\n`;
+
 export function renderReply(text: string, cwd: string, known: Known): { html: string; ask: string[] } {
   const env: ReplyEnv = { cwd, known, ask: [] };
   if (cwd !== '') env.folder = cwd;

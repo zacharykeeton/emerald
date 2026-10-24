@@ -762,6 +762,46 @@ try {
   fs.rmSync(path.join(repo, 'fresh'), { recursive: true, force: true });
   await s.waitFor(`document.querySelectorAll('.files-changed-row').length === 4`, 'the four rows back once the folder is gone', 8000);
   step("M9 fix 965: a new folder's files are rows of their own in the Changed list, each with its count");
+  // M9 fix 984: a repository of its own under the root is one row drawn as
+  // a folder reading `repository`, counted once, and a click opens its own
+  // review. It goes again before the four-row reads below.
+  const nestRepo = path.join(repo, 'nestrepo');
+  fs.mkdirSync(nestRepo);
+  execFileSync('git', ['init', '-q'], { cwd: nestRepo, stdio: ['ignore', 'pipe', 'pipe'] });
+  fs.writeFileSync(path.join(nestRepo, 'n.txt'), 'n\n');
+  await s.waitFor(`document.querySelectorAll('.files-changed-row').length === 5`, 'the nested repository as the fifth Changed row', 8000);
+  const nestRow = await s.evalJs(
+    `(() => { const r = document.querySelector(${JSON.stringify(rowSel(nestRepo))}); return { kind: r?.dataset.kind ?? null, repo: r?.dataset.repo ?? null, mark: r?.querySelector('.files-changed-repo')?.textContent ?? null, counts: !!r?.querySelector('.changes-counts'), icon: ${iconOf(nestRepo)}, count: document.querySelector('.rail-tab[data-tab="files"] .rail-tab-count')?.textContent ?? null }; })()`,
+  );
+  expect(
+    nestRow.kind === 'dir' && nestRow.repo === 'true' && nestRow.mark === 'repository' && !nestRow.counts && nestRow.icon === 'folder' && nestRow.count === '5',
+    `the nested repository is a folder row reading repository, no counts, counted once: ${JSON.stringify(nestRow)}`,
+  );
+  await clickRow(s, nestRepo);
+  const nestReview = JSON.stringify(`.review-tab[data-folder=${JSON.stringify(nestRepo)}]`);
+  await s.waitFor(
+    `!!document.querySelector(${nestReview}) && document.querySelector('.tab-file[data-active] .tab-name')?.textContent === 'Review · nestrepo' && !document.querySelector('.tab-file[data-preview]')`,
+    'the click opened the nested repository\'s own review, no preview tab',
+    8000,
+  );
+  await s.evalJs(`document.querySelector('.tab[data-active] .tab-close')?.click()`);
+  // Node 24 does not retry EPERM on Windows, and the review's git read or
+  // the watch may still hold the folder a moment after the tab closes.
+  for (let tries = 0; ; tries++) {
+    try {
+      fs.rmSync(nestRepo, { recursive: true, force: true });
+      break;
+    } catch (err) {
+      if (tries >= 20) throw err;
+      await sleep(300);
+    }
+  }
+  await s.waitFor(
+    `document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(repo)} && document.querySelectorAll('.files-changed-row').length === 4`,
+    'the rail back on repo with four Changed rows once the repository is gone',
+    8000,
+  );
+  step('M9 fix 984: a nested repository is one Changed row with a folder icon reading repository, counted once, and a click opens its own review');
   expect((await s.evalJs(`document.querySelectorAll('.files-row:not(.files-changed-row)').length`)) === 0, 'the tree gives way to the list');
   await s.evalJs(`[...document.querySelectorAll('.files-changed-row')].find(r => r.querySelector('.files-name').textContent === 'staged.txt').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'text'`, 'a click on a changed file opens it in a tab');
@@ -1270,7 +1310,10 @@ try {
     await clickRow(s, edited);
     await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(edited)} && document.querySelector('.file-view')?.dataset.state === 'text' && !!${editorJs}.getModel()`, 'edited.txt open in a tab', 5000);
     await s.evalJs(`${editorJs}.focus()`);
-    await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
+    // Focus again on every poll: the row click gives the tree the keyboard
+    // (fix 929) and a late pull back to it is answered, not timed out, as fix
+    // 985 does for fix 574's step.
+    await s.waitFor(`(${editorJs}.focus(), !!document.activeElement?.closest('.monaco-editor'))`, 'the keyboard in the editor', 3000);
   };
   const typeAtEnd = async (text) => {
     await s.evalJs(`(() => { const e = ${editorJs}; const m = e.getModel(); const n = m.getLineCount(); e.setPosition({ lineNumber: n, column: m.getLineMaxColumn(n) }); })()`);
@@ -2186,9 +2229,16 @@ try {
   const treeHasKeys = `document.activeElement === document.querySelector('.files-list')`;
   // (1) A dirty tab on ren-a.txt.
   await clickRow(s, renA);
-  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(renA)} && !!${editorJs}.getModel()`, 'ren-a.txt open in a tab', 5000);
-  await s.evalJs(`${editorJs}.focus()`);
-  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
+  // The row click gives the tree the keyboard since fix 929 and the file
+  // view's model effect defers to it, so wait for the tree to hold it with
+  // the model in before moving it, and focus again on every poll so a late
+  // pull back to the tree is answered, not timed out (M9 fix 985).
+  await s.waitFor(
+    `${treeHasKeys} && document.querySelector('.file-view')?.dataset.state === 'text' && ${editorJs}.getModel()?.uri.path.endsWith('/ren-a.txt') === true`,
+    'ren-a.txt open in a tab with the tree holding the keyboard',
+    5000,
+  );
+  await s.waitFor(`(${editorJs}.focus(), !!document.activeElement?.closest('.monaco-editor'))`, 'the keyboard in the editor', 3000);
   await typeAtEnd('beta');
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'ren-a.txt dirty');
   // (2) Rename from the row's menu, the stem selected.
@@ -2249,7 +2299,7 @@ try {
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(innerFile)}`, 'inner.txt open in a tab', 5000);
   await s.waitFor(`${editorJs}.getModel()?.uri.path.endsWith('/ren-dir/inner.txt') === true`, 'inner.txt in the editor', 5000);
   await s.evalJs(`${editorJs}.focus()`);
-  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor before the right-click', 3000);
+  await s.waitFor(`(${editorJs}.focus(), !!document.activeElement?.closest('.monaco-editor'))`, 'the keyboard in the editor before the right-click', 3000);
   // F2 after a right-click on a folder.
   at = await centreOf(renDir);
   await s.rightClick(at.x, at.y);
@@ -2531,7 +2581,10 @@ try {
   await clickRow(s, delA);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(delA)} && !!${editorJs}.getModel()`, 'del-a.txt open in a tab', 5000);
   await s.evalJs(`${editorJs}.focus()`);
-  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
+  // Focus again on every poll: the row click gives the tree the keyboard
+  // (fix 929) and a late pull back to it is answered, not timed out, as fix
+  // 985 does for fix 574's step.
+  await s.waitFor(`(${editorJs}.focus(), !!document.activeElement?.closest('.monaco-editor'))`, 'the keyboard in the editor', 3000);
   await typeAtEnd('x');
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'del-a.txt dirty');
   const dirtyMenu617 = await menuOf(delA);
@@ -2642,7 +2695,10 @@ try {
   await s.key(' ', 'Space', 32);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(plum950)} && !!${editorJs}.getModel()`, 'plum950.txt in the editor', 5000);
   await s.evalJs(`${editorJs}.focus()`);
-  await s.waitFor(`!!document.activeElement?.closest('.monaco-editor')`, 'the keyboard in the editor', 3000);
+  // Focus again on every poll: the row click gives the tree the keyboard
+  // (fix 929) and a late pull back to it is answered, not timed out, as fix
+  // 985 does for fix 574's step.
+  await s.waitFor(`(${editorJs}.focus(), !!document.activeElement?.closest('.monaco-editor'))`, 'the keyboard in the editor', 3000);
   await typeAtEnd('x');
   await s.waitFor(`document.querySelector('.file-view')?.dataset.dirty === 'true'`, 'plum950.txt dirty', 3000);
   await clickRow(s, plum950);
@@ -2687,6 +2743,179 @@ try {
   }
   fs.rmSync(keysDir950, { recursive: true, force: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(keysDir950))})`, 'keys950 gone', 5000);
+  // M9 fix 981: a row dragged within the tree moves into the folder under
+  // the mouse. The window as fix 951's clean-up leaves it: the panes tab in
+  // front, the rail on repo, no file tab.
+  const drag981 = path.join(repo, 'drag981');
+  const to981 = path.join(drag981, 'to981');
+  const box981 = path.join(drag981, 'box981');
+  const kid981 = path.join(box981, 'kid981');
+  const open981 = path.join(drag981, 'open981.txt');
+  const f1981 = path.join(drag981, 'f1981.txt');
+  const f2981 = path.join(drag981, 'f2981.txt');
+  const f3981 = path.join(drag981, 'f3981.txt');
+  fs.mkdirSync(to981, { recursive: true });
+  fs.mkdirSync(kid981, { recursive: true });
+  fs.writeFileSync(path.join(box981, 'k981.txt'), 'k\n');
+  for (const f of [open981, f1981, f2981, f3981]) fs.writeFileSync(f, 'x\n');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(drag981))})`, 'drag981 listed', 5000);
+  const noteJs981 = `(document.querySelector('.corner-note')?.textContent ?? '')`;
+  // The drag981 row at the top of the list, so every row of the fixture
+  // under it is in view while the pointer moves.
+  const topOf981 = () => s.evalJs(`document.querySelector(${JSON.stringify(rowSel(drag981))}).scrollIntoView({ block: 'start' })`);
+  const centre981 = (p) => s.evalJs(`(() => { const { x, y, width, height } = document.querySelector(${JSON.stringify(rowSel(p))}).getBoundingClientRect(); return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) }; })()`);
+  const dragRow981 = async (from, to, modifiers = 0) => {
+    await topOf981();
+    const a = await centre981(from);
+    const b = await centre981(to);
+    await s.mouse('mousePressed', a.x, a.y);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: a.x + 10, y: a.y, button: 'left', buttons: 1 });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: b.x, y: b.y, button: 'left', buttons: 1, modifiers });
+    const seen = await s.evalJs(`({ lit: [...document.querySelectorAll('[data-drop-into]')].map((e) => e.dataset.path ?? 'list'), ghost: document.querySelector('.drag-ghost')?.textContent ?? null })`);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: b.x, y: b.y, button: 'left', clickCount: 1, modifiers });
+    return seen;
+  };
+  // (a) A file open in its preview tab, dragged onto a folder row.
+  await clickRow(s, drag981);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(open981))}) && !!document.querySelector(${JSON.stringify(rowSel(to981))})`, "drag981's rows listed", 5000);
+  await clickRow(s, open981);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(open981)}]`)})`, 'open981.txt in its preview tab', 5000);
+  const movedTo981 = path.join(to981, 'open981.txt');
+  const seenA981 = await dragRow981(open981, to981);
+  expect(JSON.stringify(seenA981.lit) === JSON.stringify([to981]) && seenA981.ghost === 'open981.txt', `the hover lights to981 alone and the ghost names the file (${JSON.stringify(seenA981)})`);
+  await s.waitFor(`${noteJs981} === 'Moved open981.txt into to981'`, 'the note says open981.txt moved', 5000);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(movedTo981)}]`)}) && !!document.querySelector(${JSON.stringify(rowSel(movedTo981))})`, 'the tab follows the file and its row is at the new path', 5000);
+  expect(fs.existsSync(movedTo981) && !fs.existsSync(open981), 'open981.txt moved into to981 on disk');
+  // (b) Ctrl copies.
+  const seenB981 = await dragRow981(f1981, to981, CTRL);
+  expect(JSON.stringify(seenB981.lit) === JSON.stringify([to981]), `the Ctrl hover lights to981 (${JSON.stringify(seenB981)})`);
+  await s.waitFor(`${noteJs981} === 'Copied f1981.txt into to981'`, 'the note says f1981.txt copied', 5000);
+  expect(fs.existsSync(f1981) && fs.existsSync(path.join(to981, 'f1981.txt')), 'Ctrl copied f1981.txt, both on disk');
+  // (c) A drop on the row's own folder lights nothing and says nothing.
+  const seenC981 = await dragRow981(f2981, f3981);
+  expect(seenC981.lit.length === 0, `a drop on its own folder lights nothing (${JSON.stringify(seenC981)})`);
+  await sleep(800);
+  const noteC981 = await s.evalJs(noteJs981);
+  expect(fs.existsSync(f2981) && noteC981 !== 'Already in drag981', `f2981.txt stays where it was with no note (${noteC981})`);
+  // (d) A folder row drags too.
+  const seenD981 = await dragRow981(box981, to981);
+  expect(seenD981.ghost === 'box981' && JSON.stringify(seenD981.lit) === JSON.stringify([to981]), `the folder's ghost names it and to981 lights (${JSON.stringify(seenD981)})`);
+  await s.waitFor(`${noteJs981} === 'Moved box981 into to981'`, 'the note says box981 moved', 5000);
+  const box981b = path.join(to981, 'box981');
+  const kid981b = path.join(box981b, 'kid981');
+  expect(!fs.existsSync(box981) && fs.existsSync(path.join(box981b, 'k981.txt')), 'box981 and k981.txt are under to981 on disk');
+  // (e) A folder dropped into its own child is refused with main's note.
+  if ((await s.evalJs(`document.querySelector(${JSON.stringify(rowSel(to981))})?.dataset.expanded`)) !== 'true') await clickRow(s, to981);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(box981b))})`, 'to981 open with box981 in it', 5000);
+  if ((await s.evalJs(`document.querySelector(${JSON.stringify(rowSel(box981b))})?.dataset.expanded`)) !== 'true') await clickRow(s, box981b);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(kid981b))})`, 'box981 open with kid981 in it', 5000);
+  const seenE981 = await dragRow981(box981b, kid981b);
+  expect(JSON.stringify(seenE981.lit) === JSON.stringify([kid981b]), `the hover lights kid981 (${JSON.stringify(seenE981)})`);
+  await s.waitFor(`${noteJs981} === 'box981 could not go: A folder cannot go into itself'`, 'the note says a folder cannot go into itself', 5000);
+  expect(fs.existsSync(path.join(box981b, 'k981.txt')) && fs.readdirSync(kid981b).length === 0, 'the disk is unchanged');
+  for (let i = 0; i < 4 && (await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)) !== 'panes'; i++) {
+    await s.key('w', 'KeyW', 87, CTRL);
+    await sleep(300);
+  }
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the file tab closed', 3000);
+  step('M9 fix 981: a file row dragged onto a folder row moves there with its tab following, Ctrl copies, a drop on its own folder lights and says nothing, a folder row drags too, and a folder into its own child is refused with a note');
+  // M9 fix 982: Ctrl+click and Shift+click pick several rows, and the set
+  // drags into a folder or goes to the recycle bin. On fix 981's window:
+  // the panes tab in front, the rail on repo, drag981 still there.
+  const pick982 = path.join(repo, 'pick982');
+  const dest982 = path.join(pick982, 'dest982');
+  const m982 = path.join(pick982, 'm982');
+  const p982 = Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f'].map((k) => [k, path.join(pick982, `${k}982.txt`)]));
+  fs.mkdirSync(dest982, { recursive: true });
+  fs.mkdirSync(m982, { recursive: true });
+  fs.writeFileSync(path.join(m982, 'inner.txt'), 'i\n');
+  for (const f of Object.values(p982)) fs.writeFileSync(f, 'x\n');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(pick982))})`, 'pick982 listed', 5000);
+  const picked982 = `[...document.querySelectorAll('.files-list .files-row[data-picked]')].map((r) => r.dataset.path)`;
+  const top982 = () => s.evalJs(`document.querySelector(${JSON.stringify(rowSel(pick982))}).scrollIntoView({ block: 'start' })`);
+  const click982 = async (p, modifiers) => {
+    await top982();
+    const at = await centre981(p);
+    await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', clickCount: 1, modifiers });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', clickCount: 1, modifiers });
+  };
+  const pickedIs982 = (want, what) => s.waitFor(`JSON.stringify(${picked982}) === ${JSON.stringify(JSON.stringify(want))}`, what, 3000);
+  // (a) Ctrl+click toggles a row in and out, opening nothing.
+  await clickRow(s, pick982);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(p982.f))}) && !!document.querySelector(${JSON.stringify(rowSel(dest982))})`, "pick982's rows listed", 5000);
+  await clickRow(s, p982.a);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.path === ${JSON.stringify(p982.a)}`, 'a982.txt in front', 5000);
+  await click982(p982.c, CTRL);
+  await pickedIs982([p982.a, p982.c], 'Ctrl+click picks c982.txt beside a982.txt');
+  const frontA982 = await s.evalJs(`({ sel: ${selJs}, front: document.querySelector('.file-view')?.dataset.path ?? null })`);
+  expect(frontA982.sel === p982.c && frontA982.front === p982.a, `c982.txt is focused and a982.txt still in front (${JSON.stringify(frontA982)})`);
+  await click982(p982.a, CTRL);
+  await pickedIs982([p982.c], 'a second Ctrl+click takes a982.txt out of the set');
+  // (b) Shift+click picks a range across a folder, opening nothing.
+  await clickRow(s, p982.b);
+  await pickedIs982([p982.b], 'a plain click picks b982.txt alone');
+  await click982(m982, SHIFT);
+  await pickedIs982([m982, p982.a, p982.b], 'Shift+click picks m982 to b982.txt');
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(rowSel(m982))})?.dataset.expanded`)) === undefined, 'the Shift+click leaves m982 folded');
+  await s.key('ArrowDown', 'ArrowDown', 40, SHIFT);
+  await pickedIs982([p982.a, p982.b], 'Shift+ArrowDown narrows the range to a982 and b982');
+  await s.key('ArrowUp', 'ArrowUp', 38, SHIFT);
+  await pickedIs982([m982, p982.a, p982.b], 'Shift+ArrowUp widens it back');
+  // (c) Escape clears the set and the tree keeps the keyboard.
+  await s.key('Escape', 'Escape', 27);
+  await pickedIs982([m982], 'Escape leaves the focused row alone');
+  expect(await s.evalJs(treeHasKeys), 'the tree keeps the keyboard after the Escape');
+  // (d) The set drags into a folder with one note.
+  await clickRow(s, p982.b);
+  await pickedIs982([p982.b], 'b982.txt alone again');
+  await click982(m982, SHIFT);
+  await pickedIs982([m982, p982.a, p982.b], 'the range again');
+  await top982();
+  const fromD982 = await centre981(p982.a);
+  const toD982 = await centre981(dest982);
+  await s.mouse('mousePressed', fromD982.x, fromD982.y);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: fromD982.x + 10, y: fromD982.y, button: 'left', buttons: 1 });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: toD982.x, y: toD982.y, button: 'left', buttons: 1 });
+  const seenD982 = await s.evalJs(`({ lit: [...document.querySelectorAll('[data-drop-into]')].map((e) => e.dataset.path ?? 'list'), ghost: document.querySelector('.drag-ghost')?.textContent ?? null })`);
+  await s.mouse('mouseReleased', toD982.x, toD982.y);
+  expect(seenD982.ghost === '3 items' && JSON.stringify(seenD982.lit) === JSON.stringify([dest982]), `the set's ghost reads 3 items and dest982 lights (${JSON.stringify(seenD982)})`);
+  await s.waitFor(`${noteJs981} === 'Moved 3 items into dest982'`, 'the note says three items moved', 5000);
+  expect(['m982/inner.txt', 'a982.txt', 'b982.txt'].every((f) => fs.existsSync(path.join(dest982, f))) && !fs.existsSync(m982) && !fs.existsSync(p982.a), 'dest982 holds m982, a982.txt and b982.txt on disk');
+  // (e) A right-click on the set offers Delete alone, on every row of it.
+  await clickRow(s, p982.c);
+  await pickedIs982([p982.c], 'c982.txt alone');
+  await click982(p982.d, CTRL);
+  await pickedIs982([p982.c, p982.d], 'c982 and d982 picked');
+  await top982();
+  const atE982 = await centre981(p982.d);
+  await s.rightClick(atE982.x, atE982.y);
+  await s.waitFor(`document.querySelector('.files-menu')?.dataset.picked === '2'`, "the set's menu", 3000);
+  const menuE982 = await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent ?? b.textContent, disabled: b.disabled }))`);
+  const lastE982 = menuE982[menuE982.length - 1];
+  expect(menuE982.slice(0, -1).every((i) => i.disabled) && lastE982.label === 'Delete' && !lastE982.disabled, `every item but Delete is disabled (${JSON.stringify(menuE982)})`);
+  await pickedIs982([p982.c, p982.d], 'the right-click keeps the set');
+  await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1).click()`);
+  await s.waitFor(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1)?.querySelector('.menu-label')?.textContent === 'Delete 2 items, to the recycle bin?'`, 'Delete asks once more, naming the count', 3000);
+  await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1).click()`);
+  await s.waitFor(`${noteJs981} === '2 items moved to the recycle bin' && !document.querySelector(${JSON.stringify(rowSel(p982.c))}) && !document.querySelector(${JSON.stringify(rowSel(p982.d))})`, 'the menu moved both to the recycle bin with one note', 5000);
+  expect(!fs.existsSync(p982.c) && !fs.existsSync(p982.d) && fs.existsSync(path.join(trash644, '1-c982.txt')) && fs.existsSync(path.join(trash644, '1-d982.txt')), "c982 and d982 are in the home's trash");
+  // (f) Delete on the set from the keyboard.
+  await clickRow(s, p982.e);
+  await pickedIs982([p982.e], 'e982.txt alone');
+  await click982(p982.f, CTRL);
+  await pickedIs982([p982.e, p982.f], 'e982 and f982 picked');
+  await s.key('Delete', 'Delete', 46);
+  await s.waitFor(`${noteJs981} === '2 items moved to the recycle bin' && !document.querySelector(${JSON.stringify(rowSel(p982.e))}) && !document.querySelector(${JSON.stringify(rowSel(p982.f))})`, 'Delete moved both to the recycle bin with one note', 5000);
+  expect(!fs.existsSync(p982.e) && !fs.existsSync(p982.f), 'e982 and f982 are gone from disk');
+  for (let i = 0; i < 4 && (await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)) !== 'panes'; i++) {
+    await s.key('w', 'KeyW', 87, CTRL);
+    await sleep(300);
+  }
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the file tabs closed', 3000);
+  fs.rmSync(drag981, { recursive: true, force: true });
+  fs.rmSync(pick982, { recursive: true, force: true });
+  await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(drag981))}) && !document.querySelector(${JSON.stringify(rowSel(pick982))})`, 'drag981 and pick982 gone', 5000);
+  step('M9 fix 982: Ctrl+click toggles rows in and out of a picked set and Shift+click and Shift+arrows pick a range across a folder, opening nothing; Escape clears the set; the set drags into a folder with one note; a right-click on the set offers Delete alone, and Delete on the set or its menu moves every picked row to the recycle bin with one note');
   // M9 fix 337: a file open in a pane with no tab hears a change on
   // disk. A shell in a folder of its own, focused so the rail follows
   // it; the file opened beside it through the row menu's Open in a

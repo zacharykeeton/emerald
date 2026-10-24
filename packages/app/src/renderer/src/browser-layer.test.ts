@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RING_PX, adoptFrames, frameRect, refusalLine, toolbarShown, withPageUrl, withToolbar } from './browser-layer.ts';
+import { RING_PX, adoptFrames, frameRect, refusalLine, refusedFrame, toolbarShown, withPageUrl, withPageZoom, withToolbar, zoomToKeep } from './browser-layer.ts';
 
 // M9 fix 669: which frame a browser pane gets across a layout change, and
 // where a frame sits over its slot.
@@ -102,6 +102,20 @@ test("a navigation keeps the record's profile and toolbar, and the toolbar flag 
   assert.deepEqual(withToolbar(opened, false), { kind: 'browser', url: 'http://a/', openedBy: 'abc-1', toolbar: false });
 });
 
+test("the page's own zoom is kept when it differs from the window's and is not 0, and rides a navigation (M9 fix 986)", () => {
+  assert.equal(zoomToKeep(2, 0), 2);
+  assert.equal(zoomToKeep(-1, 0), -1);
+  assert.equal(zoomToKeep(0, 0), undefined);
+  assert.equal(zoomToKeep(1.0001, 1), undefined);
+  assert.equal(zoomToKeep(0, 2), undefined);
+  const v = { kind: 'browser', url: 'http://a/', profile: 'b', toolbar: false, openedBy: 'abc-1' } as const;
+  assert.deepEqual(withPageZoom(v, 2), { ...v, zoom: 2 });
+  const cleared = withPageZoom({ ...v, zoom: 2 }, undefined);
+  assert.deepEqual(cleared, v);
+  assert.equal('zoom' in cleared, false);
+  assert.deepEqual(withPageUrl({ kind: 'browser', url: 'http://a/', zoom: 3 }, 'http://b/'), { kind: 'browser', url: 'http://b/', zoom: 3 });
+});
+
 test('a navigation keeps the root for a page from the disk and drops it for a web page (M9 fix 896)', () => {
   const local = 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/two.html';
   const v = { kind: 'browser', url: 'emerald-file://0f1e2d3c-4b5a-4968-8776-655443322110/site/page.html', root: 'C:\\pages', profile: 'b' } as const;
@@ -123,4 +137,6 @@ test("main's refusal reads as a page from the disk or a link off the web (M9 fix
   const local = 'emerald-file://0b5c3a9e-1f2d-4c3b-8a7e-6d5c4b3a2f10/site/page.html';
   assert.equal(refusalLine(local), `This page tried to open ${local}; a web page cannot open a page from the disk`);
   assert.equal(refusalLine('file:///C:/x'), 'This page tried to open file:///C:/x; a browser pane opens only http and https pages');
+  // M9 fix 987: a frame's refusal has a line of its own.
+  assert.equal(refusedFrame(local), `A frame in this page tried to open ${local}; a web page cannot open a page from the disk`);
 });

@@ -249,10 +249,35 @@ const BAR_HASHES = 3;
 
 // The hash list a bar line names, the first BAR_HASHES then a count of
 // the rest.
-function hashesOf(bars: readonly CardBar[]): string {
+function hashesOf(bars: readonly { hash: string }[]): string {
   const named = bars.slice(0, BAR_HASHES).map((b) => b.hash.slice(0, 7));
   const rest = bars.length - named.length;
   return rest > 0 ? `${named.join(', ')} and ${rest} more` : named.join(', ');
+}
+
+// A square on a block's lane (M9 fix 992): a commit made outside the
+// session that sits on its line, with the author git gives it.
+export interface CardSquare {
+  hash: string;
+  author: string;
+}
+
+// The authors of a squares line: distinct, in order of first appearance,
+// the first three named and a count of the rest.
+function authorsOf(squares: readonly CardSquare[]): string {
+  const all = [...new Set(squares.map((q) => q.author))];
+  const named = all.slice(0, 3);
+  const rest = all.length - named.length;
+  if (rest > 0) return `${named.join(', ')} and ${rest} more`;
+  return named.length < 2 ? named.join('') : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`;
+}
+
+// The line naming a block's squares and who made them, newest first, or
+// null for a block with none (M9 fix 992).
+export function squareLine(squares: readonly CardSquare[]): string | null {
+  if (squares.length === 0) return null;
+  if (squares.length === 1) return `square at ${squares[0]!.hash.slice(0, 7)}: a commit made outside this session, by ${squares[0]!.author}`;
+  return `${squares.length} squares: commits made outside this session, by ${authorsOf(squares)} (${hashesOf(squares)})`;
 }
 
 export function barLines(bars: readonly CardBar[]): BarLines {

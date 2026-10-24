@@ -100,14 +100,22 @@ test('stampEnv adds identity and strips inherited supervisor markers', () => {
   assert.equal('EMERALD_PIPE' in stampEnv({ EMERALD_PIPE: '' }, { sessionId: 's' }), false);
 });
 
-test('stampEnv puts a given path in as Path and drops every spelling the base had (M9 fix 971)', () => {
-  assert.deepEqual(stampEnv({ PATH: 'old', path: 'older', X: '1' }, { sessionId: 's', path: 'C:\\fresh' }), {
-    X: '1',
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
-    Path: 'C:\\fresh',
-    EMERALD_SESSION_ID: 's',
-  });
+test("stampEnv lays the registry's variables over the base, every spelling the base had dropped and a stripped name dropped from either (M9 fixes 971 and 996)", () => {
+  assert.deepEqual(
+    stampEnv(
+      { PATH: 'old', path: 'older', pathext: '.Y', X: '1', EMERALD_HOME: 'C:\\h' },
+      { sessionId: 's', registry: { Path: 'C:\\fresh', PATHEXT: '.X', NO_COLOR: '1', EMERALD_PIPE: 'p' } },
+    ),
+    {
+      X: '1',
+      Path: 'C:\\fresh',
+      PATHEXT: '.X',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      EMERALD_HOME: 'C:\\h',
+      EMERALD_SESSION_ID: 's',
+    },
+  );
 });
 
 test('stampEnv drops an inherited emerald mod from CLAUDE_CODE_PLUGIN_DIRS and keeps the rest (M9 fix 833)', () => {

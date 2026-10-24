@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { hidePaneHere, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
+import { hidePaneHere, openFileFromOutside, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { defaultKind, emptyKey, folderRows, nextTile, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
 import { installedShells } from './daemon-model.ts';
 import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
 import { recordUse } from './use-record.ts';
 import { formatChord, plainKeyFor } from './keys-model.ts';
-import { currentTab, describeState, findPane, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
+import { currentTab, describeState, findPane, focusPane, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
 import type { SessionInfo, ShellId } from '@emerald/shared';
 import { normalizeFolder } from './new-session-model.ts';
 import { Menu, menuOpen } from './Menu.tsx';
@@ -20,7 +20,7 @@ import { setScheme, useScheme } from './scheme-store.ts';
 import { shownSessions, shownWords } from './shown-sessions.ts';
 import type { Shown } from './shown-sessions.ts';
 import { useSkin } from './skin.ts';
-import { browserViewSupported } from './daemon-model.ts';
+import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
 import { editTab, useStore } from './store.ts';
 import { getUiState, loadClaudeOpensOn, loadEmptyPaneKind, loadEmptyPaneShell, openNewSession, rememberClaudeOpensOn, rememberEmptyPaneKind, rememberEmptyPaneShell, useUi } from './ui.ts';
 
@@ -68,8 +68,23 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   // (M9 fix 546), else a shell.
   const [kind, setKind] = useState<EmptyKind>(() => defaultKind(getUiState().splitKind, loadEmptyPaneKind()));
   // The Browser tile (M9 fix 666) is a pick Tab can land on, not a kind:
-  // nothing is remembered of it and the folders do not apply.
-  const [browserPick, setBrowserPick] = useState(false);
+  // nothing is remembered of it and the folders do not apply. The File tile
+  // (M9 fix 990) is the same, with a path box in the folders' place.
+  const [tilePick, setTilePick] = useState<'browser' | 'file' | null>(null);
+  const browserPick = tilePick === 'browser';
+  const filePick = tilePick === 'file';
+  const pathRef = useRef<HTMLInputElement>(null);
+  const [pathText, setPathText] = useState('');
+  const [pathNote, setPathNote] = useState<string | null>(null);
+  // The path box has the keyboard once File is picked, by a click or by
+  // Tab; leaving File puts it back in the box, since the path box it was
+  // in is gone.
+  const lastPick = useRef(tilePick);
+  useEffect(() => {
+    if (tilePick === 'file') pathRef.current?.focus();
+    else if (lastPick.current === 'file') inputRef.current?.focus();
+    lastPick.current = tilePick;
+  }, [tilePick]);
   // The folder the person moved the selection to, or null for row 1, so a
   // default row that arrives after mount is selected rather than pushed.
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -245,7 +260,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   };
   const selectKind = (k: EmptyKind) => {
     setKind(k);
-    setBrowserPick(false);
+    setTilePick(null);
     setError(null);
   };
   const openBrowser = () => {
@@ -253,6 +268,66 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     void editTab((t) => setPaneView(t, paneId, { kind: 'browser', url: '' }), paneId).catch((err: unknown) => console.warn('[emerald] browser pane failed', err));
   };
   const browserTile = browserViewSupported(daemon);
+  const fileTile = fileViewSupported(daemon);
+  // M9 fix 990: a click on File picks it and never opens anything.
+  const pickFile = () => {
+    setTilePick('file');
+    setError(null);
+  };
+  // Browse… puts the chooser's pick in the box; Enter or Shift+Enter then
+  // says where it opens, as for a pasted path.
+  const browse = () => {
+    void window.emerald
+      .pickFile(selected?.folder ?? null)
+      .then((picked) => {
+        if (picked === null) return;
+        setPathText(picked);
+        setPathNote(null);
+        pathRef.current?.focus();
+      })
+      .catch((err: unknown) => console.warn('[emerald] pick file failed', err));
+  };
+  // The path box's file: here fills this pane with the file view, as
+  // Browser fills it; tab opens it as a pinned tab and leaves the pane as
+  // it is. A folder or a missing path is said on the line under the box,
+  // which keeps its text.
+  const openTyped = async (where: 'here' | 'tab') => {
+    const clean = cleanPath(pathText);
+    if (clean === '' || starting) return;
+    const target = resolvePath(clean, selected?.folder ?? null);
+    if (target === null) {
+      setPathNote(`Path not found: ${clean}`);
+      return;
+    }
+    const st = await window.emerald.files.stat(target);
+    if ('error' in st) {
+      setPathNote(`${st.error}: ${target}`);
+      return;
+    }
+    if (st.kind === 'dir') {
+      setPathNote(`A folder, not a file: ${target}`);
+      return;
+    }
+    if (where === 'here') {
+      void editTab((t) => setPaneView(focusPane(t, paneId), paneId, { kind: 'file', path: target }), paneId).catch((err: unknown) => console.warn('[emerald] file pane failed', err));
+      return;
+    }
+    setPathText('');
+    setPathNote(null);
+    void openFileFromOutside(target).catch((err: unknown) => console.warn('[emerald] file tab failed', err));
+  };
+  const onPathKey = (ev: React.KeyboardEvent<HTMLInputElement>) => {
+    if (ev.key === 'Tab' && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      ev.preventDefault();
+      const to = nextTile('file', ev.shiftKey ? -1 : 1, { browser: browserTile, file: fileTile });
+      if (to === 'browser' || to === 'file') setTilePick(to);
+      else selectKind(to);
+      if (to !== 'file') inputRef.current?.focus();
+    } else if (ev.key === 'Enter' && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      ev.preventDefault();
+      void openTyped(ev.shiftKey ? 'tab' : 'here');
+    }
+  };
   const start = (k: EmptyKind, folder: string) => {
     recordUse(k === 'shell' ? 'empty-start-shell' : 'empty-start-claude');
     if (starting) return;
@@ -293,16 +368,17 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       if (act !== null) {
         ev.preventDefault();
         if (act.act === 'flip') {
-          const to = nextTile(browserPick ? 'browser' : kind, act.delta, browserTile);
-          if (to === 'browser') setBrowserPick(true);
+          const to = nextTile(tilePick ?? kind, act.delta, { browser: browserTile, file: fileTile });
+          if (to === 'browser' || to === 'file') setTilePick(to);
           else selectKind(to);
-        } else if (browserPick && (act.act === 'move' || act.act === 'row')) {
-          // The Browser pick has no folder to move or choose.
+        } else if (tilePick !== null && (act.act === 'move' || act.act === 'row')) {
+          // The Browser and File picks have no folder to move or choose.
         } else if (act.act === 'move') {
           const next = folders[moveHighlight(selectedIndex, act.delta, folders.length)];
           if (next !== undefined) selectFolder(next.folder);
         } else if (act.act === 'start') {
           if (browserPick) openBrowser();
+          else if (filePick) pathRef.current?.focus();
           else if (selected !== null) start(kind, selected.folder);
         } else if (act.act === 'row') {
           const row = folders[act.index];
@@ -459,7 +535,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     );
   }
 
-  const label = browserPick ? { head: 'Open web page', tail: '' } : selected === null ? { head: startHead(kind, pick), tail: '' } : startLabel(kind, selected.folder, pick);
+  const label = browserPick ? { head: 'Open web page', tail: '' } : filePick ? { head: 'Open file here', tail: '' } : selected === null ? { head: startHead(kind, pick), tail: '' } : startLabel(kind, selected.folder, pick);
   return (
     <div className="empty-pane" data-mode="empty" data-filtering={filtering ? 'true' : undefined} data-picker={pickerPaneId === paneId ? 'open' : undefined} ref={rootRef} tabIndex={-1}>
       {/* The body holds the padding and the gaps, since the narrow rules
@@ -472,15 +548,16 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           <div className="empty-state">
             <div className="empty-title">No sessions</div>
             <div className="muted">Start a shell here, or a Claude session in a folder of your choice. Closing the last pane brings you back here.</div>
-            <div className="muted">Right-click any pane for more, or the {skin === 'emerald' ? 'gem' : 'Z'} at the top left.</div>
+            <div className="muted">Right-click any pane for more, or the {skin === 'emerald' ? 'gem' : 'Z'} at the top left. Over a terminal it is Shift+right-click, since a plain one copies or pastes.</div>
           </div>
         )}
         {/* What kind: a click on Shell or Claude session selects and never starts; Browser opens the page at once, having no folder to choose. */}
         {/* The mouse's form of Enter (M9 fix 705): the first click of the pair has pressed the tile, and start's starting guard keeps a triple click to one start. */}
-        <div className="empty-kinds" data-tiles={browserTile ? 3 : 2}>
-          <KindTile kind="shell" pressed={!browserPick && kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('shell', selected.folder); }} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
-          <KindTile kind="claude" pressed={!browserPick && kind === 'claude'} glyph={skin === 'emerald' ? '◆' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('claude', selected.folder); }} onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
+        <div className="empty-kinds" data-tiles={2 + (browserTile ? 1 : 0) + (fileTile ? 1 : 0)}>
+          <KindTile kind="shell" pressed={tilePick === null && kind === 'shell'} glyph=">_" name="Shell" hint={plainKeyFor('new-session')} sub={shellSub(pick, shells)} title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('shell', selected.folder); }} onPick={() => selectKind('shell')} onMouseDown={keepFocus} caret={shells.length > 1 ? { ref: caretRef, open: shellMenu !== null, onOpen: openShellMenu } : undefined} />
+          <KindTile kind="claude" pressed={tilePick === null && kind === 'claude'} glyph={skin === 'emerald' ? '◆' : '✳'} gem={skin === 'emerald'} name="Claude session" hint="Tab" sub="args and a first prompt under More…" title={tileTitle(selected?.folder ?? null)} onStart={() => { if (selected !== null) start('claude', selected.folder); }} onPick={() => selectKind('claude')} onMouseDown={keepFocus} />
           {browserTile && <KindTile kind="browser" pressed={browserPick} glyph="://" name="Browser" hint="" sub="a URL, a host or a search" onPick={openBrowser} onMouseDown={keepFocus} />}
+          {fileTile && <KindTile kind="file" pressed={filePick} glyph="{}" name="File" hint="" sub="a path, pasted or typed" onPick={pickFile} onMouseDown={keepFocus} />}
         </div>
         {shellMenu !== null && (
           <Menu
@@ -499,38 +576,70 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
             }))}
           />
         )}
-        {/* Which folder: row 1 is where a start would go now. */}
-        <div className="empty-in-block">
-          <div className="muted empty-in">in</div>
-          <div className="empty-folders">
-            {folders.map((r, i) => (
-              <button
-                key={r.folder}
-                className="empty-folder"
-                data-folder={r.folder}
-                data-selected={i === selectedIndex ? 'true' : undefined}
-                title={`${r.folder}
-Double-click to start here`}
-                onMouseDown={keepFocus}
-                onClick={() => selectFolder(r.folder)}
-                // The mouse's form of the digit keys (M9 fix 575): the first click
-                // of the pair has already selected the row, and start's
-                // starting guard keeps a triple click to one start; a Claude
-                // start is the plain one the Start button makes, not More...'s
-                // dialog.
-                onDoubleClick={() => start(kind, r.folder)}
-              >
-                <span className="empty-folder-num">{i + 1}</span>
-                <span className="empty-folder-name">{folderName(r.folder) === '' ? r.folder : folderName(r.folder)}</span>
-                <span className="empty-folder-parent">{parentLabel(r.folder, home)}</span>
-                {r.note !== null && <span className="empty-folder-note">{r.note}</span>}
+        {/* M9 fix 990: with File picked, a path box where the folders were. */}
+        {filePick && (
+          <div className="empty-path-block">
+            <div className="empty-path-row">
+              <input
+                ref={pathRef}
+                className="empty-path"
+                type="text"
+                spellCheck={false}
+                placeholder="Paste a file's path. Enter opens it here, Shift+Enter in a tab."
+                value={pathText}
+                onChange={(ev) => {
+                  setPathText(ev.target.value);
+                  setPathNote(null);
+                }}
+                onKeyDown={onPathKey}
+              />
+              <button className="secondary empty-browse" onMouseDown={keepFocus} onClick={browse}>
+                Browse…
               </button>
-            ))}
+            </div>
+            <div className="muted empty-path-note" data-error={pathNote !== null || undefined}>
+              {pathNote ?? (selected === null ? '' : `A relative path starts in ${folderName(selected.folder) === '' ? selected.folder : folderName(selected.folder)}`)}
+            </div>
           </div>
-        </div>
+        )}
+        {/* Which folder: row 1 is where a start would go now. */}
+        {!filePick && (
+          <div className="empty-in-block">
+            <div className="muted empty-in">in</div>
+            <div className="empty-folders">
+              {folders.map((r, i) => (
+                <button
+                  key={r.folder}
+                  className="empty-folder"
+                  data-folder={r.folder}
+                  data-selected={i === selectedIndex ? 'true' : undefined}
+                  title={`${r.folder}
+Double-click to start here`}
+                  onMouseDown={keepFocus}
+                  onClick={() => selectFolder(r.folder)}
+                  // The mouse's form of the digit keys (M9 fix 575): the first click
+                  // of the pair has already selected the row, and start's
+                  // starting guard keeps a triple click to one start; a Claude
+                  // start is the plain one the Start button makes, not More...'s
+                  // dialog.
+                  onDoubleClick={() => start(kind, r.folder)}
+                >
+                  <span className="empty-folder-num">{i + 1}</span>
+                  <span className="empty-folder-name">{folderName(r.folder) === '' ? r.folder : folderName(r.folder)}</span>
+                  <span className="empty-folder-parent">{parentLabel(r.folder, home)}</span>
+                  {r.note !== null && <span className="empty-folder-note">{r.note}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="empty-start-block">
           <div className="empty-row empty-start-row">
-            <button className="empty-start" disabled={browserPick ? starting : selected === null || starting} onClick={() => (browserPick ? openBrowser() : selected !== null && start(kind, selected.folder))}>
+            <button
+              className="empty-start"
+              disabled={browserPick ? starting : filePick ? pathText.trim() === '' || starting : selected === null || starting}
+              onClick={() => (browserPick ? openBrowser() : filePick ? void openTyped('here') : selected !== null && start(kind, selected.folder))}
+            >
               {/* One inline label, so the button's text reads as one line. */}
               <span className="empty-start-label">
                 {label.head}
@@ -538,16 +647,18 @@ Double-click to start here`}
               </span>
               <span className="empty-start-key">⏎</span>
             </button>
-            <button className="empty-other" onClick={other}>
-              Another folder…
-            </button>
-            {kind === 'claude' && !browserPick && (
+            {!filePick && (
+              <button className="empty-other" onClick={other}>
+                Another folder…
+              </button>
+            )}
+            {kind === 'claude' && tilePick === null && (
               <button className="empty-more" onClick={() => openNewSession(paneId, { folder: selected?.folder ?? '', split: false, opensOn: true })}>
                 More…
               </button>
             )}
             {/* The face the Claude session opens on (M9 fix 689), remembered at the click; More…'s dialog follows it too (M9 fix 723). */}
-            {kind === 'claude' && !browserPick && (
+            {kind === 'claude' && tilePick === null && (
               <span className="empty-opens" role="group" aria-label="The view the session opens on">
                 <span className="muted">opens on</span>
                 <button

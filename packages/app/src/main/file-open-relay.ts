@@ -33,15 +33,17 @@ export interface OpenRequest {
   launch?: true;
   // M9 fix 853: path is a folder from Explorer's Open in Emerald items, to open in a new tab with a Claude or a shell started there; a launch only, never set by the daemon's push.
   kind?: 'claude' | 'shell';
+  // M9 fix 988: the session whose emmer open <url> or --browser asked, recorded as the browser pane's openedBy.
+  opener?: string;
 }
 
 // What rides the open to the renderer beside the path and the pane flag.
-export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; browser?: boolean | undefined; launch?: boolean | undefined; kind?: 'claude' | 'shell' | undefined } {
-  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, browser: req.browser, launch: req.launch, kind: req.kind };
+export function openExtraOf(req: OpenRequest): { scheme?: string | null | undefined; openId?: number | undefined; beside?: string | undefined; url?: boolean | undefined; browser?: boolean | undefined; launch?: boolean | undefined; kind?: 'claude' | 'shell' | undefined; opener?: string | undefined } {
+  return { scheme: req.scheme, openId: req.openId, beside: req.beside, url: req.url, browser: req.browser, launch: req.launch, kind: req.kind, opener: req.opener };
 }
 
 export interface OpenRelayClient {
-  on(event: 'message', listener: (msg: { type: string; path?: string; pane?: boolean; scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean }) => void): unknown;
+  on(event: 'message', listener: (msg: { type: string; path?: string; pane?: boolean; scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean; opener?: unknown }) => void): unknown;
 }
 
 export interface OpenRelaySink {
@@ -84,6 +86,7 @@ export function wireFileOpenRelay(client: OpenRelayClient, sink: OpenRelaySink, 
       ...(typeof msg.beside === 'string' ? { beside: msg.beside } : {}),
       ...(msg.url === true ? { url: true } : {}),
       ...(msg.browser === true ? { browser: true } : {}),
+      ...(typeof msg.opener === 'string' ? { opener: msg.opener } : {}),
     });
   });
   return {

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findOnPath } from './find-on-path.ts';
+import type { ShellOption } from '@emerald/shared';
 import type { LaunchCommand, SessionLauncher } from './types.ts';
 
 // Runs Claude directly in the PTY so that PTY exit means Claude exited: a
@@ -37,21 +38,23 @@ export class ClaudeLauncher implements SessionLauncher {
     this.modDir = opts.modDir ?? null;
   }
 
-  command(extraArgs: string[]): LaunchCommand {
-    const file = this.resolveClaude();
+  // `env` is the session's own (M9 fix 996), so a claude installed since
+  // the daemon started is found on the PATH the registry holds now.
+  command(extraArgs: string[], _shell?: ShellOption | null, env: NodeJS.ProcessEnv = this.env): LaunchCommand {
+    const file = this.resolveClaude(env);
     if (file === null) {
       throw new Error('claude.exe not found in ~/.local/bin or on PATH');
     }
     // Only the command line carries the flag; the record's own args (what
     // session.list and emmer resume show) stay the user's.
     const args = this.modDir === null ? [...extraArgs] : ['--plugin-dir', this.modDir, ...extraArgs];
-    const env = this.modChannelEnv();
+    const channel = this.modChannelEnv();
     if (file.toLowerCase().endsWith('.cmd')) {
-      const resolved = resolveNpmShim(file, this.env);
-      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args], ...env };
-      return { file, args, note: SHIM_NOTE, ...env };
+      const resolved = resolveNpmShim(file, env);
+      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args], ...channel };
+      return { file, args, note: SHIM_NOTE, ...channel };
     }
-    return { file, args, ...env };
+    return { file, args, ...channel };
   }
 
   // How the mod starts its prompt channel (M9 fix 741): this daemon's own
@@ -63,11 +66,11 @@ export class ClaudeLauncher implements SessionLauncher {
     return { env: { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve(this.modDir, '..', 'dist', 'main.js'), 'mod-channel']) } };
   }
 
-  private resolveClaude(): string | null {
+  private resolveClaude(env: NodeJS.ProcessEnv): string | null {
     // The native installer puts it here and may not be on PATH for a detached daemon.
     const local = path.join(this.home, '.local', 'bin', 'claude.exe');
     if (isFile(local)) return local;
-    return findOnPath('claude.exe', this.env) ?? findOnPath('claude', this.env);
+    return findOnPath('claude.exe', env) ?? findOnPath('claude', env);
   }
 }
 

@@ -681,23 +681,26 @@ test("POST /compact answers the mod's question from the handler, with the sessio
 test("the mod's ModSubmit goes to onModSubmit alone, never the handler or the log, and only from the mod (M9 fix 781)", async () => {
   const dir = mkTemp('emerald-modsubmit-');
   const file = path.join(dir, 'h.jsonl');
-  const words: Array<[string, string, boolean, string | null]> = [];
+  const words: Array<[string, string, boolean, string | null, boolean]> = [];
   const handled: string[] = [];
   const own = await HookSink.listen((_id, payload) => {
     handled.push(String(payload.hook_event_name));
     return { outcome: 'applied', from: 'idle', to: 'idle' };
-  }, { preferredPort: 0, token: TOKEN, eventLogPath: file, log: silentLogger, onModSubmit: (id, submitId, entered, drop) => words.push([id, submitId, entered, drop]) });
+  }, { preferredPort: 0, token: TOKEN, eventLogPath: file, log: silentLogger, onModSubmit: (id, submitId, entered, drop, queued) => words.push([id, submitId, entered, drop, queued]) });
   const send = (body: object, hook: string) =>
     fetch(`http://127.0.0.1:${own.port}/hook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': TOKEN, 'X-Emerald-Session': 'emerald-781', 'X-Emerald-Hook': hook }, body: JSON.stringify(body) });
   try {
     assert.equal((await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--1', entered: false, drop: 'the session was stopped and nobody has sent input since' }, 'emerald-mod')).status, 204);
     assert.equal((await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--2', entered: true }, 'emerald-mod')).status, 204);
+    // M9 fix 995: the mod's queued word carries queued: true; the others read false.
+    assert.equal((await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--4', entered: true, queued: true }, 'emerald-mod')).status, 204);
     // From the hook file, not the mod: ignored.
     await send({ hook_event_name: 'ModSubmit', session_id: 'c781', submit_id: 'emerald--3', entered: true }, HOOK_A['X-Emerald-Hook']);
     await settle();
     assert.deepEqual(words, [
-      ['emerald-781', 'emerald--1', false, 'the session was stopped and nobody has sent input since'],
-      ['emerald-781', 'emerald--2', true, null],
+      ['emerald-781', 'emerald--1', false, 'the session was stopped and nobody has sent input since', false],
+      ['emerald-781', 'emerald--2', true, null, false],
+      ['emerald-781', 'emerald--4', true, null, true],
     ]);
     assert.deepEqual(handled, [], 'the session handler never sees a ModSubmit');
     assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '', '', 'no hooks.jsonl line');

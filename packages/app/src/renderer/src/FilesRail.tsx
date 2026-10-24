@@ -6,7 +6,7 @@ import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collaps
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
-import { dropDirFor, hoverEffect } from './files-drop-model.ts';
+import { dropDirFor, hoverEffect, SPRING_OPEN_MS, springDirFor } from './files-drop-model.ts';
 import type { RailDrop } from './files-drop-model.ts';
 import { dropIntoFolder } from './files-drop.ts';
 import { setRailDrop } from './explorer-drop.ts';
@@ -21,6 +21,7 @@ import { useGitPoll } from './git-poll.ts';
 import { useGitChanges } from './git-changes-hook.ts';
 import { GitLetter } from './GitLetter.tsx';
 import { Menu, menuOpen } from './Menu.tsx';
+import type { MenuItem } from './Menu.tsx';
 import { RenameBox } from './RenameBox.tsx';
 import { HistoryPanel } from './HistoryPanel.tsx';
 import { ClaudeStar } from './skin-star.tsx';
@@ -33,6 +34,8 @@ import { openLocalPage, openViewBeside, typeInto } from './actions.ts';
 import { fileViewSupported, localPageSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
 import { isHtmlFile, localPageRoot, noteRailRoot } from './local-page-model.ts';
 import { startDrag } from './pane-drag.ts';
+import type { DragPayload } from './pane-drag.ts';
+import { dragSet, extendSelection, pickRange, pickedRows, rowAfterRemovals, togglePick, trashNote } from './files-model.ts';
 import { useFocusedSession, useFocusedView } from './shown-sessions.ts';
 import { graphFolder } from './graph-folder.ts';
 import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, renameFilePanes, statsPath } from './tabs-model.ts';
@@ -241,10 +244,20 @@ export function FilesRail() {
   // terminal, as the filter box does, except the Escape that closes a
   // menu, which leaves the tree holding it. The Escape that closes a menu
   // is read off `menuOpen()` (M9 fix 589), since this listener runs before
-  // the menu's.
+  // the menu's. M9 fix 982: with more than one row picked, the first
+  // Escape clears the set back to the focused row and keeps the keyboard
+  // on the tree; the next hands it on as before.
+  const pickedMany = useRef(false);
+  pickedMany.current = model.picked.size > 1;
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape' || document.activeElement !== listRef.current || menuOpen()) return;
+      if (pickedMany.current) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setModel((m) => select(m, m.selected));
+        return;
+      }
       focusTerminal();
     };
     window.addEventListener('keydown', onKey, { capture: true });
@@ -436,7 +449,14 @@ export function FilesRail() {
   // light is set by hand, as explorer-drop.ts lights the strip, since a
   // dragover every few hundred milliseconds should render nothing.
   const railDrop = useRef<RailDrop | null>(null);
+  // M9 fix 983: the closed folder a drag has been held over, and the timer
+  // that opens it. A drag that moves to another row, leaves or drops clears it.
+  const spring = useRef<{ dir: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   {
+    const clearSpring = () => {
+      if (spring.current !== null) clearTimeout(spring.current.timer);
+      spring.current = null;
+    };
     const sameDir = (a: string, b: string) => normalizePath(a).toLowerCase() === normalizePath(b).toLowerCase();
     const clearLight = () => {
       for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) delete el.dataset['dropInto'];
@@ -449,20 +469,32 @@ export function FilesRail() {
     // The folder a drop at the point lands in and the element to light
     // (its row, the list for the rail's own folder, else the row hovered),
     // or null when no folder is in view.
-    const aim = (x: number, y: number): { dir: string; light: HTMLElement | null } | null => {
+    const aim = (x: number, y: number): { dir: string; light: HTMLElement | null; row: { path: string; kind: 'dir' | 'file' } | null } | null => {
       if (railTab !== 'files' || model.root === null) return null;
       const hit = document.elementFromPoint(x, y)?.closest<HTMLElement>('.files-list .files-row[data-path][data-kind]') ?? null;
       const path = hit?.dataset['path'];
-      const dir = dropDirFor(hit !== null && path !== undefined ? { path, kind: hit.dataset['kind'] === 'dir' ? 'dir' : 'file' } : null, model.root);
+      const row: { path: string; kind: 'dir' | 'file' } | null = hit !== null && path !== undefined ? { path, kind: hit.dataset['kind'] === 'dir' ? 'dir' : 'file' } : null;
+      const dir = dropDirFor(row, model.root);
       const listEl = listRef.current;
-      if (listEl === null) return { dir, light: null };
-      if (sameDir(dir, model.root)) return { dir, light: listEl };
-      const row = listEl.querySelector<HTMLElement>(`.files-row[data-kind="dir"][data-path="${CSS.escape(dir)}"]`);
-      return { dir, light: row ?? hit };
+      if (listEl === null) return { dir, light: null, row };
+      if (sameDir(dir, model.root)) return { dir, light: listEl, row };
+      const dirRow = listEl.querySelector<HTMLElement>(`.files-row[data-kind="dir"][data-path="${CSS.escape(dir)}"]`);
+      return { dir, light: dirRow ?? hit, row };
     };
     railDrop.current = {
       over: (x, y, keys) => {
         const a = aim(x, y);
+        const want = a === null ? null : springDirFor(a.row, model.expanded);
+        if (spring.current?.dir !== want) {
+          clearSpring();
+          if (want !== null) {
+            const timer = setTimeout(() => {
+              spring.current = null;
+              setModel((m) => expandFolder(m, want));
+            }, SPRING_OPEN_MS);
+            spring.current = { dir: want, timer };
+          }
+        }
         if (a === null) {
           clearLight();
           return 'none';
@@ -477,8 +509,12 @@ export function FilesRail() {
         }
         return effect;
       },
-      leave: clearLight,
+      leave: () => {
+        clearSpring();
+        clearLight();
+      },
       drop: (paths, x, y, keys) => {
+        clearSpring();
         const a = aim(x, y);
         clearLight();
         if (a === null) return;
@@ -500,6 +536,7 @@ export function FilesRail() {
           })
           .catch((err: unknown) => console.warn('[emerald] explorer drop on the rail failed', err));
       },
+      dirAt: (x, y) => aim(x, y)?.dir ?? null,
     };
   }
   useEffect(() => {
@@ -507,8 +544,13 @@ export function FilesRail() {
       over: (x, y, k) => railDrop.current?.over(x, y, k) ?? 'none',
       leave: () => railDrop.current?.leave(),
       drop: (p, x, y, k) => railDrop.current?.drop(p, x, y, k),
+      dirAt: (x, y) => railDrop.current?.dirAt(x, y) ?? null,
     });
-    return () => setRailDrop(null);
+    return () => {
+      if (spring.current !== null) clearTimeout(spring.current.timer);
+      spring.current = null;
+      setRailDrop(null);
+    };
   }, []);
 
   // The type-ahead's buffer and the time of its last key (M9 fix 951); a ref,
@@ -642,18 +684,64 @@ export function FilesRail() {
               return;
             }
             onMoved?.(!r.ok);
-            dropFileSchemes(p);
-            closeFileTabsUnder(p);
-            void editLayout((l) => deletedFilePanes(l, p)).catch((err: unknown) => console.warn('[emerald] closing the file panes after a delete failed', err));
-            list(parentPath(p));
-            setRefreshTick((t) => t + 1);
-            setSearchTick((t) => t + 1);
+            afterTrash(p);
           })
           .catch((err: unknown) => {
             console.warn('[emerald] delete failed', err);
             flashCornerNote(`${folderName(p)} could not go to the recycle bin`);
           }),
     };
+  };
+  // What follows an entry moved to the recycle bin or found gone: its
+  // scheme picks, tabs and file panes go and the tree, the hits and the
+  // Changed list read again.
+  const afterTrash = (p: string) => {
+    dropFileSchemes(p);
+    closeFileTabsUnder(p);
+    void editLayout((l) => deletedFilePanes(l, p)).catch((err: unknown) => console.warn('[emerald] closing the file panes after a delete failed', err));
+    list(parentPath(p));
+    setRefreshTick((t) => t + 1);
+    setSearchTick((t) => t + 1);
+  };
+  // M9 fix 982: Delete on a picked set, from the key or the menu: each
+  // entry trashOf gives a reason for is held, the rest go to the recycle
+  // bin together, and one note says what went and what could not.
+  const trashSet = (entries: readonly { path: string; kind: FileEntry['kind'] }[]) => {
+    const held: { path: string; why: string }[] = [];
+    const going: string[] = [];
+    for (const e of entries) {
+      const item = trashOf(e.path, e.kind);
+      if (item.trash === null) held.push({ path: e.path, why: item.reason ?? 'it cannot go' });
+      else going.push(e.path);
+    }
+    const after = rowAfterRemovals(rows, going);
+    if (isFileTab(tabs) && !isDocument(tabs.active) && going.some((p) => renamedPath(tabs.active, p, p) !== null)) holdKeysInTreeOverClose();
+    void Promise.all(going.map((p) => window.emerald.files.trash(p).then((r) => ({ p, r }))))
+      .then((answers) => {
+        const moved: string[] = [];
+        for (const { p, r } of answers) {
+          if (!r.ok && r.reason === 'refused') {
+            held.push({ path: p, why: 'the recycle bin turned it down' });
+            continue;
+          }
+          if (r.ok) moved.push(p);
+          afterTrash(p);
+        }
+        setModel((m) => select(m, after));
+        const note = trashNote(moved, held);
+        if (note !== null) flashCornerNote(note);
+      })
+      .catch((err: unknown) => {
+        console.warn('[emerald] delete failed', err);
+        flashCornerNote(`${going.length} items could not go to the recycle bin`);
+      });
+  };
+  // The menu's Delete on a set (M9 fix 982): disabled with the first
+  // held reason only when every entry is held.
+  const setTrashItem = (set: readonly { path: string; kind: FileEntry['kind'] }[]): TrashItem => {
+    const reasons = set.map((e) => trashOf(e.path, e.kind).reason);
+    if (reasons.every((r) => r !== null)) return { reason: reasons[0] ?? null, trash: null };
+    return { reason: null, trash: () => trashSet(set) };
   };
   // M9 fix 180: a file row can be picked up and dropped on a pane, and
   // the row menu offers the same, once the daemon keeps the kind.
@@ -795,7 +883,17 @@ export function FilesRail() {
     // A lone Shift or Caps Lock, on its way to a capital, keeps the buffer;
     // any other key ends it.
     if (ev.key !== 'Shift' && ev.key !== 'CapsLock') typed.current = { text: '', at: 0 };
-    if (ev.shiftKey) return;
+    // M9 fix 982: Shift with Up, Down, Home or End picks the range from
+    // the anchor to the row the key alone would select.
+    if (ev.shiftKey) {
+      const next = extendSelection(model, rows, ev.key);
+      if (next === null) return;
+      ev.preventDefault();
+      if (next === model) return;
+      setModel(next);
+      if (next.selected !== null) setScrollToRow(next.selected);
+      return;
+    }
     const found = model.selected === null ? undefined : rows.find((r) => r.type === 'entry' && r.path === model.selected);
     const row = found !== undefined && found.type === 'entry' ? found : undefined;
     if (ev.key === 'F2') {
@@ -828,6 +926,14 @@ export function FilesRail() {
       return;
     }
     if (ev.key === 'Delete') {
+      // M9 fix 982: on a picked set, every row of it, its outermost paths.
+      const set = pickedRows(model, rows);
+      if (set.length > 1) {
+        ev.preventDefault();
+        const outer = new Set(dragSet(model, rows, set[0]!.path));
+        trashSet(set.filter((r) => outer.has(r.path)));
+        return;
+      }
       if (row === undefined) return;
       ev.preventDefault();
       const after = rowAfterRemoval(rows, row.path);
@@ -1007,8 +1113,22 @@ export function FilesRail() {
               touched={row.type !== 'entry' ? [] : row.kind === 'file' ? touchedAt(touched, row.path) : row.expanded ? [] : touchedUnder(touched, row.path)}
               onShowDiff={row.type === 'entry' && row.kind === 'file' ? diffOf(row.path) : undefined}
               selected={row.type === 'entry' && row.path === model.selected}
-              onClick={() => {
+              picked={row.type === 'entry' && model.picked.has(row.path)}
+              onClick={(ev) => {
                 if (row.type !== 'entry') return;
+                // M9 fix 982: Shift picks the range from the anchor, Ctrl
+                // toggles the row in or out of the set; neither opens a
+                // file or folds a folder.
+                if (ev.shiftKey) {
+                  focusTree();
+                  setModel((m) => pickRange(m, rows, row.path));
+                  return;
+                }
+                if (ev.ctrlKey) {
+                  focusTree();
+                  setModel((m) => togglePick(m, row.path));
+                  return;
+                }
                 // M9 fix 929: a click on any row selects it and gives the
                 // tree the keyboard, as VS Code's explorer does; a file
                 // opens in the preview tab (fix 203) and its view leaves the
@@ -1024,12 +1144,22 @@ export function FilesRail() {
               onContextMenu={(ev) => {
                 if (row.type !== 'entry') return;
                 // M9 fix 574: a right-click selects the row, a folder too,
-                // and puts the keyboard on the tree for F2.
+                // and puts the keyboard on the tree for F2. M9 fix 982: on a
+                // row of a picked set it keeps the set and offers Delete on
+                // all of it.
                 focusTree();
+                const set = pickedRows(model, rows);
+                if (set.length > 1 && model.picked.has(row.path)) {
+                  ev.preventDefault();
+                  const outer = new Set(dragSet(model, rows, row.path));
+                  setMenu({ path: row.path, kind: row.kind, x: ev.clientX, y: ev.clientY, from: 'row', set: set.filter((r) => outer.has(r.path)).map((r) => ({ path: r.path, kind: r.kind })) });
+                  return;
+                }
                 setModel((m) => select(m, row.path));
                 onContextMenu(ev, row.path, row.kind);
               }}
               draggable={filesDrag && row.type === 'entry' && row.kind === 'file'}
+              dragPaths={row.type === 'entry' ? () => dragSet(model, rows, row.path) : undefined}
               flash={row.type === 'entry' && flashRow !== null && row.path === flashRow.path ? (flashRow.n % 2 === 0 ? 'a' : 'b') : undefined}
             />
             ),
@@ -1086,7 +1216,7 @@ export function FilesRail() {
           onShowDiff={menu.kind === 'file' ? diffOf(menu.path) : undefined}
           statsOffered={statsSupported(daemon)}
           revert={menu.kind === 'file' ? revertOf(menu.path) : undefined}
-          trash={canEditFrom(menu.from) ? trashOf(menu.path, menu.kind) : undefined}
+          trash={menu.set !== undefined ? setTrashItem(menu.set) : canEditFrom(menu.from) ? trashOf(menu.path, menu.kind) : undefined}
         />
       )}
         </>
@@ -1166,6 +1296,8 @@ interface MenuState {
   x: number;
   y: number;
   from: MenuFrom;
+  // M9 fix 982: the picked set a right-click on one of its rows opened the menu on, its outermost rows; Delete alone acts, on all of them.
+  set?: readonly { path: string; kind: FileEntry['kind'] }[];
 }
 
 // The name box of a new entry (M9 fix 309): what the tree needs to
@@ -1538,6 +1670,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
   const [revertArmed, setRevertArmed] = useState(false);
   // Delete asks twice the same way (M9 fix 617).
   const [trashArmed, setTrashArmed] = useState(false);
+  const set = menu.set;
   const rel = relativePath(root, menu.path);
   // The root's own menu (M9 fix 588) types and names the whole path,
   // since its path relative to itself is the whole path or nothing.
@@ -1567,16 +1700,20 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
       : trash.trash === null
         ? [{ label: 'Delete', title: trash.reason ?? undefined, disabled: true, onClick: () => {}, separator: true }]
         : trashArmed
-          ? [{ label: 'Delete, to the recycle bin?', title: 'The recycle bin keeps it; Restore there puts it back', onClick: done(trash.trash), separator: true }]
+          ? [{ label: set === undefined ? 'Delete, to the recycle bin?' : `Delete ${set.length} items, to the recycle bin?`, title: 'The recycle bin keeps it; Restore there puts it back', onClick: done(trash.trash), separator: true }]
           : [{ label: 'Delete', title: 'Move it to the recycle bin; asks once more', onClick: () => setTrashArmed(true), separator: true }];
+  // M9 fix 982: on a picked set every item but Delete stays in its place,
+  // disabled, since each acts on one row.
+  const oneRow = (items: MenuItem[]): MenuItem[] => (set === undefined ? items : items.map((i) => ({ ...i, disabled: true, title: `On one row at a time: ${set.length} rows are picked`, onClick: () => {} })));
   return (
     <Menu
       x={menu.x}
       y={menu.y}
       onClose={onClose}
       className="files-menu"
-      data={{ path: menu.path, from: menu.from }}
+      data={{ path: menu.path, from: menu.from, ...(set === undefined ? {} : { picked: String(set.length) }) }}
       items={[
+        ...oneRow([
         ...(menu.kind === 'file'
           ? [
               ...(onShowDiff === undefined ? [] : [{ label: 'Show diff', title: 'The change to this file in the review tab', onClick: done(onShowDiff) }]),
@@ -1611,6 +1748,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
         { label: 'Copy path', title: menu.path, onClick: done(() => copy(menu.path)), separator: true },
         ...(atRoot ? [] : [{ label: 'Copy relative path', title: rel, onClick: done(() => copy(rel)) }]),
         { label: 'Insert path into pane', title: `Type ${typed} into the focused pane`, onClick: done(insert), separator: true },
+        ]),
         ...trashItems,
       ]}
     />
@@ -1691,11 +1829,15 @@ interface FileRowProps {
   draggable: boolean;
   // The row Reveal in Files just showed (M9 fix 652), flashed once.
   flash?: 'a' | 'b' | undefined;
+  // M9 fix 981: what a drag from this row moves within the tree; every entry row, a folder too, whatever the daemon.
+  dragPaths?: (() => readonly string[]) | undefined;
+  // M9 fix 982: the row is in the picked set (data-picked).
+  picked?: boolean;
 }
 
-function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, selected, onClick, onDoubleClick, onContextMenu, draggable, flash }: FileRowProps) {
+function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, selected, onClick, onDoubleClick, onContextMenu, draggable, flash, dragPaths, picked = false }: FileRowProps) {
   const indent = { paddingLeft: 8 + row.depth * 14 };
-  const press = useFilePress(draggable && row.type === 'entry' ? row.path : null);
+  const press = useFilePress(draggable && row.type === 'entry' ? row.path : null, undefined, undefined, row.type === 'entry' ? dragPaths : undefined);
   if (row.type === 'note') {
     return (
       <div className="files-note" style={indent} data-path={row.path}>
@@ -1712,6 +1854,7 @@ function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, sel
       data-depth={row.depth}
       data-expanded={row.expanded || undefined}
       data-selected={selected || undefined}
+      data-picked={picked || undefined}
       data-flash={flash}
       data-git={status}
       title={status === undefined ? row.name : `${row.name} (${status})`}
@@ -1763,18 +1906,28 @@ function TouchedDots({ by }: { by: TouchedBy[] }) {
 // A line (a contents hit, M9 fix 437) rides on the drag and a markdown
 // file lands in Raw, as the tab's reveal does, since the rendered view
 // has no lines.
-function useFilePress(path: string | null, line?: number, column?: number): { onMouseDown: (ev: React.MouseEvent) => void; swallowClick: () => boolean } {
+// M9 fix 981: tree, read at the press, is what a drop on one of the rail's
+// folders moves; with it the press drags a folder row, or a file row under
+// an old daemon, too, though only a single file reaches a pane.
+function useFilePress(path: string | null, line?: number, column?: number, tree?: () => readonly string[]): { onMouseDown: (ev: React.MouseEvent) => void; swallowClick: () => boolean } {
   const dragged = useRef(false);
   return {
     onMouseDown: (ev) => {
       ev.preventDefault();
       dragged.current = false;
-      if (path === null || ev.button !== 0) return;
-      const file = normalizePath(path);
-      const view: PaneView = line !== undefined && defaultView(file) !== null ? { kind: 'file', path: file, view: 'raw' } : { kind: 'file', path: file };
-      startDrag({ kind: 'view', view, ...(line === undefined ? {} : { line, column: column ?? 1 }) }, ev.nativeEvent, () => {
+      if ((path === null && tree === undefined) || ev.button !== 0) return;
+      const paths = tree?.() ?? [];
+      let payload: DragPayload | null = null;
+      if (path !== null && (tree === undefined || paths.length === 1)) {
+        const file = normalizePath(path);
+        const view: PaneView = line !== undefined && defaultView(file) !== null ? { kind: 'file', path: file, view: 'raw' } : { kind: 'file', path: file };
+        payload = { kind: 'view', view, ...(line === undefined ? {} : { line, column: column ?? 1 }) };
+      }
+      const onBegin = () => {
         dragged.current = true;
-      });
+      };
+      if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin);
+      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items` });
     },
     swallowClick: () => {
       if (!dragged.current) return false;
@@ -1803,6 +1956,28 @@ function ChangedRow({ path, status, code, selected, title, draggable, onClick, o
       }}
       onContextMenu={onContextMenu}
       onMouseDown={press.onMouseDown}
+    >
+      {children}
+    </div>
+  );
+}
+
+// A nested repository's row of the Changed list (M9 fix 984): a folder row
+// with no press, drag or counts, whose click opens that repository's own
+// review. Its own component so ChangedRow's press stays a file's.
+function ChangedRepoRow({ path, rel, status, code, selected, onContextMenu, children }: { path: string; rel: string; status: GitStatus; code: string; selected: boolean; onContextMenu: (ev: React.MouseEvent) => void; children: React.ReactNode }) {
+  return (
+    <div
+      className="files-row files-changed-row"
+      data-path={path}
+      data-kind="dir"
+      data-repo="true"
+      data-selected={selected || undefined}
+      data-git={status}
+      data-code={code}
+      title={`${rel} is a repository of its own; click to review its changes`}
+      onClick={() => openFolderReviewTab(path)}
+      onContextMenu={onContextMenu}
     >
       {children}
     </div>
@@ -1876,7 +2051,18 @@ function ChangedList({ changes, needle, selected, onOpen, onContextMenu, session
         const counts = countsText(f.added, f.removed);
         const deleted = letter === 'D';
         if (!deleted && renaming !== null && normalizePath(f.path) === renaming.path) {
-          return <RenamingListRow key={`${f.path}#rename`} path={f.path} kind="file" className="files-changed-row" box={renaming} onDone={onRenameDone} />;
+          return <RenamingListRow key={`${f.path}#rename`} path={f.path} kind={f.repo === true ? 'dir' : 'file'} className="files-changed-row" box={renaming} onDone={onRenameDone} />;
+        }
+        if (f.repo === true) {
+          return (
+            <ChangedRepoRow key={f.path} path={f.path} rel={f.rel} status={f.status} code={f.code} selected={f.path === selected} onContextMenu={(ev) => onContextMenu(ev, f.path, 'dir', 'changed')}>
+              <TypeIcon name={f.rel.slice(f.rel.lastIndexOf('/') + 1)} kind="dir" />
+              <GitLetter letter={letter} />
+              <span className="files-name">{f.rel}</span>
+              <span className="files-changed-repo">repository</span>
+              <TouchedDots by={touchedAt(touched, f.path)} />
+            </ChangedRepoRow>
+          );
         }
         return (
           <ChangedRow

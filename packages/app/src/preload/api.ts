@@ -42,7 +42,7 @@ export interface DaemonInfo {
   // Set when the daemon serves another home than this window's (M9 fix
   // 495), which the banner says before anything else.
   otherHome: { theirs: string; mine: string } | null;
-  // The shells the daemon found at its start (M9 fix 624), the first the
+  // The shells the daemon found at the connect (M9 fix 624), the first the
   // default; absent from a daemon older than level 61.
   shells?: ShellOption[];
 }
@@ -355,6 +355,8 @@ export interface OpenExtra {
   browser?: boolean;
   // M9 fix 853: the path is a folder to open a new tab on, with a Claude or a shell.
   kind?: 'claude' | 'shell';
+  // M9 fix 988: the session that asked for the browser pane, kept as its openedBy.
+  opener?: string;
 }
 
 // One file of a review (M64): its path relative to the repo root and
@@ -392,6 +394,8 @@ export interface ChangedFile extends GitFile {
   rel: string;
   added: number | null;
   removed: number | null;
+  // A repository of its own under the root (M9 fix 984, as ReviewFile's since fix 963): one row with no count. Absent on every other row.
+  repo?: true;
 }
 
 export interface GitChanges {
@@ -793,8 +797,8 @@ export interface KeysApi {
   armed(on: boolean): void;
   onGuestKey(handler: (key: GuestKey) => void): () => void;
   onGuestInput(handler: (hit: { webContentsId: number; kind: 'mouse' | 'key' }) => void): () => void;
-  // M9 fix 967: a page's own navigation main's guard refused, for the pane's error line.
-  onGuestRefused(handler: (refused: { webContentsId: number; url: string }) => void): () => void;
+  // M9 fix 967: a page's own navigation main's guard refused, for the pane's error line; fix 987: frame when it was a frame inside the page.
+  onGuestRefused(handler: (refused: { webContentsId: number; url: string; frame?: true }) => void): () => void;
 }
 
 // The usage record (M9 fix 676): send-only; main checks every line
@@ -820,6 +824,9 @@ export interface BrowserApi {
   // it holds it (the guard hands it back when the command ends).
   onTakeFocus(handler: (paneId: string, token: number) => void): () => void;
   tookFocus(token: number, ok: boolean): void;
+  // M9 fix 986: a page's own level after its Ctrl+wheel step, kept on the
+  // pane's record so a relaunch brings it back.
+  onZoom(handler: (paneId: string, level: number) => void): () => void;
 }
 
 // What a pane drag carries (M52; here since M9 fix 927, so main reads it

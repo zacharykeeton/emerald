@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizePath } from './files-model.ts';
 import type { MoveOutcome } from '../../preload/api.ts';
-import { dropDirFor, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote } from './files-drop-model.ts';
+import { dropDirFor, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote, SPRING_OPEN_MS, springDirFor, treeDropPaths } from './files-drop-model.ts';
 
 // M9 fix 953: a drop from Explorer on the Files rail.
 
@@ -10,6 +11,15 @@ test('dropDirFor lands in a folder row, a file row its folder, and the root for 
   assert.equal(dropDirFor({ path: 'C:\\w\\src\\a.ts', kind: 'file' }, 'C:\\w'), 'C:\\w\\src');
   assert.equal(dropDirFor({ path: 'C:\\a.txt', kind: 'file' }, 'C:\\w'), 'C:\\');
   assert.equal(dropDirFor(null, 'C:\\w'), 'C:\\w');
+});
+
+test('treeDropPaths drops a path already in the folder and the folder itself, case-insensitively, and keeps the rest (M9 fix 981)', () => {
+  assert.deepEqual(treeDropPaths(['C:\\w\\a.txt'], 'c:/w'), []);
+  assert.deepEqual(treeDropPaths(['C:\\w\\src'], 'C:\\w\\src'), []);
+  assert.deepEqual(treeDropPaths(['C:\\w\\a.txt', 'C:\\w\\src\\b.txt'], 'C:\\w\\src'), ['C:\\w\\a.txt']);
+  assert.deepEqual(treeDropPaths(['C:\\w\\src\\b.txt'], 'C:\\w\\lib'), ['C:\\w\\src\\b.txt']);
+  // A folder into its own child stays, so main's refusal is the note.
+  assert.deepEqual(treeDropPaths(['C:\\w\\src'], 'C:\\w\\src\\kid'), ['C:\\w\\src']);
 });
 
 test('modeFor and hoverEffect follow Explorer\'s keys', () => {
@@ -52,4 +62,12 @@ test('moveNote says what landed, what was skipped, refused or kept, in that orde
   );
   assert.equal(moveNote([o('a.txt', 'here'), o('b.txt', 'here')], 'into'), 'Already in into');
   assert.equal(moveNote([], 'into'), null);
+});
+
+test('springDirFor opens a closed folder row only', () => {
+  assert.equal(SPRING_OPEN_MS, 600);
+  assert.equal(springDirFor({ path: 'C:/r/a', kind: 'dir' }, new Set()), 'C:/r/a');
+  assert.equal(springDirFor({ path: 'C:\\r/a', kind: 'dir' }, new Set([normalizePath('C:/r/a')])), null);
+  assert.equal(springDirFor({ path: 'C:/r/a.txt', kind: 'file' }, new Set()), null);
+  assert.equal(springDirFor(null, new Set()), null);
 });

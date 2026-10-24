@@ -7255,8 +7255,10 @@ button:disabled {
 /* The bar lines on a block's card (M9 fix 152): a bar on the graph has
    no words of its own, so the card says what its start bar and its fork
    bars mean, in the muted tone of the where line, wrapped since the
-   fork line names up to three hashes. */
-.lane-card-bars {
+   fork line names up to three hashes, and the squares' line (M9 fix
+   992). */
+.lane-card-bars,
+.lane-card-squares {
   margin-top: 4px;
   color: var(--muted);
   white-space: normal;
@@ -11351,21 +11353,6 @@ button.files-root {
   min-width: 0;
 }
 
-/* M9 fix 666: the Browser tile makes three; under the width where three
-   names no longer fit it drops to a row of its own below the other two. */
-.empty-kinds[data-tiles="3"] {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-@container empty-pane (max-width: 760px) {
-  .empty-kinds[data-tiles="3"] {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .empty-kind[data-kind="browser"] {
-    grid-column: 1 / -1;
-  }
-}
-
 .empty-kind {
   display: flex;
   flex-direction: column;
@@ -11756,8 +11743,7 @@ button.files-root {
 /* M9 fix 706: under 310px no two tiles fit side by side at any padding, so
    they stack, one name per row. */
 @container empty-pane (max-width: 310px) {
-  .empty-kinds,
-  .empty-kinds[data-tiles="3"] {
+  .empty-kinds {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -14508,4 +14494,179 @@ button.answer-popover-tab[data-sent="true"]:hover {
   font-family: "Segoe UI", system-ui, sans-serif;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* M9 fix 982: the rows picked with Ctrl+click and Shift+click draw as the selected row does; the focused row a Ctrl+click took out of the set keeps only fix 929's ring. Tree rows alone carry data-depth. */
+.files-row[data-picked] {
+  background: var(--row-selected);
+}
+
+.files-row[data-depth][data-selected]:not([data-picked]):not(:hover) {
+  background: none;
+}
+
+/* M9 fix 984: a nested repository's mark on its Changed row, where a file's counts sit. */
+.files-changed-repo {
+  flex: none;
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* M9 fix 990: the File tile's path box. */
+.empty-path-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.empty-path-row {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.empty-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  margin-bottom: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--gutter);
+  font: inherit;
+  outline: none;
+}
+
+.empty-path-note {
+  font-size: 12.5px;
+  min-height: 1.4em;
+}
+
+.empty-path-note[data-error] {
+  color: var(--error);
+}
+
+.empty-path::placeholder {
+  color: var(--placeholder);
+}
+
+.empty-path:focus {
+  border-color: var(--focus);
+}
+
+/* M9 fix 974: the band over the chat box when a usage window is nearly
+   spent, in the fallback bar's shape, with a dismiss in the chips row's
+   clear button's. */
+.chat-usage-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--blocked-line);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.chat-usage-warning-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-usage-warning-dismiss {
+  flex: none;
+  margin-left: 2px;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-usage-warning-dismiss:hover {
+  color: var(--fg);
+}
+
+/* M9 fix 978: a fenced block's copy button, top right on a wrapper outside the pre, so it stays put while the block scrolls sideways; always shown, dim, full under the pointer or the keyboard's focus. The wrapper takes the pre's margin, so a reply ending in a block still ends flush (.chat-md > :last-child). The glyph is two sheets drawn by the button's own pseudo-elements: the button holds no text, so a reply's textContent never gains a word. */
+.chat-code {
+  position: relative;
+  margin: 0 0 6px;
+}
+
+.chat-md .chat-code > pre {
+  margin: 0;
+}
+
+button.chat-code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--title-bg);
+  color: var(--fg);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+button.chat-code-copy:hover,
+button.chat-code-copy:focus-visible {
+  background: var(--title-bg);
+  opacity: 1;
+}
+
+button.chat-code-copy::before,
+button.chat-code-copy::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+  width: 9px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+button.chat-code-copy::before {
+  left: 4px;
+  top: 3px;
+}
+
+button.chat-code-copy::after {
+  left: 7px;
+  top: 6px;
+  background: var(--title-bg);
+}
+
+/* M9 fix 979: a reply's time under its bubble at the right edge, as the prompt's time sits, shown while the pointer is on the bubble. Drawn from data-time by ::after, so the reply's textContent never holds it; placed absolutely, so the hover moves nothing below, and on the timeline's ground above the next step, since it can sit over that step's top. Opacity alone: a turn can hold many bubbles. */
+.chat-reply[data-time]::after {
+  content: attr(data-time);
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 1;
+  margin-top: 1px;
+  padding-left: 4px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chat-reply[data-time]:hover::after {
+  opacity: 1;
 }

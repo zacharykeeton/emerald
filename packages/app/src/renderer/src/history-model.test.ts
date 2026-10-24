@@ -148,6 +148,20 @@ test('countPrompts counts a typed /compact once (M9 fix 956)', () => {
   assert.equal(countPrompts(text, true), 3 - 1);
 });
 
+test('countPrompts counts a typed /compact on two promptIds once (M9 fix 993)', () => {
+  const a = { promptId: 'p993a' };
+  const b = { promptId: 'p993b' };
+  const text =
+    user('hello', T0) +
+    user('/compact', T0 + 1000, a) +
+    compactBoundary(T0 + 1500) +
+    compactSummary(T0 + 1600) +
+    user('<local-command-caveat>Caveat: the messages below</local-command-caveat>', T0 + 1005, { isMeta: true, ...b }) +
+    user('<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>', T0 + 1005, b) +
+    user('<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>', T0 + 1900, b);
+  assert.equal(countPrompts(text, true), 2);
+});
+
 test('buildSession prefers the history index for counts and times and the transcript for the rest', () => {
   const head = { title: 'A title', name: null, firstAsk: null, cwd: 'C:\\code\\emerald', branch: 'main', firstPrompt: 'from transcript', startedAt: T0 + 5, remoteIds: ['session_a'] };
   const tail = { name: null, model: 'claude-opus-5', lastAt: T0 + 100, preview: { who: 'agent' as const, text: 'Done.' }, remoteIds: ['session_c', 'session_a'] };
@@ -277,6 +291,13 @@ test('sameTranscriptCost: equal prices, a changed part, and the first answer', (
 test('isBareCommand: a slash command with nothing after it, or a setting command with its argument, is not an ask', () => {
   for (const t of ['/model', '/model opus[1m]', ' /effort medium ', '/rename Install the routine from ATK', '/clear', '/compact']) assert.equal(isBareCommand(t), true, t);
   for (const t of ['/backlog file this', '/c/Users/x/notes.md read this', 'fix the tabs']) assert.equal(isBareCommand(t), false, t);
+});
+
+test('isBareCommand: a built-in with any argument is not an ask, a skill with words is (fix 973)', () => {
+  const builtins = ['/compact keep the plan', '/clear old', '/cost today', '/reset now', '/output-style explanatory', '/color red', '/add-dir C:\\x'];
+  const eight = ['/model opus', '/rename x', '/effort low', '/resume abc', '/add-dir D:\\y', '/output-style x', '/color blue', '/theme dark'];
+  for (const t of [...builtins, ...eight]) assert.equal(isBareCommand(t), true, t);
+  for (const t of ['/backlog file this', '/my-skill do the thing']) assert.equal(isBareCommand(t), false, t);
 });
 
 test('parseTranscriptTail and parseTranscriptHead read the last /rename, skipping an empty one (M9 fix 954)', () => {
