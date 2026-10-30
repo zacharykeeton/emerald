@@ -2,6 +2,38 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 997 to 1014, 2026-10-30
+
+Eighteen fixes: a side question beside the chat view with `/btw`, Copy image on a picture's right-click, a large copy onto the Files rail that shows how far it has got, a set dragged where it cannot land that says so, `emmer prompt` printing Claude's whole reply, and a handful of small ones in the chat view, the empty pane, the usage band and the level banner. The daemon goes from level 77 to 78, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**Ask a side question with `/btw`.** Type `/btw` and a question in the chat view's box and send it: a strip opens at the view's top right with your question and Claude's answer, without adding a turn to the conversation. Escape, or the strip's ×, closes it.
+
+**Copy a picture.** Right-click a picture in a file tab, a file pane or the Files rail and pick Copy image to put it on the clipboard. PNG, JPEG and ICO files copy; for GIF, WebP, BMP and SVG the item is there but greyed out, its tooltip saying why.
+
+**A large copy shows its progress.** Drop a big folder from Explorer onto the Files rail and the corner note reads `Copying 120 of 400 files into <folder>`, counting up, until the final note says it is done.
+
+**A drag that cannot land says so.** A folder, or several picked rows, dragged from the Files tree onto a pane or the tab strip's + shows a not-allowed cursor, and letting go puts a note in the corner: a pane takes one file at a time, so drop the set on a folder. The menu of a picked set now copies every path, or every relative path, one per line.
+
+**`emmer prompt` prints the whole reply.** It used to print only the reply's first line; it now prints Claude's last reply whole, and `--json` carries it whole as `reply` with the first line beside it as `replyLine`.
+
+### Details
+
+**The chat view.** A draft sitting in Claude Code's input is carried into the box once each time you flip to the chat view, never twice, and a model or effort pick or a `/` command made while that carry is still reading waits for it and then goes alone. The switch confirmation drawn without numbers labels its buttons with what each one sends, and the sidebar's card for it offers Yes and No.
+
+**Sending into a busy session.** When the session's mod queues your message behind a running turn, `emmer send` says queued rather than sent, and `emmer prompt` waits for its own turn's reply, not the one already running.
+
+**The empty pane.** The File tile's row now shows `In a tab ⇧⏎` beside `Open file here ⏎`, so Shift+Enter is visible. Escape in the path box clears what you typed first, and closes the empty pane's pick only once the box is empty. The tab strip's + brings the panes forward with the new layout tab even when a file tab was in front.
+
+**The usage band.** A warning you dismissed stays dismissed when the window's reset time shifts by a few minutes between readings.
+
+**The level banner.** A reloaded window knows its daemon from its first paint, so the banner asking for a daemon restart no longer pops in a moment after the sidebar.
+
+**The sidebar.** A folder heading's count of changed files no longer asks git for line counts, so the poll behind it runs two gits and never counts the lines of new files.
+
+**Finding claude and the shells.** Claude, pwsh and the other shells are found whatever case the environment spells `PATH`, `PATHEXT`, `ProgramFiles`, `LOCALAPPDATA` and `ComSpec` in.
+
 ## Fixes 972 to 996, 2026-10-24
 
 Twenty-five fixes: the chat view's model and effort picks that no longer send what sits in Claude Code's input, a warning when a usage window is nearly spent, Claude Code's switch confirmations as a card, a copy button on code and a time on replies, the Files tree's own drags and several rows picked at once, a right-click on a terminal that only pastes, an empty pane that opens a file from a path, the browser pane's zoom kept across a restart, and a new session that gets the machine's whole environment. The daemon goes from level 76 to 77, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

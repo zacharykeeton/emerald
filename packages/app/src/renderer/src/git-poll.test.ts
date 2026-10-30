@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startGitPoll } from './git-poll.ts';
 import type { GitPollEnv } from './git-poll.ts';
-import { changesStamp } from './git-changes-hook.ts';
+import { changesStamp, countStamp } from './git-changes-hook.ts';
 import type { GitChanges } from '../../preload/api.ts';
 
 // The poll's stamp (M9 fix 354): a reply that reads the same as the
@@ -93,4 +93,13 @@ test('changesStamp tells two replies apart when only a status code differs (fix 
   const reply = (code: string): GitChanges => ({ root: 'C:\\repo', files: [{ path: 'a.txt', rel: 'a.txt', code, status: 'modified', added: 1, removed: 1 }] });
   assert.notEqual(changesStamp(reply(' M')), changesStamp(reply('M ')));
   assert.equal(changesStamp(reply(' M')), changesStamp(reply(' M')));
+});
+
+test('countStamp moves only with the row count or the root (fix 1014)', () => {
+  const row = (rel: string, code: string, added: number | null) => ({ path: rel, rel, code, status: 'modified' as const, added, removed: added });
+  const reply = (root: string, ...files: ReturnType<typeof row>[]): GitChanges => ({ root, files });
+  assert.equal(countStamp(reply('C:\\repo', row('a.txt', ' M', 1))), countStamp(reply('C:\\repo', row('a.txt', 'M ', 1))));
+  assert.equal(countStamp(reply('C:\\repo', row('a.txt', ' M', 1))), countStamp(reply('C:\\repo', row('a.txt', ' M', null))));
+  assert.notEqual(countStamp(reply('C:\\repo', row('a.txt', ' M', 1))), countStamp(reply('C:\\repo', row('a.txt', ' M', 1), row('b.txt', '??', null))));
+  assert.notEqual(countStamp(reply('C:\\repo', row('a.txt', ' M', 1))), countStamp(reply('C:\\other', row('a.txt', ' M', 1))));
 });

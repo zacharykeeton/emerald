@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createFile, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, renameEntry, requireAbsolute, sameVolume, trashEntry, writeFileText } from './file-write.ts';
+import { COPY_PROGRESS_MS, copyPaceMs, createFile, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, progressDue, renameEntry, requireAbsolute, sameVolume, trashEntry, walkTree, writeFileText } from './file-write.ts';
 
 const BOM = String.fromCharCode(0xfeff);
 // Any stamp, for a save refused before the stat.
@@ -531,4 +531,190 @@ test('sameVolume and entryMode read the drive as Explorer does', (t) => {
   assert.equal(entryMode('auto', 'C:\\x.txt', 'C:\\y'), 'move');
   assert.equal(entryMode('move', 'D:\\x.txt', 'C:\\y'), 'move');
   assert.equal(entryMode('copy', 'C:\\x.txt', 'C:\\y'), 'copy');
+});
+
+// M9 fix 1008: a copy's progress. A folder of n one-byte files, half in
+// each of two subfolders, and a fake clock that moves 10 ms per copied file.
+function manyFiles(root: string, n: number): string {
+  fs.mkdirSync(path.join(root, 'a'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'b'));
+  for (let i = 0; i < n; i++) fs.writeFileSync(path.join(root, i < n / 2 ? 'a' : 'b', `f${String(i).padStart(3, '0')}.txt`), 'x');
+  return root;
+}
+
+type Push = { done: number; total: number; bytesDone: number; bytesTotal: number; at: number };
+
+function clocked(step: number) {
+  let t = 0;
+  const pushes: Push[] = [];
+  const calls: string[] = [];
+  return {
+    pushes,
+    calls,
+    now: () => t,
+    progress: (p: Omit<Push, 'at'>) => pushes.push({ ...p, at: t }),
+    copyFile: async (from: string, to: string) => {
+      calls.push(from);
+      await fs.promises.cp(from, to, { errorOnExist: true, force: false, preserveTimestamps: true });
+      t += step;
+    },
+  };
+}
+
+function filesUnder(dir: string): string[] {
+  return (fs.readdirSync(dir, { recursive: true }) as string[]).filter((p) => fs.statSync(path.join(dir, p)).isFile());
+}
+
+test('walkTree lists a folder and every folder below it top-down, then the files with their sizes; a file alone is one entry', async () => {
+  const dir = tempDir();
+  try {
+    const root = path.join(dir, 'root');
+    fs.mkdirSync(path.join(root, 'sub', 'deep'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'empty'));
+    fs.writeFileSync(path.join(root, 'a.txt'), 'abc');
+    fs.writeFileSync(path.join(root, 'sub', 'b.txt'), 'ab');
+    fs.writeFileSync(path.join(root, 'sub', 'deep', 'c.txt'), 'a');
+    const w = await walkTree(root);
+    assert.deepEqual(w.dirs, [root, path.join(root, 'empty'), path.join(root, 'sub'), path.join(root, 'sub', 'deep')]);
+    assert.deepEqual(w.files, [
+      { path: path.join(root, 'a.txt'), size: 3 },
+      { path: path.join(root, 'sub', 'b.txt'), size: 2 },
+      { path: path.join(root, 'sub', 'deep', 'c.txt'), size: 1 },
+    ]);
+    assert.deepEqual(await walkTree(path.join(root, 'a.txt')), { dirs: [], files: [{ path: path.join(root, 'a.txt'), size: 3 }] });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries pushes a copy of 250 files at most every 100 ms, done rising to the total', async () => {
+  const dir = tempDir();
+  try {
+    const src = manyFiles(path.join(dir, 'many'), 250);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const c = clocked(10);
+    const answer = await moveEntries([src], into, 'copy', null, { trash: fakeTrash(dir).trash, now: c.now, progress: c.progress, copyFile: c.copyFile });
+    assert.deepEqual(answer, { done: [{ from: src, to: path.join(into, 'many'), result: 'copied' }] });
+    assert.equal(filesUnder(path.join(into, 'many')).length, 250);
+    assert.equal(filesUnder(src).length, 250);
+    assert.ok(c.pushes.length >= 20 && c.pushes.length <= 26, `pushes ${c.pushes.length}`);
+    for (const p of c.pushes) {
+      assert.equal(p.total, 250);
+      assert.equal(p.bytesTotal, 250);
+    }
+    for (let i = 1; i < c.pushes.length; i++) {
+      const p = c.pushes[i]!;
+      const before = c.pushes[i - 1]!;
+      assert.ok(p.done > before.done, `push ${i} did not rise`);
+      if (i < c.pushes.length - 1) assert.ok(p.at - before.at >= COPY_PROGRESS_MS, `push ${i} came early`);
+    }
+    assert.ok(c.pushes[0]!.at >= COPY_PROGRESS_MS);
+    assert.equal(c.pushes.at(-1)?.done, 250);
+    assert.equal(c.pushes.at(-1)?.bytesDone, 250);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries pushes nothing for a copy that ends within 100 ms', async () => {
+  const dir = tempDir();
+  try {
+    const src = manyFiles(path.join(dir, 'many'), 250);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const c = clocked(0);
+    const answer = await moveEntries([src], into, 'copy', null, { trash: fakeTrash(dir).trash, now: c.now, progress: c.progress, copyFile: c.copyFile });
+    assert.deepEqual(answer, { done: [{ from: src, to: path.join(into, 'many'), result: 'copied' }] });
+    assert.equal(filesUnder(path.join(into, 'many')).length, 250);
+    assert.deepEqual(c.pushes, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries copies nothing and pushes nothing for a move on one drive, a rename', async () => {
+  const dir = tempDir();
+  try {
+    const src = manyFiles(path.join(dir, 'many'), 250);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const c = clocked(10);
+    const answer = await moveEntries([src], into, 'auto', null, { trash: fakeTrash(dir).trash, now: c.now, progress: c.progress, copyFile: c.copyFile });
+    assert.deepEqual(answer, { done: [{ from: src, to: path.join(into, 'many'), result: 'moved' }] });
+    assert.deepEqual(c.calls, []);
+    assert.deepEqual(c.pushes, []);
+    assert.equal(filesUnder(path.join(into, 'many')).length, 250);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries takes a refused copy off the totals and removes its partial copy, the next entry still copied', async () => {
+  const dir = tempDir();
+  try {
+    const bad = manyFiles(path.join(dir, 'bad'), 20);
+    const good = manyFiles(path.join(dir, 'good'), 30);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const c = clocked(10);
+    let badCalls = 0;
+    const copyFile = async (from: string, to: string) => {
+      if (from.startsWith(bad + path.sep) && ++badCalls === 5) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      await c.copyFile(from, to);
+    };
+    const answer = await moveEntries([bad, good], into, 'copy', null, { trash: fakeTrash(dir).trash, now: c.now, progress: c.progress, copyFile });
+    const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+    assert.deepEqual(answer, {
+      done: [
+        { from: bad, to: path.join(into, 'bad'), result: 'refused', why: describeWrite(denied) },
+        { from: good, to: path.join(into, 'good'), result: 'copied' },
+      ],
+    });
+    assert.equal(fs.existsSync(path.join(into, 'bad')), false);
+    assert.equal(filesUnder(bad).length, 20);
+    assert.equal(filesUnder(path.join(into, 'good')).length, 30);
+    const last = c.pushes.at(-1);
+    assert.equal(last?.done, 34);
+    assert.equal(last?.total, 34);
+    assert.equal(last?.bytesDone, last?.bytesTotal);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries counts an EXDEV fallback copy when it starts', async () => {
+  const dir = tempDir();
+  try {
+    const src = manyFiles(path.join(dir, 'many'), 250);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const c = clocked(10);
+    const rename = async () => {
+      throw Object.assign(new Error('cross'), { code: 'EXDEV' });
+    };
+    const answer = await moveEntries([src], into, 'move', null, { trash: fakeTrash(dir).trash, rename, now: c.now, progress: c.progress, copyFile: c.copyFile });
+    assert.deepEqual(answer, { done: [{ from: src, to: path.join(into, 'many'), result: 'moved' }] });
+    assert.equal(fs.existsSync(src), false);
+    assert.ok(c.pushes.length > 0);
+    for (const p of c.pushes) assert.equal(p.total, 250);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('progressDue waits COPY_PROGRESS_MS from the start or the last push', () => {
+  assert.equal(progressDue(0, null, 99), false);
+  assert.equal(progressDue(0, null, 100), true);
+  assert.equal(progressDue(0, 150, 249), false);
+  assert.equal(progressDue(0, 150, 250), true);
+});
+
+test('copyPaceMs takes a whole number of milliseconds up to 1000 and nothing else', () => {
+  assert.equal(copyPaceMs(undefined), 0);
+  assert.equal(copyPaceMs('2'), 2);
+  assert.equal(copyPaceMs('x'), 0);
+  assert.equal(copyPaceMs('-1'), 0);
+  assert.equal(copyPaceMs('2.5'), 0);
+  assert.equal(copyPaceMs('5000'), 1000);
 });

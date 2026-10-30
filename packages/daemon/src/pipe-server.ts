@@ -596,11 +596,13 @@ export class PipeServer {
         // Gone meanwhile; the line says taken as entered.
       }
       this.opts.log.info(`mod submit for ${id8}: no word from the mod in ${ackMs} ms, ${working ? 'queued behind the turn' : 'taken as entered'}`);
-      return { via: 'mod' };
+      // M9 fix 1001: said on the reply, so a caller that read the row idle
+      // says the text waits rather than that it went in.
+      return working ? { via: 'mod', queued: true } : { via: 'mod' };
     }
     if (got.queued) {
       this.opts.log.info(`mod submit for ${id8}: queued behind the turn, by the mod's word`);
-      return { via: 'mod' };
+      return { via: 'mod', queued: true };
     }
     this.submitWaits.delete(submitId);
     if (!got.entered) {

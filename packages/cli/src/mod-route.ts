@@ -28,3 +28,8 @@ export function queuedLine(found: SessionInfo, via: 'mod' | 'typed', now = Date.
     ? `queued behind a turn running ${age}; it goes in when that turn ends`
     : `queued into a turn running ${age}; it goes in at the turn's next tool call, or when that turn ends`;
 }
+
+// M9 fix 1001: what a send says when the row read idle but the daemon's
+// reply says the mod queued the text, since a turn started as it was
+// sent. No age: the row's stateSince is the idle state's, not the turn's.
+export const QUEUED_AT_SEND = 'queued behind a turn that started as this was sent; it goes in when that turn ends';

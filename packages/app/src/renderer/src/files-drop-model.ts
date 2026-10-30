@@ -98,3 +98,9 @@ export function moveNote(outcomes: readonly MoveOutcome[], folder: string): stri
   if (kept !== undefined) parts.push(`${name(kept)}: copied, its original could not be removed`);
   return parts.length === 0 ? null : parts.join('; ');
 }
+
+// The corner note while a drop's copy runs (M9 fix 1008); the final note
+// is moveNote's.
+export function copyingNote(done: number, total: number, folder: string): string {
+  return `Copying ${done.toLocaleString()} of ${total.toLocaleString()} files into ${folder}`;
+}

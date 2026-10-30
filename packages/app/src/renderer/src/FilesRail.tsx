@@ -9,6 +9,7 @@ import { dirtyFiles, isDirty } from './file-edits.ts';
 import { dropDirFor, hoverEffect, SPRING_OPEN_MS, springDirFor } from './files-drop-model.ts';
 import type { RailDrop } from './files-drop-model.ts';
 import { dropIntoFolder } from './files-drop.ts';
+import { setCopy, treeRefusal } from './files-set-model.ts';
 import { setRailDrop } from './explorer-drop.ts';
 import type { FilesModel, MenuFrom, Pending, Row, TouchedBy, TouchedIndex } from './files-model.ts';
 import { indexCodes, indexStatuses, letterAt, letterFor, statusAt } from './git-status-model.ts';
@@ -38,7 +39,8 @@ import type { DragPayload } from './pane-drag.ts';
 import { dragSet, extendSelection, pickRange, pickedRows, rowAfterRemovals, togglePick, trashNote } from './files-model.ts';
 import { useFocusedSession, useFocusedView } from './shown-sessions.ts';
 import { graphFolder } from './graph-folder.ts';
-import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, renameFilePanes, statsPath } from './tabs-model.ts';
+import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, isImage, renameFilePanes, statsPath } from './tabs-model.ts';
+import { COPY_IMAGE_REFUSED, copyableImage } from './file-menu-model.ts';
 import { commitsQuery, commitsView } from './view-state.ts';
 import { editLayout, getState, useStore } from './store.ts';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, clearRevealFile, closeFileTabsUnder, flashCornerNote, keepSearchScopeUnder, openFileTab, openFolderReviewTab, openPreviewTab, openReviewTab, pinFileTab, renameFileTabs, setFilesChanged, setFilesWidth, setRailTab, setSearchMode, setSearchScope, toggleFiles, useUi } from './ui.ts';
@@ -1704,7 +1706,18 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
           : [{ label: 'Delete', title: 'Move it to the recycle bin; asks once more', onClick: () => setTrashArmed(true), separator: true }];
   // M9 fix 982: on a picked set every item but Delete stays in its place,
   // disabled, since each acts on one row.
-  const oneRow = (items: MenuItem[]): MenuItem[] => (set === undefined ? items : items.map((i) => ({ ...i, disabled: true, title: `On one row at a time: ${set.length} rows are picked`, onClick: () => {} })));
+  // M9 fix 1006: the copies stay live on a set, copying every picked path.
+  const copyItems: MenuItem[] =
+    set === undefined
+      ? [
+          { label: 'Copy path', title: menu.path, onClick: done(() => copy(menu.path)), separator: true },
+          ...(atRoot ? [] : [{ label: 'Copy relative path', title: rel, onClick: done(() => copy(rel)) }]),
+        ]
+      : [false, true].map((relative, i) => {
+          const c = setCopy(set.map((r) => r.path), root, relative);
+          return { label: c.label, title: c.title, onClick: done(() => copy(c.text)), ...(i === 0 ? { separator: true } : {}) };
+        });
+  const oneRow = (items: MenuItem[]): MenuItem[] => (set === undefined ? items : items.map((i) => (copyItems.includes(i) ? i : { ...i, disabled: true, title: `On one row at a time: ${set.length} rows are picked`, onClick: () => {} })));
   return (
     <Menu
       x={menu.x}
@@ -1745,8 +1758,28 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
           onClick: done(() => void window.emerald.files.open(menu.path).catch(warn('open'))),
         },
         { label: 'Reveal in Explorer', onClick: done(() => void window.emerald.files.reveal(menu.path).catch(warn('reveal'))) },
-        { label: 'Copy path', title: menu.path, onClick: done(() => copy(menu.path)), separator: true },
-        ...(atRoot ? [] : [{ label: 'Copy relative path', title: rel, onClick: done(() => copy(rel)) }]),
+        ...copyItems,
+        // M9 fix 1007: a picture's row copies the picture itself, as the
+        // file view's menu does, disabled with the reason on a kind main
+        // cannot decode.
+        ...(menu.kind === 'file' && isImage(menu.path)
+          ? [
+              {
+                label: 'Copy image',
+                title: copyableImage(menu.path) ? 'Copy the picture to the clipboard, as a PNG' : COPY_IMAGE_REFUSED,
+                disabled: !copyableImage(menu.path),
+                onClick: done(
+                  () =>
+                    void window.emerald.clipboard
+                      .writeImageFile(menu.path)
+                      .then((ok) => {
+                        if (!ok) console.warn('[emerald] copy image decoded nothing from', menu.path);
+                      })
+                      .catch(warn('copy image')),
+                ),
+              },
+            ]
+          : []),
         { label: 'Insert path into pane', title: `Type ${typed} into the focused pane`, onClick: done(insert), separator: true },
         ]),
         ...trashItems,
@@ -1837,7 +1870,7 @@ interface FileRowProps {
 
 function FileRow({ row, status, letter, counts, folder, touched, onShowDiff, selected, onClick, onDoubleClick, onContextMenu, draggable, flash, dragPaths, picked = false }: FileRowProps) {
   const indent = { paddingLeft: 8 + row.depth * 14 };
-  const press = useFilePress(draggable && row.type === 'entry' ? row.path : null, undefined, undefined, row.type === 'entry' ? dragPaths : undefined);
+  const press = useFilePress(draggable && row.type === 'entry' ? row.path : null, undefined, undefined, row.type === 'entry' ? dragPaths : undefined, row.type === 'entry' ? row.kind : undefined);
   if (row.type === 'note') {
     return (
       <div className="files-note" style={indent} data-path={row.path}>
@@ -1909,7 +1942,7 @@ function TouchedDots({ by }: { by: TouchedBy[] }) {
 // M9 fix 981: tree, read at the press, is what a drop on one of the rail's
 // folders moves; with it the press drags a folder row, or a file row under
 // an old daemon, too, though only a single file reaches a pane.
-function useFilePress(path: string | null, line?: number, column?: number, tree?: () => readonly string[]): { onMouseDown: (ev: React.MouseEvent) => void; swallowClick: () => boolean } {
+function useFilePress(path: string | null, line?: number, column?: number, tree?: () => readonly string[], kind?: FileEntry['kind']): { onMouseDown: (ev: React.MouseEvent) => void; swallowClick: () => boolean } {
   const dragged = useRef(false);
   return {
     onMouseDown: (ev) => {
@@ -1927,7 +1960,7 @@ function useFilePress(path: string | null, line?: number, column?: number, tree?
         dragged.current = true;
       };
       if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin);
-      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items` });
+      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items`, refusal: payload === null ? treeRefusal(paths.length, kind) : null });
     },
     swallowClick: () => {
       if (!dragged.current) return false;

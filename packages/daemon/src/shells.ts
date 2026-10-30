@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SHELL_LABELS, type ShellId, type ShellOption } from '@emerald/shared';
-import { findOnPath } from './launchers/find-on-path.ts';
+import { envValue, findOnPath } from './launchers/find-on-path.ts';
 
 function isFile(p: string): boolean {
   try {
@@ -32,15 +32,15 @@ export function findShells(env: NodeJS.ProcessEnv = process.env): ShellOption[] 
   if (pwsh) shells.push(option('pwsh', pwsh));
   shells.push(option('powershell', findOnPath('powershell.exe', env) ?? 'powershell.exe'));
   const bashes: string[] = [];
-  const programFiles = env['ProgramFiles'] ?? env['PROGRAMFILES'];
+  const programFiles = envValue(env, 'ProgramFiles');
   if (programFiles) bashes.push(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
-  const localAppData = env['LOCALAPPDATA'];
+  const localAppData = envValue(env, 'LOCALAPPDATA');
   if (localAppData) bashes.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'));
   const git = findOnPath('git.exe', env);
   if (git) bashes.push(path.resolve(path.dirname(git), '..', 'bin', 'bash.exe'));
   const bash = bashes.find(isFile);
   if (bash) shells.push(option('gitbash', bash));
-  const comSpec = env['ComSpec'] ?? env['COMSPEC'];
+  const comSpec = envValue(env, 'ComSpec');
   const cmd = comSpec && isFile(comSpec) ? comSpec : findOnPath('cmd.exe', env) ?? 'cmd.exe';
   shells.push(option('cmd', cmd));
   return shells;

@@ -1,7 +1,7 @@
 import { decodeRequestError } from '../main/request-error.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { BrowserDriveState, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, WindowDragTarget } from './api.ts';
+import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, WindowDragTarget } from './api.ts';
 
 const api: EmeraldApi = {
   // M9 fix 900: the window's zoom, VS Code's Ctrl+= and Ctrl+-.
@@ -65,6 +65,11 @@ const api: EmeraldApi = {
       ipcRenderer.on('emerald:files-changed', listener);
       return () => ipcRenderer.off('emerald:files-changed', listener);
     },
+    onProgress: (handler) => {
+      const listener = (_event: IpcRendererEvent, p: FilesProgress) => handler(p);
+      ipcRenderer.on('emerald:files-progress', listener);
+      return () => ipcRenderer.off('emerald:files-progress', listener);
+    },
     open: (path) => ipcRenderer.invoke('emerald:files-open', path),
     reveal: (path) => ipcRenderer.invoke('emerald:files-reveal', path),
     openFolder: (path) => ipcRenderer.invoke('emerald:files-open-folder', path),
@@ -73,7 +78,7 @@ const api: EmeraldApi = {
     real: (path) => ipcRenderer.invoke('emerald:files-real', path),
     openExternal: (url) => ipcRenderer.invoke('emerald:files-open-external', url),
     gitStatus: (dir) => ipcRenderer.invoke('emerald:files-git-status', dir),
-    gitChanges: (dir) => ipcRenderer.invoke('emerald:files-git-changes', dir),
+    gitChanges: (dir, opts) => ipcRenderer.invoke('emerald:files-git-changes', dir, opts),
     gitLog: (dir) => ipcRenderer.invoke('emerald:files-git-log', dir),
     gitGraph: (dir, options) => ipcRenderer.invoke('emerald:files-git-graph', dir, options ?? {}),
     gitWatch: (dirs) => ipcRenderer.invoke('emerald:git-watch', dirs),
@@ -129,6 +134,7 @@ const api: EmeraldApi = {
     read: () => ipcRenderer.invoke('emerald:clipboard-read'),
     write: (text) => ipcRenderer.invoke('emerald:clipboard-write', text),
     writeImage: (dataUrl) => ipcRenderer.invoke('emerald:clipboard-write-image', dataUrl),
+    writeImageFile: (file) => ipcRenderer.invoke('emerald:clipboard-write-image-file', file),
     image: (keyRoute) => ipcRenderer.invoke('emerald:clipboard-image', keyRoute),
   },
   // Design Mode (M9 fix 674): main checks the pane's guest is this
@@ -165,6 +171,7 @@ const api: EmeraldApi = {
   },
   restartDaemon: () => ipcRenderer.invoke('emerald:daemon-restart'),
   daemonInfo: () => ipcRenderer.invoke('emerald:daemon-info'),
+  daemonInfoNow: () => ipcRenderer.sendSync('emerald:daemon-info-sync'),
   windowId: () => ipcRenderer.invoke('emerald:window-id'),
   // M9 fix 927: a drag carried across windows.
   windowDrag: {

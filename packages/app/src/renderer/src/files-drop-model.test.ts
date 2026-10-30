@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizePath } from './files-model.ts';
 import type { MoveOutcome } from '../../preload/api.ts';
-import { dropDirFor, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote, SPRING_OPEN_MS, springDirFor, treeDropPaths } from './files-drop-model.ts';
+import { copyingNote, dropDirFor, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote, SPRING_OPEN_MS, springDirFor, treeDropPaths } from './files-drop-model.ts';
 
 // M9 fix 953: a drop from Explorer on the Files rail.
 
@@ -70,4 +70,10 @@ test('springDirFor opens a closed folder row only', () => {
   assert.equal(springDirFor({ path: 'C:\\r/a', kind: 'dir' }, new Set([normalizePath('C:/r/a')])), null);
   assert.equal(springDirFor({ path: 'C:/r/a.txt', kind: 'file' }, new Set()), null);
   assert.equal(springDirFor(null, new Set()), null);
+});
+
+// M9 fix 1008: the corner note while a drop's copy runs.
+test('copyingNote says how many files of the whole copy are in, by the locale, the word files whatever the count', () => {
+  assert.equal(copyingNote(1204, 3000, 'into'), `Copying ${(1204).toLocaleString()} of ${(3000).toLocaleString()} files into into`);
+  assert.equal(copyingNote(1, 1, 'x'), 'Copying 1 of 1 files into x');
 });

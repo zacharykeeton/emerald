@@ -126,7 +126,8 @@ export const PROTOCOL_VERSION = 1;
 //  77: M9 fix 986, zoom on a browser view, the page's own whole zoom level, kept only when not 0 and dropped outside the app's zoom steps
 //  77: M9 fix 976, needs-input with the reason switch on SessionInfo, a Claude session at rest at Claude Code's Change effort level? or Switch model? confirmation read off its screen
 //  77: M9 fix 996, shells on the hello found again at each app hello on the PATH the registry holds then, waiting at most 500 ms for the read, so a shell installed since the daemon started is offered at the window's next connect; a new session's whole environment from the registry at its spawn
-export const DAEMON_FEATURE_LEVEL = 77;
+//  78: M9 fix 1001, queued on session.submit's reply, set when the mod's word says queued or no word came in time while the turn ran, so a send to a row read idle says it waits behind a turn
+export const DAEMON_FEATURE_LEVEL = 78;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -371,7 +372,10 @@ export interface Requests {
   // A prompt for a Claude session (M9 fix 741): with its mod's channel
   // up the daemon pushes mod.submit to it and answers 'mod'; with none it
   // does nothing and answers 'typed', and the caller types the text.
-  'session.submit': { req: { sessionId: string; text: string };                    res: { via: 'mod' | 'typed' } };
+  // queued (M9 fix 1001) is set, never false, when the mod's word says the
+  // prompt waits behind a turn, or no word came in time while the row was
+  // working, so a caller that read the row idle still says queued.
+  'session.submit': { req: { sessionId: string; text: string };                    res: { via: 'mod' | 'typed'; queued?: true } };
 }
 
 // A session's last screen (M9 fix 159): the rows and the cursor the

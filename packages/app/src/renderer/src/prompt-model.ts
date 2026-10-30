@@ -67,6 +67,12 @@ export function sendRoute(session: Pick<SessionInfo, 'kind' | 'state'>, text: st
   return modRoutable(text) ? 'mod' : 'typed';
 }
 
+// M9 fix 1005: the question of a /btw typed in the box, its spaces run together; null for a bare /btw or any other text.
+export function btwQuestion(text: string): string | null {
+  const m = /^\/btw\s+(\S[\s\S]*)$/.exec(text.trim());
+  return m === null ? null : m[1]!.replace(/\s+/g, ' ');
+}
+
 // M9 fix 781: one chain per key, so two quick sends to one session stay
 // two messages; without it the second's text was typed inside the first's
 // Enter pause and the TUI read one line. A run starts once the previous run

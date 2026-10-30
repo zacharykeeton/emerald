@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FileClash, FileMade, FileRenamed, FileSaved, FilesMoved, FileStamp, FileTrashed, MoveMode, MoveOutcome, TextFormat } from '../preload/api.ts';
+import type { FileClash, FileMade, FileRenamed, FileSaved, FilesMoved, FilesProgress, FileStamp, FileTrashed, MoveMode, MoveOutcome, TextFormat } from '../preload/api.ts';
 
 // The file service's one write (M9 fix 248): the editor's text back onto
 // the file it came from. Kept apart from files.ts, which imports electron's
@@ -216,7 +216,9 @@ export async function trashEntry(p: string, trash: (target: string) => Promise<v
 // the rest still go, and nothing done is rolled back. A replaced entry
 // goes to the trasher first, so fix 617's no fs.rm holds for what was
 // there; a move across drives is a copy and then the source removed
-// outright, as Explorer's own is.
+// outright, as Explorer's own is. A copy walks its tree itself, folders
+// then files, so the window that dropped can be told how far it is (M9
+// fix 1008).
 export function sameVolume(a: string, b: string): boolean {
   const ra = path.parse(path.resolve(a)).root;
   const rb = path.parse(path.resolve(b)).root;
@@ -228,10 +230,64 @@ export function entryMode(mode: MoveMode, from: string, dir: string): 'move' | '
   return sameVolume(from, dir) ? 'move' : 'copy';
 }
 
+// At most one progress push per this long, so a copy of thousands of
+// small files does not flood the window.
+export const COPY_PROGRESS_MS = 100;
+
+export function progressDue(startAt: number, lastAt: number | null, now: number): boolean {
+  return now - (lastAt ?? startAt) >= COPY_PROGRESS_MS;
+}
+
+// A harness's slowed copy (M9 fix 1008): verify:drop sets
+// EMERALD_COPY_PACE_MS so a few hundred files take long enough to read a
+// progress note. Unset, nothing waits.
+export function copyPaceMs(raw: string | undefined): number {
+  if (raw === undefined || !/^\d+$/.test(raw)) return 0;
+  return Math.min(Number(raw), 1000);
+}
+
+// What a copy of one dropped entry will make: its folders top-down, the
+// entry itself first, and every other entry under them with its size. A
+// symbolic link is a file here and never followed, as cp copies a link
+// as a link.
+export interface TreeWalk {
+  dirs: string[];
+  files: { path: string; size: number }[];
+}
+
+export async function walkTree(src: string): Promise<TreeWalk> {
+  const st = await fs.promises.lstat(src);
+  if (!st.isDirectory()) return { dirs: [], files: [{ path: src, size: st.size }] };
+  const dirs = [src];
+  const files: TreeWalk['files'] = [];
+  // The array's iterator reads its length each step, so the folders
+  // pushed below are walked in turn.
+  for (const dir of dirs) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const d of entries) {
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) dirs.push(p);
+      else files.push({ path: p, size: (await fs.promises.lstat(p)).size });
+    }
+  }
+  return { dirs, files };
+}
+
 export interface MoveDeps {
   trash: (target: string) => Promise<void>;
   rename?: (from: string, to: string) => Promise<void>;
   log?: (msg: string) => void;
+  // One file or one link copied (M9 fix 1008); the tests' fake counts
+  // the calls and moves a clock.
+  copyFile?: (from: string, to: string) => Promise<void>;
+  // A copy's figures so far, at most every COPY_PROGRESS_MS and once at
+  // the end (M9 fix 1008).
+  progress?: (p: Omit<FilesProgress, 'dir'>) => void;
+  // The clock the pushes are paced on; Date.now unless a test moves it.
+  now?: () => number;
+  // Milliseconds slept after each copied file, EMERALD_COPY_PACE_MS's.
+  pace?: number;
 }
 
 // An entry the drop can act on, or the outcome that stops it before
@@ -300,10 +356,78 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
     }
   }
   const chosen = replace ?? [];
+  const isChosen = (src: string) => chosen.some((c) => path.isAbsolute(c) && same(path.resolve(c), src));
 
-  const copyInto = async (src: string, to: string): Promise<unknown> => {
+  // The count of every file the drop will copy, so a push can say how
+  // far it is. A move on one drive is a rename and copies nothing, so it
+  // shows nothing. A walk that throws leaves its entry out, and its copy
+  // then fails and is reported as before.
+  const copyFile = deps.copyFile ?? ((a: string, b: string) => fs.promises.cp(a, b, { errorOnExist: true, force: false, preserveTimestamps: true }));
+  const now = deps.now ?? Date.now;
+  const pace = deps.pace ?? 0;
+  const walks = new Map<string, TreeWalk>();
+  let total = 0;
+  let bytesTotal = 0;
+  for (const e of planned) {
+    if ('outcome' in e || entryMode(mode, e.src, into) !== 'copy') continue;
+    if ((await thereAt(e.to)) !== null && !isChosen(e.src)) continue;
     try {
-      await fs.promises.cp(src, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+      const w = await walkTree(e.src);
+      walks.set(e.src, w);
+      total += w.files.length;
+      for (const f of w.files) bytesTotal += f.size;
+    } catch {
+      // Counted as nothing; the copy reports why.
+    }
+  }
+  let filesDone = 0;
+  let bytesDone = 0;
+  let startAt: number | null = null;
+  let lastAt: number | null = null;
+  let last: Omit<FilesProgress, 'dir'> | null = null;
+  const push = () => {
+    last = { done: filesDone, total, bytesDone, bytesTotal };
+    deps.progress?.(last);
+  };
+  // A counted entry that ends without its whole copy takes what it did
+  // not copy off the totals, so done meets total at the end.
+  const uncount = (src: string, copied: { files: number; bytes: number }) => {
+    const w = walks.get(src);
+    if (w === undefined) return;
+    walks.delete(src);
+    total -= w.files.length - copied.files;
+    for (const f of w.files) bytesTotal -= f.size;
+    bytesTotal += copied.bytes;
+  };
+
+  const copyInto = async (src: string, to: string, copied: { files: number; bytes: number }): Promise<unknown> => {
+    try {
+      let w = walks.get(src);
+      if (w === undefined) {
+        // An EXDEV fallback's tree, or one whose count walk threw: walked
+        // now and counted from now.
+        w = await walkTree(src);
+        walks.set(src, w);
+        total += w.files.length;
+        for (const f of w.files) bytesTotal += f.size;
+      }
+      const target = (p: string) => path.join(to, path.relative(src, p));
+      // Not recursive, so a name that appeared at `to` since the check
+      // answers EEXIST, as cp's errorOnExist did, and is spared below.
+      for (const d of w.dirs) await fs.promises.mkdir(target(d));
+      for (const f of w.files) {
+        startAt ??= now();
+        await copyFile(f.path, target(f.path));
+        filesDone += 1;
+        bytesDone += f.size;
+        copied.files += 1;
+        copied.bytes += f.size;
+        if (pace > 0) await new Promise((r) => setTimeout(r, pace));
+        if (progressDue(startAt, lastAt, now())) {
+          lastAt = now();
+          push();
+        }
+      }
       return null;
     } catch (err) {
       // The check before found nothing at `to`, so a partial copy is ours
@@ -327,15 +451,18 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
       continue;
     }
     const { src, to } = e;
+    const copied = { files: 0, bytes: 0 };
     let replaced = false;
     if ((await thereAt(to)) !== null) {
-      if (!chosen.some((c) => path.isAbsolute(c) && same(path.resolve(c), src))) {
+      if (!isChosen(src)) {
+        uncount(src, copied);
         done.push({ from: src, to, result: 'skipped' });
         continue;
       }
       try {
         await deps.trash(to);
       } catch {
+        uncount(src, copied);
         done.push({ from: src, to, result: 'refused', why: 'What is there could not go to the recycle bin' });
         continue;
       }
@@ -343,7 +470,8 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
     }
     const extra = replaced ? { replaced: true as const } : {};
     if (entryMode(mode, src, into) === 'copy') {
-      const err = await copyInto(src, to);
+      const err = await copyInto(src, to, copied);
+      if (err !== null) uncount(src, copied);
       done.push(err === null ? { from: src, to, result: 'copied', ...extra } : { from: src, to, result: 'refused', ...extra, why: describeWrite(err) });
       continue;
     }
@@ -353,8 +481,9 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
     } catch (err) {
       const code = errCode(err);
       if (code === 'EXDEV') {
-        const copyErr = await copyInto(src, to);
+        const copyErr = await copyInto(src, to, copied);
         if (copyErr !== null) {
+          uncount(src, copied);
           done.push({ from: src, to, result: 'refused', ...extra, why: describeWrite(copyErr) });
           continue;
         }
@@ -371,6 +500,10 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
       }
     }
   }
+  // The final figures once more when the window was shown any, unless
+  // the last push already carried them.
+  const final = last as Omit<FilesProgress, 'dir'> | null;
+  if (final !== null && (final.done !== filesDone || final.total !== total || final.bytesDone !== bytesDone || final.bytesTotal !== bytesTotal)) push();
   const words = done.map((o) => `${path.basename(o.from)} ${o.result}${o.replaced === true ? ' replaced' : ''}${o.sourceKept === true ? ' source kept' : ''}`);
   deps.log?.(`files-move into ${into} (${mode}): ${words.join(', ')}`);
   return { done };

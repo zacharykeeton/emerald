@@ -11,8 +11,11 @@
 // private EMERALD_HOME (its own sessions.json, state.json, daemon.json and
 // hooks.jsonl); since M9 fix 495 the pipe is named per user and per home,
 // so the home's own pipe is a private one and the run needs no Emerald app
-// closed (EMERALD_PIPE still names another, M9 fix 360). Needs the hooks installed in
-// ~/.claude/settings.json (emmer hooks install).
+// closed (EMERALD_PIPE still names another, M9 fix 360). Since M9 fix 997
+// every Claude here runs on a private Claude config under the home, the
+// user's global config copied in and the login read in place, and the
+// script installs emerald's hooks into that config itself, so nothing a
+// turn saves reaches ~/.claude.
 // Then (M9 fix 233) a third Claude the daemon did not start: a plain
 // `claude -p` with this checkout's hook script named by a --settings
 // file, whose hooks reach the private daemon off daemon.json under
@@ -30,13 +33,43 @@ const repoRoot = path.resolve(cliDir, '..', '..');
 const main = path.join(cliDir, 'dist', 'main.js');
 const home = path.join(os.tmpdir(), 'emerald-verify', 'cli-claude-home');
 const logFile = path.join(os.tmpdir(), 'emerald-verify', 'cli-claude.log');
-const env = { ...process.env, EMERALD_HOME: home };
+// M9 fix 997: the private Claude config, the same rule as cdp.mjs's
+// harnessClaudeConfig, written out here since importing cdp.mjs reads
+// EMERALD_HOME and the shots folder at import.
+const claudeConfig = path.join(home, 'claude-config');
+const realClaudeConfigSet = (process.env['CLAUDE_CONFIG_DIR']?.trim() ?? '') !== '';
+const realClaudeConfig = process.env['CLAUDE_CONFIG_DIR']?.trim() || path.join(os.homedir(), '.claude');
+const env = {
+  ...process.env,
+  EMERALD_HOME: home,
+  CLAUDE_CONFIG_DIR: claudeConfig,
+  CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env['CLAUDE_SECURESTORAGE_CONFIG_DIR'] ?? realClaudeConfig,
+};
 const pipeWord = env.EMERALD_PIPE ? `the private pipe ${env.EMERALD_PIPE}` : "the home's own pipe";
 const t0 = Date.now();
 
 fs.rmSync(home, { recursive: true, force: true });
 fs.mkdirSync(home, { recursive: true });
 fs.writeFileSync(logFile, '');
+// The global config copied whole, since the trust of the folders the
+// turns run in lives in its projects; a copy taken mid-write by the
+// user's own Claude is taken again.
+fs.mkdirSync(claudeConfig, { recursive: true });
+const globalSrc = realClaudeConfigSet ? path.join(realClaudeConfig, '.claude.json') : path.join(os.homedir(), '.claude.json');
+if (!fs.existsSync(globalSrc)) {
+  console.log(`[verify] note: no ${globalSrc} to copy; a Claude on ${claudeConfig} meets the first-run screens`);
+} else {
+  for (let attempt = 0; ; attempt += 1) {
+    fs.copyFileSync(globalSrc, path.join(claudeConfig, '.claude.json'));
+    try {
+      JSON.parse(fs.readFileSync(path.join(claudeConfig, '.claude.json'), 'utf8'));
+      break;
+    } catch {
+      if (attempt === 5) throw new Error(`the copy of ${globalSrc} is not JSON`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
 
 // M9 fix 392: the script costs two real Claude turns, and the second
 // session's exit and the plain `claude -p` each measured 37 to 41 s on a
@@ -114,24 +147,39 @@ function hookLines(sessionId) {
 
 try {
   log(`log: ${logFile}`);
-  // Preconditions: the real hooks are installed, and nothing owns the pipe.
-  // Only the hooks and their script are asked for (M9 fix 38): the text
-  // form's exit code also folds in the status line wrapper, which names
-  // the Node that installed it, Emerald.exe on a machine with the app
-  // installed and node.exe from this checkout, so it said "differs" on
-  // every installed machine; the test only needs Claude's hooks to reach
-  // the daemon.
-  const realEnv = { ...env };
-  delete realEnv.EMERALD_HOME;
-  let r = spawnSync(process.execPath, [main, 'hooks', 'status', '--json'], { env: realEnv, encoding: 'utf8' });
+  // Preconditions: emerald's hooks are installed in the private Claude
+  // config (M9 fix 997, by this script), its login reads signed in, and
+  // nothing owns the pipe. Only the hooks and their script are asked for
+  // (M9 fix 38): the text form's exit code also folds in the status line
+  // wrapper, which names the Node that installed it, Emerald.exe on a
+  // machine with the app installed and node.exe from this checkout, so it
+  // said "differs" on every installed machine; the test only needs
+  // Claude's hooks to reach the daemon.
+  const privateSettings = path.join(claudeConfig, 'settings.json');
+  let r = emerald('hooks', 'install', '--settings', privateSettings, '--json');
+  expect(r.code === 0, `hooks installed into the private Claude config (exit ${r.code})`);
+  r = emerald('hooks', 'status', '--settings', privateSettings, '--json');
   let status = null;
   try {
-    status = JSON.parse(r.stdout);
+    status = JSON.parse(r.out);
   } catch {
     // Not JSON: the expect below says so.
   }
   const hooksReady = status !== null && Array.isArray(status.missing) && status.missing.length === 0 && status.scriptPresent === true;
-  expect(hooksReady, `hooks installed in the real settings (${status === null ? r.stdout.trim() : `${status.installed?.length ?? 0} installed, missing ${JSON.stringify(status.missing)}, script ${status.scriptPresent ? 'present' : 'missing'}`})`);
+  expect(hooksReady, `hooks installed in the private Claude config (${status === null ? r.out.trim() : `${status.installed?.length ?? 0} installed, missing ${JSON.stringify(status.missing)}, script ${status.scriptPresent ? 'present' : 'missing'}`})`);
+  const auth = spawnSync('claude auth status --json', { env, shell: true, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  fs.appendFileSync(logFile, `$ claude auth status --json\n${auth.stdout ?? ''}${auth.stderr ?? ''}[exit ${auth.status}]\n`);
+  let authStatus = null;
+  try {
+    authStatus = JSON.parse(auth.stdout ?? '');
+  } catch {
+    // Not JSON: the expect below says so.
+  }
+  const authDir = typeof authStatus?.configDirectory === 'string' ? authStatus.configDirectory : null;
+  expect(
+    authStatus?.loggedIn === true && authDir !== null && path.resolve(authDir).toLowerCase() === path.resolve(claudeConfig).toLowerCase(),
+    `the private Claude config reads signed in (claude auth status: loggedIn ${authStatus?.loggedIn}, configDirectory ${authDir ?? (auth.stdout ?? '').trim().slice(0, 200)})`,
+  );
   r = emerald('daemon', 'status');
   expect(r.code === 1, `no daemon on ${pipeWord} (a leftover of an earlier run: emmer daemon stop with this EMERALD_HOME)`);
   r = emerald('daemon', 'start');
@@ -187,7 +235,12 @@ try {
   expect(window.includes(`"claudeSessionId": "${firstRow.claudeSessionId}"`), 'second session saw the first session bound to its Claude session id');
   const firstEvents = hookEvents(first.id);
   const secondEvents = hookEvents(second.id);
-  expect(firstEvents[0] === 'SessionStart:applied', `first hook events: ${firstEvents.join(' ')}`);
+  // The status line's posts (StatusLine, Measure) are not Claude's hook
+  // events and race SessionStart: on the private config (M9 fix 997) the
+  // status line is this checkout's node wrapper and landed first, where
+  // the user's installed one had landed second.
+  const firstHookEvents = firstEvents.filter((e) => !/^(StatusLine|Measure):/.test(e));
+  expect(firstHookEvents[0] === 'SessionStart:applied', `first hook events: ${firstEvents.join(' ')}`);
   expect(secondEvents.includes('SessionStart:applied') && secondEvents.includes('Stop:applied'), `second hook events: ${secondEvents.join(' ')}`);
   // M9 fix 726: the -p session loads --plugin-dir fresh.
   expect(hookLines(second.id).some((e) => e.event === 'Stop' && e.mod === true), "the -p session's Stop came from the mod");
@@ -284,6 +337,9 @@ try {
   });
   expect((replies995[replies995.length - 1] ?? '').includes('absorbed-995'), `the turn's reply reads the line (${JSON.stringify(replies995[replies995.length - 1] ?? null)})`);
   expect(hookLines(long.id).filter((e) => e.event === 'UserPromptSubmit').length === 2, 'one UserPromptSubmit for the absorbed line after the ping prompt, and no turn of its own');
+  r = emerald('prompt', 'long', 'Reply with exactly two short paragraphs and use no tools: the first is the word first-1000 alone, the second the word second-1000 alone.', '--timeout', '90000');
+  expect(r.code === 0 && r.out.includes('first-1000') && r.out.includes('second-1000'), `fix 1000: emmer prompt prints the whole reply, both paragraphs (${JSON.stringify(r.out.trim())})`);
+  log('M9 fix 1000: emmer prompt prints the whole reply, read off the transcript');
   r = emerald('kill', 'long');
   r = emerald('wait', 'long', '--for', 'exited', '--timeout', '10000');
   expect(r.code === 0, 'long exited');
@@ -322,11 +378,12 @@ try {
   expect(typeof conv233 === 'string' && conv233 !== first.id && conv233 !== second.id && unhostedLines.every((e) => e.sessionId === conv233), `the plain Claude's hooks landed unhosted under its own conversation id (${unhostedLines.map((e) => e.event).join(' ')})`);
   const unhostedEvents = unhostedLines.map((e) => `${e.event}:${e.outcome}${e.to === undefined ? '' : '>' + e.to}`);
   expect(unhostedLines.some((e) => e.event === 'UserPromptSubmit' && e.to === 'working') && unhostedLines.some((e) => e.event === 'Stop' && e.from === 'working'), `its lines carry the bare record's transitions: ${unhostedEvents.join(' ')}`);
-  // M9 fix 260: the hooks `emmer hooks install` put in the user's settings
-  // read the port off daemon.json under EMERALD_HOME too, so on a box with
-  // them installed every event above was posted twice, once by each hook
-  // set, and the sink folds the second; on a box without them the unit
-  // test is the proof and this reads one post per event either way.
+  // M9 fix 260: the hooks `emmer hooks install` put in the Claude config's
+  // settings read the port off daemon.json under EMERALD_HOME too, so every
+  // event above was posted twice, once by each hook set, and the sink folds
+  // the second. Since M9 fix 997 that second set is the private config's,
+  // installed by this script, so the fold is exercised on every box rather
+  // than only on one with the user's hooks installed.
   expect(new Set(unhostedLines.map((e) => e.event)).size === unhostedLines.length, `each of the plain Claude's events landed once (M9 fix 260): ${unhostedLines.map((e) => e.event).join(' ')}`);
   expect(unhostedLines.every((e) => e.mod !== true), 'the unhosted Claude posted through its hook file alone');
   j = emeraldJson('activity', '--json');

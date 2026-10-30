@@ -188,3 +188,34 @@ test("gitChanges lists a new folder's files one row each with their counts, the 
   assert.equal(changes.files.find((r) => r.rel === 'new/a.txt')?.path, path.join(dir, 'new', 'a.txt'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a count-only gitChanges lists the same rows with no line counts and runs only status and ls-files (M9 fix 1014)', async () => {
+  const dir = scratchRepo();
+  const f = (rel: string) => path.join(dir, ...rel.split('/'));
+  fs.writeFileSync(f('tracked.txt'), 'u\n');
+  fs.writeFileSync(f('extra.txt'), 'e\n');
+  fs.mkdirSync(f('new'));
+  fs.writeFileSync(f('new/a.txt'), 'a1\na2\n');
+  fs.writeFileSync(f('new/b.txt'), 'b1\n');
+  fs.appendFileSync(f('.git/info/exclude'), 'skip/\n');
+  fs.mkdirSync(f('skip'));
+  fs.writeFileSync(f('skip/s.txt'), 's\n');
+  fs.mkdirSync(f('nested'));
+  execFileSync('git', ['init', '-q'], { cwd: f('nested'), stdio: 'ignore' });
+  fs.writeFileSync(f('nested/n.txt'), 'n\n');
+  fs.writeFileSync(f('staged.txt'), 's1\n');
+  execFileSync('git', ['add', 'staged.txt'], { cwd: dir, stdio: 'ignore' });
+  const calls: Call[] = [];
+  const counted = await gitChanges(dir, realGit(calls), { countOnly: true });
+  const calls2: Call[] = [];
+  const full = await gitChanges(dir, realGit(calls2));
+  const cols = (c: typeof full) => c.files.map((r) => [r.rel, r.code, r.status]);
+  assert.deepEqual(cols(counted), cols(full));
+  assert.equal(counted.files.length, 6);
+  assert.ok(counted.files.every((r) => r.added === null && r.removed === null));
+  assert.equal(counted.files.find((r) => r.rel === 'nested')?.repo, true);
+  assert.deepEqual(calls.map((c) => c.args[1]).sort(), ['ls-files', 'status']);
+  // The default read still runs the numstat, so the Changed list keeps its numbers.
+  assert.ok(calls2.some((c) => c.args[1] === 'diff'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

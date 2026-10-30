@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { UsageWindow } from '../../preload/api.ts';
 import { windowLengthMs } from './usage-model.ts';
+import type { UsageDismissal } from './usage-model.ts';
 
 // The account's usage windows as the strip last showed them (M9 fix
 // 321), lifted out of the strip so the activity view's five-hour unit
@@ -104,23 +105,23 @@ export function useFiveHourWindow(): { from: number; to: number } | null {
   return fiveHourBounds(useUsageReading());
 }
 
-// M9 fix 974: the chat view's usage warnings dismissed, by usageWarning's
-// dismissKey (window, reset and mark), held in memory for the window's
-// life so one dismissal hides the band in every chat pane and a reload
-// brings it back once.
-let dismissed: ReadonlySet<string> = new Set();
+// M9 fix 974: the chat view's usage warnings dismissed, each the warning's
+// dismissKey (window, mark and reset), matched within an hour of its reset
+// (fix 1012), held in memory for the window's life so one dismissal hides
+// the band in every chat pane and a reload brings it back once.
+let dismissed: readonly UsageDismissal[] = [];
 
-export function dismissUsageWarning(key: string): void {
-  if (dismissed.has(key)) return;
-  dismissed = new Set([...dismissed, key]);
+export function dismissUsageWarning(d: UsageDismissal): void {
+  if (dismissed.some((e) => e.key === d.key && e.resetsAt === d.resetsAt && e.threshold === d.threshold)) return;
+  dismissed = [...dismissed, d];
   for (const l of listeners) l();
 }
 
-export function usageWarningDismissed(): ReadonlySet<string> {
+export function usageWarningDismissed(): readonly UsageDismissal[] {
   return dismissed;
 }
 
-export function useUsageWarningDismissed(): ReadonlySet<string> {
+export function useUsageWarningDismissed(): readonly UsageDismissal[] {
   return useSyncExternalStore(subscribe, usageWarningDismissed);
 }
 
@@ -128,5 +129,5 @@ export function useUsageWarningDismissed(): ReadonlySet<string> {
 export function resetUsageReading(): void {
   windows = null;
   age = NO_AGE;
-  dismissed = new Set();
+  dismissed = [];
 }

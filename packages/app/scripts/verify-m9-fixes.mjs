@@ -4348,15 +4348,28 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     expect(back832, 'fix 832: the crash banner is back after a reload');
     await s.evalJs(`document.querySelector(${JSON.stringify(bannerSel815 + ' .daemon-dismiss')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(crashSel815)})`, 'the crash banner put away by Not now', 3000);
+    // M9 fix 1013: a recorder from the document's start. A mutation callback
+    // runs before the browser can paint its batch, so the sidebar and the
+    // banner seen in one callback are one frame; no rAF is used (a covered
+    // harness window gets none).
+    const rec1013 = await s.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => { const mo = new MutationObserver(() => { if (window.__paint1013 === undefined && document.querySelector('.sidebar')) window.__paint1013 = { banner: !!document.querySelector('.daemon-banner[data-reason="level"]'), at: performance.now() }; if (window.__banner1013 === undefined && document.querySelector('.daemon-banner[data-reason="level"]')) window.__banner1013 = performance.now(); }); mo.observe(document, { childList: true, subtree: true }); })();`,
+    });
     await s.send('Page.reload');
     // The script's daemon reports level 1 throughout (fix 11), so the level
     // banner is the one up once the window knows its daemon, and the crash
     // banner would stand in its place; a read of any .daemon-banner only
     // passed in the 50 ms between the sidebar and the daemon's info.
     await s.waitFor(`!!document.querySelector('.sidebar') && !!document.querySelector('.daemon-banner[data-reason="level"]')`, 'fix 832: the window back after the second reload with the level banner and no crash banner', 15_000);
+    const paint1013 = await s.evalJs(`window.__paint1013 ?? null`);
+    const bannerAt1013 = await s.evalJs(`window.__banner1013 ?? null`);
+    await s.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: rec1013.identifier });
+    console.log(`[verify] fix 1013: the banner came ${paint1013 !== null && bannerAt1013 !== null ? Math.round(bannerAt1013 - paint1013.at) : 'n/a'} ms after the sidebar`);
     await sleep(2000);
     expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(crashSel815)})`)), 'fix 832: after Not now a reload brings no crash banner');
     step('M9 fix 815: a daemon the window started that crashed (0xC0000374) brings the crash banner after the restart, its code in the tooltip, and Not now puts it away; a restart brings none; a reload keeps it until Not now (fix 832)');
+    expect(paint1013?.banner === true, `fix 1013: the level banner is in the page in the same mutation batch as the sidebar after a reload, got ${JSON.stringify({ paint: paint1013, bannerAt: bannerAt1013 })}`);
+    step('M9 fix 1013: after a reload the level banner is in the page in the same mutation batch as the sidebar');
   });
   step(blocksRun());
   step('PASS');

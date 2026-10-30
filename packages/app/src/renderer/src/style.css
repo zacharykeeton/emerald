@@ -14670,3 +14670,57 @@ button.chat-code-copy::after {
 .chat-reply[data-time]:hover::after {
   opacity: 1;
 }
+
+/* M9 fix 1006: a tree drag that can land on no pane or tab under it. */
+body.dragging-session[data-drag-refused],
+body.dragging-session[data-drag-refused] * {
+  cursor: not-allowed !important;
+}
+
+/* M9 fix 1005: the /btw side strip, over the chat view's top right: beside
+   the 760 px column in a wide pane, over the timeline's corner in a narrow
+   one. On the ask card's tokens; no animation. */
+.chat-side {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 2;
+  width: min(340px, calc(100% - 24px));
+  max-height: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  overflow: hidden;
+  background: var(--title-bg);
+  border: 1px solid var(--blocked-line);
+  font-size: 12px;
+}
+
+.chat-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-side-title {
+  font-weight: 600;
+  color: var(--blocked);
+}
+
+.chat-side-close {
+  padding: 0 6px;
+  line-height: 18px;
+}
+
+.chat-side-question,
+.chat-side-pending {
+  color: var(--muted);
+}
+
+.chat-side-answer {
+  white-space: pre-wrap;
+  overflow-y: auto;
+  min-height: 0;
+}

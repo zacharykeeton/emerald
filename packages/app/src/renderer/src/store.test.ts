@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { defaultLayout } from '@emerald/shared';
 import type { Layout, SessionInfo } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { dismissCrash, editAllLayout, endSessionColorPreview, getState, holdSessionColorPreview, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
+import { dismissCrash, editAllLayout, endSessionColorPreview, getState, holdSessionColorPreview, initialDaemon, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
 import { aSession } from './test-support.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
@@ -270,4 +270,20 @@ test("a refusal whose code the bridge dropped is retried when the daemon's revis
   const done = await editAllLayout((l) => ({ ...l, tabs: l.tabs.map((t) => ({ ...t, name: 'retried 947' })) }));
   assert.ok(done.tabs.every((t) => t.name === 'retried 947'));
   assert.equal(daemon.sets() - before, 2);
+});
+
+test("initialDaemon reads the main process's hello synchronously, and null with no window or a throw (M9 fix 1013)", () => {
+  const g = globalThis as { window?: unknown };
+  const held = g.window;
+  try {
+    g.window = { emerald: { daemonInfoNow: () => ({ pid: 17700, version: '0.1.997', featureLevel: 1, otherHome: null }) } };
+    assert.equal(initialDaemon()?.pid, 17700);
+    g.window = { emerald: { daemonInfoNow: () => { throw new Error('no handler'); } } };
+    assert.equal(initialDaemon(), null);
+    delete g.window;
+    assert.equal(initialDaemon(), null);
+  } finally {
+    if (held === undefined) delete g.window;
+    else g.window = held;
+  }
 });

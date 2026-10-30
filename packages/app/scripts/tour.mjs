@@ -169,16 +169,15 @@ try {
   // The clips. Everything the batches read: the sidebar, each pane title,
   // the tab strip, the rail, the footer, the title bar when there is one,
   // and the whole window.
+  // M9 fix 998: through the harness's screenshotOf; the size is the PNG's.
   const clip = async (name, selector, index = 0) => {
-    const rect = await s.evalJs(`(() => { const el = document.querySelectorAll(${JSON.stringify(selector)})[${index}]; if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
-    if (rect === null || rect.width === 0 || rect.height === 0) {
+    const file = await s.screenshotOf(path.join(tourDir, `${name}.png`), selector, { index });
+    if (file === null) {
       step(`clip ${name}: no ${selector}${index > 0 ? `[${index}]` : ''} on screen, skipped`);
       return;
     }
-    const { data } = await s.send('Page.captureScreenshot', { format: 'png', clip: { ...rect, scale: 2 } });
-    const file = path.join(tourDir, `${name}.png`);
-    fs.writeFileSync(file, Buffer.from(data, 'base64'));
-    step(`clip ${name}: ${Math.round(rect.width)}x${Math.round(rect.height)} at ${Math.round(rect.x)},${Math.round(rect.y)} -> ${file}`);
+    const png = fs.readFileSync(file);
+    step(`clip ${name}: ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} px at scale 2 -> ${file}`);
   };
   await clip('window', '.app');
   await clip('title-bar', '.title-bar');

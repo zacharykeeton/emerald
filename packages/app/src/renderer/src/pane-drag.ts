@@ -6,12 +6,14 @@ import { pastEdge, tabDropTarget, zoneAt } from './drop-zone-model.ts';
 import type { TabDropTarget } from './drop-zone-model.ts';
 import { viewName } from './show-model.ts';
 import { editLayout, getState } from './store.ts';
-import { beginSessionDrag, beginViewDrag, endSessionDrag, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
+import { beginSessionDrag, beginViewDrag, endSessionDrag, flashCornerNote, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
 import { dropOutsideWindows } from './window-drop.ts';
 import type { DropTarget } from './ui.ts';
 import { railDropAt } from './explorer-drop.ts';
 import { treeDropPaths } from './files-drop-model.ts';
 import type { RailDrop } from './files-drop-model.ts';
+import { refusalNote } from './files-set-model.ts';
+import type { TreeRefusal } from './files-set-model.ts';
 
 // Dragging a sidebar row, a pane by its title bar (M9 fix 73), or the
 // rail's Commits tab as a view (M52), onto a pane. Hand-rolled on window mousemove and
@@ -59,6 +61,9 @@ export function startSessionDrag(sessionId: string, press: MouseEvent, onBegin: 
 export interface TreeDrag {
   paths: readonly string[];
   label: string;
+  // M9 fix 1006: why a drag with no payload reaches no pane, said when it
+  // is released on one; null for a drag that has a payload.
+  refusal: TreeRefusal | null;
 }
 
 // payload is null only for a drag that can reach no pane (a tree's folder
@@ -82,6 +87,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     window.removeEventListener('keydown', onKey, { capture: true });
     window.removeEventListener('blur', cancel);
     document.body.classList.remove('dragging-session');
+    delete document.body.dataset.dragRefused;
     ghost?.remove();
     ghost = null;
     endSessionDrag();
@@ -118,6 +124,12 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     return { rail, dir, paths: dir === null ? [] : treeDropPaths(tree.paths, dir) };
   };
 
+  // M9 fix 1006: the not-allowed cursor over a pane or tab a tree drag cannot land on.
+  const markRefused = (kind: TreeRefusal | null) => {
+    if (kind === null) delete document.body.dataset.dragRefused;
+    else document.body.dataset.dragRefused = kind;
+  };
+
   const onMove = (e: MouseEvent) => {
     if (!dragging) {
       if (Math.max(Math.abs(e.clientX - startX), Math.abs(e.clientY - startY)) < DRAG_THRESHOLD) return;
@@ -126,6 +138,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     if (ghost !== null) ghost.style.transform = `translate(${e.clientX + GHOST_OFFSET}px, ${e.clientY + GHOST_OFFSET}px)`;
     const aim = railAim(e.clientX, e.clientY);
     if (aim !== null) {
+      markRefused(null);
       setSessionDropTarget(null);
       if (aim.dir !== null && aim.paths.length > 0) {
         onRail = aim.rail;
@@ -142,6 +155,8 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     }
     if (payload === null) {
       setSessionDropTarget(null);
+      // Past the edge the cursor is the other window's, so no mark there.
+      markRefused(tree?.refusal != null && (targetAt(e.clientX, e.clientY) !== null || tabTargetAt(e.clientX, e.clientY) !== null) ? tree.refusal : null);
       return;
     }
     if (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
@@ -178,7 +193,12 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     // Cleared first, so the teardown sends no back for a drag main is ending.
     out = false;
     teardown();
-    if (payload === null) return;
+    if (payload === null) {
+      // A release on a pane, a tab, the + or past the edge says why nothing
+      // landed; the rail's own release returned above and Escape shows none.
+      if (dropped && tree?.refusal != null && (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight) || targetAt(e.clientX, e.clientY) !== null || tabTargetAt(e.clientX, e.clientY) !== null)) flashCornerNote(refusalNote(tree.refusal));
+      return;
+    }
     if (dropped && handed) {
       // Another window made the drop, or none was under the pointer and
       // a window opens there (M9 fix 928).

@@ -356,7 +356,11 @@ export function TabStrip() {
             className="tab-add"
             data-pane-drop={(sessionDrag?.tabTarget != null && 'newTab' in sessionDrag.tabTarget) || undefined}
             title="New layout tab (Ctrl+B c)"
-            onClick={() => void newTab().catch(warn('new tab'))}
+            // M9 fix 1011: a file tab in front goes back to the panes, as prefix c does.
+            onClick={() => {
+              showTab(PANES);
+              void newTab().catch(warn('new tab'));
+            }}
             onMouseDown={(ev) => ev.preventDefault()}
           >
             +

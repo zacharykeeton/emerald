@@ -139,6 +139,13 @@ export function answeredElsewhere(o: { key: string | null; pressed: boolean; spe
 // card read it on its own before, as the sidebar's card does).
 export const SCREEN_READ_MS = 1000;
 
+// M9 fix 1005: the side strip's waits. A /btw whose panel no screen read
+// has drawn this long after the send says it did not open; a close's Esc
+// waits this long for the panel to go before a send behind it gives up.
+export const BTW_OPEN_MS = 5000;
+export const SIDE_CLOSE_MS = 2000;
+export const SIDE_STILL_OPEN = 'The side question is still open in the session';
+
 // M9 fix 780: the two commands whose argument skips their dialog (a model
 // or an effort level picked by name); every other one keeps the bar.
 export const ARGUMENT_SKIPS_DIALOG: readonly string[] = ['/model', '/effort'];
@@ -152,6 +159,9 @@ export function opensMenu(text: string): boolean {
   // account already enabled the connect line lands in the transcript and
   // the bar goes on growth (FALLBACK_ON_GROWTH), so it shows for a moment.
   if (first === '/remote-control' || first === '/rc') return true;
+  // M9 fix 1005: /btw with a question opens the view's side strip; bare,
+  // it reopens the TUI's own panel, which the view does not draw.
+  if (first === '/btw') return words.length < 2;
   if (ARGUMENT_SKIPS_DIALOG.includes(first) && words.length > 1) return false;
   return TERMINAL_COMMANDS.some((c) => c.name === first) || TERMINAL_ALIASES.includes(first) || ARGUMENT_COMMANDS.some((c) => c.name === first);
 }
@@ -916,6 +926,29 @@ export function pickRoute(read: CarryRead): PickRoute {
   if (read.kind === 'none') return 'type';
   if (read.kind === 'text') return 'carry-then-type';
   return 'refuse';
+}
+
+// M9 fix 1002: how a carry of Claude Code's input into the box ended.
+// 'busy' another carry of the same pane and session was running, so this
+// one never read; 'none' and 'blocked' the read's kinds, nothing moved;
+// 'stuck' the input would not empty and was left with a refusal; 'failed'
+// a read threw; 'moved' the text went into the box (or was parked, when
+// the view had gone); 'prompt' Stop's turn prompt went in with the input
+// left alone.
+export type CarryOutcome = 'busy' | 'none' | 'blocked' | 'stuck' | 'failed' | 'moved' | 'prompt';
+
+// M9 fix 1003: a pick or a box `/` command made while a carry runs waits
+// for it, then routes on a fresh read of the input and the carry's
+// outcome. Empty, the command types alone; blocked, it is refused; still
+// holding text, a carry that was left stuck keeps its own refusal
+// ('left', nothing more said), one that failed refuses, and after any
+// other outcome the input changed since, so it carries again.
+export function routeAfterCarry(read: CarryRead, outcome: CarryOutcome): PickRoute | 'left' {
+  if (read.kind === 'none') return 'type';
+  if (read.kind === 'blocked') return 'refuse';
+  if (outcome === 'stuck') return 'left';
+  if (outcome === 'failed') return 'refuse';
+  return 'carry-then-type';
 }
 
 // Which way Claude Code takes a queued message back: 'one' when Up

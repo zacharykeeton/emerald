@@ -195,3 +195,13 @@ test('cmd is always there and last, ComSpec when it is a file (fix 624)', () => 
   assert.deepEqual(full.map((o) => o.id), ['pwsh', 'powershell', 'gitbash', 'cmd']);
   assert.equal(full.at(-1)!.file, comSpec);
 });
+
+test('a lower-case path and comspec are read all the same (M9 fix 999)', () => {
+  const dir = mkTemp('emerald-shells-');
+  const pwsh = fakeExe(dir, 'pwsh7', 'pwsh.exe');
+  const comSpec = fakeExe(dir, 'sys', 'cmd.exe');
+  const shells = findShells({ path: path.dirname(pwsh), comspec: comSpec });
+  assert.equal(shells[0]!.id, 'pwsh');
+  assert.equal(shells[0]!.file, pwsh);
+  assert.deepEqual(shells.at(-1), { id: 'cmd', label: 'Command Prompt', file: comSpec });
+});

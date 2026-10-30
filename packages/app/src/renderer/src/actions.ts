@@ -43,7 +43,7 @@ import { lastFolder, rememberFolderUsed } from './recent-folders.ts';
 import { daemonLevel, tabsSupported } from './daemon-model.ts';
 import { CLOSE_GRACE_MS, closeTyping } from './group-sweep-model.ts';
 import type { SweepMode } from './group-sweep-model.ts';
-import { CLAUDE_ENTER_DELAY_MS, STALL_MS, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
+import { CLAUDE_ENTER_DELAY_MS, STALL_MS, btwQuestion, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
 import { editLayout, editTab, getState, subscribe, whenSynced } from './store.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
@@ -618,7 +618,8 @@ async function sendNow(sessionId: string, text: string, typed: boolean): Promise
   }
   // On the mod path too: a channel that died after it came up leaves the
   // prompt unsubmitted, and the stall mark is the only thing that says so.
-  if (claude && !busy) watchForStall(sessionId);
+  // A side question (M9 fix 1005) never starts a turn, so it is not watched.
+  if (claude && !busy && btwQuestion(text) === null) watchForStall(sessionId);
   return { kind: 'sent', via };
 }
 

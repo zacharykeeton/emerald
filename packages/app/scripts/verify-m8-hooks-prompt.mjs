@@ -126,7 +126,11 @@ try {
   const line1 = await oneLine(s);
   expect(line1.width <= 1200 && line1.banner - (line1.install + 8) <= 4, `the banner is one line at the default width: ${JSON.stringify(line1)}`);
   await s.screenshot('m8-hooks-banner.png');
-  // M9 fix 606: the Test before any install finds no script.
+  // M9 fix 606: the Test before any install finds no script. Since fix 997
+  // launch installs emerald's hooks into the harness's private Claude config,
+  // which puts the script in this home before the window starts, so it is
+  // taken out first; the app's own settings file is untouched by that.
+  fs.rmSync(script, { force: true });
   await s.evalJs(`document.querySelector('.hooks-test').click()`);
   await s.waitFor(`(document.querySelector('.hooks-banner')?.textContent ?? '').includes('Test failed: the hook script is missing.')`, 'the Test says the hook script is missing', 10000);
   await s.evalJs(`document.querySelector('.hooks-install').click()`);

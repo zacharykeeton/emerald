@@ -13,13 +13,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ClientMessage, RequestType, Requests, ServerMessage, UsageEdge } from '@emerald/shared';
-import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, HooksInstallResult, HooksStatus, HooksTestResult, MoveMode, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
+import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, GitChangesOptions, HooksInstallResult, HooksStatus, HooksTestResult, MoveMode, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
 import { runCliJson } from './cli.ts';
 import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, readTail, revealPath, statPath } from './files.ts';
 import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
-import { createFile, makeFolder, heldTrash, moveEntries, renameEntry, trashEntry, writeFileText } from './file-write.ts';
+import { copyPaceMs, createFile, makeFolder, heldTrash, moveEntries, renameEntry, trashEntry, writeFileText } from './file-write.ts';
 import { folderIcon, folderIconForget } from './folder-icon.ts';
 import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitProjectCounts, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
 import type { Runner } from './node-runner.ts';
@@ -334,6 +334,8 @@ client.on('connected', () => {
 });
 ipcMain.handle('emerald:daemon-restart', () => client.restartDaemon());
 ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
+// A reloaded renderer seeds its store with the hello main already holds (M9 fix 1013).
+ipcMain.on('emerald:daemon-info-sync', (e) => { e.returnValue = client.daemonInfo ?? null; });
 client.on('disconnected', () => {
   broker.clear();
   pushToRenderer({ type: 'daemon.disconnected' });
@@ -771,14 +773,22 @@ const trasher = trashHeld
   : (target: string) => shell.trashItem(target);
 ipcMain.handle('emerald:files-trash', (_event, p: string) => trashEntry(p, trasher, log));
 // M9 fix 953: a drop from Explorer on the Files rail, the replaced entries
-// through the same trasher as Delete.
-ipcMain.handle('emerald:files-move', (_event, paths: unknown, dir: string, mode: MoveMode, replace: unknown) =>
+// through the same trasher as Delete, and a copy's progress pushed back to
+// the window that dropped (M9 fix 1008).
+ipcMain.handle('emerald:files-move', (event, paths: unknown, dir: string, mode: MoveMode, replace: unknown) =>
   moveEntries(
     Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : [],
     dir,
     mode === 'move' || mode === 'copy' ? mode : 'auto',
     Array.isArray(replace) ? replace.filter((p): p is string => typeof p === 'string') : null,
-    { trash: trasher, log },
+    {
+      trash: trasher,
+      log,
+      pace: copyPaceMs(process.env['EMERALD_COPY_PACE_MS']),
+      progress: (p) => {
+        if (!event.sender.isDestroyed()) event.sender.send('emerald:files-progress', { dir, ...p });
+      },
+    },
   ),
 );
 // One running search per window (M9 fix 519): a newer search aborts the
@@ -799,7 +809,7 @@ ipcMain.handle('emerald:files-stat', (_event, p: string) => statPath(p));
 ipcMain.handle('emerald:files-real', (_event, p: string) => realPath(p));
 ipcMain.handle('emerald:files-open-external', (_event, url: string) => openExternal(url, log));
 ipcMain.handle('emerald:files-git-status', (_event, dir: string) => gitStatus(dir));
-ipcMain.handle('emerald:files-git-changes', (_event, dir: string) => gitChanges(dir));
+ipcMain.handle('emerald:files-git-changes', (_event, dir: string, opts?: GitChangesOptions) => gitChanges(dir, undefined, opts?.countOnly === true ? { countOnly: true } : {}));
 ipcMain.handle('emerald:files-git-log', (_event, dir: string) => gitLog(dir));
 ipcMain.handle('emerald:files-git-graph', (_event, dir: string, options: unknown) => gitGraph(dir, { remotes: typeof options === 'object' && options !== null && (options as { remotes?: unknown }).remotes === true }));
 ipcMain.handle('emerald:files-git-review', (_event, dir: string, base: string) => gitReview(dir, base));
@@ -965,6 +975,23 @@ async function writeClipboardPng(png: Buffer): Promise<void> {
 }
 ipcMain.handle('emerald:clipboard-write', (_event, text: string) => writeClipboardText(text));
 ipcMain.handle('emerald:clipboard-write-image', (_event, dataUrl: string) => writeClipboardPng(nativeImage.createFromDataURL(dataUrl).toPNG()));
+// Copy image on a picture file (M9 fix 1007). Main reads the file itself:
+// the renderer's <img> is on a file: URL, and createFromPath decodes it
+// without a canvas. It decodes PNG, JPEG and ICO on Windows and returns an
+// empty image for the rest; the empty check keeps the held clipboard from
+// saying image: true over nothing, since writeClipboardPng sets it for any
+// buffer.
+ipcMain.handle('emerald:clipboard-write-image-file', async (_event, file: string) => {
+  // Never a network path, for fix 478's reason (isImage refuses one too).
+  if (/^[\\/]{2}/.test(file)) return false;
+  const img = nativeImage.createFromPath(file);
+  if (img.isEmpty()) {
+    log(`copy image: nothing decoded from ${file}`);
+    return false;
+  }
+  await writeClipboardPng(img.toPNG());
+  return true;
+});
 // The chat box's image paste (M9 fix 721): the clipboard's PNG (the held
 // one under a private home) as a thumbnail, and as a file Claude Code is
 // handed by its path; with the key route asked for and the real clipboard

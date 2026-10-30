@@ -4,8 +4,8 @@ import type { SessionInfo } from '@emerald/shared';
 import { ackIfDone, sendAskSubmit, sendFreeAnswer, typeInto } from './actions.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
-import { answerOptions, askQuestion, askReview, dialogKey, freeOption, freeText, optionKeys, pressOver, promptExcerpt } from './screen-prompt-model.ts';
-import type { AnswerOption, AskOption, AskPress } from './screen-prompt-model.ts';
+import { askQuestion, askReview, cardOptions, cardPress, dialogKey, freeOption, freeText, optionTitle, pressOver, promptExcerpt } from './screen-prompt-model.ts';
+import type { AskPress } from './screen-prompt-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab, AskVisit } from './screen-prompt-model.ts';
 import { AskTabs } from './AskTabs.tsx';
@@ -117,7 +117,10 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   }, [liveVisit, visit]);
   const askTabs = ask === null ? [] : visitedTabs(ask.tabs, liveVisit);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
-  const options: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
+  // M9 fix 1004: the digitless switch confirmation offers Yes and No here
+  // too, each answered by the pointer's arrows and Enter.
+  const card = cardOptions(session.needsInputReason, shown?.rows ?? null, review, ask);
+  const options = card.options;
   // A dialog with a Cancel of its own draws no second one (fix 879).
   const escShown = !options.some((o) => o.label === 'Cancel');
   const send = (data: string) => {
@@ -187,8 +190,10 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   };
   const pressOption = (key: string) => {
     if (pressed !== null) return;
+    const keys = cardPress(card, ask, key);
+    if (keys === null) return;
     if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
-    press(optionKeys(ask, key));
+    press(keys);
   };
   // M9 fix 959: the dialog's tab keys on a question, taken from wherever the
   // focus is, as this card's Escape is (Popover.tsx); its own fields keep
@@ -280,7 +285,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
               />
             </div>
           ) : (
-            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => pressOption(o.key)}>
+            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
               <span className="answer-popover-key">{o.key}</span>
               <span className="answer-popover-text">
                 <span className="answer-popover-label">{o.label}</span>

@@ -1462,11 +1462,23 @@ try {
   let hist = await historyProbe();
   expect(hist.hm === hist.hb1 && hist.edges === 'session', `one lane, the merge folded, the block's own line alone (${JSON.stringify(hist)})`);
   const histLaneSel = `.commits-lane-group[data-history=${JSON.stringify(T71)}] .commits-node`;
+  // Two tries, the fix 175 pattern (hoverForAction): the first hover
+  // after M71's columns opened no card on about a third of quiet runs,
+  // with fix 997's harness and without it alike, and a second hover
+  // opened it in about 430 ms every time (measured at fix 997's close-out).
   const layoutOn = async (want) => {
-    await away();
-    await settled(histLaneSel);
-    await hoverOver(histLaneSel);
-    await s.waitFor(`document.querySelector('.history-popover .lane-card-action[data-action="layout"]')?.textContent === ${JSON.stringify(want)}`, `the card offers ${want}`, 3000);
+    for (let attempt = 0; ; attempt += 1) {
+      await away();
+      await settled(histLaneSel);
+      await hoverOver(histLaneSel);
+      try {
+        await s.waitFor(`document.querySelector('.history-popover .lane-card-action[data-action="layout"]')?.textContent === ${JSON.stringify(want)}`, `the card offers ${want}`, 3000);
+        break;
+      } catch (err) {
+        if (attempt === 1) throw err;
+        console.log(`[verify] note: the hover for the card offering ${want} opened nothing the first time; trying again`);
+      }
+    }
     await s.evalJs(`document.querySelector('.history-popover .lane-card-action[data-action="layout"]').click()`);
     await s.waitFor(`!document.querySelector('.history-popover')`, 'the card closes on the click');
   };
@@ -5005,7 +5017,15 @@ try {
     }
     const squareText = await s.evalJs(`document.querySelector(${JSON.stringify(squareSel)}).textContent`);
     expect(squareText === `square at ${X1.slice(0, 7)}: a commit made outside this session, by verify`, `the card's square line (${JSON.stringify(squareText)})`);
-    console.log(`[verify] fix 992 frame: ${await s.screenshot('m9-fix992-square-card.png')}`);
+    // M9 fix 998: the frame is the card alone, at scale 2.
+    const card992 = `.lane-popover[data-session-id=${JSON.stringify(lead.id)}]`;
+    const { cw, ch } = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(card992)}).getBoundingClientRect(); return { cw: r.width, ch: r.height }; })()`);
+    const frame992 = await s.screenshotOf('m9-fix992-square-card.png', card992);
+    expect(frame992 !== null, 'the fix 992 card is on screen for its frame');
+    const png992 = fs.readFileSync(frame992);
+    const [w992, h992] = [png992.readUInt32BE(16), png992.readUInt32BE(20)];
+    expect(Math.abs(w992 - cw * 2) <= 2 && Math.abs(h992 - ch * 2) <= 2, `the fix 992 frame is the card at scale 2 (${w992}x${h992} px for a ${cw}x${ch} card)`);
+    console.log(`[verify] fix 992 frame: ${frame992}`);
     await away();
     step("M9 fix 992: a hover on a square opens its session's card, which names the square and its author");
     const MA = await merge('m9-seat-a', 'MA', 'Merge m9-seat-a');

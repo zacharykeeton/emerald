@@ -1,4 +1,5 @@
-import { describeState, MOD_CHANNEL_LEVEL, modRoutable } from '@emerald/shared';
+import fs from 'node:fs';
+import { describeState, MOD_CHANNEL_LEVEL, modRoutable, parseTurns, summarize } from '@emerald/shared';
 import type { ServerMessage, SessionInfo } from '@emerald/shared';
 import { integerOption, parse, readText } from '../args.ts';
 import { CliError, EXIT, usageError } from '../cli-error.ts';
@@ -6,7 +7,7 @@ import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { connectHello } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
-import { queuedLine, refuseBusy } from '../mod-route.ts';
+import { QUEUED_AT_SEND, queuedLine, refuseBusy } from '../mod-route.ts';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { resolveSession, shortId } from '../resolve.ts';
 import { CLAUDE_ENTER_DELAY_MS } from './send.ts';
@@ -29,6 +30,14 @@ const BUSY = new Set<string>(['working', 'waiting']);
 // Where the second wait ends.
 const SETTLED = new Set<string>(['done', 'needs-input', 'errored', 'exited']);
 
+// M9 fix 1000: the whole reply is read off the transcript, which Claude
+// Code writes a median 59 ms before the Stop (at most 2.3 s on the record
+// of 315 Stops); a read that does not yet hold the reply the Stop named is
+// tried again this often, this many reads in all, before the first line
+// the row carries is printed instead.
+export const REPLY_READ_PAUSE_MS = 100;
+export const REPLY_READ_TRIES = 5;
+
 export interface PromptOptions {
   ref: string;
   // The text, or the name of a saved prompt (M56) to take it from.
@@ -47,7 +56,9 @@ export interface PromptOptions {
 type Via = 'mod' | 'typed';
 
 // queued (M9 fix 995) is set, never false, when the session was a Claude
-// mid-turn, so the text waited for that turn.
+// mid-turn, so the text waited for that turn. reply is the whole last
+// reply, read off the transcript (M9 fix 1000), or the row's first line
+// when there is no transcript to read.
 export type PromptOutcome =
   | { kind: 'done'; session: SessionInfo; reply: string | null; waitedMs: number; via: Via; queued?: true }
   | { kind: 'needs-input'; session: SessionInfo; waitedMs: number; via: Via; queued?: true };
@@ -122,6 +133,29 @@ export function heldPrompt(rows: readonly string[], lastPrompt: string | null): 
   return null;
 }
 
+// M9 fix 1000: the turn's last reply whole, off the session's transcript.
+// The row's lastReply is the Stop's message cut to its first line, and the
+// Stop's message is the turn's last text part, which is what parseTurns
+// takes as the turn's reply; so the transcript's reply is this turn's when
+// its first line is lastReply, and a read that is behind (the line not yet
+// written, or an earlier turn's) is tried again. No transcript (a daemon
+// on another box, a fake Claude, a row with no hook yet) is the first line.
+export async function wholeReply(session: SessionInfo, read: (file: string) => string = (f) => fs.readFileSync(f, 'utf8')): Promise<string | null> {
+  const line = session.lastReply;
+  const file = session.transcriptPath;
+  if (line === null || typeof file !== 'string') return line;
+  for (let i = 0; i < REPLY_READ_TRIES; i++) {
+    if (i > 0) await sleep(REPLY_READ_PAUSE_MS);
+    try {
+      const reply = parseTurns(read(file)).at(-1)?.reply ?? null;
+      if (reply !== null && summarize(reply) === line) return reply;
+    } catch {
+      // Not readable yet, or gone; try again, then fall back to the line.
+    }
+  }
+  return line;
+}
+
 function goneError(step: Extract<Step, { kind: 'gone' }>): CliError {
   return new CliError(step.session === null ? `session was removed while waiting on the prompt` : `${shortId(step.session.id)} ${step.session.name} exited while waiting on the prompt`, EXIT.failure);
 }
@@ -158,8 +192,13 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
     // types it, so the text enters the running turn at its next tool round
     // rather than waiting in the mod for the turn's end.
     let via: Via = 'typed';
+    // M9 fix 1001: the daemon's word that the mod queued the text behind a
+    // turn, which a row read idle does not show.
+    let modQueued = false;
     if (found.kind === 'claude' && (hello.featureLevel ?? 1) >= MOD_CHANNEL_LEVEL && found.state !== 'needs-input' && found.state !== 'working' && modRoutable(text)) {
-      via = (await client.request('session.submit', { sessionId: found.id, text })).via;
+      const submitted = await client.request('session.submit', { sessionId: found.id, text });
+      via = submitted.via;
+      modQueued = submitted.queued === true;
     }
     if (via === 'typed') {
       // M9 fix 778: an input holding the prompt given back after an
@@ -181,19 +220,37 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
       client.send({ type: 'pty.input', sessionId: found.id, data: '\r' });
     }
     // M9 fix 995: on stderr, since stdout is the reply.
-    const queuedWord = queuedLine(found, via);
+    const queuedWord = queuedLine(found, via) ?? (modQueued ? QUEUED_AT_SEND : null);
     if (queuedWord !== null) process.stderr.write(queuedWord + '\n');
     const queued = queuedWord !== null ? { queued: true as const } : {};
     const started = Date.now();
+    const stalled = () => new CliError(`${shortId(found.id)} ${found.name} did not start working within ${stallMs} ms; the text may be sitting in its input box (emmer read ${shortId(found.id)} --screen)`, EXIT.stalled);
 
     // Gate two: the session has to move. One already busy is taken as
     // moving; the text is queued behind its turn and the second wait
     // ends with whichever turn settles first.
-    if (!BUSY.has(found.state)) {
-      const moved = await watch.until((s) => BUSY.has(s.state), stallMs);
-      if (moved.kind === 'timeout') {
-        throw new CliError(`${shortId(found.id)} ${found.name} did not start working within ${stallMs} ms; the text may be sitting in its input box (emmer read ${shortId(found.id)} --screen)`, EXIT.stalled);
+    if (modQueued && !BUSY.has(found.state)) {
+      // M9 fix 1001: the row read idle, but a turn started as the text was
+      // sent and the mod queued it behind that turn. That turn's working
+      // and done come first, and any busy push would be taken as this
+      // prompt's move and its done as this prompt's reply; so wait for a
+      // turn whose prompt is this one, past the earlier turn's end (which
+      // may take minutes, so the reply's timeout and not the stall). The
+      // match also takes the case where the mod had in fact entered the
+      // text and the running turn is this one.
+      const own = summarize(text);
+      const mine = (s: SessionInfo) => BUSY.has(s.state) && s.lastPrompt === own;
+      const first = await watch.until((s) => mine(s) || s.state === 'done' || s.state === 'errored', opts.timeoutMs);
+      if (first.kind === 'timeout') throw new CliError(`timed out after ${opts.timeoutMs} ms waiting for the reply`, EXIT.timeout);
+      if (first.kind === 'gone') throw goneError(first);
+      if (!mine(first.session)) {
+        const moved = await watch.until(mine, stallMs);
+        if (moved.kind === 'timeout') throw stalled();
+        if (moved.kind === 'gone') throw goneError(moved);
       }
+    } else if (!BUSY.has(found.state)) {
+      const moved = await watch.until((s) => BUSY.has(s.state), stallMs);
+      if (moved.kind === 'timeout') throw stalled();
       if (moved.kind === 'gone') throw goneError(moved);
     }
 
@@ -202,7 +259,7 @@ export async function runPrompt(opts: PromptOptions): Promise<PromptOutcome> {
     if (settled.kind === 'timeout') throw new CliError(`timed out after ${opts.timeoutMs} ms waiting for the reply`, EXIT.timeout);
     if (settled.kind === 'gone') throw goneError(settled);
     const s = settled.session;
-    if (s.state === 'done') return { kind: 'done', session: s, reply: s.lastReply, waitedMs, via, ...queued };
+    if (s.state === 'done') return { kind: 'done', session: s, reply: await wholeReply(s), waitedMs, via, ...queued };
     if (s.state === 'needs-input') return { kind: 'needs-input', session: s, waitedMs, via, ...queued };
     throw new CliError(`${shortId(s.id)} ${s.name} ${describeState(s).text} after ${waitedMs} ms`);
   } finally {
@@ -245,7 +302,7 @@ const command: Command = {
     const outcome = await runPrompt({ ref, text, saved: parsed.values.saved, force: parsed.values.force, timeoutMs, ifIdle: parsed.values['if-idle'] });
     const s = outcome.session;
     if (parsed.values.json) {
-      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, waitedMs: outcome.waitedMs, via: outcome.via, ...(outcome.queued ? { queued: true } : {}) });
+      printJson({ session: s, state: s.state, reply: outcome.kind === 'done' ? outcome.reply : null, replyLine: outcome.kind === 'done' ? s.lastReply : null, waitedMs: outcome.waitedMs, via: outcome.via, ...(outcome.queued ? { queued: true } : {}) });
       return EXIT.ok;
     }
     if (outcome.kind === 'done') println(outcome.reply ?? `${shortId(s.id)} ${s.name} is done with no reply text`);

@@ -59,14 +59,14 @@ test("the age's text is the strip's stale text, else the folded note, else none 
   assert.deepEqual(usageAge(), { fetchedAt: null, stale: null, folded: false });
 });
 
-test('dismissUsageWarning adds its key and resetUsageReading forgets it (fix 974)', () => {
+test('dismissUsageWarning adds its dismissal and resetUsageReading forgets it (fix 974, fix 1012)', () => {
   resetUsageReading();
-  assert.equal(usageWarningDismissed().size, 0);
-  dismissUsageWarning('seven_day:1:75');
-  assert.equal(usageWarningDismissed().has('seven_day:1:75'), true);
+  assert.equal(usageWarningDismissed().length, 0);
+  dismissUsageWarning({ key: 'seven_day', resetsAt: 1, threshold: 75 });
+  assert.equal(usageWarningDismissed().length, 1);
   const held = usageWarningDismissed();
-  dismissUsageWarning('seven_day:1:75');
-  assert.equal(usageWarningDismissed(), held, 'the same key again is no change');
+  dismissUsageWarning({ key: 'seven_day', resetsAt: 1, threshold: 75 });
+  assert.equal(usageWarningDismissed(), held, 'the same dismissal again is no change');
   resetUsageReading();
-  assert.equal(usageWarningDismissed().has('seven_day:1:75'), false);
+  assert.equal(usageWarningDismissed().length, 0);
 });

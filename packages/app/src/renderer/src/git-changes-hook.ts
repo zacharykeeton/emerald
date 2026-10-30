@@ -29,10 +29,16 @@ export function useGitChanges(root: string | null, tick: number): GitChanges {
 // asked again, since it will not become one under the heading; the exited
 // group hands a null folder and asks nothing. A reply is told from the
 // empty start by identity: useGitPoll hands back the very empty object
-// until the first reply lands.
+// until the first reply lands. Since fix 1014 it asks for the count-only
+// read, two gits a poll, and stamps the root and the row count alone, so
+// a status code moving under an unchanged count re-renders nothing.
+export function countStamp(c: GitChanges): string {
+  return `${c.root}\n${c.files.length}`;
+}
+
 export function useFolderChangeCount(folder: string | null): number {
   const [repo, setRepo] = useState(true);
-  const changes = useGitChanges(repo ? folder : null, 0);
+  const changes = useGitPoll(repo ? folder : null, 0, EMPTY_CHANGES, (dir) => window.emerald.files.gitChanges(dir, { countOnly: true }), 'git change count', '', countStamp);
   useEffect(() => {
     setRepo(true);
   }, [folder]);

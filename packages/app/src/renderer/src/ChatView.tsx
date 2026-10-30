@@ -7,9 +7,16 @@ import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEV
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
+// M9 fix 1005, the side strip.
+import { BTW_OPEN_MS, SIDE_CLOSE_MS, SIDE_STILL_OPEN } from './chat-model.ts';
+import { btwPanel } from './screen-prompt-model.ts';
+import { btwQuestion } from './prompt-model.ts';
+import { SideStrip } from './SideStrip.tsx';
 import type { ReactNode } from 'react';
 import type { ChatMode, FoldItem, PendingItem, SlashRow } from './chat-model.ts';
 import { CARRY_MS, CARRY_POLL_MS, carryRead, pickRoute, stopCarry } from './chat-model.ts';
+import type { CarryOutcome, PickRoute } from './chat-model.ts';
+import { routeAfterCarry } from './chat-model.ts';
 import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
 import { isPasteKey } from './keys-model.ts';
 import type { MentionRow } from './ChatMenus.tsx';
@@ -27,10 +34,8 @@ import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
-import { switchDialog, trustKeys } from '@emerald/shared';
-import { answerOptions, askQuestion, askReview, ghostSuggestion, promptExcerpt } from './screen-prompt-model.ts';
-import type { AnswerOption, AskOption } from './screen-prompt-model.ts';
-import { dialogKey, freeOption, freeText, optionKeys, pressOver } from './screen-prompt-model.ts';
+import { askQuestion, askReview, cardOptions, cardPress, ghostSuggestion, optionTitle, promptExcerpt } from './screen-prompt-model.ts';
+import { dialogKey, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab, AskVisit } from './screen-prompt-model.ts';
@@ -95,6 +100,13 @@ function measureContext(): CanvasRenderingContext2D {
 // M9 fix 784: the box's text kept across an unmount that is not a flip to
 // the terminal, by pane and session, and taken back on the next mount.
 const chatDrafts = new Map<string, string>();
+// M9 fix 1002: the carry of Claude Code's input running for a pane and
+// session, keyed as chatDrafts is, so a second carry (a remount's, a
+// pick's own) finds the first and stands aside whichever ChatView runs
+// it; the entry goes when its own carry ends. And a counter numbering
+// each ChatView, for the carry's harness console lines.
+const carriesInFlight = new Map<string, Promise<CarryOutcome>>();
+let chatInstances = 0;
 // The states a mount carries Claude's input in: never starting, an ask or
 // an exited session.
 const CARRY_STATES: ReadonlySet<SessionState> = new Set<SessionState>(['idle', 'done', 'waiting', 'working', 'errored']);
@@ -302,6 +314,21 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
 
   const [box, setBox] = useState('');
   const [refusal, setRefusal] = useState<string | null>(null);
+  // M9 fix 1005: a /btw sent from the box, shown in the side strip with the
+  // answer Claude Code's panel draws, read off the screen reads after the
+  // send. `seen` once a read drew the panel for this question; `missing`
+  // when none had BTW_OPEN_MS after the send.
+  const [side, setSide] = useState<{ question: string; sentAt: number; answer: string | null; seen: boolean; missing: boolean } | null>(null);
+  useEffect(() => setSide(null), [session.id]);
+  useEffect(() => {
+    if (side === null || screen === null || screen.sentAt <= side.sentAt) return;
+    const panel = btwPanel(screen.rows);
+    const asked = panel === null ? null : panel.question.replace(/…$/, '').replace(/\s+/g, ' ');
+    if (asked !== null && side.question.startsWith(asked)) {
+      const answer = panel!.answer ?? side.answer;
+      if (!side.seen || side.missing || answer !== side.answer) setSide({ ...side, seen: true, missing: false, answer });
+    } else if (!side.seen && !side.missing && screen.sentAt - side.sentAt >= BTW_OPEN_MS) setSide({ ...side, missing: true });
+  }, [screen, side]);
   const boxRef = useRef<HTMLTextAreaElement>(null);
   // M9 fix 779: Claude Code's suggested prompt, ghosted in the empty box
   // where the placeholder sits; Tab or the Right arrow takes it. A screen
@@ -559,8 +586,23 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // with no Enter, when the face no longer names the session (flipped to
   // the terminal, or the pane given another session); any other unmount
   // (the pane no longer a Claude pane, the tab hidden) keeps it as a draft.
+  // M9 fix 1002: a trace read one mount and one carry per flip; a flip
+  // back made while the input still held text carried it, and the guard
+  // in carry keeps any second carry of the pane and session out.
   const boxNow = useRef(box);
   boxNow.current = box;
+  // Text with no box to go to: back into Claude's input, with no Enter,
+  // when the face no longer names the session, else kept as a draft for
+  // the next mount (after any draft already kept there).
+  const park = (id: string, text: string) => {
+    const key = `${paneId}:${id}`;
+    const now = getState().sessions.get(id);
+    if (getUiState().chatPanes.get(paneId) !== id && now !== undefined && now.state !== 'needs-input' && now.state !== 'exited') typeInto(id, text);
+    else {
+      const kept = chatDrafts.get(key);
+      chatDrafts.set(key, kept === undefined || kept === '' ? text : `${kept}\n${text}`);
+    }
+  };
   useEffect(() => {
     const id = session.id;
     const key = `${paneId}:${id}`;
@@ -582,10 +624,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     }
     return () => {
       const text = boxNow.current;
-      if (text === '') return;
-      const now = getState().sessions.get(id);
-      if (getUiState().chatPanes.get(paneId) !== id && now !== undefined && now.state !== 'needs-input' && now.state !== 'exited') typeInto(id, text);
-      else chatDrafts.set(key, text);
+      if (text !== '') park(id, text);
     };
   }, [session.id]);
 
@@ -621,6 +660,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   };
   const dispatch = (prompt: string, typed: boolean) => {
     const menu = opensMenu(prompt);
+    // M9 fix 1005: a /btw with a question opens the side strip. One sent
+    // with chips is typed after the images and is no command, so it goes
+    // as any prompt.
+    const btw = typed ? null : btwQuestion(prompt);
+    if (btw !== null) setSide({ question: btw, sentAt: Date.now(), answer: null, seen: false, missing: false });
     // M9 fix 782: a send drops the refused and unseen bubbles, then draws
     // its own unless it is a command or empty.
     const id = (nextPending.current += 1);
@@ -633,6 +677,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     void sendPrompt(session.id, prompt, { typed }).then((outcome) => {
       if (outcome.kind === 'refused') {
         setRefusal(outcome.reason);
+        if (btw !== null) setSide(null);
         const reason = outcome.reason;
         setPending((list) => list.map((p) => (p.id === id ? { ...p, refusal: reason } : p)));
         // The text goes back in the box, before whatever is there now.
@@ -655,6 +700,36 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     const turn = working && turns.length > 0 ? turns[turns.length - 1]! : null;
     typeInto(session.id, '\x1b');
     if (turn !== null) void carryInput(turn.prompt, turn);
+  };
+  // M9 fix 1005: the strip closed, and the panel with it by its own close
+  // key when the newest read still draws it; no Esc goes otherwise, since
+  // one to a working Claude stops its turn. True once the panel is gone.
+  const closeSide = async (): Promise<boolean> => {
+    const drawn = screen !== null && btwPanel(screen.rows) !== null;
+    if (drawn) typeInto(session.id, '\x1b');
+    setSide(null);
+    if (!drawn) return true;
+    const id = session.id;
+    const until = Date.now() + SIDE_CLOSE_MS;
+    while (Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const res = await window.emerald.request('pty.screen', { sessionId: id }).catch(() => null);
+      if (res !== null && btwPanel(res.rows) === null) return true;
+    }
+    return false;
+  };
+  // The panel takes the keys while it is up (c copies, f forks), so a send
+  // from the box closes it first; a second /btw so opens a new strip.
+  const sendBox = (text?: string) => {
+    const t = text ?? box;
+    if (side === null) {
+      send(t);
+      return;
+    }
+    void closeSide().then((gone) => {
+      if (gone) send(t);
+      else setRefusal(SIDE_STILL_OPEN);
+    });
   };
   // M9 fix 754: a queued message taken back from Claude Code's queue the
   // way its own keys do it, by QUEUE_PICK: on 'all' (2.1.301) one Up pulls
@@ -733,14 +808,44 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // is left in the terminal with a refusal, the box untouched. `turn` is
   // Stop's stopped turn, for stopCarry's 'prompt': its prompt goes in the
   // box with the input left alone, since it is already empty.
-  const carryingRef = useRef(false);
+  // M9 fix 1002: one carry at a time per pane and session (carriesInFlight),
+  // and a carry whose view unmounted while it ran parks the text it took
+  // rather than putting it in a box that is gone. On a harness (the chime
+  // not real, which only a private home sets) a carry writes a start line
+  // and its outcome to the console, which verify:chat counts.
+  const instance = useRef(0);
+  if (instance.current === 0) instance.current = ++chatInstances;
+  const carryNote = (what: string) => {
+    if (getUiState().chimeMode !== 'real') console.log(`[emerald] chat carry ${what} instance ${instance.current}`);
+  };
   const carryInput = async (expect: string | null = null, turn: StepTurn | null = null): Promise<boolean> => {
-    if (carryingRef.current) return false;
-    carryingRef.current = true;
+    const outcome = await carry(expect, turn);
+    return outcome === 'moved' || outcome === 'prompt';
+  };
+  const carry = (expect: string | null, turn: StepTurn | null): Promise<CarryOutcome> => {
+    const key = `${paneId}:${session.id}`;
+    if (carriesInFlight.has(key)) {
+      carryNote('busy');
+      return Promise.resolve('busy');
+    }
+    carryNote('start');
+    const run: Promise<CarryOutcome> = carryBody(expect, turn).then((outcome) => {
+      if (carriesInFlight.get(key) === run) carriesInFlight.delete(key);
+      carryNote(outcome);
+      return outcome;
+    });
+    carriesInFlight.set(key, run);
+    return run;
+  };
+  const carryBody = async (expect: string | null, turn: StepTurn | null): Promise<CarryOutcome> => {
     const id = session.id;
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const read = async () => carryRead(await window.emerald.request('pty.screen', { sessionId: id }), expect);
     const toBox = (text: string) => {
+      if (!alive.current) {
+        park(id, text);
+        return;
+      }
       const el = boxRef.current;
       const was = el === null ? box : el.value;
       const next = was === '' ? text : `${was}\n${text}`;
@@ -756,9 +861,9 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       }
       if (expect !== null && turn !== null && stopCarry(now, turn) === 'prompt') {
         toBox(expect);
-        return true;
+        return 'prompt';
       }
-      if (now.kind !== 'text') return false;
+      if (now.kind !== 'text') return now.kind;
       const text = now.text;
       typeInto(id, '\x7f'.repeat(text.length + 4));
       let gone = false;
@@ -772,15 +877,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       }
       if (!gone) {
         setRefusal('The prompt is still in the terminal\'s input; Show the terminal to clear it');
-        return false;
+        return 'stuck';
       }
       toBox(text);
-      return true;
+      return 'moved';
     } catch (err) {
       console.warn('[emerald] input carry failed', err);
-      return false;
-    } finally {
-      carryingRef.current = false;
+      return 'failed';
     }
   };
   // M9 fix 972: before a pick or a box `/` command types, Claude Code's
@@ -789,24 +892,59 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // open ask's `❯ 1.` row reads as the prompt row, so an ask (and a
   // session that is not Claude's) types with no read; a failed read types
   // as before the guard.
+  // M9 fix 1003: made while a carry of this pane's session runs (the
+  // mount's, after a flip to chat), the command waits for it with nothing
+  // shown, the draft landing in the box being the sign, then routes on a
+  // fresh read and the carry's outcome (routeAfterCarry). A second command
+  // made while one already waits is dropped.
+  const pickWaiting = useRef(false);
   const inputFirst = async (): Promise<boolean> => {
     if (markKind(session) !== 'claude' || askingRef.current) return true;
+    const key = `${paneId}:${session.id}`;
+    const running = carriesInFlight.get(key);
+    if (running !== undefined) return afterCarry(running);
     try {
       const route = pickRoute(carryRead(await window.emerald.request('pty.screen', { sessionId: session.id })));
-      if (route === 'type') return true;
-      if (route === 'refuse') {
-        setRefusal(PICK_BLOCKED);
-        return false;
-      }
-      if (await carryInput()) return true;
-      // carryInput's own refusal stays when it set one; a carry already
-      // running set none.
-      setRefusal((r) => r ?? PICK_BLOCKED);
-      return false;
+      // A mount carry that started while the read was out is waited for
+      // too, rather than refusing this command's own carry as busy.
+      const started = carriesInFlight.get(key);
+      if (route === 'carry-then-type' && started !== undefined) return afterCarry(started);
+      return routeInput(route);
     } catch (err) {
       console.warn('[emerald] pick input read failed', err);
       return true;
     }
+  };
+  const afterCarry = async (running: Promise<CarryOutcome>): Promise<boolean> => {
+    if (pickWaiting.current) return false;
+    const id = session.id;
+    pickWaiting.current = true;
+    let outcome: CarryOutcome;
+    try {
+      outcome = await running;
+    } finally {
+      pickWaiting.current = false;
+    }
+    if (!alive.current || sessionRef.current !== id) return false;
+    try {
+      const route = routeAfterCarry(carryRead(await window.emerald.request('pty.screen', { sessionId: id })), outcome);
+      return route === 'left' ? false : routeInput(route);
+    } catch (err) {
+      console.warn('[emerald] pick input read failed', err);
+      return true;
+    }
+  };
+  const routeInput = async (route: PickRoute): Promise<boolean> => {
+    if (route === 'type') return true;
+    if (route === 'refuse') {
+      setRefusal(PICK_BLOCKED);
+      return false;
+    }
+    if (await carryInput()) return true;
+    // carryInput's own refusal stays when it set one; a carry already
+    // running set none.
+    setRefusal((r) => r ?? PICK_BLOCKED);
+    return false;
   };
   // M9 fix 744: the model chip's menu, the models and a row of the effort
   // levels. A pick is typed as the box sends a prompt, but not through
@@ -1135,7 +1273,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // Tab or a click alike and sends nothing; Enter on the completed box
   // sends it, since a space closes the menu.
   const pickSlash = (row: SlashRow, how: 'send' | 'complete') => {
-    if (how === 'send' && !row.argument) send(row.name);
+    if (how === 'send' && !row.argument) sendBox(row.name);
     else {
       setBox(`${row.name} `);
       pendingCaret.current = row.name.length + 1;
@@ -1169,6 +1307,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
         // sends none while one is up; its answers are the card's buttons.
         if (asking && session.needsInputReason === 'trust') {
           ev.preventDefault();
+          return;
+        }
+        // M9 fix 1005: with the side strip open Escape closes it and the
+        // panel, and never reaches stop().
+        if (side !== null) {
+          ev.preventDefault();
+          void closeSide();
           return;
         }
         ev.preventDefault();
@@ -1443,7 +1588,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               // them) still work from in here.
               if (ev.key === 'Enter' && !ev.shiftKey && !ev.nativeEvent.isComposing) {
                 ev.preventDefault();
-                send();
+                sendBox();
               }
             }}
           />
@@ -1588,13 +1733,14 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 Stop
               </button>
             )}
-            <button type="button" className="chat-send" disabled={(box.trim() === '' && chips.length === 0) || asking} onClick={() => send()}>
+            <button type="button" className="chat-send" disabled={(box.trim() === '' && chips.length === 0) || asking} onClick={() => sendBox()}>
               Send ⏎
             </button>
           </div>
         </div>
       </div>
       )}
+      {side !== null && <SideStrip question={side.question} answer={side.answer} missing={side.missing} onClose={() => void closeSide()} />}
     </div>
   );
 }
@@ -1667,11 +1813,10 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
-  const read: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (shown === null ? [] : answerOptions(shown.rows));
-  // M9 fix 976: the switch confirmation drawn without digits offers its two
-  // options all the same, each answered by the pointer's arrows and Enter.
-  const switched = session.needsInputReason === 'switch' && review === null && ask === null && read.length === 0 && shown !== null ? switchDialog(shown.rows) : null;
-  const options: (AnswerOption | AskOption)[] = switched === null ? read : switched.options.map((o, i) => ({ key: String(i + 1), label: o.label }));
+  // M9 fix 1004: the options and their keys, the digitless switch card's
+  // among them, read as the sidebar's card reads them.
+  const card = cardOptions(session.needsInputReason, shown?.rows ?? null, review, ask);
+  const options = card.options;
   // M9 fix 879: a dialog with a Cancel of its own (the review's) draws no
   // second one; Escape there cancels the ask as Cancel does (read on
   // 2.1.302), and the card's Escape key still sends it.
@@ -1758,15 +1903,12 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   // tab, and a landed visit with it.
   const pressOption = (key: string) => {
     if (pressed !== null) return;
-    if (switched !== null) {
-      const option = switched.options[Number(key) - 1];
-      const keys = option === undefined ? null : trustKeys(switched, option.pick);
-      // No pointer read: a key could land anywhere, so nothing is sent.
-      if (keys !== null) press(keys);
-      return;
-    }
+    // No pointer read on the switch card: a key could land anywhere, so
+    // nothing is sent.
+    const keys = cardPress(card, ask, key);
+    if (keys === null) return;
     if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
-    press(optionKeys(ask, key));
+    press(keys);
   };
   // A question wants words, so its box takes the keyboard, as the
   // sidebar card's does.
@@ -1886,7 +2028,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                 />
               </div>
             ) : (
-              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={`Sends ${o.key} to the session`} onClick={() => pressOption(o.key)}>
+              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
                 <span className="chat-ask-key">{o.key}</span>
                 <span className="chat-ask-text">
                   <span className="chat-ask-label">{o.label}</span>

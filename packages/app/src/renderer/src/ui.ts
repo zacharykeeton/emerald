@@ -472,6 +472,21 @@ export function flashCornerNote(text: string, paneId: string | null = null): voi
   }, CORNER_NOTE_MS);
 }
 
+// A note that stays until the next one (M9 fix 1008: a copy's progress),
+// with no clock of its own; the window's corner, never a pane's.
+export function holdCornerNote(text: string): void {
+  if (cornerTimer !== null) clearTimeout(cornerTimer);
+  cornerTimer = null;
+  setState({ ...state, cornerNote: { text, paneId: null } });
+}
+
+// Starts the usual clock on a held note that still shows text, so a copy
+// that ended without a note of its own does not leave its progress up.
+export function releaseCornerNote(text: string): void {
+  if (state.cornerNote?.text !== text || cornerTimer !== null) return;
+  flashCornerNote(text);
+}
+
 // Design Mode on one browser pane, or off (M9 fix 674); turning it on
 // for one pane turns it off for any other.
 export function setDesignPane(paneId: string | null): void {

@@ -1,7 +1,7 @@
 // Chrome DevTools Protocol driver for the built app. Launches Electron with
 // remote debugging, evaluates JS in the renderer, dispatches input, takes
 // screenshots. Used by the verify-*.mjs scripts; build the app first.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -120,6 +120,102 @@ export function harnessClaudeHome(home) {
   return chosen;
 }
 
+// M9 fix 997: the Claude Code config every harness Claude runs on. Claude
+// Code reads ~/.claude whatever EMERALD_CLAUDE_HOME says, so a setting a
+// test sent was saved to the user's own settings (fix 976's `/effort low`,
+// and install 918's before it). Read at load, before launch sets either:
+// the real config folder, and the folder the login is read from.
+const realClaudeConfigSet = (process.env['CLAUDE_CONFIG_DIR']?.trim() ?? '') !== '';
+const realClaudeConfig = process.env['CLAUDE_CONFIG_DIR']?.trim() || path.join(os.homedir(), '.claude');
+const realClaudeCredentials = process.env['CLAUDE_SECURESTORAGE_CONFIG_DIR'] ?? realClaudeConfig;
+const sameFolder = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+
+// One private config per process, under the script's own home (a pair
+// launch shares it): the user's global config copied whole, since the
+// trust the real-Claude scripts rely on lives in its projects; emerald's
+// hooks alone in its settings.json, never the user's; and the login read
+// in place through CLAUDE_SECURESTORAGE_CONFIG_DIR, never copied, since a
+// copy whose refresh rotated the token would leave the user's own dead.
+// The variables are set on process.env so the script's own reads and
+// spawns follow, and only here, inside launch, never at load:
+// verify-m7-install imports this module and reads the real settings.
+let claudeConfigOnce;
+export function harnessClaudeConfig() {
+  claudeConfigOnce ??= makeHarnessClaudeConfig();
+  return claudeConfigOnce;
+}
+
+async function makeHarnessClaudeConfig() {
+  const dir = path.join(emeraldHome, 'claude-config');
+  for (const real of [realClaudeConfig, path.join(os.homedir(), '.claude')]) {
+    if (sameFolder(dir, real)) throw new Error(`a harness must not run Claude on the real Claude config ${real}`);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const globalCopy = path.join(dir, '.claude.json');
+  if (!fs.existsSync(globalCopy)) {
+    const src = realClaudeConfigSet ? path.join(realClaudeConfig, '.claude.json') : path.join(os.homedir(), '.claude.json');
+    if (!fs.existsSync(src)) {
+      console.log(`[verify] note: no ${src} to copy; a harness Claude on ${dir} meets the first-run screens`);
+    } else {
+      // The user's own Claude may be mid-write; a copy that does not parse
+      // is taken again.
+      let global;
+      for (let attempt = 0; ; attempt += 1) {
+        fs.copyFileSync(src, globalCopy);
+        try {
+          global = JSON.parse(fs.readFileSync(globalCopy, 'utf8'));
+          break;
+        } catch {
+          if (attempt === 5) throw new Error(`the copy of ${src} is not JSON`);
+          await sleep(200);
+        }
+      }
+      // Auto mode's "Teach auto mode about your environment?" notice is
+      // held off for the user by their settings' autoMode.environment,
+      // which the private settings do not carry, so after a real turn it
+      // drew under the prompt box and fix 972's input read took it for
+      // typed text. Its own "Don't show again" key is seeded in the copy.
+      global.autoModeEnvSetup = { ...(global.autoModeEnvSetup ?? {}), dismissed: true };
+      fs.writeFileSync(globalCopy, JSON.stringify(global, null, 2));
+    }
+  }
+  const settings = path.join(dir, 'settings.json');
+  if (!fs.existsSync(settings)) {
+    // --settings by name: CLAUDE_SETTINGS beats CLAUDE_CONFIG_DIR in the
+    // CLI's hookOptions, and a seat's shell may carry one.
+    const r = spawnSync(process.execPath, [path.join(repoRoot, 'packages', 'cli', 'dist', 'main.js'), 'hooks', 'install', '--settings', settings, '--json'], {
+      env: { ...process.env, EMERALD_HOME: emeraldHome, CLAUDE_CONFIG_DIR: dir },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (r.status !== 0) throw new Error(`emmer hooks install into the private Claude config ${dir} exited ${r.status}: ${(r.stderr ?? '').trim()}`);
+  }
+  process.env['CLAUDE_CONFIG_DIR'] = dir;
+  process.env['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = realClaudeCredentials;
+  // The login, read once without a turn: a signed-out private config
+  // fails here, loudly, rather than at a real-Claude step's reply.
+  const auth = spawnSync('claude auth status --json', { env: process.env, shell: true, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const out = auth.stdout ?? '';
+  let status = null;
+  try {
+    status = JSON.parse(out);
+  } catch {
+    // Not JSON: no claude, or something to throw with.
+  }
+  if (status === null) {
+    if (/not recognized|not found|ENOENT/i.test(auth.stderr ?? '')) {
+      console.log(`[verify] note: no claude on the PATH; the private Claude config ${dir} is not checked for a login`);
+      return dir;
+    }
+    throw new Error(`claude auth status on the private Claude config ${dir} said: ${(out + (auth.stderr ?? '')).trim().slice(0, 300)}`);
+  }
+  if (status.loggedIn !== true || typeof status.configDirectory !== 'string' || !sameFolder(status.configDirectory, dir)) {
+    throw new Error(`a harness Claude on the private config ${dir} reads signed out (claude auth status: ${out.trim().slice(0, 200)}); a real-Claude step would run signed out`);
+  }
+  console.log(`[verify] private Claude config ${dir}: signed in (${status.authMethod})`);
+  return dir;
+}
+
 // M9 fix 620: the window writes two Electron lines about its sandboxed
 // renderer bundle on about half the harness launches, whatever the run is
 // doing; they sat in 187 of 188 kept FAIL dumps and one seat took them for
@@ -187,7 +283,9 @@ export async function launch(port, opts = {}) {
   const pairEnv = opts.pair === undefined ? {} : { EMERALD_HOME: opts.pair.home, EMERALD_PIPE: opts.pair.pipe };
   // M9 fix 606: the window's hooks status, and since this fix its settings
   // watcher, read CLAUDE_SETTINGS; without it a harness read the user's own
-  // settings and would have watched them.
+  // settings and would have watched them. M9 fix 997: every Claude the
+  // window's daemon spawns runs on the private Claude config.
+  const claudeConfig = await harnessClaudeConfig();
   const env = {
     ...process.env,
     EMERALD_WINDOW: 'background',
@@ -199,6 +297,8 @@ export async function launch(port, opts = {}) {
     EMERALD_SKIN: 'classic',
     EMERALD_CLAUDE_HOME: harnessClaudeHome(home),
     CLAUDE_SETTINGS: process.env['CLAUDE_SETTINGS'] ?? path.join(home, 'claude-settings.json'),
+    CLAUDE_CONFIG_DIR: claudeConfig,
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: realClaudeCredentials,
     ...pairEnv,
     ...(opts.env ?? {}),
   };
@@ -459,10 +559,7 @@ export async function connect(wsUrl) {
   // had the previous run's frame up. A refused write goes to a stamped
   // name beside it, said on stderr, so the run goes on and the new frame
   // is still there to look at.
-  const screenshot = async (name) => {
-    const r = await send('Page.captureScreenshot', { format: 'png' });
-    const png = Buffer.from(r.data, 'base64');
-    const file = path.join(shotsDir, name);
+  const writeFrame = (name, file, png) => {
     try {
       fs.writeFileSync(file, png);
       return file;
@@ -472,6 +569,25 @@ export async function connect(wsUrl) {
       console.error(`[verify] frame ${name} is held open (${err.code ?? err.message}); written as ${path.basename(stamped)}`);
       return stamped;
     }
+  };
+  const screenshot = async (name) => {
+    const r = await send('Page.captureScreenshot', { format: 'png' });
+    return writeFrame(name, path.join(shotsDir, name), Buffer.from(r.data, 'base64'));
+  };
+  // M9 fix 998: one element's frame, the index-th match of selector grown
+  // by pad CSS px a side, at scale device px per CSS px. A plain name lands
+  // beside screenshot's, an absolute path where it says. The file written,
+  // or null with nothing captured when the element is missing or empty.
+  const screenshotOf = async (name, selector, { scale = 2, pad = 0, index = 0 } = {}) => {
+    const rect = await evalJs(
+      `(() => { const el = document.querySelectorAll(${JSON.stringify(selector)})[${index}]; if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`,
+    );
+    if (rect === null || rect.width === 0 || rect.height === 0) return null;
+    const x = Math.max(0, rect.x - pad);
+    const y = Math.max(0, rect.y - pad);
+    const clip = { x, y, width: rect.x + rect.width + pad - x, height: rect.y + rect.height + pad - y, scale };
+    const r = await send('Page.captureScreenshot', { format: 'png', clip });
+    return writeFrame(name, path.resolve(shotsDir, name), Buffer.from(r.data, 'base64'));
   };
   const type = (text) => send('Input.insertText', { text });
   const key = async (key, code, keyCode, modifiers = 0) => {
@@ -517,7 +633,7 @@ export async function connect(wsUrl) {
     throw err;
   }
   for (const line of boxLines(reducedMotion, fontSmoothingOn())) console.log(line);
-  return { send, on, evalJs, waitFor, screenshot, type, key, guestKey, mouse, click, rightClick, pastRecentInput, close, consoleLog };
+  return { send, on, evalJs, waitFor, screenshot, screenshotOf, type, key, guestKey, mouse, click, rightClick, pastRecentInput, close, consoleLog };
 }
 
 // CDP modifier bits.

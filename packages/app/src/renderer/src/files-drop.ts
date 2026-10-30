@@ -1,14 +1,14 @@
 import { useSyncExternalStore } from 'react';
 import type { FileClash, MoveOutcome } from '../../preload/api.ts';
 import { folderName, refusalWords, renamedPath, sessionInFolder } from './files-model.ts';
-import { modeFor, moveNote } from './files-drop-model.ts';
+import { copyingNote, modeFor, moveNote } from './files-drop-model.ts';
 import type { DropKeys } from './files-drop-model.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { endHandover, renameModels } from './monaco.ts';
 import { editLayout, getState } from './store.ts';
 import { deletedFilePanes, renameFilePanes } from './tabs-model.ts';
-import { closeFileTabsUnder, flashCornerNote, renameFileTabs } from './ui.ts';
+import { closeFileTabsUnder, flashCornerNote, holdCornerNote, releaseCornerNote, renameFileTabs } from './ui.ts';
 import { recordUse } from './use-record.ts';
 
 // A drop from Explorer on the Files rail (M9 fix 953): main moves or
@@ -73,46 +73,67 @@ function askClashes(dir: string, clashes: readonly HeldClash[]): Promise<ClashCh
 
 export async function dropIntoFolder(paths: readonly string[], dir: string, keys: DropKeys): Promise<MoveOutcome[]> {
   if (paths.length === 0) return [];
-  const mode = modeFor(keys);
-  let answer = await window.emerald.files.move([...paths], dir, mode, null);
-  if ('refused' in answer) {
-    flashCornerNote(`Could not drop into ${folderName(dir)}: ${answer.refused}`);
-    return [];
-  }
-  if ('clashes' in answer) {
-    const clashes = answer.clashes.map((c) => ({ ...c, held: heldOf(c) }));
-    const choice = clashes.every((c) => c.held !== null) ? 'skip' : await askClashes(dir, clashes);
-    if (choice === 'cancel') return [];
-    const replace = choice === 'replace' ? clashes.filter((c) => c.held === null).map((c) => c.from) : [];
-    answer = await window.emerald.files.move([...paths], dir, mode, replace);
+  // A copy's progress in the corner note (M9 fix 1008), for this drop's
+  // folder alone, until main answers.
+  // Settled once an answer is in, before anything reads it, so a push
+  // that lands after the answer is never drawn over the final note.
+  let held: string | null = null;
+  let settled = false;
+  const off = window.emerald.files.onProgress((p) => {
+    if (settled || p.dir !== dir) return;
+    held = copyingNote(p.done, p.total, folderName(dir));
+    holdCornerNote(held);
+  });
+  try {
+    const mode = modeFor(keys);
+    let answer = await window.emerald.files.move([...paths], dir, mode, null);
+    settled = true;
     if ('refused' in answer) {
       flashCornerNote(`Could not drop into ${folderName(dir)}: ${answer.refused}`);
       return [];
     }
-    // The second pass never asks; a clash it answers is a bug in main.
-    if ('clashes' in answer) return [];
-  }
-  const outcomes = answer.done;
-  for (const o of outcomes) {
-    if (o.replaced === true) {
-      dropFileSchemes(o.to);
-      closeFileTabsUnder(o.to);
-      void editLayout((l) => deletedFilePanes(l, o.to)).catch((err: unknown) => console.warn('[emerald] closing the file panes after a delete failed', err));
+    if ('clashes' in answer) {
+      const clashes = answer.clashes.map((c) => ({ ...c, held: heldOf(c) }));
+      const choice = clashes.every((c) => c.held !== null) ? 'skip' : await askClashes(dir, clashes);
+      if (choice === 'cancel') return [];
+      const replace = choice === 'replace' ? clashes.filter((c) => c.held === null).map((c) => c.from) : [];
+      // The first pass copied nothing; the second is the one that copies.
+      settled = false;
+      answer = await window.emerald.files.move([...paths], dir, mode, replace);
+      settled = true;
+      if ('refused' in answer) {
+        flashCornerNote(`Could not drop into ${folderName(dir)}: ${answer.refused}`);
+        return [];
+      }
+      // The second pass never asks; a clash it answers is a bug in main.
+      if ('clashes' in answer) return [];
     }
-    if (o.result === 'moved') {
-      // finishRename's pinned order: the models before the tabs, the file
-      // panes last (M9 fix 591).
-      const handed = renameModels(o.from, o.to);
-      renameFileSchemes(o.from, o.to);
-      renameFileTabs(o.from, o.to);
-      void editLayout((l) => renameFilePanes(l, o.from, o.to)).catch((err: unknown) => {
-        console.warn('[emerald] moving the file panes after a drop failed', err);
-        endHandover(handed);
-      });
+    const outcomes = answer.done;
+    for (const o of outcomes) {
+      if (o.replaced === true) {
+        dropFileSchemes(o.to);
+        closeFileTabsUnder(o.to);
+        void editLayout((l) => deletedFilePanes(l, o.to)).catch((err: unknown) => console.warn('[emerald] closing the file panes after a delete failed', err));
+      }
+      if (o.result === 'moved') {
+        // finishRename's pinned order: the models before the tabs, the file
+        // panes last (M9 fix 591).
+        const handed = renameModels(o.from, o.to);
+        renameFileSchemes(o.from, o.to);
+        renameFileTabs(o.from, o.to);
+        void editLayout((l) => renameFilePanes(l, o.from, o.to)).catch((err: unknown) => {
+          console.warn('[emerald] moving the file panes after a drop failed', err);
+          endHandover(handed);
+        });
+      }
     }
+    const note = moveNote(outcomes, folderName(dir));
+    if (note !== null) flashCornerNote(note);
+    recordUse('drop-move-files');
+    return outcomes;
+  } finally {
+    settled = true;
+    off();
+    if (held !== null) releaseCornerNote(held);
   }
-  const note = moveNote(outcomes, folderName(dir));
-  if (note !== null) flashCornerNote(note);
-  recordUse('drop-move-files');
-  return outcomes;
 }

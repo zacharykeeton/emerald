@@ -6,6 +6,7 @@ import { ackIfDone, typeInto } from './actions.ts';
 import { PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
 import { askHeading } from './chat-model.ts';
+import { ARROW_KEYS_TITLE } from './screen-prompt-model.ts';
 import { acknowledgeAttention } from './ui.ts';
 
 // M9 fix 808: Claude Code's folder trust dialog as a card, in the chat view
@@ -18,8 +19,6 @@ interface TrustScreen {
   rows: string[];
   sentAt: number;
 }
-
-const OPTION_TITLE = 'Sends the arrow keys and Enter to the session';
 
 // M9 fix 847: the dialog's text with the session's own folder on a line of
 // its own under the heading, where the dialog drew its path (which the TUI
@@ -85,7 +84,7 @@ export function TrustCard({ session, screen, rootRef }: { session: SessionInfo; 
         </pre>
         <div className="chat-ask-options">
           {(dialog?.options ?? []).map((o) => (
-            <button key={o.pick} type="button" className="chat-ask-option" data-pick={o.pick} data-pointer={o.pointer ? 'true' : undefined} title={OPTION_TITLE} disabled={disabled(o.pick)} onClick={() => press(o.pick)}>
+            <button key={o.pick} type="button" className="chat-ask-option" data-pick={o.pick} data-pointer={o.pointer ? 'true' : undefined} title={ARROW_KEYS_TITLE} disabled={disabled(o.pick)} onClick={() => press(o.pick)}>
               <span className="chat-ask-text">
                 <span className="chat-ask-label">{o.label}</span>
               </span>
@@ -136,7 +135,7 @@ export function TrustPopover({ session, anchor, onClose, onEnter, onLeave }: Car
       </pre>
       <div className="answer-popover-options">
         {(dialog?.options ?? []).map((o) => (
-          <button key={o.pick} type="button" className="answer-popover-option" data-pick={o.pick} data-pointer={o.pointer ? 'true' : undefined} title={OPTION_TITLE} disabled={disabled(o.pick)} onClick={() => press(o.pick)}>
+          <button key={o.pick} type="button" className="answer-popover-option" data-pick={o.pick} data-pointer={o.pointer ? 'true' : undefined} title={ARROW_KEYS_TITLE} disabled={disabled(o.pick)} onClick={() => press(o.pick)}>
             <span className="answer-popover-text">
               <span className="answer-popover-label">{o.label}</span>
             </span>

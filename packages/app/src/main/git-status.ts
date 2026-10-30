@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ChangedFile, GitChanges, GitCheckout, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
+import type { ChangedFile, GitChanges, GitChangesOptions, GitCheckout, GitGraph, GitGraphOptions, GitInit, GitLog, GitProjectCounts, GitReview, GitShow, ReviewFile } from '../preload/api.ts';
 import { forgetInFlight, gitBytes, gitPipe, gitText, type GitOptions } from './git-runner.ts';
 import { defaultBranchOf, parseCheckouts, parseGraph, parseLog, parseMerged, parseNameStatus, parseNumstat, parsePatchIds, parseWorktrees, twinGroups } from '../renderer/src/git-changes-model.ts';
 import type { GitStatusResult } from '../renderer/src/git-status-model.ts';
@@ -61,8 +61,10 @@ export function gitStatus(dir: string): Promise<GitStatusResult> {
 // no HEAD to diff against, and its tracked rows then show without numbers
 // rather than not at all. `git` is the worker's gitText unless a test
 // hands in its own. gitStatus keeps the untracked default, since the
-// tree's tints want a new folder once.
-export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null> = gitText): Promise<GitChanges> {
+// tree's tints want a new folder once. countOnly (M9 fix 1014) is the
+// sidebar heading's read, which draws only how many rows there are, so it
+// skips the numstat and the untracked counts and costs two gits a poll.
+export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?: GitOptions) => Promise<string | null> = gitText, opts: GitChangesOptions = {}): Promise<GitChanges> {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) return Promise.resolve({ root: null, files: [] });
   const root = findRepoRoot(dir);
   if (root === null) return Promise.resolve({ root: null, files: [] });
@@ -71,7 +73,7 @@ export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?
   return (async () => {
     const [status, nums, others] = await Promise.all([
       run(['status', '--porcelain=v1', '--untracked-files=no', '-z']),
-      run(['diff', '--numstat', 'HEAD', '-z']),
+      opts.countOnly === true ? Promise.resolve(null) : run(['diff', '--numstat', 'HEAD', '-z']),
       run(['ls-files', '--others', '--exclude-standard', '-z']),
     ]);
     const counts = nums === null ? new Map<string, [number | null, number | null]>() : parseNumstat(nums, root);
@@ -80,7 +82,7 @@ export function gitChanges(dir: string, git: (args: string[], cwd: string, opts?
       return { ...f, rel: relOf(f.path), added: c?.[0] ?? null, removed: c?.[1] ?? null };
     });
     const untracked = untrackedPaths(others, root);
-    const added = await countUntracked(root, untracked.filter((u) => !u.repo).map((u) => u.path), git);
+    const added = opts.countOnly === true ? new Map<string, number | null>() : await countUntracked(root, untracked.filter((u) => !u.repo).map((u) => u.path), git);
     for (const { path: p, repo } of untracked) {
       const n = added.get(p.toLowerCase()) ?? null;
       // No count is no number on both sides, as the review's rows (M9 fix 917).

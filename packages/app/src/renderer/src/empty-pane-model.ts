@@ -184,3 +184,19 @@ export function emptyKey(ev: { key: string; shiftKey: boolean; ctrlKey: boolean;
   if (plain && ev.key === 'ArrowUp') return { act: 'move', delta: -1 };
   return null;
 }
+
+export type EscapeStep = 'clear-path' | 'clear-query-and-close' | 'close';
+
+// What Escape does in the empty pane. With File picked and text in the
+// path box it clears the box and closes nothing (M9 fix 1010), since the
+// box holds the keyboard whenever File is picked and over a terminal the
+// close would lose the typed path; the raw text is read, so a box of
+// spaces is cleared too. Otherwise the action mode empties its query
+// before the close (M9 fix 202), and anything else just closes. A path
+// left in the box while another tile is picked is not on screen and is
+// kept.
+export function escapeStep({ actionQuery, filePick, pathText }: { actionQuery: boolean; filePick: boolean; pathText: string }): EscapeStep {
+  if (filePick && pathText !== '') return 'clear-path';
+  if (actionQuery) return 'clear-query-and-close';
+  return 'close';
+}

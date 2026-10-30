@@ -534,12 +534,27 @@ try {
   fs.writeFileSync(path.join(seed, 'dirty2.txt'), 'two');
   await s.waitFor(`document.querySelector(${JSON.stringify(`${seedGroup} .sidebar-group-changes`)})?.dataset.count === '2'`, 'the heading counts two changed files', 8000);
   expect((await seedMark()).title === '2 changed files', 'the tooltip reads 2 changed files');
+  // M9 fix 1014: the heading's count-only read counts what the full read
+  // counts: a staged file once and a new folder's two files one each (a
+  // status-only count would read 3). The medians of both reads are logged,
+  // never asserted.
+  git('add', 'dirty.txt');
+  fs.mkdirSync(path.join(seed, 'fresh'));
+  fs.writeFileSync(path.join(seed, 'fresh', 'a.txt'), 'a');
+  fs.writeFileSync(path.join(seed, 'fresh', 'b.txt'), 'b');
+  await s.waitFor(`document.querySelector(${JSON.stringify(`${seedGroup} .sidebar-group-changes`)})?.dataset.count === '4'`, "the heading counts a staged file once and a new folder's two files one each", 8000);
+  const timeReads = (opts) =>
+    s.evalJs(
+      `(async () => { const t = []; for (let i = 0; i < 10; i++) { const a = performance.now(); await window.emerald.files.gitChanges(${JSON.stringify(seed)}${opts}); t.push(performance.now() - a); } t.sort((x, y) => x - y); return Math.round(t[5]); })()`,
+    );
+  const fullMs = await timeReads('');
+  const countMs = await timeReads(', { countOnly: true }');
   const homeMark = await s.evalJs(`!!document.querySelector(${JSON.stringify(`.sidebar-group[data-group=${JSON.stringify(home)}] .sidebar-group-changes`)})`);
   git('add', '.');
   git('commit', '-q', '-m', 'dirty');
   const tCommit = Date.now();
   await s.waitFor(`!document.querySelector(${JSON.stringify(`${seedGroup} .sidebar-group-changes`)})`, 'the mark goes when the tree is clean', 8000);
-  step(`M9 fix 200: a written file put the changes mark on the seed heading (1 changed file, then 2), the commit took it off ${Date.now() - tCommit} ms later; the home heading's mark read ${homeMark}`);
+  step(`M9 fix 200: a written file put the changes mark on the seed heading (1 changed file, then 2, then 4 with a staged file and a new folder of two, fix 1014), the commit took it off ${Date.now() - tCommit} ms later; the home heading's mark read ${homeMark}; full read ${fullMs} ms, count-only ${countMs} ms (median of ten)`);
   // M9 fix 133: the palette is twelve again (M68 had twenty-four, which
   // did not tell apart), so twelve live sessions wear twelve different
   // colours, each one of the palette, and the thirteenth repeats one.

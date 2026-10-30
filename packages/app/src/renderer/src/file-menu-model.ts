@@ -1,4 +1,5 @@
 import type { FileTabView } from './tabs-model.ts';
+import { isImage } from './tabs-model.ts';
 
 // The file body's right-click menu as facts (M9 fix 270), the way
 // pane-menu-model.ts lists the pane menu: one list for the editor, the
@@ -15,7 +16,8 @@ import type { FileTabView } from './tabs-model.ts';
 // heading, drawn as a menu heading, not an item.
 // M9 fix 619: 'find' opens the view's find bar in Rendered and Turns and
 // Monaco's find in Raw and Pretty.
-export type FileMenuRun = 'copy' | 'select-all' | 'find' | 'wrap' | 'paste' | 'format' | 'format-selection' | 'copy-path' | 'reveal' | 'reveal-files' | 'open' | 'scheme' | 'heading';
+// M9 fix 1007: 'copy-image' puts the picture on the clipboard as a PNG.
+export type FileMenuRun = 'copy-image' | 'copy' | 'select-all' | 'find' | 'wrap' | 'paste' | 'format' | 'format-selection' | 'copy-path' | 'reveal' | 'reveal-files' | 'open' | 'scheme' | 'heading';
 
 export interface FileMenuItem {
   run: FileMenuRun;
@@ -47,6 +49,10 @@ export interface FileMenuFacts {
   // the pane menu lists them, and the file's own pick, null for none.
   schemes: readonly FileMenuScheme[];
   scheme: string | null;
+  // The view shows a picture now (M9 fix 1007), and whether its kind is
+  // one main can decode and copy (COPYABLE_IMAGE).
+  image: boolean;
+  imageCopyable: boolean;
 }
 
 export interface FileMenuScheme {
@@ -55,12 +61,27 @@ export interface FileMenuScheme {
   source: 'shipped' | 'windows-terminal';
 }
 
-export function fileMenu({ view, editable, selected, wrap, json, schemes, scheme }: FileMenuFacts): FileMenuItem[] {
-  const items: FileMenuItem[] = [
+// The picture kinds Copy image takes (M9 fix 1007): main decodes the file
+// with nativeImage.createFromPath, which on Windows reads PNG, JPEG and
+// ICO and returns an empty image for GIF, WebP, BMP and SVG (the fix's
+// probe on Electron's own build). A kind outside the set gets the item
+// disabled with a reason rather than a copy that puts nothing there.
+export const COPYABLE_IMAGE = /\.(png|jpe?g|ico)$/i;
+export const COPY_IMAGE_REFUSED = "This kind of picture can't be copied";
+
+export function copyableImage(path: string): boolean {
+  return isImage(path) && COPYABLE_IMAGE.test(path);
+}
+
+export function fileMenu({ view, editable, selected, wrap, json, schemes, scheme, image, imageCopyable }: FileMenuFacts): FileMenuItem[] {
+  const items: FileMenuItem[] = [];
+  // A picture's first item is its copy (M9 fix 1007).
+  if (image) items.push({ run: 'copy-image', label: 'Copy image', disabled: !imageCopyable, title: imageCopyable ? 'Copy the picture to the clipboard, as a PNG' : COPY_IMAGE_REFUSED });
+  items.push(
     { run: 'copy', label: 'Copy', hint: 'Ctrl+C', disabled: !selected, title: selected ? 'Copy the selection' : 'Nothing selected' },
     { run: 'select-all', label: 'Select all', hint: 'Ctrl+A' },
     { run: 'find', label: 'Find', hint: 'Ctrl+F', title: 'Find in this file' },
-  ];
+  );
   // The wrap is the editor's setting; the rendered views have no long
   // lines to wrap, so the item shows where it does something (the Raw
   // editor, and the Pretty view, which is the same editor).

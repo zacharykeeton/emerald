@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
+import { ARROW_KEYS_TITLE, btwPanel, cardOptions, cardPress, optionTitle } from './screen-prompt-model.ts';
+import { spinnerOf } from './chat-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab } from './screen-prompt-model.ts';
 
@@ -536,6 +538,26 @@ test('dialogKey reads the digitless switch confirmation', () => {
   assert.notEqual(dialogKey(rows, { x: 0, y: 3 }), null);
 });
 
+test('cardOptions: the switch confirmation drawn without digits answers by the arrows, and a numbered one by its digit (M9 fix 1004)', () => {
+  const rows = [' Switch model?', '', '   Yes, switch to Opus 5.5', ' ❯ No, go back'];
+  const card = cardOptions('switch', rows, null, null);
+  assert.deepEqual(card.options, [{ key: '1', label: 'Yes, switch to Opus 5.5' }, { key: '2', label: 'No, go back' }]);
+  assert.equal(cardPress(card, null, '1'), '\x1b[A\r');
+  assert.equal(cardPress(card, null, '2'), '\r');
+  assert.equal(cardPress(card, null, '3'), null);
+  assert.equal(optionTitle(card, '1'), ARROW_KEYS_TITLE);
+  const noPointer = rows.map((r) => r.replace('❯', ' '));
+  assert.equal(cardPress(cardOptions('switch', noPointer, null, null), null, '1'), null, 'no pointer row read');
+  const permission = cardOptions('permission', rows, null, null);
+  assert.deepEqual(permission.options, []);
+  assert.equal(permission.switched, null);
+  const numbered = cardOptions('switch', [' Change effort level?', '', ' > 1. Yes, switch to high', '   2. No, go back'], null, null);
+  assert.equal(numbered.switched, null);
+  assert.deepEqual(numbered.options.map((o) => o.key), ['1', '2']);
+  assert.equal(cardPress(numbered, null, '2'), '2');
+  assert.equal(optionTitle(numbered, '2'), 'Sends 2 to the session');
+});
+
 // M9 fix 801: one press per dialog, told by the dialog's key.
 test('dialogKey: one key per dialog, the pointer left out; null with no dialog (fix 801)', () => {
   const tabs = dialogKey(ASK_TABS, { x: 0, y: 0 });
@@ -692,4 +714,25 @@ test('M9 fix 922: visitAnswered follows a landed visit to the next tab', () => {
   assert.equal(visitAnswered(null), null);
   assert.equal(visitAnswered({ index: 0, from: 'a', question: null }), null);
   assert.deepEqual(visitAnswered({ index: 0, from: 'a', question: 'b' }), { index: 1, from: 'b', question: null });
+});
+
+test('btwPanel: the question and the answer off the panel, pending while it answers (M9 fix 1005)', () => {
+  // The rows of a real 2.1.314 capture: the typed command echoed above the
+  // panel, the pending footer Esc alone, the answered one every key.
+  const footer = '  ↑/↓ to scroll · c to copy · f to fork · Esc to close';
+  const answered = ['● an earlier reply', '', '❯ /btw what folder am I in', '', '  /btw what folder am I in', '', '    You are in the fixture folder.', '    It holds one file.', '', footer];
+  assert.deepEqual(btwPanel(answered), { question: 'what folder am I in', answer: 'You are in the fixture folder.\nIt holds one file.' });
+  const pending = ['❯ /btw what folder am I in', '', '  /btw what folder am I in', '', '    ✽ Answering…', '', '  Esc to close'];
+  assert.deepEqual(btwPanel(pending), { question: 'what folder am I in', answer: null });
+  const paragraphs = ['  /btw what folder am I in', '', '    You are here.', '', '    I read it off the status.', '', footer];
+  assert.equal(btwPanel(paragraphs)?.answer, 'You are here.\n\nI read it off the status.', 'a blank row inside the answer kept');
+  const retrying = ['', '  /btw what folder am I in', '', '    ✻ Answering… · retrying in 3s · attempt 1/5', '', footer];
+  assert.equal(btwPanel(retrying)?.answer, null);
+  const earlier = ['  (+1 earlier /btw)', '  /btw first?', '  /btw what folder am I in', '', '    You are in the fixture folder.', '', footer];
+  assert.deepEqual(btwPanel(earlier), { question: 'what folder am I in', answer: 'You are in the fixture folder.' });
+  assert.equal(btwPanel([...answered, '', '❯ ']), null, 'a prompt box under the footer');
+  assert.equal(btwPanel(['● Try /btw x', '  to ask aside', '', '❯ ']), null, 'a reply that quotes /btw, no footer');
+  assert.equal(btwPanel(['', '  /btw what fol…', '', '    ✻ Answering…', '', footer])?.question, 'what fol…');
+  // Log only: what the live line's spinner read makes of a pending panel.
+  console.log(`[fix 1005] spinnerOf on the pending panel: ${JSON.stringify(spinnerOf(pending))}`);
 });

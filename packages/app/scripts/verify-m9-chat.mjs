@@ -57,6 +57,10 @@
 // three-question ask and then a later one, and reads the arrows at the
 // stub and the card keeping the tab it moved to as current, then Shift+Tab
 // and Right walking the tabs from the card with the focus kept (fix 959). Block
+// `btw` (fix 1005, needs stub) picks /btw from the / menu, sends a side
+// question to a stub that draws Claude Code's /btw panel, reads the side
+// strip go from Answering… to the answer, and closes it and the panel by
+// Escape. Block
 // `mod-ask` (fixes 774 and 775) starts a real Claude in default mode,
 // Escapes a real permission dialog and answers a second one, a short
 // real turn of its own.
@@ -109,9 +113,10 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'question', fixes: ['777', '801', '802', '803', '845', '879'], needs: ['stub'] },
   { name: 'ask-once', fixes: ['801', '880'], needs: ['stub'] },
   { name: 'ask-tabs', fixes: ['922', '959'], needs: ['stub'] },
-  { name: 'switch', fixes: ['976'], needs: ['stub'] },
+  { name: 'switch', fixes: ['976', '1004'], needs: ['stub'] },
+  { name: 'btw', fixes: ['1005'], needs: ['stub'] },
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957'], needs: [] },
-  { name: 'send', fixes: ['781', '782', '783', '784', '921', '980'], needs: [] },
+  { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
@@ -2054,8 +2059,8 @@ try {
     const stamp = Date.now().toString(36);
     freshDir = path.join(repoRoot, '.chat-fresh-' + stamp);
     fs.mkdirSync(freshDir);
-    // The real Claude writes under the person's Claude home (the harness
-    // sets only EMERALD_CLAUDE_HOME, which Claude Code does not read).
+    // The real Claude writes under the harness's private Claude config,
+    // which launch puts in this process's CLAUDE_CONFIG_DIR too (M9 fix 997).
     const claudeProjects = path.join(process.env['CLAUDE_CONFIG_DIR']?.trim() || path.join(os.homedir(), '.claude'), 'projects');
     const stamped = () => (fs.existsSync(claudeProjects) ? fs.readdirSync(claudeProjects).filter((n) => n.toLowerCase().includes(stamp)) : []);
     expect(stamped().length === 0, `no project folder for the fresh folder yet, got ${JSON.stringify(stamped())}`);
@@ -2198,9 +2203,9 @@ try {
     expect(seeded?.desc === 'Seeded by verify:chat for fix 719.', `the seeded skill's description, got ${JSON.stringify(seeded)}`);
     const terminalA = rowsA.filter((r) => r.section === 'terminal');
     // M9 fix 780: fix 749's thirteen, then the rest of Claude Code 2.1.301's
-    // terminal forms in name order.
+    // terminal forms in name order; /btw is a sent row since fix 1005.
     const TERMINAL = [
-      '/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor', '/btw',
+      '/model', '/permissions', '/mcp', '/config', '/usage', '/hooks', '/memory', '/resume', '/theme', '/login', '/status', '/doctor',
       '/autocompact', '/background', '/branch', '/bug', '/context', '/copy', '/daemon', '/effort', '/exit', '/export', '/feedback', '/focus', '/goal', '/help', '/ide',
       '/install-github-app', '/logout', '/mobile', '/plan', '/plugin', '/powerup', '/release-notes', '/rewind', '/skill-doctor', '/skills', '/tasks', '/terminal-setup', '/tui',
     ];
@@ -3251,7 +3256,7 @@ try {
     const cardSel = paneSel(stubPane) + ' .chat-step[data-kind="ask"]';
     const boxSel = paneSel(stubPane) + ' .chat-box';
     const badgeSel = `.sidebar-row[data-session-id=${JSON.stringify(stubId)}] .sidebar-row-state`;
-    const readCard = () => s.evalJs(`(() => { const c = ${q(cardSel)}; const box = ${q(boxSel)}; return { card: c !== null, heading: c?.querySelector('.chat-ask-heading')?.textContent ?? null, keys: c === null ? [] : [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), labels: c === null ? [] : [...c.querySelectorAll('button.chat-ask-option')].filter((b) => b.dataset.key !== 'esc').map((b) => b.querySelector('.chat-ask-label')?.textContent ?? b.textContent), disabled: box.disabled, placeholder: box.placeholder, badge: ${q(badgeSel)}?.textContent ?? null }; })()`);
+    const readCard = () => s.evalJs(`(() => { const c = ${q(cardSel)}; const box = ${q(boxSel)}; return { card: c !== null, heading: c?.querySelector('.chat-ask-heading')?.textContent ?? null, keys: c === null ? [] : [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key), labels: c === null ? [] : [...c.querySelectorAll('button.chat-ask-option')].filter((b) => b.dataset.key !== 'esc').map((b) => b.querySelector('.chat-ask-label')?.textContent ?? b.textContent), titles: c === null ? [] : [...c.querySelectorAll('button.chat-ask-option')].filter((b) => b.dataset.key !== 'esc').map((b) => b.title), disabled: box.disabled, placeholder: box.placeholder, badge: ${q(badgeSel)}?.textContent ?? null }; })()`);
     // (a) The numbered shape, as Claude Code draws it unless overDraft
     // hides the digits: the pointer on Yes, a digit answers.
     await typeRaw(stubId, `${draw('Change effort level?', 'This conversation is cached for the current effort level. Switching to high means the full history gets re-read on your next message.', '> 1. Yes, switch to high', '  2. No, go back')}; $k = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got976 ' + $k.KeyChar); Read-Host | Out-Null\r`);
@@ -3263,6 +3268,7 @@ try {
     expect(a.heading === 'Change effort level?', `fix 976: the card's heading is the dialog's title, got ${JSON.stringify(a.heading)}`);
     expect(JSON.stringify(a.keys) === JSON.stringify(['1', '2', 'esc']), `fix 976: the card's keys, got ${JSON.stringify(a.keys)}`);
     expect(JSON.stringify(a.labels.map((l) => l.trim())) === JSON.stringify(['Yes, switch to high', 'No, go back']), `fix 976: the card's labels, got ${JSON.stringify(a.labels)}`);
+    expect(JSON.stringify(a.titles) === JSON.stringify(['Sends 1 to the session', 'Sends 2 to the session']), `fix 1004: the numbered card's titles name its digits, got ${JSON.stringify(a.titles)}`);
     expect(a.disabled && a.placeholder === 'Answer the ask above, or press Esc to cancel', `fix 976: the box disabled under the card, got ${JSON.stringify(a)}`);
     step('fix 976 (a): a Change effort level? dialog on a resting Claude is an ask card with its title, its two options and the box held');
     await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="2"]')}.click()`);
@@ -3281,6 +3287,7 @@ try {
     console.log(`[verify] fix 976: the digitless dialog's card reads ${JSON.stringify(b)}`);
     expect(b.heading === 'Switch model?', `fix 976: the digitless card's heading, got ${JSON.stringify(b.heading)}`);
     expect(JSON.stringify(b.labels.map((l) => l.trim())) === JSON.stringify(['Yes, switch to Opus 5.5', 'No, go back']), `fix 976: the digitless card's labels, got ${JSON.stringify(b.labels)}`);
+    expect(JSON.stringify(b.titles) === JSON.stringify(['Sends the arrow keys and Enter to the session', 'Sends the arrow keys and Enter to the session']), `fix 1004: the digitless card's titles say it sends the arrows and Enter, got ${JSON.stringify(b.titles)}`);
     step('fix 976 (b): a Switch model? dialog drawn without digits still offers both options');
     await s.evalJs(`${q(cardSel + ' .chat-ask-option[data-key="1"]')}.click()`);
     await waitCursorRow(stubId, (row) => row.trim().endsWith('got976 UpArrow Enter'), 'fix 976: the stub got an Up and an Enter');
@@ -3289,10 +3296,117 @@ try {
     step('fix 976 (b): Yes on the digitless dialog moves the pointer up and confirms, and the row goes back to idle');
     await typeRaw(stubId, '\r');
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 976: the second Read-Host ended at the prompt', 10000);
+    // (c) M9 fix 1004: the same digitless dialog answered from the sidebar's
+    // card, which offered only its Cancel before.
+    await typeRaw(stubId, `${draw('Switch model?', 'This conversation is cached for the current model. Switching to Opus 5.5 means the full history gets re-read on your next message.', '  Yes, switch to Opus 5.5', '> No, go back')}; $a = [Console]::ReadKey($true); $b = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got976 ' + $a.Key + ' ' + $b.Key); Read-Host | Out-Null\r`);
+    await waitRecord(stubId, (r) => r.state === 'needs-input' && r.needsInputReason === 'switch', 'fix 1004: the record at needs-input/switch off the digitless dialog', 5000);
+    const popSel = `.answer-popover[data-session-id=${JSON.stringify(stubId)}]`;
+    const badge1004 = await s.evalJs(`(() => { const el = ${q(badgeSel)}; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await s.click(badge1004.x, badge1004.y);
+    await s.waitFor(`document.querySelectorAll(${JSON.stringify(popSel + ' .answer-popover-option[data-key="1"], ' + popSel + ' .answer-popover-option[data-key="2"]')}).length === 2`, 'fix 1004: the sidebar card with Yes and No', 5000).catch(async (err) => {
+      const at = await s.evalJs(`(() => { const e = document.elementFromPoint(${badge1004.x}, ${badge1004.y}); return { at: e ? e.tagName + '.' + e.className : null, popovers: [...document.querySelectorAll('.answer-popover')].map((c) => c.className + ' ' + [...c.querySelectorAll('[data-key]')].map((b) => b.dataset.key).join(',')), window: [innerWidth, innerHeight] }; })()`);
+      throw new Error(`${err.message}: clicked ${JSON.stringify(badge1004)}, ${JSON.stringify(at)}`);
+    });
+    const pop = await s.evalJs(`(() => { const c = document.querySelector(${JSON.stringify(popSel)}); const digits = [...c.querySelectorAll('.answer-popover-option')].filter((b) => b.dataset.key !== 'esc'); return { heading: c.querySelector('.answer-popover-heading')?.textContent ?? null, keys: [...c.querySelectorAll('.answer-popover-option')].map((b) => b.dataset.key), labels: digits.map((b) => b.querySelector('.answer-popover-label')?.textContent ?? null), titles: digits.map((b) => b.title) }; })()`);
+    console.log(`[verify] fix 1004: the sidebar card reads ${JSON.stringify(pop)}`);
+    expect(pop.heading === 'Switch model?', `fix 1004: the sidebar card's heading, got ${JSON.stringify(pop.heading)}`);
+    expect(JSON.stringify(pop.keys) === JSON.stringify(['1', '2', 'esc']), `fix 1004: the sidebar card's keys, got ${JSON.stringify(pop.keys)}`);
+    expect(JSON.stringify(pop.labels) === JSON.stringify(['Yes, switch to Opus 5.5', 'No, go back']), `fix 1004: the sidebar card's labels, got ${JSON.stringify(pop.labels)}`);
+    expect(JSON.stringify(pop.titles) === JSON.stringify(['Sends the arrow keys and Enter to the session', 'Sends the arrow keys and Enter to the session']), `fix 1004: the sidebar card's titles, got ${JSON.stringify(pop.titles)}`);
+    await s.evalJs(`${q(popSel + ' .answer-popover-option[data-key="1"]')}.click()`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('got976 UpArrow Enter'), 'fix 1004: the sidebar card sent an Up and an Enter');
+    await waitRecord(stubId, (r) => r.state === 'idle', 'fix 1004: the record back at idle once the dialog went', 5000);
+    await s.waitFor(`!document.querySelector('.answer-popover')`, 'fix 1004: the sidebar card gone', 5000);
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1004: the third Read-Host ended at the prompt', 10000);
+    step('fix 1004: the digitless switch card says it sends the arrows and Enter, and the sidebar card offers Yes and No and answers by the pointer');
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     // A Stop after the resume above leaves the row at idle, as at the start.
     await waitRecord(stubId, (r) => r.state === 'done' || r.state === 'idle', 'fix 976: the stub at rest at the block\'s end', 5000);
     await s.waitFor(`${q(boxSel)}?.disabled === false`, 'fix 976: the box back at the block\'s end');
+  });
+
+  await block('btw', async () => {
+    // M9 fix 1005: /btw from the box opens a side strip beside the chat
+    // with the question and the answer Claude Code's panel draws, read off
+    // the screen, since the side question is never written to the
+    // transcript. The stub draws the panel's rows as the bundle shapes
+    // them (2.1.314): the question row, the answer two columns further in
+    // (or the spinner row while it answers) and the footer's key hints.
+    await bindPane(stubPane, stubId);
+    await s.waitFor(`!!${q(paneSel(stubPane) + ' .pane-face-toggle')}`, 'fix 1005: the stub back in the first pane', 10000);
+    await toChat(stubPane);
+    if ((await record(stubId))?.claudeSessionId === null) {
+      await post({ hook_event_name: 'SessionStart', source: 'resume' });
+      await waitRecord(stubId, (r) => r.claudeSessionId !== null, 'fix 1005: the stub bound again', 5000);
+    }
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(stubId, (r) => r.state === 'done' || r.state === 'idle', 'fix 1005: the stub at rest', 5000);
+    const boxSel = paneSel(stubPane) + ' .chat-box';
+    const sideSel = paneSel(stubPane) + ' aside.chat-side[aria-label="Side question"]';
+    // (a) The / menu lists /btw as a sent row, and a pick completes it.
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'fix 1005: the box holds the keyboard');
+    // A block before (fix 716's mention) can leave a draft in the stub's box.
+    await s.key('a', 'KeyA', 65, CTRL);
+    await s.key('Backspace', 'Backspace', 8);
+    await s.waitFor(`${q(boxSel)}.value === ''`, 'fix 1005: the box empty at the block\'s start', 3000);
+    await s.type('/bt');
+    await s.waitFor(`document.querySelector('.chat-menu .chat-menu-row[data-active="true"]')?.dataset.name === '/btw'`, 'fix 1005: the menu on /btw', 3000).catch(async (err) => {
+      throw new Error(`${err.message}: box ${JSON.stringify(await s.evalJs(`${q(boxSel)}.value`))}, rows ${JSON.stringify(await s.evalJs(`[...document.querySelectorAll('.chat-menu .chat-menu-row')].map((r) => (r.dataset.active === 'true' ? '>' : '') + r.dataset.name + ':' + r.dataset.section)`))}`);
+    });
+    const active = await s.evalJs(`(() => { const r = document.querySelector('.chat-menu .chat-menu-row[data-active="true"]'); return { name: r?.dataset.name ?? null, section: r?.dataset.section ?? null }; })()`);
+    expect(active.section === 'sent', `fix 1005 (a): /btw a sent row, got ${JSON.stringify(active)}`);
+    await s.key('Tab', 'Tab', 9);
+    await s.waitFor(`${q(boxSel)}.value === '/btw ' && !document.querySelector('.chat-menu')`, 'fix 1005: Tab completed /btw with the menu gone', 3000);
+    const rowsA = (await screen(stubId)).rows;
+    expect(!rowsA.some((r) => r.includes('/btw')), `fix 1005 (a): the pick sent nothing, got ${JSON.stringify(rowsA.filter((r) => r.trim() !== '').slice(-4))}`);
+    step('fix 1005 (a): /btw is a sent row of the / menu and a pick completes it');
+    // (b) The stub takes the box's send as its Read-Host's input and draws
+    // the pending panel, then the answered one three seconds on. The rows
+    // are a real 2.1.314 capture's: the pending footer is `Esc to close`
+    // alone, the answered one carries the other keys, and the spinner's
+    // glyph turns (✽ · ✻ ✢).
+    const c = (code) => `[char]0x${code}`;
+    const answeredFooter = `('  ' + ${c('2191')} + '/' + ${c('2193')} + ' to scroll ' + ${c('B7')} + ' c to copy ' + ${c('B7')} + ' f to fork ' + ${c('B7')} + ' Esc to close')`;
+    const panel = (body, footer) => `cls; Write-Host ''; Write-Host ('  /btw ' + $q.Substring(5)); Write-Host ''; ${body}; Write-Host ''; Write-Host ${footer}`;
+    const pendingRows = `Write-Host ('    ' + ${c('273B')} + ' Answering' + ${c('2026')})`;
+    const answerRows = `Write-Host '    You are in the fixture folder.'; Write-Host '    It holds one file.'`;
+    await typeRaw(stubId, `$q = Read-Host; ${panel(pendingRows, "'  Esc to close'")}; Start-Sleep -Milliseconds 3000; ${panel(answerRows, answeredFooter)}; $k = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('gotbtw ' + $k.Key); Read-Host | Out-Null\r`);
+    await waitRecord(stubId, (r) => r.command?.state === 'running', 'fix 1005: the stub\'s Read-Host running', 10000);
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'fix 1005: the box holds the keyboard again');
+    await s.type('what folder am I in');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`!!${q(sideSel)}`, 'fix 1005: the side strip', 2000).catch(async (err) => {
+      throw new Error(`${err.message}: box ${JSON.stringify(await s.evalJs(`${q(boxSel)}.value`))}, hint ${JSON.stringify(await s.evalJs(`${q(paneSel(stubPane) + ' .chat-hint')}?.textContent ?? null`))}`);
+    });
+    const p = await s.evalJs(`(() => { const a = ${q(sideSel)}; return { state: a.dataset.state, question: a.querySelector('.chat-side-question')?.textContent ?? null, pending: a.querySelector('.chat-side-pending')?.textContent ?? null }; })()`);
+    console.log(`[verify] fix 1005: the strip at the send reads ${JSON.stringify(p)}`);
+    expect(p.state === 'pending' && p.question === 'what folder am I in' && p.pending === 'Answering…', `fix 1005 (b): the strip pending on the question, got ${JSON.stringify(p)}`);
+    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .chat-fallback')}`)) === false, 'fix 1005 (b): no fallback bar after a /btw');
+    await s.waitFor(`${q(sideSel)}?.dataset.state === 'answered'`, 'fix 1005: the strip answered', 8000).catch(async (err) => {
+      throw new Error(`${err.message}: strip ${JSON.stringify(await s.evalJs(`${q(sideSel)}?.outerHTML ?? null`))}, rows ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-8))}`);
+    });
+    const answer = await s.evalJs(`${q(sideSel + ' .chat-side-answer')}?.textContent ?? null`);
+    expect(answer === 'You are in the fixture folder.\nIt holds one file.', `fix 1005 (b): the strip's answer, got ${JSON.stringify(answer)}`);
+    expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .chat-fallback')}`)) === false, 'fix 1005 (b): still no fallback bar');
+    await s.screenshot('m9-chat-btw.png');
+    step('fix 1005 (b): /btw from the box opens the side strip, Answering… and then the answer read off the panel');
+    // (c) Escape with the box focused closes the strip and sends the
+    // panel's close key, one Escape and no stop.
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.key('Escape', 'Escape', 27);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('gotbtw Escape'), 'fix 1005: the stub took the Escape');
+    await s.waitFor(`!${q(sideSel)}`, 'fix 1005: the strip gone', 3000);
+    const r1005 = await record(stubId);
+    expect(r1005.state !== 'working', `fix 1005 (c): no turn started, got ${r1005.state}`);
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1005: the Read-Host ended at the prompt', 10000);
+    step('fix 1005 (c): Escape closes the strip and the panel, and the stub took one Escape');
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(stubId, (r) => r.state === 'done' || r.state === 'idle', 'fix 1005: the stub at rest at the block\'s end', 5000);
+    await s.waitFor(`${q(boxSel)}?.disabled === false`, 'fix 1005: the box back at the block\'s end');
   });
 
   await block('box', async () => {
@@ -3850,6 +3964,9 @@ try {
     const typedBy = Date.now() + 5000;
     while (Date.now() < typedBy && (await promptText()) !== 'hello from the cli') await sleep(200);
     expect((await promptText()) === 'hello from the cli', `the stub's input holds the text, got ${JSON.stringify(await lastRows())}`);
+    // Fix 1002: the carry's harness console lines, counted since a mark.
+    const carryLines = (mark, what) => s.consoleLog.slice(mark).filter((l) => l.includes(`[emerald] chat carry ${what} `));
+    const mark1002 = s.consoleLog.length;
     await flip('chat');
     try {
       await s.waitFor(`${q(boxSel)}.value === 'hello from the cli'`, 'the box holds the terminal input', 4000);
@@ -3860,6 +3977,10 @@ try {
     while (Date.now() < emptyBy && (await promptText()) !== '') await sleep(200);
     expect((await promptText()) === '', `the stub's input emptied, got ${JSON.stringify(await lastRows())}`);
     step('fix 784 (a): text typed in the terminal face moves into the chat box and leaves Claude\'s input');
+    await sleep(1000);
+    const carries1002 = { start: carryLines(mark1002, 'start'), moved: carryLines(mark1002, 'moved') };
+    expect(carries1002.start.length === 1 && carries1002.moved.length === 1, `one carry started and moved on the flip, got ${JSON.stringify(s.consoleLog.slice(mark1002).filter((l) => l.includes('[emerald] chat carry')))}`);
+    step('fix 1002 (a): the flip to chat carries the input once, one start and one moved line');
 
     // Fix 784 (b): the box's text goes back into the input on the flip to
     // the terminal, with no Enter.
@@ -3871,10 +3992,19 @@ try {
     await sleep(1000);
     const after = await lastRows();
     expect(after.at(-1) === '❯ back to the cli', `no Enter: the input row is still the last, got ${JSON.stringify(after)}`);
-    // PSReadLine's Escape clears the line.
+    // PSReadLine's Escape clears the line. Fix 1002: the flip back waits
+    // for the input to read empty, so its mount finds nothing to carry (a
+    // flip at once read `back to the cli` and carried it, the trace found).
     await typeRaw(sendId, '\x1b');
+    const clearBy = Date.now() + 3000;
+    while (Date.now() < clearBy && (await promptText()) !== '') await sleep(200);
+    expect((await promptText()) === '', `the Escape cleared the input, got ${JSON.stringify(await lastRows())}`);
+    const markBack1002 = s.consoleLog.length;
     await flip('chat');
     step('fix 784 (b): the box\'s text goes back into Claude\'s input with no Enter on the flip to the terminal');
+    await sleep(1000);
+    expect(carryLines(markBack1002, 'start').length === 0, `no carry on the flip back over an empty input, got ${JSON.stringify(s.consoleLog.slice(markBack1002).filter((l) => l.includes('[emerald] chat carry')))}`);
+    step('fix 1002 (b): the flip back to chat over an empty input starts no carry');
 
     // Fix 972: a pick, or a `/` command sent from the box, reads Claude's
     // input first. A draft there moves into the box before the command
@@ -3919,11 +4049,6 @@ try {
     // earlier step left (a value set to what it holds fires no change).
     const emptyBox = () => s.evalJs(`(() => { const b = ${q(boxSel)}; const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; for (const v of ['x', '']) { set.call(b, v); b.dispatchEvent(new Event('input', { bubbles: true })); } })()`);
     const why972 = async () => `box ${JSON.stringify(await boxValue())}, hint ${JSON.stringify(await s.evalJs(`${q(SP + ' .chat-hint')}?.textContent ?? null`))}, state ${(await record(sendId))?.state}, face ${await face()}, rows ${JSON.stringify(await lastRows())}, console ${JSON.stringify(s.consoleLog.filter((l) => l.includes('[emerald]')).slice(-4))}`;
-    // Fix 784 (b)'s flip back to chat starts the mount's carry, which can
-    // still be polling the input for CARRY_MS; a pick inside it is
-    // refused, so the step waits it out and starts from an empty input
-    // and an empty box.
-    await sleep(2500);
     await emptyBox();
     if ((await promptText()) !== '') {
       await typeRaw(sendId, '\x1b');
@@ -3968,6 +4093,34 @@ try {
     await waitPrompt((t) => t === '', 3000);
     await emptyBox();
     step('fix 972: an effort pick moves Claude\'s input into the box before it types, a /effort sent from the box does the same, and an input past one row refuses the pick and types nothing');
+
+    // Fix 1003: a pick made at once after the flip to chat finds the
+    // mount's carry running, waits for it to move the draft into the box,
+    // then types the command alone.
+    await flip(null);
+    await typeRaw(sendId, 'draft1003 words');
+    await waitPrompt((t) => t === 'draft1003 words', 5000);
+    const mark1003 = s.consoleLog.length;
+    await flip('chat');
+    await pick972('max');
+    try {
+      await s.waitFor(`${q(boxSel)}.value === 'draft1003 words'`, 'the draft in the box', 6000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${await why972()}`);
+    }
+    try {
+      await waitRow972('❯ /effort max', 8000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${await why972()}`);
+    }
+    expect(!(await rowsNow()).some((r) => r.includes('draft1003 words/effort')), `the draft and the command not on one row, got ${JSON.stringify(await lastRows())}`);
+    const lines1003 = s.consoleLog.slice(mark1003).filter((l) => l.includes('[emerald] chat carry'));
+    expect(carryLines(mark1003, 'start').length === 1 && carryLines(mark1003, 'moved').length === 1, `one carry started and moved, got ${JSON.stringify(lines1003)}`);
+    const hint1003 = await s.evalJs(`${q(SP + ' .chat-hint')}?.textContent ?? ''`);
+    expect(hint1003 === '', `no hint after the pick, got ${JSON.stringify(hint1003)}`);
+    await back972();
+    await emptyBox();
+    step('fix 1003: an effort pick made while the flip back to chat moves Claude\'s input into the box waits for the move, then types /effort max alone');
   });
 
   await block('chips', async () => {

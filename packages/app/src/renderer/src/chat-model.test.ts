@@ -113,7 +113,9 @@ test('opensMenu: a picker command first in the box, case-sensitive', () => {
   assert.equal(opensMenu('/usage'), true);
   assert.equal(opensMenu('/cost'), true);
   assert.equal(opensMenu('/stats'), true);
-  assert.equal(opensMenu('/btw why?'), true);
+  // M9 fix 1005: /btw with a question opens the side strip, not the bar; bare, it reopens the TUI's panel.
+  assert.equal(opensMenu('/btw why?'), false);
+  assert.equal(opensMenu('/btw'), true);
   assert.equal(opensMenu('/agents'), false);
   // M9 fixes 890 and 923: /remote-control (or /rc) opens a dialog of the terminal's in every state.
   assert.equal(opensMenu('/remote-control'), true);
@@ -337,7 +339,7 @@ test('SENT_COMMANDS: the five built-ins first, and slashRows puts the skills aft
     { name: 'alpha', description: 'a' },
     { name: 'compact', description: 'shadowed by the built-in' },
   ]);
-  const builtIn = ['/compact', '/clear', '/init', '/recap', '/reload-skills', '/add-dir', '/cd', '/insights', '/install-slack-app', '/radio', '/reload-plugins', '/remote-control', '/rename', '/statusline', '/stickers', '/team-onboarding'];
+  const builtIn = ['/compact', '/clear', '/init', '/recap', '/reload-skills', '/add-dir', '/btw', '/cd', '/insights', '/install-slack-app', '/radio', '/reload-plugins', '/remote-control', '/rename', '/statusline', '/stickers', '/team-onboarding'];
   assert.deepEqual(
     rows.filter((r) => r.section === 'sent').map((r) => [r.name, r.skill]),
     [...builtIn.map((n) => [n, false]), ['/alpha', true]],
@@ -370,7 +372,7 @@ test('the built-ins carry their hints and kinds, and no name is listed twice (M9
   assert.equal(row('/init')?.hint, '');
   const names = [...SENT_COMMANDS, ...ARGUMENT_COMMANDS, ...TERMINAL_COMMANDS].map((c) => c.name);
   assert.equal(new Set(names).size, names.length);
-  assert.equal(TERMINAL_COMMANDS.length, 41);
+  assert.equal(TERMINAL_COMMANDS.length, 40);
 });
 
 test('mentionQuery: the @ token before the caret, split at its last slash', () => {
@@ -760,6 +762,21 @@ test('pickRoute: none types, text carries first, a marker or a wrapped input ref
   assert.equal(pickRoute(on(['❯ draft words'])), 'carry-then-type');
   assert.equal(pickRoute(on(['❯ [Image #1] look'])), 'refuse');
   assert.equal(pickRoute(on(['❯ a long line', 'its wrapped tail'])), 'refuse');
+});
+
+import { routeAfterCarry } from './chat-model.ts';
+
+test('routeAfterCarry: a pick that waited for a carry types alone, refuses, keeps the carry\'s refusal or carries again (fix 1003)', () => {
+  const on = (rows: string[]) => carryRead({ rows, cursor: { x: 2, y: 0 } });
+  assert.equal(routeAfterCarry(on(['❯']), 'moved'), 'type', 'the carry emptied the input');
+  assert.equal(routeAfterCarry(on(['❯']), 'stuck'), 'type', 'the input emptied since');
+  assert.equal(routeAfterCarry(on(['❯ [Image #1] look']), 'moved'), 'refuse', 'a marker');
+  assert.equal(routeAfterCarry(on(['❯ a long line', 'its wrapped tail']), 'none'), 'refuse', 'a wrapped input');
+  assert.equal(routeAfterCarry(on(['❯ draft words']), 'stuck'), 'left', 'the carry\'s own refusal stays');
+  assert.equal(routeAfterCarry(on(['❯ draft words']), 'failed'), 'refuse');
+  assert.equal(routeAfterCarry(on(['❯ draft words']), 'moved'), 'carry-then-type', 'typed again since the carry');
+  assert.equal(routeAfterCarry(on(['❯ draft words']), 'none'), 'carry-then-type');
+  assert.equal(routeAfterCarry(on(['❯ draft words']), 'busy'), 'carry-then-type');
 });
 
 test('carryRead: with expect, the whole prompt over two rows, and never a placeholder', () => {

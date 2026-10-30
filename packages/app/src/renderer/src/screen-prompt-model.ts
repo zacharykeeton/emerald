@@ -6,7 +6,8 @@
 // characters are stripped before a row is judged blank or read for an
 // option.
 
-import { switchDialog } from '@emerald/shared';
+import { switchDialog, trustKeys } from '@emerald/shared';
+import type { NeedsInputReason, SwitchDialog } from '@emerald/shared';
 
 export interface AnswerOption {
   // The key the button sends: the option's digit, or y and n.
@@ -430,6 +431,77 @@ export function submitMoves(ask: AskQuestion): number | null {
 export function optionKeys(ask: AskQuestion | null, key: string): string {
   if (ask?.multi === true && freeOption(ask)?.pointer === true) return '\x1b[A' + key;
   return key;
+}
+
+// M9 fix 1004: the options a needs-input card offers and the keys a press of one sends, one branch for the chat view's card and the sidebar's.
+export const ARROW_KEYS_TITLE = 'Sends the arrow keys and Enter to the session';
+export interface CardOptions {
+  options: (AnswerOption | AskOption)[];
+  // The switch confirmation drawn without digits, its options keyed 1 and 2 by position; null for every other read.
+  switched: SwitchDialog | null;
+}
+
+export function cardOptions(reason: NeedsInputReason | null, rows: readonly string[] | null, review: AskReview | null, ask: AskQuestion | null): CardOptions {
+  const read: (AnswerOption | AskOption)[] = review?.options ?? ask?.options ?? (rows === null ? [] : answerOptions(rows));
+  // M9 fix 976: the switch confirmation drawn without digits offers its two
+  // options all the same, each answered by the pointer's arrows and Enter.
+  const switched = reason === 'switch' && review === null && ask === null && read.length === 0 && rows !== null ? switchDialog(rows) : null;
+  const options = switched === null ? read : switched.options.map((o, i) => ({ key: String(i + 1), label: o.label }));
+  return { options, switched };
+}
+
+// Null when nothing should go: no such option, or no pointer row read,
+// where a key could land anywhere.
+export function cardPress(card: CardOptions, ask: AskQuestion | null, key: string): string | null {
+  if (card.switched === null) return optionKeys(ask, key);
+  const option = card.switched.options[Number(key) - 1];
+  return option === undefined ? null : trustKeys(card.switched, option.pick);
+}
+
+export function optionTitle(card: CardOptions, key: string): string {
+  return card.switched === null ? `Sends ${key} to the session` : ARROW_KEYS_TITLE;
+}
+
+// M9 fix 1005: Claude Code's /btw panel, drawn in place of the prompt box; the answer is never written to the transcript (the side question runs with skipTranscript), so the screen is the only word of it.
+export interface BtwPanel {
+  question: string;
+  // Null while the panel answers (its spinner row, or a retry).
+  answer: string | null;
+}
+
+const BTW_FOOTER = /(^|·\s*)esc(ape)?\s+to\s+close\b/i;
+// How far above its footer the panel's question row may sit.
+const BTW_REACH = 40;
+
+export function btwPanel(rows: readonly string[]): BtwPanel | null {
+  const b = rows.map(bare);
+  let footer = -1;
+  for (let i = b.length - 1; i >= 0; i -= 1) {
+    if (BTW_FOOTER.test(b[i]!)) {
+      footer = i;
+      break;
+    }
+  }
+  if (footer < 0) return null;
+  // The panel takes the prompt box's place, so an input row under it means
+  // the rows are a reply quoting a panel, not the panel.
+  if (b.slice(footer + 1).some((r) => /^[❯>](\s|$)/.test(r))) return null;
+  let at = -1;
+  for (let i = footer - 1; i >= Math.max(0, footer - BTW_REACH); i -= 1) {
+    if (b[i]!.startsWith('/btw ')) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return null;
+  const question = b[at]!.slice('/btw '.length).trim();
+  let lines = rows.slice(at + 1, footer).map((r) => r.trimEnd());
+  while (lines.length > 0 && lines[0]!.trim() === '') lines = lines.slice(1);
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines = lines.slice(0, -1);
+  const indent = Math.min(...lines.filter((l) => l.trim() !== '').map((l) => l.length - l.trimStart().length));
+  const text = lines.map((l) => l.slice(Math.min(indent, l.length - l.trimStart().length)));
+  const pending = text.length === 0 || text[text.length - 1]!.endsWith('Answering…') || text.some((l) => /retrying in \d+s/.test(l));
+  return { question, answer: pending ? null : text.join('\n') };
 }
 
 // How long the pointer has to reach the Type something row after its digit.

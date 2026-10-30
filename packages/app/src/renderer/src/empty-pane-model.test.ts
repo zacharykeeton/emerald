@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanPath, defaultKind, emptyKey, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
 
 test('tileTitle: the folder by name, the whole folder for a drive root, none with no row (M9 fix 705)', () => {
   assert.equal(tileTitle('C:\\code\\emerald'), 'Double-click to start in emerald');
@@ -115,6 +115,16 @@ test('shellChoice: the stored shell when installed and not the default, else nul
 test('startLabel names a picked shell for the shell kind alone', () => {
   assert.deepEqual(startLabel('shell', 'C:\\code\\emerald', CMD), { head: 'Start Command Prompt', tail: ' in emerald' });
   assert.deepEqual(startLabel('claude', 'C:\\code\\emerald', CMD), { head: 'Start Claude', tail: ' in emerald' });
+});
+
+test('escapeStep: a path in the box is cleared before anything closes, and a path kept under another tile is not (M9 fix 1010)', () => {
+  assert.equal(escapeStep({ actionQuery: false, filePick: true, pathText: 'C:\\a.txt' }), 'clear-path');
+  assert.equal(escapeStep({ actionQuery: false, filePick: true, pathText: '  ' }), 'clear-path');
+  assert.equal(escapeStep({ actionQuery: false, filePick: true, pathText: '' }), 'close');
+  assert.equal(escapeStep({ actionQuery: true, filePick: false, pathText: '' }), 'clear-query-and-close');
+  assert.equal(escapeStep({ actionQuery: true, filePick: false, pathText: 'C:\\a.txt' }), 'clear-query-and-close');
+  assert.equal(escapeStep({ actionQuery: true, filePick: true, pathText: 'x' }), 'clear-path');
+  assert.equal(escapeStep({ actionQuery: false, filePick: false, pathText: '' }), 'close');
 });
 
 test('shellSub: the default line with no pick, the swap with one', () => {

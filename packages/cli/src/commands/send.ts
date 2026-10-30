@@ -5,7 +5,7 @@ import { println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { connectHello, findSession } from '../connect.ts';
 import { sleep } from '../daemon-process.ts';
-import { queuedLine, refuseBusy } from '../mod-route.ts';
+import { QUEUED_AT_SEND, queuedLine, refuseBusy } from '../mod-route.ts';
 import { shortId } from '../resolve.ts';
 
 const options = {
@@ -53,13 +53,17 @@ const command: Command = {
       // at once and left the row in the same state.
       if (parsed.values.interrupt) client.send({ type: 'pty.input', sessionId: found.id, data: INTERRUPT });
       let viaMod = false;
+      // M9 fix 1001: the daemon's word that the mod queued the text.
+      let modQueued = false;
       // M9 fix 995: a Claude mid-turn is typed, as the chat box's sendRoute
       // types it: Claude Code takes a typed line into the running turn at
       // its next tool round, where the mod's prompt waits for the turn's
       // end. With --interrupt the Ctrl+C has ended the turn.
       const midTurn = found.state === 'working' && !parsed.values.interrupt;
       if (parsed.values.enter && text !== '' && found.kind === 'claude' && !midTurn && (hello.featureLevel ?? 1) >= MOD_CHANNEL_LEVEL && modRoutable(text)) {
-        viaMod = (await client.request('session.submit', { sessionId: found.id, text })).via === 'mod';
+        const submitted = await client.request('session.submit', { sessionId: found.id, text });
+        viaMod = submitted.via === 'mod';
+        modQueued = submitted.queued === true;
       }
       if (!viaMod) {
         if (text !== '') client.send({ type: 'pty.input', sessionId: found.id, data: text });
@@ -77,8 +81,9 @@ const command: Command = {
         ...(parsed.values.enter ? ['Enter'] : []),
       ];
       // M9 fix 995: a Claude mid-turn has not read the text yet; one sent
-      // with --interrupt has, since its Ctrl+C ended the turn.
-      const queued = parsed.values.enter && text !== '' && !parsed.values.interrupt ? queuedLine(found, viaMod ? 'mod' : 'typed') : null;
+      // with --interrupt has, since its Ctrl+C ended the turn. M9 fix 1001:
+      // a row read idle whose submit the mod queued says so too.
+      const queued = parsed.values.enter && text !== '' && !parsed.values.interrupt ? queuedLine(found, viaMod ? 'mod' : 'typed') ?? (modQueued ? QUEUED_AT_SEND : null) : null;
       println(queued ?? `sent ${parts.join(' + ')} to ${shortId(found.id)} ${found.name}${viaMod ? ' through the emerald mod' : ''}`);
     } finally {
       client.close();

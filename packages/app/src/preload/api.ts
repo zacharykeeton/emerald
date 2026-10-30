@@ -230,6 +230,17 @@ export interface MoveOutcome {
 // The first pass's clashes, every entry's outcome, or the folder refused.
 export type FilesMoved = { clashes: FileClash[] } | { done: MoveOutcome[] } | { refused: string };
 
+// A copy's progress (M9 fix 1008), pushed to the window that dropped: files
+// and bytes copied of the whole drop's copies, and the folder as the drop
+// named it.
+export interface FilesProgress {
+  dir: string;
+  done: number;
+  total: number;
+  bytesDone: number;
+  bytesTotal: number;
+}
+
 // The file service behind the files rail. Paths are absolute; the main
 // process refuses relative ones.
 export interface FilesApi {
@@ -270,6 +281,9 @@ export interface FilesApi {
   // Fires with a folder that changed on disk, debounced; `renamed` false
   // when only contents changed (M9 fix 551); absent from the git pushes.
   onChanged(handler: (dir: string, info?: { renamed: boolean }) => void): () => void;
+  // Fires while a drop's copy runs (M9 fix 1008), at most every 100 ms and
+  // once at the end; never for a move on one drive, which is a rename.
+  onProgress(handler: (p: FilesProgress) => void): () => void;
   // The program Windows has for the file; rejects with the shell's reason.
   open(path: string): Promise<void>;
   reveal(path: string): Promise<void>;
@@ -291,8 +305,9 @@ export interface FilesApi {
   // git or a slow status is an empty map.
   gitStatus(dir: string): Promise<GitStatusResult>;
   // The Changes tab (M45): the changed files with their line counts,
-  // ignored ones left out, sorted by path. Never rejects.
-  gitChanges(dir: string): Promise<GitChanges>;
+  // ignored ones left out, sorted by path. Never rejects. With countOnly
+  // the rows carry no line counts, for the sidebar heading's dot.
+  gitChanges(dir: string, opts?: GitChangesOptions): Promise<GitChanges>;
   // The Commits tab (M45): the repo's recent commits, newest first.
   // Never rejects; root is null outside a repo.
   gitLog(dir: string): Promise<GitLog>;
@@ -401,6 +416,11 @@ export interface ChangedFile extends GitFile {
 export interface GitChanges {
   root: string | null;
   files: ChangedFile[];
+}
+
+// M9 fix 1014: countOnly skips the numstat and the untracked line counts.
+export interface GitChangesOptions {
+  countOnly?: boolean;
 }
 
 // One commit of the Commits tab: the full hash, the subject line, the
@@ -747,6 +767,9 @@ export interface ClipboardApi {
   // A data: URL onto the clipboard as an image; the verify scripts' way
   // to put one there.
   writeImage(dataUrl: string): Promise<void>;
+  // A picture file onto the clipboard as a PNG (M9 fix 1007); false when
+  // Electron decodes nothing from it.
+  writeImageFile(path: string): Promise<boolean>;
   // The clipboard's image for the chat box (M9 fix 721): a 48 px high
   // thumbnail, and the path of the PNG written for Claude Code to read,
   // null when the key route is asked for and the clipboard is the real
@@ -931,6 +954,10 @@ export interface EmeraldApi {
   // disconnected. The connected push carries the same, but a renderer that
   // loads after the connection is up never saw it.
   daemonInfo(): Promise<DaemonInfo | null>;
+  // The same answer read synchronously (M9 fix 1013), for the store's first
+  // state so a reloaded window draws the level banner in its first render;
+  // null on a cold start, before the daemon has said hello.
+  daemonInfoNow(): DaemonInfo | null;
   // The layout window this page shows (M9 fix 866): known at once for a window main opened from a record, and for the first window once main has read the layout.
   windowId(): Promise<string>;
   // The last crash of a daemon this window started (M9 fix 832), held by

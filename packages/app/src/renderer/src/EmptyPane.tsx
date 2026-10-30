@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { hidePaneHere, openFileFromOutside, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { cleanPath, defaultKind, emptyKey, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
 import { installedShells } from './daemon-model.ts';
 import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
@@ -114,9 +114,14 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   // registered again on every change of the mode, by a passive effect that
   // runs after the > is painted, and an Escape in between reached the old
   // listener, which closed the picker and left the box full of actions.
+  // The path text and the tile pick (M9 fix 1010) are read the same way.
   const actionMode = isActionQuery(query);
   const queryRef = useRef(query);
   queryRef.current = query;
+  const pathTextRef = useRef(pathText);
+  pathTextRef.current = pathText;
+  const tilePickRef = useRef(tilePick);
+  tilePickRef.current = tilePick;
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape') return;
@@ -129,11 +134,22 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       // box. The ui state is read at call time, not from a closure, as fix
       // 548's comment above says.
       if (getUiState().pickerPaneId !== paneId && !(rootRef.current?.contains(document.activeElement) ?? false)) return;
-      if (isActionQuery(queryRef.current)) {
-        setQuery('');
-        setHighlighted(0);
+      // M9 fix 1010: a path in the box is cleared first, and nothing closes.
+      switch (escapeStep({ actionQuery: isActionQuery(queryRef.current), filePick: tilePickRef.current === 'file', pathText: pathTextRef.current })) {
+        case 'clear-path':
+          setPathText('');
+          setPathNote(null);
+          pathRef.current?.focus();
+          return;
+        case 'clear-query-and-close':
+          setQuery('');
+          setHighlighted(0);
+          onDone();
+          return;
+        case 'close':
+          onDone();
+          return;
       }
-      onDone();
     };
     window.addEventListener('keydown', onKey, { capture: true });
     return () => window.removeEventListener('keydown', onKey, { capture: true });
@@ -650,6 +666,12 @@ Double-click to start here`}
             {!filePick && (
               <button className="empty-other" onClick={other}>
                 Another folder…
+              </button>
+            )}
+            {/* M9 fix 1009: Shift+Enter's tab open, said on the row once the placeholder is gone; the focus stays in the box. */}
+            {filePick && (
+              <button className="empty-other empty-open-tab" disabled={pathText.trim() === '' || starting} onMouseDown={keepFocus} onClick={() => void openTyped('tab')}>
+                In a tab ⇧⏎
               </button>
             )}
             {kind === 'claude' && tilePick === null && (

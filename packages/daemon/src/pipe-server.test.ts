@@ -797,7 +797,7 @@ test('a queued submit is answered at once and its late word is logged (M9 fix 99
     let heard = nextPush(channel);
     void heard.then((p) => own.modSubmitAnswered(p.sessionId, p.submitId, true, null, true));
     const t = Date.now();
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'queued' }), { via: 'mod' });
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'queued' }), { via: 'mod', queued: true });
     assert.ok(Date.now() - t < 250, `answered on the queued word, took ${Date.now() - t} ms`);
     assert.ok(lines.includes(`mod submit for ${id8}: queued behind the turn, by the mod's word`), lines.join(' | '));
     let p = await heard;
@@ -809,7 +809,7 @@ test('a queued submit is answered at once and its late word is logged (M9 fix 99
     manager.applyHook(session.id, { hook_event_name: 'UserPromptSubmit', session_id: 'c995', prompt: 'a long turn' }, Date.now());
     assert.equal(manager.get(session.id).info.state, 'working');
     heard = nextPush(channel);
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod' });
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod', queued: true });
     assert.ok(lines.includes(`mod submit for ${id8}: no word from the mod in 300 ms, queued behind the turn`), lines.join(' | '));
     p = await heard;
     own.modSubmitAnswered(p.sessionId, p.submitId, true, null);
@@ -817,7 +817,7 @@ test('a queued submit is answered at once and its late word is logged (M9 fix 99
 
     // (3) A late drop is logged and nothing is typed.
     heard = nextPush(channel);
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'dropped' }), { via: 'mod' });
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'dropped' }), { via: 'mod', queued: true });
     p = await heard;
     own.modSubmitAnswered(p.sessionId, p.submitId, false, 'gone');
     assert.ok(lines.includes(`mod submit for ${id8} not entered after 0 s (gone): nothing typed`), lines.join(' | '));
@@ -825,7 +825,7 @@ test('a queued submit is answered at once and its late word is logged (M9 fix 99
     // (4) A kept entry whose channel closes never entered.
     heard = nextPush(channel);
     void heard.then((q) => own.modSubmitAnswered(q.sessionId, q.submitId, true, null, true));
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'orphan' }), { via: 'mod' });
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'orphan' }), { via: 'mod', queued: true });
     channel.close();
     await once(channel, 'close');
     const deadline = Date.now() + 2000;

@@ -310,6 +310,27 @@ try {
   await s.screenshot('m11-image.png');
   fs.writeFileSync(pic, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAAAAADRSSBWAAAAC0lEQVR4nGNgYAAAAAMAAbitOmMAAAAASUVORK5CYII=', 'base64'));
   await s.waitFor(`document.querySelector('img.file-image')?.naturalWidth === 2 && document.querySelector('.file-image-size')?.textContent === '2 \u00d7 1'`, 'the rewritten PNG shown', 3000);
+  // M9 fix 1007: Copy image, first on the picture's own menu, then on its
+  // rail row after the copy items; the clipboard is the held one.
+  const heldImage = `window.emerald.clipboard.read().then(r => r.text === null && r.image === true)`;
+  const rightClick = (sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}); const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); })()`);
+  await s.evalJs(`window.emerald.clipboard.write('before 1007')`);
+  await rightClick('img.file-image');
+  await s.waitFor(`!!document.querySelector('.file-menu')`, 'the PNG menu', 3000);
+  const pngFirst = await s.evalJs(`(() => { const b = document.querySelector('.file-menu .menu-item'); return { label: b.querySelector('.menu-label').textContent, disabled: b.disabled }; })()`);
+  expect(pngFirst.label === 'Copy image' && !pngFirst.disabled, `fix 1007: the PNG menu opens with Copy image, enabled, got ${JSON.stringify(pngFirst)}`);
+  await s.evalJs(`document.querySelector('.file-menu .menu-item').click()`);
+  await s.waitFor(`!document.querySelector('.file-menu')`, 'the PNG menu closed', 3000);
+  await s.waitFor(heldImage, 'fix 1007: Copy image put the PNG on the clipboard', 3000);
+  await s.evalJs(`window.emerald.clipboard.write('before 1007')`);
+  await rightClick(rowSel(pic));
+  await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(pic)}`, "the PNG row's menu", 3000);
+  const rowLabels = await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].map((b) => b.querySelector('.menu-label').textContent)`);
+  const afterRel = rowLabels.indexOf('Copy relative path');
+  expect(afterRel >= 0 && rowLabels[afterRel + 1] === 'Copy image' && rowLabels[afterRel + 2] === 'Insert path into pane', `fix 1007: the PNG row lists Copy image after Copy relative path and before Insert path into pane, got ${JSON.stringify(rowLabels)}`);
+  await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Copy image').click()`);
+  await s.waitFor(`!document.querySelector('.files-menu')`, 'the row menu closed', 3000);
+  await s.waitFor(heldImage, "fix 1007: the row's Copy image put the PNG on the clipboard", 3000);
   step('fix 615: a PNG shows in its tab as the picture with its size in the header, and a rewrite on disk shows the new one');
   await clickRow(s, svgWide);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.view === 'rendered' && document.querySelector('.file-view')?.dataset.state === 'image' && document.querySelector('img.file-image')?.naturalWidth === 3000`, 'the SVG shown rendered');
@@ -365,6 +386,15 @@ try {
   expect((await s.evalJs(`document.querySelector('.file-view').dataset.view`)) === 'raw', 'the SVG is on Raw');
   await s.evalJs(`document.querySelector('.file-view-switch [data-view="rendered"]').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'image'`, 'Rendered is the picture again');
+  // M9 fix 1007: Electron decodes no SVG, so its Copy image is there,
+  // disabled, with the reason.
+  await rightClick('img.file-image');
+  await s.waitFor(`!!document.querySelector('.file-menu')`, 'the SVG menu', 3000);
+  const svgFirst = await s.evalJs(`(() => { const b = document.querySelector('.file-menu .menu-item'); return { label: b.querySelector('.menu-label').textContent, disabled: b.disabled, title: b.title }; })()`);
+  expect(svgFirst.label === 'Copy image' && svgFirst.disabled === true && svgFirst.title === "This kind of picture can't be copied", `fix 1007: the SVG menu opens with Copy image disabled with the reason, got ${JSON.stringify(svgFirst)}`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.file-menu')`, 'the SVG menu closed', 3000);
+  step('fix 1007: Copy image puts the PNG on the clipboard from its tab and its rail row, and the SVG lists it disabled with the reason');
   step('fix 615: an SVG opens on Rendered as the picture fitted to the pane, a click shows it at actual size with scrolling and a second fits it again, and Raw is the editor');
   // M9 fix 638: a GIF has a Pause button. anim.gif is a looping 3 by 2 GIF
   // of two frames, red then a green row over a blue one.
@@ -1115,17 +1145,28 @@ try {
   // file tab it opens are closed, so the reads after it hold. The tab in
   // front when the step starts can be a file tab (the profile's preview
   // tab comes forward when fix 341's Ctrl+W closes its pinned one), and
-  // .tab-add makes the layout tab without bringing the panes forward, so
-  // the step shows its tab by a click and puts the old front tab back at
-  // the end: a path box under a hidden panes view takes no focus.
+  // the step puts the old front tab back at the end. Since fix 1011 the +
+  // brings the panes forward, read straight after it; with the panes
+  // already in front a file tab is shown first, so the read can fail.
   const front990 = await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab`);
   console.log(`[verify] fix 990: the tab in front at the start is ${front990}`);
+  if (front990 === 'panes') {
+    const fileTab1011 = await s.evalJs(`document.querySelector('.tab-file')?.dataset.tab ?? null`);
+    if (fileTab1011 === null) {
+      console.log('[verify] fix 1011: no file tab on the strip, so the + read cannot tell the fix from the old code');
+    } else {
+      await s.evalJs(`document.querySelector('.tab-file').click()`);
+      await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === ${JSON.stringify(fileTab1011)}`, 'fix 1011: a file tab in front before the +', 5000);
+    }
+  }
   const layoutTabs990 = await s.evalJs(`document.querySelectorAll('.tab.tab-panes').length`);
   await s.evalJs(`document.querySelector('.tab-add').click()`);
   await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${layoutTabs990 + 1} && !!document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-kind[data-kind="file"]')`, 'a new layout tab with the File tile', 5000);
+  expect(
+    (await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab`)) === 'panes' && (await s.evalJs(`!document.querySelector('.panes-view[data-hidden]')`)),
+    `fix 1011: the + brought the panes forward with the new layout tab (in front before: ${front990})`,
+  );
   const tab990 = (await getTabs(s)).currentTabId;
-  await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab990)}]`)}).click()`);
-  await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === 'panes' && !document.querySelector('.panes-view[data-hidden]')`, 'the new layout tab in front, the panes on show', 5000);
   const fileTile990 = `.layout-tab:not([hidden]) .empty-pane .empty-kind[data-kind="file"]`;
   const pathBox990 = `.layout-tab:not([hidden]) .empty-pane .empty-path`;
   const note990 = `.layout-tab:not([hidden]) .empty-pane .empty-path-note`;
@@ -1139,9 +1180,12 @@ try {
     throw e;
   });
   await s.screenshot('tabs-990-file-tile.png');
-  const pathEnter990 = async (text, mods = 0) => {
+  const pathType990 = async (text) => {
     await s.evalJs(`(() => { const i = document.querySelector(${JSON.stringify(pathBox990)}); i.focus(); i.select(); })()`);
     await s.type(text);
+  };
+  const pathEnter990 = async (text, mods = 0) => {
+    await pathType990(text);
     await s.key('Enter', 'Enter', 13, mods);
   };
   const noteIs990 = (text) => `document.querySelector(${JSON.stringify(note990)})?.textContent === ${JSON.stringify(text)} && document.querySelector(${JSON.stringify(note990)})?.hasAttribute('data-error') && !!document.querySelector(${JSON.stringify(pathBox990)})`;
@@ -1164,6 +1208,43 @@ try {
     'the panes back with File still picked and the box emptied',
     5000,
   );
+  // M9 fix 1009: the start row's In a tab button, off on an empty box,
+  // opens the typed path as a pinned tab, as Shift+Enter does.
+  const openTab1009 = `.layout-tab:not([hidden]) .empty-pane .empty-open-tab`;
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(openTab1009)})?.disabled === true`)) === true, 'fix 1009: In a tab is off while the box is empty');
+  await pathType990(`"${hello}"`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(openTab1009)})?.disabled === false`, 'fix 1009: In a tab comes on with a path in the box', 3000);
+  const label1009 = await s.evalJs(`document.querySelector(${JSON.stringify(openTab1009)}).textContent`);
+  expect(label1009 === 'In a tab ⇧⏎', `fix 1009: the button reads In a tab ⇧⏎, got ${JSON.stringify(label1009)}`);
+  await s.screenshot('tabs-1009-in-a-tab.png');
+  await s.evalJs(`document.querySelector(${JSON.stringify(openTab1009)}).click()`);
+  await s.waitFor(activePinned(hello), 'fix 1009: In a tab opened the file as a pinned, active tab', 5000);
+  await s.key('w', 'KeyW', 87, CTRL);
+  await s.waitFor(`document.querySelectorAll('.tab-file').length === ${tabsBefore341.length}`, 'fix 1009: Ctrl+W closed the pinned tab', 5000);
+  await s.evalJs(`document.querySelector(${JSON.stringify(`.tab.tab-panes[data-tab-id=${JSON.stringify(tab990)}]`)}).click()`);
+  await s.waitFor(
+    `document.querySelector('.tab-strip').dataset.activeTab === 'panes' && !document.querySelector('.panes-view[data-hidden]') && document.querySelector(${JSON.stringify(fileTile990)})?.getAttribute('aria-pressed') === 'true' && document.querySelector(${JSON.stringify(pathBox990)})?.value === ''`,
+    'fix 1009: the panes back with File still picked and the box emptied',
+    5000,
+  );
+  // M9 fix 1010: Escape with a path in the box clears the box and closes
+  // nothing; a second Escape finds it empty and closes as before, which in
+  // a layout tab's own empty pane changes nothing on screen.
+  await pathType990(`"${hello}"`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(
+    `document.querySelector(${JSON.stringify(pathBox990)})?.value === '' && document.querySelector(${JSON.stringify(fileTile990)})?.getAttribute('aria-pressed') === 'true' && document.activeElement === document.querySelector(${JSON.stringify(pathBox990)}) && !document.querySelector(${JSON.stringify(`${note990}[data-error]`)})`,
+    'fix 1010: Escape cleared the path box, File still picked, the box with the keyboard',
+    3000,
+  );
+  await s.key('Escape', 'Escape', 27);
+  await sleep(300);
+  expect(
+    (await s.evalJs(
+      `document.querySelector(${JSON.stringify(pathBox990)})?.value === '' && document.querySelector(${JSON.stringify(fileTile990)})?.getAttribute('aria-pressed') === 'true' && !!document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-path') && document.querySelectorAll('.tab.tab-panes').length === ${layoutTabs990 + 1}`,
+    )) === true,
+    'fix 1010: a second Escape closes as before and leaves the empty pane as it was',
+  );
   await s.evalJs(`document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-browse').click()`);
   await s.waitFor(`document.querySelector(${JSON.stringify(pathBox990)})?.value === ${JSON.stringify(notes)} && document.activeElement === document.querySelector(${JSON.stringify(pathBox990)})`, 'Browse… put the chooser’s pick in the box, which has the keyboard', 5000);
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore341.length, 'Browse… filled the box and opened nothing');
@@ -1179,7 +1260,7 @@ try {
     await s.evalJs(`[...document.querySelectorAll('.tab-file')].find((t) => t.dataset.tab === ${JSON.stringify(front990)})?.click()`);
     await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === ${JSON.stringify(front990)}`, 'the tab in front at the start back in front', 5000);
   }
-  step('fix 990: the File tile refuses a folder and a missing path on its line, Shift+Enter opens a pinned tab, Browse… fills the box, and Enter fills the pane with the file');
+  step('fix 990: the File tile refuses a folder and a missing path on its line, Shift+Enter and In a tab open a pinned tab (fix 1009), Escape clears the box before it closes (fix 1010), Browse… fills the box, and Enter fills the pane with the file; the + brings the panes forward (fix 1011)');
 
   // M9 fix 527: an `emmer open` sent while the window reloads is held by
   // the main process until the new page says it listens, then opened.

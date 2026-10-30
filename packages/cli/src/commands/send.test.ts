@@ -59,6 +59,8 @@ const inputs: string[] = [];
 // M9 fix 995: the row the fake lists, and what its session.submit answers.
 let listed: Partial<SessionInfo> = {};
 let submitVia: 'mod' | 'typed' = 'mod';
+// M9 fix 1001: the submit's reply says the mod queued the text.
+let submitQueued = false;
 const submits: string[] = [];
 const sockets = new Set<net.Socket>();
 let server: net.Server;
@@ -77,7 +79,7 @@ before(async () => {
         else if (msg.type === 'pty.input') inputs.push(msg.data ?? '');
         else if (msg.type === 'session.submit') {
           submits.push(msg.text ?? '');
-          reply({ via: submitVia });
+          reply({ via: submitVia, ...(submitQueued ? { queued: true } : {}) });
         }
         else sock.write(encodeJsonLine({ type: 'reply', id: msg.id, ok: false, error: { code: 'bad-request', message: `fake daemon does not do ${msg.type}` } }));
       }
@@ -98,6 +100,7 @@ beforeEach(() => {
   submits.length = 0;
   listed = {};
   submitVia = 'mod';
+  submitQueued = false;
 });
 
 async function quietly(run: () => Promise<unknown>): Promise<string> {
@@ -196,6 +199,14 @@ test('send --enter to an idle Claude or a working shell prints sent as before', 
   out = await quietly(() => send.run(['alpha', 'dir', '--enter']));
   assert.equal(out, 'sent "dir" + Enter to a1b2c3d4 alpha\n');
   assert.doesNotMatch(out, MOD_WORDS);
+});
+
+// M9 fix 1001: the row read idle, but a turn started as the text was sent.
+test('send --enter to an idle Claude whose submit the mod queued says it waits behind a turn', async () => {
+  listed = { kind: 'claude', state: 'idle' };
+  submitQueued = true;
+  const out = await quietly(() => send.run(['alpha', 'hello', '--enter']));
+  assert.equal(out, 'queued behind a turn that started as this was sent; it goes in when that turn ends\n');
 });
 
 test('send --interrupt --enter to a working Claude keeps sent, since its Ctrl+C ends the turn', async () => {

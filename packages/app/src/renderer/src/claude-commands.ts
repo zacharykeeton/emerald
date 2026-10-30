@@ -5,7 +5,8 @@
 // The slash commands that open a picker or a dialog of their own in the
 // TUI, which the chat view cannot draw: a send of one shows the fallback
 // bar over the box. Read off Claude Code 2.1.301's command table (M9
-// fixes 749 and 780): fix 749's thirteen first, then the rest of the
+// fixes 749 and 780): fix 749's thirteen first (/btw left them for the
+// argument rows at fix 1005), then the rest of the
 // table's terminal forms (`local-jsx`, and /rewind's message picker) in
 // name order, each with its argument hint and description verbatim. A
 // command whose gate reads the account, a flag or the platform is left
@@ -23,7 +24,6 @@ export const TERMINAL_COMMANDS: readonly { name: string; description: string; hi
   { name: '/login', hint: '', description: 'Sign in with your Anthropic account' },
   { name: '/status', hint: '', description: 'Show Claude Code status including version, model, account, API connectivity, and tool statuses' },
   { name: '/doctor', hint: '', description: 'Health-check your setup and fix issues: installation, unused extensions, duplicated or bloated memory files, slow hooks, updates, permissions' },
-  { name: '/btw', hint: '[question]', description: 'Ask a quick side question without interrupting the main conversation' },
   { name: '/autocompact', hint: '[auto|<tokens>]', description: 'Set how full the context gets before auto-summarizing' },
   { name: '/background', hint: '[prompt]', description: 'Send this session to the background and free the terminal' },
   { name: '/branch', hint: '[name]', description: 'Create a branch of the current conversation at this point' },
@@ -71,9 +71,8 @@ export const TERMINAL_ALIASES: readonly string[] = ['/cost', '/stats', '/setting
 // is the one command whose gate reads the account that is listed, since
 // the person asked to call it from the chat view; its send opens one of
 // Claude Code's dialogs (the one-time Enable Remote Control, or Disconnect
-// while connected), so opensMenu answers true for it (fix 923). /review is not in the table,
-// /cost is /usage's alias and /btw a terminal row, since it answers in a
-// panel of its own.
+// while connected), so opensMenu answers true for it (fix 923). /review is not in the table
+// and /cost is /usage's alias.
 export const SENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
   { name: '/compact', hint: '<optional custom summarization instructions>', description: 'Free up context by summarizing the conversation so far' },
   { name: '/clear', hint: '[name]', description: 'Start a new session with empty context; previous session stays on disk (resumable with /resume)' },
@@ -94,9 +93,12 @@ export const SENT_COMMANDS: readonly { name: string; description: string; hint: 
 // M9 fix 780: the commands whose hint is a required argument. A pick
 // completes the name with a space and sends nothing, and the send of the
 // completed box brings the bar, since both draw a dialog of their own
-// (/add-dir's `Add directory to workspace`).
+// (/add-dir's `Add directory to workspace`). /btw (M9 fix 1005) completes
+// the same way, but its completed send opens the chat view's side strip
+// rather than the bar.
 export const ARGUMENT_COMMANDS: readonly { name: string; description: string; hint: string }[] = [
   { name: '/add-dir', hint: '<path>', description: 'Add a new working directory' },
+  { name: '/btw', hint: '[question]', description: 'Ask a quick side question without interrupting the main conversation' },
   { name: '/cd', hint: '<path>', description: 'Move this session to a new working directory' },
 ];
 

@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileMenu } from './file-menu-model.ts';
+import { copyableImage, fileMenu } from './file-menu-model.ts';
 
 // M9 fix 270: the file body's right-click menu as one list. M9 fix
 // 338: Wrap long lines sits after Select all, checked while on.
 test('the editor of an editable file lists Copy, Select all, Wrap, Paste, then the three ways out under a rule', () => {
-  const items = fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: false, schemes: [], scheme: null });
+  const items = fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false });
   assert.deepEqual(
     items.map((i) => i.label),
     ['Copy', 'Select all', 'Find', 'Wrap long lines', 'Paste', 'Copy path', 'Reveal in Explorer', 'Reveal in Files', 'Open with Windows', 'Colour scheme'],
@@ -14,7 +14,7 @@ test('the editor of an editable file lists Copy, Select all, Wrap, Paste, then t
   assert.equal(items.find((i) => i.run === 'find')?.hint, 'Ctrl+F');
   assert.equal(items.find((i) => i.run === 'wrap')?.hint, 'Alt+Z');
   assert.equal(items.find((i) => i.run === 'wrap')?.checked, true);
-  assert.equal(fileMenu({ view: 'raw', editable: true, selected: true, wrap: false, json: false, schemes: [], scheme: null }).find((i) => i.run === 'wrap')?.checked, false);
+  assert.equal(fileMenu({ view: 'raw', editable: true, selected: true, wrap: false, json: false, schemes: [], scheme: null, image: false, imageCopyable: false }).find((i) => i.run === 'wrap')?.checked, false);
   assert.ok(items.every((i) => i.run === 'wrap' || i.checked === undefined), 'no other item wears a check');
   assert.equal(items.find((i) => i.run === 'copy')?.hint, 'Ctrl+C');
   assert.equal(items.find((i) => i.run === 'paste')?.hint, 'Ctrl+V');
@@ -27,16 +27,16 @@ test('the editor of an editable file lists Copy, Select all, Wrap, Paste, then t
 });
 
 test('Copy is disabled with nothing selected and says so', () => {
-  const copy = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null }).find((i) => i.run === 'copy')!;
+  const copy = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false }).find((i) => i.run === 'copy')!;
   assert.equal(copy.disabled, true);
   assert.equal(copy.title, 'Nothing selected');
 });
 
 test("a transcript's Raw view and the rendered views offer no Paste", () => {
   for (const facts of [
-    { view: 'raw' as const, editable: false, selected: true, wrap: true, json: false, schemes: [], scheme: null },
-    { view: 'rendered' as const, editable: false, selected: true, wrap: true, json: false, schemes: [], scheme: null },
-    { view: 'turns' as const, editable: false, selected: false, wrap: false, json: false, schemes: [], scheme: null },
+    { view: 'raw' as const, editable: false, selected: true, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false },
+    { view: 'rendered' as const, editable: false, selected: true, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false },
+    { view: 'turns' as const, editable: false, selected: false, wrap: false, json: false, schemes: [], scheme: null, image: false, imageCopyable: false },
   ]) {
     const items = fileMenu(facts);
     assert.ok(!items.some((i) => i.run === 'paste'), `no Paste on ${facts.view}`);
@@ -54,7 +54,7 @@ test("a transcript's Raw view and the rendered views offer no Paste", () => {
 // M9 fix 420: Format JSON selection sits right after it, disabled with
 // nothing selected.
 test("a JSON file's Raw view offers Format JSON and its Pretty view does not", () => {
-  const raw = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: true, schemes: [], scheme: null });
+  const raw = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: true, schemes: [], scheme: null, image: false, imageCopyable: false });
   assert.deepEqual(
     raw.map((i) => i.run),
     ['copy', 'select-all', 'find', 'wrap', 'paste', 'format', 'format-selection', 'copy-path', 'reveal', 'reveal-files', 'open', 'heading'],
@@ -63,15 +63,15 @@ test("a JSON file's Raw view offers Format JSON and its Pretty view does not", (
   assert.equal(raw.find((i) => i.run === 'format-selection')?.label, 'Format JSON selection');
   assert.equal(raw.find((i) => i.run === 'format-selection')?.disabled, true, 'disabled with nothing selected');
   assert.equal(raw.find((i) => i.run === 'format-selection')?.title, 'Nothing selected');
-  const rawSelected = fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: true, schemes: [], scheme: null });
+  const rawSelected = fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: true, schemes: [], scheme: null, image: false, imageCopyable: false });
   assert.equal(rawSelected.find((i) => i.run === 'format-selection')?.disabled, false, 'enabled with a selection');
-  const pretty = fileMenu({ view: 'pretty', editable: true, selected: false, wrap: false, json: true, schemes: [], scheme: null });
+  const pretty = fileMenu({ view: 'pretty', editable: true, selected: false, wrap: false, json: true, schemes: [], scheme: null, image: false, imageCopyable: false });
   assert.deepEqual(
     pretty.map((i) => i.run),
     ['copy', 'select-all', 'find', 'wrap', 'copy-path', 'reveal', 'reveal-files', 'open', 'heading'],
   );
-  assert.ok(!fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null }).some((i) => i.run === 'format'), 'no Format on a file that is not JSON');
-  assert.ok(!fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: false, schemes: [], scheme: null }).some((i) => i.run === 'format-selection'), 'no Format JSON selection on a file that is not JSON');
+  assert.ok(!fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false }).some((i) => i.run === 'format'), 'no Format on a file that is not JSON');
+  assert.ok(!fileMenu({ view: 'raw', editable: true, selected: true, wrap: true, json: false, schemes: [], scheme: null, image: false, imageCopyable: false }).some((i) => i.run === 'format-selection'), 'no Format JSON selection on a file that is not JSON');
 });
 
 // M9 fix 340: the scheme section at the end, in the pane menu's shape.
@@ -81,7 +81,7 @@ test("the menu ends with a Colour scheme heading, one checked row per scheme, an
     { name: 'Dracula', background: '#282a36', source: 'shipped' as const },
     { name: 'Mine', background: '#ffffff', source: 'windows-terminal' as const },
   ];
-  const none = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes, scheme: null });
+  const none = fileMenu({ view: 'raw', editable: true, selected: false, wrap: true, json: false, schemes, scheme: null, image: false, imageCopyable: false });
   const tail = none.slice(none.findIndex((i) => i.run === 'heading'));
   assert.deepEqual(
     tail.map((i) => i.label),
@@ -99,7 +99,7 @@ test("the menu ends with a Colour scheme heading, one checked row per scheme, an
   );
   assert.equal(tail[2]?.title, 'Shipped with emerald, ground #282a36');
   assert.equal(tail[3]?.title, 'From your Windows Terminal settings, ground #ffffff');
-  const picked = fileMenu({ view: 'rendered', editable: true, selected: false, wrap: true, json: false, schemes, scheme: 'Dracula' });
+  const picked = fileMenu({ view: 'rendered', editable: true, selected: false, wrap: true, json: false, schemes, scheme: 'Dracula', image: false, imageCopyable: false });
   const pickedTail = picked.slice(picked.findIndex((i) => i.run === 'heading'));
   assert.deepEqual(
     pickedTail.map((i) => i.label),
@@ -108,4 +108,31 @@ test("the menu ends with a Colour scheme heading, one checked row per scheme, an
   assert.deepEqual(pickedTail[1] && [pickedTail[1].run, pickedTail[1].scheme], ['scheme', null], "Window's scheme clears the pick");
   assert.equal(pickedTail.find((i) => i.label === 'Dracula')?.checked, true);
   assert.ok(pickedTail[0]?.title?.startsWith('This file wears Dracula'), 'the heading names the pick');
+});
+
+// M9 fix 1007: a picture's menu opens with Copy image.
+test("a picture's menu opens with Copy image, disabled with a reason on a kind Electron cannot decode", () => {
+  const facts = { view: 'raw' as const, editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null, image: true, imageCopyable: true };
+  const items = fileMenu(facts);
+  assert.deepEqual(items[0], { run: 'copy-image', label: 'Copy image', disabled: false, title: 'Copy the picture to the clipboard, as a PNG' });
+  assert.deepEqual(
+    items.slice(1).map((i) => i.run),
+    fileMenu({ ...facts, image: false }).map((i) => i.run),
+  );
+  const refused = fileMenu({ view: 'rendered', editable: true, selected: false, wrap: true, json: false, schemes: [], scheme: null, image: true, imageCopyable: false });
+  assert.equal(refused[0]?.disabled, true);
+  assert.equal(refused[0]?.title, "This kind of picture can't be copied");
+  assert.ok(!fileMenu({ ...facts, image: false }).some((i) => i.run === 'copy-image'), 'no Copy image off a picture');
+});
+
+// The kinds the fix's probe read as decoded by nativeImage.createFromPath
+// on Windows: PNG, JPEG and ICO; GIF, WebP, BMP and SVG read empty.
+test('copyableImage takes the kinds main decodes and refuses a network path', () => {
+  assert.equal(copyableImage('C:\\a\\b.png'), true);
+  assert.equal(copyableImage('C:\\a\\b.JPG'), true);
+  assert.equal(copyableImage('C:\\a\\b.jpeg'), true);
+  assert.equal(copyableImage('C:\\a\\b.ico'), true);
+  assert.equal(copyableImage('C:\\a\\b.txt'), false);
+  assert.equal(copyableImage('\\\\host\\share\\b.png'), false);
+  for (const kind of ['gif', 'webp', 'bmp', 'svg']) assert.equal(copyableImage(`C:\\a\\b.${kind}`), false, `${kind} is not decoded`);
 });

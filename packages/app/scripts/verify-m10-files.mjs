@@ -2881,19 +2881,73 @@ try {
   expect(seenD982.ghost === '3 items' && JSON.stringify(seenD982.lit) === JSON.stringify([dest982]), `the set's ghost reads 3 items and dest982 lights (${JSON.stringify(seenD982)})`);
   await s.waitFor(`${noteJs981} === 'Moved 3 items into dest982'`, 'the note says three items moved', 5000);
   expect(['m982/inner.txt', 'a982.txt', 'b982.txt'].every((f) => fs.existsSync(path.join(dest982, f))) && !fs.existsSync(m982) && !fs.existsSync(p982.a), 'dest982 holds m982, a982.txt and b982.txt on disk');
+  // (d2) M9 fix 1006: a folder row dragged onto a pane is refused with a
+  // not-allowed cursor and, on the release, a note; nothing opens.
+  await s.evalJs(`document.querySelector('.tab.tab-panes').click()`);
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the panes tab in front for the refused drag', 3000);
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(dest982))})`, 'dest982 listed on the panes tab', 5000);
+  const layoutD2 = await getLayout(s);
+  const paneCount982 = leaves(layoutD2).length;
+  const paneAt982 = await s.evalJs(`(() => { const { x, y, width, height } = document.querySelector('[data-pane-id=' + ${JSON.stringify(JSON.stringify(layoutD2.focusedPaneId))} + ']').getBoundingClientRect(); return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) }; })()`);
+  await top982();
+  const fromD2 = await centre981(dest982);
+  await s.mouse('mousePressed', fromD2.x, fromD2.y);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: fromD2.x + 10, y: fromD2.y, button: 'left', buttons: 1 });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: paneAt982.x, y: paneAt982.y, button: 'left', buttons: 1 });
+  const seenD2 = await s.evalJs(`({ mark: document.body.dataset.dragRefused ?? null, cursor: getComputedStyle(document.body).cursor })`);
+  expect(seenD2.mark === 'folder' && seenD2.cursor === 'not-allowed', `a folder over a pane is marked refused with the not-allowed cursor (${JSON.stringify(seenD2)})`);
+  await s.mouse('mouseReleased', paneAt982.x, paneAt982.y);
+  await s.waitFor(`${noteJs981} === 'A folder opens in no pane; drop it on a folder in the tree'`, 'the note says a folder opens in no pane', 5000);
+  expect(!(await s.evalJs(`'dragRefused' in document.body.dataset`)), 'the mark is gone after the release');
+  expect(leaves(await getLayout(s)).length === paneCount982, 'the pane count is unchanged');
+  expect(fs.existsSync(path.join(dest982, 'a982.txt')), 'the folder stayed where it was on disk');
   // (e) A right-click on the set offers Delete alone, on every row of it.
   await clickRow(s, p982.c);
   await pickedIs982([p982.c], 'c982.txt alone');
   await click982(p982.d, CTRL);
   await pickedIs982([p982.c, p982.d], 'c982 and d982 picked');
+  // M9 fix 1006: the set dragged onto the + is refused, the rail's own
+  // folder lights nothing and clears the mark, and the release says why.
+  const tabsBefore982 = await s.evalJs(`document.querySelectorAll('.tab').length`);
+  await top982();
+  const fromE2 = await centre981(p982.d);
+  const addAt982 = await s.evalJs(`(() => { const { x, y, width, height } = document.querySelector('.tab-add').getBoundingClientRect(); return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) }; })()`);
+  await s.mouse('mousePressed', fromE2.x, fromE2.y);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: fromE2.x + 10, y: fromE2.y, button: 'left', buttons: 1 });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: addAt982.x, y: addAt982.y, button: 'left', buttons: 1 });
+  expect((await s.evalJs(`document.body.dataset.dragRefused ?? null`)) === 'set', 'a set over the + is marked refused');
+  const overRail982 = await centre981(p982.c);
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: overRail982.x, y: overRail982.y, button: 'left', buttons: 1 });
+  expect((await s.evalJs(`document.body.dataset.dragRefused ?? null`)) === null, 'the mark is gone over the rail');
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: addAt982.x, y: addAt982.y, button: 'left', buttons: 1 });
+  await s.mouse('mouseReleased', addAt982.x, addAt982.y);
+  await s.waitFor(`${noteJs981} === 'A pane takes one file at a time; drop the set on a folder'`, 'the note says a pane takes one file at a time', 5000);
+  await s.screenshot('m10-1006-refused-set.png');
+  expect((await s.evalJs(`document.querySelectorAll('.tab').length`)) === tabsBefore982 && fs.existsSync(p982.c) && fs.existsSync(p982.d), 'no tab was made and both files are still on disk');
+  await pickedIs982([p982.c, p982.d], 'the refused drag keeps the set');
   await top982();
   const atE982 = await centre981(p982.d);
   await s.rightClick(atE982.x, atE982.y);
   await s.waitFor(`document.querySelector('.files-menu')?.dataset.picked === '2'`, "the set's menu", 3000);
   const menuE982 = await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent ?? b.textContent, disabled: b.disabled }))`);
   const lastE982 = menuE982[menuE982.length - 1];
-  expect(menuE982.slice(0, -1).every((i) => i.disabled) && lastE982.label === 'Delete' && !lastE982.disabled, `every item but Delete is disabled (${JSON.stringify(menuE982)})`);
+  const copyLabels982 = ['Copy 2 paths', 'Copy 2 relative paths'];
+  expect(menuE982.slice(0, -1).every((i) => i.disabled === !copyLabels982.includes(i.label)) && copyLabels982.every((l) => menuE982.some((i) => i.label === l)) && lastE982.label === 'Delete' && !lastE982.disabled, `the two copies are enabled, every other item but Delete is disabled (${JSON.stringify(menuE982)})`);
   await pickedIs982([p982.c, p982.d], 'the right-click keeps the set');
+  // M9 fix 1006: the set's copies put every picked path on the held clipboard.
+  const clickMenu982 = (label) => s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].find((b) => b.querySelector('.menu-label')?.textContent === ${JSON.stringify(label)}).click()`);
+  const reopen982 = async () => {
+    await top982();
+    const at = await centre981(p982.d);
+    await s.rightClick(at.x, at.y);
+    await s.waitFor(`document.querySelector('.files-menu')?.dataset.picked === '2'`, "the set's menu again", 3000);
+  };
+  await clickMenu982('Copy 2 paths');
+  await s.waitFor(`window.emerald.clipboard.read().then((r) => r.text === ${JSON.stringify(p982.c + '\n' + p982.d)})`, 'Copy 2 paths puts both paths on the clipboard, one per line', 3000);
+  await reopen982();
+  await clickMenu982('Copy 2 relative paths');
+  await s.waitFor(`window.emerald.clipboard.read().then((r) => r.text === ${JSON.stringify(path.join('pick982', 'c982.txt') + '\n' + path.join('pick982', 'd982.txt'))})`, 'Copy 2 relative paths puts both relative paths on the clipboard', 3000);
+  await reopen982();
   await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1).click()`);
   await s.waitFor(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1)?.querySelector('.menu-label')?.textContent === 'Delete 2 items, to the recycle bin?'`, 'Delete asks once more, naming the count', 3000);
   await s.evalJs(`[...document.querySelectorAll('.files-menu .menu-item')].at(-1).click()`);
@@ -2915,7 +2969,7 @@ try {
   fs.rmSync(drag981, { recursive: true, force: true });
   fs.rmSync(pick982, { recursive: true, force: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(drag981))}) && !document.querySelector(${JSON.stringify(rowSel(pick982))})`, 'drag981 and pick982 gone', 5000);
-  step('M9 fix 982: Ctrl+click toggles rows in and out of a picked set and Shift+click and Shift+arrows pick a range across a folder, opening nothing; Escape clears the set; the set drags into a folder with one note; a right-click on the set offers Delete alone, and Delete on the set or its menu moves every picked row to the recycle bin with one note');
+  step('M9 fix 982: Ctrl+click toggles rows in and out of a picked set and Shift+click and Shift+arrows pick a range across a folder, opening nothing; Escape clears the set; the set drags into a folder with one note; a set or a folder dragged onto a pane or the + is refused with a note, and the menu of a set copies both paths and offers Delete (fix 1006); Delete on the set or its menu moves every picked row to the recycle bin with one note');
   // M9 fix 337: a file open in a pane with no tab hears a change on
   // disk. A shell in a folder of its own, focused so the rail follows
   // it; the file opened beside it through the row menu's Open in a

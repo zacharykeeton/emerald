@@ -1,10 +1,13 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import type { SessionInfo } from '@emerald/shared';
 import { CliError, EXIT } from '../cli-error.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
-import prompt, { heldPrompt, runPrompt } from './prompt.ts';
+import prompt, { REPLY_READ_TRIES, heldPrompt, runPrompt, wholeReply } from './prompt.ts';
 import { stdinText } from '../args.ts';
 import { captureOutput } from '../command.ts';
 
@@ -21,6 +24,8 @@ let sessions: SessionInfo[] = [];
 const inputs: string[] = [];
 const submits: { sessionId: string; text: string }[] = [];
 let modVia: 'mod' | 'typed' = 'mod';
+// M9 fix 1001: the submit's reply says the mod queued the text.
+let modQueued = false;
 // M9 fix 778: the screen the fake answers, and how often it was asked.
 let screenRows: string[] = [];
 let screens = 0;
@@ -88,7 +93,7 @@ before(async () => {
         } else if (msg.type === 'session.submit') {
           // M9 fix 741: the mod's channel up ('mod') or not ('typed').
           submits.push(raw as { sessionId: string; text: string });
-          reply({ via: modVia });
+          reply({ via: modVia, ...(modQueued ? { queued: true } : {}) });
           if (modVia === 'mod') onEnter(push);
         } else if (msg.type === 'pty.screen') {
           screens += 1;
@@ -112,6 +117,7 @@ function scenario(state: SessionInfo['state'], script: (push: Push) => void, ove
   inputs.length = 0;
   submits.length = 0;
   modVia = 'mod';
+  modQueued = false;
   screenRows = [];
   screens = 0;
   onEnter = script;
@@ -127,15 +133,77 @@ async function failure(run: Promise<unknown>): Promise<CliError> {
   assert.fail('expected the prompt to fail');
 }
 
-test('the happy path: the text and Enter go in, working then done come back, the reply is the first line', async () => {
+// M9 fix 1000: a transcript whose one turn is "fix it" and a two-paragraph
+// reply, written beside the test's pipe and removed after.
+const WHOLE = 'Fixed.\n\nThe login now checks the token first.';
+const transcriptDir = path.join(os.tmpdir(), `emmer-prompt-transcript-${process.pid}`);
+const transcript = path.join(transcriptDir, 'turns.jsonl');
+after(() => fs.rmSync(transcriptDir, { recursive: true, force: true }));
+
+function transcriptOf(reply: string): string {
+  const at = new Date().toISOString();
+  return [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'fix it' }, timestamp: at }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] }, timestamp: at }),
+  ].join('\n') + '\n';
+}
+
+test('the happy path: the text and Enter go in, working then done come back, the reply is the transcript\'s last reply, whole (M9 fix 1000)', async () => {
+  fs.mkdirSync(transcriptDir, { recursive: true });
+  fs.writeFileSync(transcript, transcriptOf(WHOLE));
+  const script = (push: Push) => {
+    push(session({ state: 'working', lastPrompt: 'fix it', transcriptPath: transcript }));
+    setTimeout(() => push(session({ state: 'done', lastPrompt: 'fix it', lastReply: 'Fixed.', transcriptPath: transcript })), 50);
+  };
+  scenario('idle', script);
+  const out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  assert.equal(out.kind, 'done');
+  assert.equal(out.kind === 'done' && out.reply, WHOLE);
+  assert.deepEqual(inputs, ['fix it', '\r']);
+
+  // The command prints both paragraphs, and --json gives reply whole with
+  // the first line beside it as replyLine.
+  let printed = '';
+  scenario('idle', script);
+  let restore = captureOutput((t) => (printed += t));
+  try {
+    await prompt.run(['fix-login', 'fix it', '--timeout', '5000']);
+  } finally {
+    restore();
+  }
+  assert.equal(printed, WHOLE + '\n');
+  printed = '';
+  scenario('idle', script);
+  restore = captureOutput((t) => (printed += t));
+  try {
+    await prompt.run(['fix-login', 'fix it', '--timeout', '5000', '--json']);
+  } finally {
+    restore();
+  }
+  const json = JSON.parse(printed) as { reply: string; replyLine: string };
+  assert.equal(json.reply, WHOLE);
+  assert.equal(json.replyLine, 'Fixed.');
+});
+
+test('a done row with no transcript gives the first line (M9 fix 1000)', async () => {
   scenario('idle', (push) => {
     push(session({ state: 'working', lastPrompt: 'fix it' }));
     setTimeout(() => push(session({ state: 'done', lastPrompt: 'fix it', lastReply: 'Fixed.' })), 50);
   });
   const out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
-  assert.equal(out.kind, 'done');
   assert.equal(out.kind === 'done' && out.reply, 'Fixed.');
-  assert.deepEqual(inputs, ['fix it', '\r']);
+});
+
+test('a transcript whose last reply is not the row\'s is read five times, then the first line (M9 fix 1000)', async () => {
+  let reads = 0;
+  const stale = transcriptOf('Something else entirely.\n\nFrom a turn before.');
+  const reply = await wholeReply(session({ state: 'done', lastReply: 'Fixed.', transcriptPath: 'C:\\sim\\turns.jsonl' }), () => {
+    reads += 1;
+    return stale;
+  });
+  assert.equal(reply, 'Fixed.');
+  assert.equal(reads, REPLY_READ_TRIES);
+  assert.equal(reads, 5);
 });
 
 test('a done session takes a new prompt, and a reply that lands as needs-input is reported as such', async () => {
@@ -327,6 +395,48 @@ test('a working Claude gives an outcome with queued: true, an idle one no queued
   scenario('idle', turns, { kind: 'claude' });
   out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
   assert.equal('queued' in out, false);
+});
+
+// M9 fix 1001: the row read idle, but a turn started as the text was sent
+// and the mod queued it; the earlier turn's working and done come first,
+// and the reply is this prompt's own turn's.
+test('a send the mod queued behind a turn that started at the send waits for its own turn (M9 fix 1001)', async () => {
+  scenario(
+    'idle',
+    (push) => {
+      push(session({ kind: 'claude', state: 'working', lastPrompt: 'the other prompt' }));
+      push(session({ kind: 'claude', state: 'done', lastPrompt: 'the other prompt', lastReply: 'the other reply' }));
+      setTimeout(() => {
+        push(session({ kind: 'claude', state: 'working', lastPrompt: 'fix it' }));
+        push(session({ kind: 'claude', state: 'done', lastPrompt: 'fix it', lastReply: 'Fixed.' }));
+      }, 30);
+    },
+    { kind: 'claude' },
+  );
+  modQueued = true;
+  const restore = captureOutput(() => {});
+  let out;
+  try {
+    out = await runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000 });
+  } finally {
+    restore();
+  }
+  assert.equal(out.kind === 'done' && out.reply, 'Fixed.');
+  assert.equal(out.queued, true);
+});
+
+test('a queued send whose own turn never starts after the earlier one ends is stalled, exit 3 (M9 fix 1001)', async () => {
+  scenario(
+    'idle',
+    (push) => {
+      push(session({ kind: 'claude', state: 'working', lastPrompt: 'the other prompt' }));
+      push(session({ kind: 'claude', state: 'done', lastPrompt: 'the other prompt', lastReply: 'the other reply' }));
+    },
+    { kind: 'claude' },
+  );
+  modQueued = true;
+  const err = await failure(runPrompt({ ref: 'fix-login', text: 'fix it', force: false, timeoutMs: 5000, stallMs: 200 }));
+  assert.equal(err.exitCode, EXIT.stalled);
 });
 
 // M9 fix 855: the prompt's text from stdin or a file.

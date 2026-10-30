@@ -52,11 +52,23 @@ export interface State {
   preview: ColorPreview | null;
 }
 
+// M9 fix 1013: one blocking IPC at load, answered from memory in main, so
+// a reloaded window draws the level banner in its first render; a cold
+// start reads null and draws as before.
+export function initialDaemon(): DaemonInfo | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.emerald.daemonInfoNow();
+  } catch {
+    return null;
+  }
+}
+
 // What the daemon pushed, and the snapshot components read: the same
 // object until a preview is on, then a copy with the previewed colour
 // on its one session, so a reader never sees the preview and the saved
 // colour at once.
-let state: State = { connected: true, layout: null, allLayout: null, windowId: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: null, crashed: null, preview: null };
+let state: State = { connected: true, layout: null, allLayout: null, windowId: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: initialDaemon(), crashed: null, preview: null };
 let snapshot: State = state;
 const listeners = new Set<() => void>();
 let started = false;

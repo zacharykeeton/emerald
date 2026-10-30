@@ -618,16 +618,29 @@ export function fitForm(needs: StripNeeds, width: number): StripForm {
 // M9 fix 974: the chat view's band when a window is nearly spent, at
 // Claude Code's own marks and in its words. A window past its reset is
 // skipped; each other window's mark is the highest at or under its
-// percent; a dismissal names the window, its reset and its mark, so the
-// band comes back at the next mark or after the reset. The highest
-// percent left wins, the first in reading order on a tie.
+// percent; a dismissal names the window, its mark and its reset to within
+// an hour (M9 fix 1012), so the band comes back at the next mark or after
+// the reset. The highest percent left wins, the first in reading order on
+// a tie.
 export const USAGE_WARN_AT: readonly number[] = [75, 95];
+
+// The five-hour and seven-day windows never hold two windows of one key
+// within an hour, so a reset within an hour of a dismissed one is the same
+// window read from the other source (the endpoint's reset and the mod's
+// push differ by seconds or minutes).
+export const USAGE_DISMISS_SLACK_MS = HOUR_MS;
+
+export interface UsageDismissal {
+  key: string;
+  resetsAt: number;
+  threshold: number;
+}
 
 export interface UsageWarning {
   key: string;
   threshold: number;
   text: string;
-  dismissKey: string;
+  dismissKey: UsageDismissal;
 }
 
 function limitName(key: string): string {
@@ -637,16 +650,16 @@ function limitName(key: string): string {
   return `${labelFor(key)} limit`;
 }
 
-export function usageWarning(windows: readonly UsageWindow[] | null, now: number, dismissed: ReadonlySet<string>): UsageWarning | null {
+export function usageWarning(windows: readonly UsageWindow[] | null, now: number, dismissed: readonly UsageDismissal[]): UsageWarning | null {
   if (windows === null) return null;
-  let best: { win: UsageWindow; threshold: number; dismissKey: string } | null = null;
+  let best: { win: UsageWindow; threshold: number; dismissKey: UsageDismissal } | null = null;
   for (const win of windows) {
     if (win.resetsAt <= now) continue;
     const marks = USAGE_WARN_AT.filter((m) => m <= win.percent);
     if (marks.length === 0) continue;
     const threshold = Math.max(...marks);
-    const dismissKey = `${win.key}:${win.resetsAt}:${threshold}`;
-    if (dismissed.has(dismissKey)) continue;
+    if (dismissed.some((d) => d.key === win.key && d.threshold === threshold && Math.abs(d.resetsAt - win.resetsAt) <= USAGE_DISMISS_SLACK_MS)) continue;
+    const dismissKey: UsageDismissal = { key: win.key, resetsAt: win.resetsAt, threshold };
     if (best === null || win.percent > best.win.percent) best = { win, threshold, dismissKey };
   }
   if (best === null) return null;

@@ -5,7 +5,7 @@ import { normalizePath, parentPath } from './files-model.ts';
 import { fileUrl } from './markdown-url.ts';
 import { MarkdownView } from './MarkdownView.tsx';
 import { useEditState } from './file-edits.ts';
-import { fileMenu } from './file-menu-model.ts';
+import { copyableImage, fileMenu } from './file-menu-model.ts';
 import { setFileScheme, useFileScheme } from './file-scheme-store.ts';
 import { themeOf } from './scheme-model.ts';
 import { useScheme } from './scheme-store.ts';
@@ -686,6 +686,14 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       case 'heading':
         // A heading has no click.
         return;
+      case 'copy-image':
+        void window.emerald.clipboard
+          .writeImageFile(path)
+          .then((ok) => {
+            if (!ok) console.warn('[emerald] copy image decoded nothing from', path);
+          })
+          .catch(warn('copy image'));
+        return;
       case 'copy-path':
         void window.emerald.clipboard.write(path).catch(warn('copy'));
         return;
@@ -838,6 +846,8 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
               json,
               schemes: schemes.map((sch) => ({ name: sch.name, background: sch.background, source: sch.source })),
               scheme: schemePick,
+              image: showImage && !imageFailed,
+              imageCopyable: copyableImage(path),
             }).map((item) =>
               item.run === 'heading'
                 ? { heading: item.label, title: item.title }

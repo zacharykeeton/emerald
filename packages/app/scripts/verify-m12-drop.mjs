@@ -96,7 +96,10 @@ const boxOf = (s, paneId) =>
 const centerOf = (s, sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
 const sessionCount = async (s) => (await zreq(s, 'session.list', {})).sessions.length;
 
-const s = await launch(freshPort(), { freshState: true });
+// M9 fix 1008: 2 ms after each copied file, so the 400 files take long
+// enough to read a progress note; nothing else in the script copies more
+// than one file.
+const s = await launch(freshPort(), { freshState: true, env: { EMERALD_COPY_PACE_MS: '2' } });
 app = s;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
@@ -629,8 +632,8 @@ try {
     expect(!p.row && p.list, `the blank under the rows is on the list and on no row, got ${JSON.stringify(p)}`);
     return { x: p.x, y: p.y };
   };
-  const waitDisk953 = async (test, what) => {
-    const until = Date.now() + 5000;
+  const waitDisk953 = async (test, what, ms = 5000) => {
+    const until = Date.now() + ms;
     while (!test()) {
       if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
       await sleep(100);
@@ -833,6 +836,50 @@ try {
   await waitDisk953(() => read953(path.join(inner983, 'a983.txt')) === 'a983' && !fs.existsSync(a983), 'a983.txt moved into inner983');
   await noteIs953('Moved a983.txt into inner983', 'the note says a983.txt moved into inner983');
   step('fix 983: a folder held under a drag opens after 600 ms, not before, not once the drag moves off it, stays open after the drag leaves, and takes a drop into its child');
+
+  // M9 fix 1008: a copy of 400 files dropped with Ctrl on into953 shows
+  // its progress in the window's corner note, updating, until the final
+  // note lands, and the note then goes after its usual moment. Every note
+  // the corner shows is recorded as it changes, so the read does not
+  // race the copy.
+  const many1008 = path.join(src953, 'many1008');
+  fs.mkdirSync(path.join(many1008, 'a'), { recursive: true });
+  fs.mkdirSync(path.join(many1008, 'b'), { recursive: true });
+  for (let i = 0; i < 400; i++) fs.writeFileSync(path.join(many1008, i < 200 ? 'a' : 'b', `f${String(i).padStart(3, '0')}.txt`), 'x');
+  const filesIn1008 = (dir) => {
+    try {
+      return fs.readdirSync(dir, { recursive: true }).filter((p) => fs.statSync(path.join(dir, p)).isFile()).length;
+    } catch {
+      return 0;
+    }
+  };
+  await s.evalJs(
+    `(() => { window.__notes1008 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane)')?.textContent ?? null; if (t !== null && window.__notes1008.at(-1) !== t) window.__notes1008.push(t); }; window.__obs1008 = new MutationObserver(read); window.__obs1008.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
+  );
+  await setDropFiles(s, [many1008]);
+  const spot1008 = await centerOf(s, rowSel953(into953));
+  await hover(s, spot1008, { ctrl: true });
+  expect((await drop953()).effect === 'copy', 'Ctrl shows copy over into953');
+  await drag(s, 'drop', spot1008, { ctrl: true });
+  // The frame for the user: the note mid-copy, taken the moment it shows.
+  await s.waitFor(`/^Copying /.test(document.querySelector('.corner-note')?.textContent ?? '')`, 'a progress note in the corner', 10000);
+  await s.screenshot('m12-drop-copying-1008.png');
+  await waitDisk953(() => filesIn1008(path.join(into953, 'many1008')) === 400 && filesIn1008(many1008) === 400, 'many1008 copied whole into into953, its source kept', 15000);
+  await noteIs953('Copied many1008 into into953', 'the final note says the folder was copied');
+  const notes1008 = await s.evalJs(`(() => { window.__obs1008.disconnect(); return window.__notes1008; })()`);
+  const counts1008 = notes1008.map((t) => /^Copying (\d+) of 400 files into into953$/.exec(t)).filter((m) => m !== null).map((m) => Number(m[1]));
+  const lastProgress1008 = notes1008.findLastIndex((t) => t.startsWith('Copying '));
+  expect(
+    counts1008.length >= 1 &&
+      counts1008.every((n, i) => n >= 1 && n <= 400 && (i === 0 || n >= counts1008[i - 1])) &&
+      lastProgress1008 < notes1008.length - 1 &&
+      notes1008.at(-1) === 'Copied many1008 into into953',
+    `the progress notes rise to the final note, got ${JSON.stringify(notes1008)}`,
+  );
+  const mainLog1008 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  expect(mainLog1008.includes(`files-move into ${into953} (copy): many1008 copied`), 'main.log has the copy line');
+  await s.waitFor(`!document.querySelector('.corner-note')`, 'the note goes after its usual moment, the progress not held', 3500);
+  step('fix 1008: a copy of 400 files dropped with Ctrl shows its progress in the corner note, updating, before the final note, and the note goes after its usual moment');
 
   step('PASS');
 } catch (err) {

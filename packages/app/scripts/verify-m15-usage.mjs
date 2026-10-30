@@ -1077,13 +1077,14 @@ try {
       await post({ hook_event_name: 'Stop', stop_hook_active: false });
       return waitRecord(id, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), `the stub bound with its transcript after ${JSON.stringify(prompt)}`, 10000);
     };
-    // The resets are read once: a dismissal names the window's reset, and
-    // the endpoint's reset stays put between readings.
+    // The resets are read once so the band's text holds still; the 93 reading
+    // moves the week's reset forty minutes on, which a dismissal rides out
+    // since fix 1012.
     const fiveReset = at(4 * HOUR);
     const weekReset = at(6 * DAY + 12 * HOUR + 20 * MIN);
-    const weekAt = (pct) => ({ status: 200, body: { five_hour: { utilization: 10, resets_at: fiveReset }, seven_day: { utilization: pct, resets_at: weekReset } } });
-    const refreshTo = async (pct) => {
-      reply = weekAt(pct);
+    const weekAt = (pct, reset = weekReset) => ({ status: 200, body: { five_hour: { utilization: 10, resets_at: fiveReset }, seven_day: { utilization: pct, resets_at: reset } } });
+    const refreshTo = async (pct, reset = weekReset) => {
+      reply = weekAt(pct, reset);
       const asked = requests.length;
       await clickRefresh(s);
       const by = Date.now() + 5000;
@@ -1120,7 +1121,7 @@ try {
     await s.screenshot('m9-974-band.png');
     await s.evalJs(`${q(band + ' .chat-usage-warning-dismiss')}.click()`);
     await s.waitFor(`!${q(band)}`, 'the band gone on its dismiss', 3000);
-    await refreshTo(93);
+    await refreshTo(93, new Date(Date.parse(weekReset) + 40 * MIN).toISOString());
     await sleep(1500);
     expect((await bandRead()) === null, `no band at 93 after the 75 mark's dismissal, got ${JSON.stringify(await bandRead())}`);
     await refreshTo(96);
@@ -1131,7 +1132,7 @@ try {
     }
     await zreq(s, 'session.kill', { sessionId: stubId });
   }
-  step('fix 974: the chat view\'s band says You\'ve used 92% of your weekly limit, a dismissal holds through 93 and the band comes back at 96');
+  step('fix 974: the chat view\'s band says You\'ve used 92% of your weekly limit, a dismissal holds through 93 and the band comes back at 96; fix 1012: the dismissal holds with the reset forty minutes on');
 
   // The renderer never saw the token.
   const leaked = await s.evalJs(`document.documentElement.outerHTML.includes(${JSON.stringify(TOKEN)})`);

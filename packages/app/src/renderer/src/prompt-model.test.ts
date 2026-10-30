@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
+import { btwQuestion, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
+
+test('btwQuestion: the question of a /btw, its spaces run together; null for a bare one or other text (M9 fix 1005)', () => {
+  assert.equal(btwQuestion('/btw what folder am I in'), 'what folder am I in');
+  assert.equal(btwQuestion('  /btw   two  words '), 'two words');
+  assert.equal(btwQuestion('/btw'), null);
+  assert.equal(btwQuestion('/btw   '), null);
+  assert.equal(btwQuestion('/btwx hi'), null);
+  assert.equal(btwQuestion('hi /btw x'), null);
+});
 
 test('promptRefusal names the two states the text must not go to', () => {
   assert.equal(promptRefusal({ state: 'needs-input' }), 'Answer what it is waiting on first');
