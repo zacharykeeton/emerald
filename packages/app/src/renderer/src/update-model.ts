@@ -20,9 +20,16 @@ export interface UpdateBadge {
 // back through Resume, as at a hand install.
 const RESTART_NOTE = 'The window closes, the daemon stops and every pane comes back through Resume once the new build opens; nothing is lost but the scrollback.';
 
-export function updateBadge(current: string, latest: string | null, phase: UpdatePhase, percent: number | null = null, message: string | null = null): UpdateBadge | null {
+// platform: the main process's (window.emerald.platform). Off Windows a
+// build does not update itself (M9 fix 1025), so available is a newer
+// release whose page the click opens.
+export function updateBadge(current: string, latest: string | null, phase: UpdatePhase, percent: number | null = null, message: string | null = null, platform: string = 'win32'): UpdateBadge | null {
   switch (phase) {
     case 'available':
+      if (platform !== 'win32') {
+        if (latest === null || !isNewerVersion(latest, current)) return null;
+        return { text: 'Update available', title: `emerald ${latest} is out (this is ${current}). Opens the release page; this build does not update itself.` };
+      }
       // Only after a download that failed (M9 fix 625): a newer build
       // downloads on its own, so available is the way to a retry, and the
       // words say what the click does (M9 fix 656).

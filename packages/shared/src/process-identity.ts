@@ -88,15 +88,99 @@ function parseStart(out: string): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-// The epoch milliseconds Windows reports for a pid's creation, or null
+// `ps` with its C locale, so a column never reads in another language;
+// only its stdout is ever parsed, since procps under wsl.exe with no
+// terminal writes "your 131072x1 screen size is bogus" to stderr.
+const PS_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, LC_ALL: 'C' });
+
+// Off Windows a start time comes from `ps -o etime=` (M9 fix 1016): the
+// elapsed time is a count and reads the same on macOS and procps, where
+// `lstart` prints local time in a locale-shaped text whose parse by Date is
+// not specified. The half second centres etime's whole-second truncation
+// inside START_TOLERANCE_MS.
+function startFromElapsed(out: string): number | null {
+  const seconds = parseElapsed(out);
+  return seconds === null ? null : Date.now() - (seconds + 0.5) * 1000;
+}
+
+function elapsedArgs(pid: number): string[] {
+  return ['-o', 'etime=', '-p', String(pid)];
+}
+
+// The epoch milliseconds the system reports for a pid's creation, or null
 // when the process has gone or the read failed.
-export function readStartedAt(pid: number): number | null {
+export function readStartedAt(pid: number, platform: NodeJS.Platform = process.platform): number | null {
   try {
+    if (platform !== 'win32') {
+      const ps = spawnSync('ps', elapsedArgs(pid), { encoding: 'utf8', timeout: 5000, env: PS_ENV() });
+      return startFromElapsed(ps.stdout ?? '');
+    }
     const out = spawnSync('powershell.exe', scriptArgs(startScript(), pid), { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
     return parseStart(out.stdout ?? '');
   } catch {
     return null;
   }
+}
+
+// One row per line of `ps -A -o pid=,ppid=` (M9 fix 1016); a line that is
+// not two integers is skipped.
+export function parsePsTable(out: string): Array<{ pid: number; ppid: number }> {
+  const rows: Array<{ pid: number; ppid: number }> = [];
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (m !== null) rows.push({ pid: Number(m[1]), ppid: Number(m[2]) });
+  }
+  return rows;
+}
+
+// The pid's descendants in post order, children in table order, the pid
+// itself last, so a kill in this order takes the leaves before their
+// parents. The visited set keeps a reused number from looping.
+export function treeOf(pid: number, rows: ReadonlyArray<{ pid: number; ppid: number }>): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>();
+  const walk = (p: number): void => {
+    if (seen.has(p)) return;
+    seen.add(p);
+    for (const r of rows) if (r.ppid === p && r.pid !== p) walk(r.pid);
+    out.push(p);
+  };
+  walk(pid);
+  return out;
+}
+
+// `ps`'s etime, `[[dd-]hh:]mm:ss`, as seconds; anything else is null.
+export function parseElapsed(text: string): number | null {
+  const m = /^\s*(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)\s*$/.exec(text);
+  if (m === null) return null;
+  const [, d, h, min, s] = m;
+  return Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min) * 60 + Number(s);
+}
+
+// Kills pid's whole tree (M9 fix 1016): null on success, else the
+// failure's message. On win32 it is the `taskkill /t /f` the reaper, the
+// CLI and the app each ran, moved here whole. Off it there is no tree kill
+// in the system, so one `ps` reads the table and every descendant, then
+// the pid, gets a SIGKILL; a process gone meanwhile (ESRCH) is fine. When
+// `ps` fails the pid alone is killed and the answer says so.
+export function killTree(pid: number, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === 'win32') {
+    const result = spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
+    return result.error?.message ?? null;
+  }
+  const ps = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 5000, env: PS_ENV() });
+  const psFailed = ps.error !== undefined || ps.status !== 0;
+  const pids = psFailed ? [pid] : treeOf(pid, parsePsTable(ps.stdout ?? ''));
+  let first: string | null = null;
+  for (const p of pids) {
+    try {
+      process.kill(p, 'SIGKILL');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH' && first === null) first = (err as Error).message;
+    }
+  }
+  if (psFailed) return `ps failed: ${ps.error?.message ?? `exit ${String(ps.status)}`}`;
+  return first;
 }
 
 function alive(pid: number): boolean {
@@ -113,9 +197,37 @@ function alive(pid: number): boolean {
 export const systemProbes: ReaperProbes = { alive, startedAt: readStartedAt };
 
 // processIdentity through an async spawn, for the app's main process,
-// which must not block its event loop on a PowerShell.
-export function processIdentityAsync(pid: number, startedAt: number): Promise<ProcessIdentity> {
+// which must not block its event loop on a PowerShell (or, off Windows,
+// a `ps`, M9 fix 1016).
+export function processIdentityAsync(pid: number, startedAt: number, platform: NodeJS.Platform = process.platform): Promise<ProcessIdentity> {
   if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(startedAt) || !alive(pid)) return Promise.resolve('gone');
+  if (platform !== 'win32') {
+    return new Promise((resolve) => {
+      let out = '';
+      let settled = false;
+      const done = (value: ProcessIdentity) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      let child;
+      try {
+        child = spawn('ps', elapsedArgs(pid), { stdio: ['ignore', 'pipe', 'ignore'], env: PS_ENV() });
+      } catch {
+        resolve('gone');
+        return;
+      }
+      const timer = setTimeout(() => {
+        child.kill();
+        done('gone');
+      }, 5000);
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => (out += chunk));
+      child.on('error', () => done('gone'));
+      child.on('close', () => done(judge(startFromElapsed(out), startedAt)));
+    });
+  }
   return new Promise((resolve) => {
     let out = '';
     let settled = false;

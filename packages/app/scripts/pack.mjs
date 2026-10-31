@@ -11,6 +11,10 @@
 // plugin that unpacks the installer predates that filter: it skipped every
 // .exe and .dll silently, and the install had no Emerald.exe. The classic
 // BCJ filter is decodable by the plugin, so the archive is built with it.
+//
+// `--mac` (M9 fix 1027) builds the Apple silicon dmg and zip into
+// release-mac/ instead, on macOS only (electron-builder makes a dmg nowhere
+// else), with node-pty's darwin-arm64 prebuild staged and no 7-Zip filter.
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +24,25 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.resolve(appDir, '..', '..', 'node_modules', 'electron-builder', 'cli.js');
 const dirOnly = process.argv.includes('--dir');
 const arch = process.argv.includes('--x64') ? 'x64' : 'arm64';
+const mac = process.argv.includes('--mac');
+
+if (mac) {
+  if (process.platform !== 'darwin') {
+    console.error('pack.mjs: --mac builds on macOS only (electron-builder makes a dmg nowhere else)');
+    process.exit(1);
+  }
+  if (arch === 'x64') {
+    console.error('pack.mjs: the Mac build is arm64 only');
+    process.exit(1);
+  }
+  stage({ arch: 'arm64', platform: 'darwin' });
+  const m = spawnSync(process.execPath, [cli, '--mac', '--arm64', '--publish', 'never', '-c.directories.output=release-mac', ...(dirOnly ? ['--dir'] : [])], {
+    cwd: appDir,
+    stdio: 'inherit',
+    env: process.env,
+  });
+  process.exit(m.status ?? 1);
+}
 
 stage({ arch });
 // --publish never: the publish block in electron-builder.yml is there for

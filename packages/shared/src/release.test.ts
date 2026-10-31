@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseLatestYml, type LatestManifest } from './feed.ts';
-import { appUpdateTarget, installerName, mergeLatestYml, PUBLIC_RELEASES_REPO, releaseCreateArgs, releaseNotes } from './release.ts';
+import { appUpdateTarget, installerName, macAssetNames, mergeLatestYml, PUBLIC_RELEASES_REPO, releaseCreateArgs, releaseNotes } from './release.ts';
 
 // The feed.test.ts SAMPLE shape, one per arch.
 function manifest(arch: 'arm64' | 'x64', over: Partial<LatestManifest> = {}): LatestManifest {
@@ -17,6 +17,10 @@ function manifest(arch: 'arm64' | 'x64', over: Partial<LatestManifest> = {}): La
 
 test('installerName is electron-builder.yml artifactName', () => {
   assert.equal(installerName('0.1.608', 'x64'), 'Emerald-setup-0.1.608-x64.exe');
+});
+
+test("macAssetNames is electron-builder.yml's mac artifactName, then latest-mac.yml", () => {
+  assert.deepEqual(macAssetNames('0.1.1015'), ['Emerald-0.1.1015-arm64.dmg', 'Emerald-0.1.1015-arm64.zip', 'latest-mac.yml']);
 });
 
 test('mergeLatestYml lists both installers, arm64 first and at the top level', () => {

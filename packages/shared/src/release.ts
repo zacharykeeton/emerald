@@ -20,6 +20,14 @@ export function installerName(version: string, arch: ReleaseArch): string {
   return `Emerald-setup-${version}-${arch}.exe`;
 }
 
+// M9 fix 1029: what .github/workflows/mac.yml uploads to a release once it
+// is published, by electron-builder.yml's mac artifactName: the dmg a
+// person downloads, the zip electron-updater's Mac path reads, and the
+// manifest that names the zip.
+export function macAssetNames(version: string): string[] {
+  return [`Emerald-${version}-arm64.dmg`, `Emerald-${version}-arm64.zip`, 'latest-mac.yml'];
+}
+
 // M9 fix 609: one release carries both arches, and electron-updater reads
 // one latest.yml per release, so the two builds' manifests become one
 // whose files list names both installers. electron-updater picks the

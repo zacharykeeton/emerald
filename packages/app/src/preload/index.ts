@@ -156,6 +156,7 @@ const api: EmeraldApi = {
     act: () => ipcRenderer.invoke('emerald:update-act'),
   },
   info: () => ipcRenderer.invoke('emerald:info'),
+  platform: process.platform,
   setSkin: (skin) => ipcRenderer.send('emerald:skin-set', skin),
   mainSkin: () => ipcRenderer.sendSync('emerald:skin-get'),
   pickFolder: (defaultPath) => ipcRenderer.invoke('emerald:pick-folder', defaultPath),
@@ -163,6 +164,8 @@ const api: EmeraldApi = {
   skills: (folder) => ipcRenderer.invoke('emerald:skills-list', folder),
   hooksStatus: () => ipcRenderer.invoke('emerald:hooks-status'),
   hooksInstall: () => ipcRenderer.invoke('emerald:hooks-install'),
+  pathLink: () => ipcRenderer.invoke('emerald:path-link'),
+  dismissPathLink: () => ipcRenderer.send('emerald:path-link-dismiss'),
   hooksTest: () => ipcRenderer.invoke('emerald:hooks-test'),
   onHooksChanged: (handler) => {
     const listener = (_e: IpcRendererEvent, s: HooksStatus) => handler(s);

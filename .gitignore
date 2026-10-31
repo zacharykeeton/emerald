@@ -5,6 +5,7 @@ out/
 packages/app/stage/
 packages/app/release/
 packages/app/release-x64/
+packages/app/release-mac/
 # Screenshots linked from docs/BACKLOG-INBOX.md (the backlog-inbox skill);
 # kept out of git and so out of the public export, deleted by the drain.
 docs/inbox-shots/

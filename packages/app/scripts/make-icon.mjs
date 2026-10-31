@@ -6,6 +6,9 @@
 // by 4 samples a pixel; 16 takes its colour from the 256 drawing at each
 // pixel centre, hard facet edges, and its alpha from the same 4 by 4
 // coverage, so the stone's outline is soft and nothing else is drawn.
+// It also writes build/icon.png, the same drawing at 1024 px (M9 fix 1027):
+// electron-builder makes the Mac app's icns from a png of at least 512 px,
+// and 1024 is the size a Retina dock draws.
 // Hand-rolled so the repo needs no image tooling; the output is committed
 // and this only reruns when the look changes. Importing it writes nothing
 // (app-icon.test.ts reads the drawing against the committed file). Run:
@@ -241,6 +244,9 @@ function main() {
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, icoOf(ICON_SIZES.map((size) => ({ size, png: pngOf(drawIcon(size), size) }))));
   console.log(`wrote ${out}`);
+  const png = path.join(path.dirname(out), 'icon.png');
+  fs.writeFileSync(png, pngOf(drawIcon(1024), 1024));
+  console.log(`wrote ${png}`);
 }
 
 if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

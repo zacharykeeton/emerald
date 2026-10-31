@@ -36,3 +36,13 @@ test('a failure after a click is shown with its words and a retry', () => {
   assert.equal(e?.text, 'update failed');
   assert.equal(e?.title, 'net::ERR_CONNECTION_REFUSED Click to check again.');
 });
+
+// M9 fix 1025: off Windows a build does not update itself, so available is
+// a newer release whose page the badge opens.
+test('off Windows available reads Update available and says the click opens the release page', () => {
+  const title = 'emerald 0.1.1030 is out (this is 0.1.1015). Opens the release page; this build does not update itself.';
+  assert.deepEqual(updateBadge('0.1.1015', '0.1.1030', 'available', null, null, 'darwin'), { text: 'Update available', title });
+  assert.deepEqual(updateBadge('0.1.1015', '0.1.1030', 'available', null, null, 'linux'), { text: 'Update available', title });
+  assert.equal(updateBadge('0.1.1015', '0.1.1015', 'available', null, null, 'darwin'), null);
+  assert.equal(updateBadge('0.1.1015', '0.1.1030', 'available', null, null)?.text, 'Retry 0.1.1030');
+});

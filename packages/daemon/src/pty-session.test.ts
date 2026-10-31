@@ -126,7 +126,8 @@ test('stampEnv drops an inherited emerald mod from CLAUDE_CODE_PLUGIN_DIRS and k
     fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
   }
-  assert.equal(stampEnv({ PATH: 'x', CLAUDE_CODE_PLUGIN_DIRS: `${mod};${other}` }, { sessionId: 's' })['CLAUDE_CODE_PLUGIN_DIRS'], other);
+  // Claude Code splits the variable on path.delimiter (M9 fix 1018).
+  assert.equal(stampEnv({ PATH: 'x', CLAUDE_CODE_PLUGIN_DIRS: [mod, other].join(path.delimiter) }, { sessionId: 's' })['CLAUDE_CODE_PLUGIN_DIRS'], other);
   const alone = stampEnv({ PATH: 'x', claude_code_plugin_dirs: mod }, { sessionId: 's' });
   assert.deepEqual(Object.keys(alone).filter((k) => k.toUpperCase() === 'CLAUDE_CODE_PLUGIN_DIRS'), [], 'no such key in any case');
 });
@@ -266,7 +267,11 @@ test('a spawn size past the ceiling is clamped by the constructor, and the floor
   assert.deepEqual(clampPtySize(80.7, 24.2), { cols: 80, rows: 24 });
 });
 
-test('spawns powershell, captures its output and exit code', async () => {
+// A test that spawns PowerShell or reads ConPTY runs on Windows alone (M9
+// fix 1018); its assertions are as they were.
+const windowsOnly = { skip: process.platform !== 'win32' };
+
+test('spawns powershell, captures its output and exit code', windowsOnly, async () => {
   const s = PtySession.spawn({
     file: 'powershell.exe',
     args: ['-NoProfile', '-NoLogo', '-Command', 'echo hi'],
@@ -293,7 +298,7 @@ test('spawns powershell, captures its output and exit code', async () => {
   assert.doesNotThrow(() => s.kill());
 });
 
-test('a stamped env var is visible inside the spawned shell', async () => {
+test('a stamped env var is visible inside the spawned shell', windowsOnly, async () => {
   const s = PtySession.spawn({
     file: 'powershell.exe',
     args: ['-NoProfile', '-NoLogo', '-Command', 'echo ("ID=" + $env:EMERALD_SESSION_ID)'],
@@ -345,7 +350,7 @@ test.after(removeTemps);
 const MARK_A = /\x1b\]133;A\x07/;
 const MARK_C = /\x1b\]133;C\x07/;
 
-test("a profile's script-block Enter runs after the wrapper's C mark (fix 505)", async () => {
+test("a profile's script-block Enter runs after the wrapper's C mark (fix 505)", windowsOnly, async () => {
   const { s, out, waitFor } = await shellWithProfile(
     "Set-PSReadLineKeyHandler -Key Enter -ScriptBlock { [Console]::Write('[profile-enter]'); [Microsoft.PowerShell.PSConsoleReadLine]::ValidateAndAcceptLine() }\r\n",
   );
@@ -361,7 +366,7 @@ test("a profile's script-block Enter runs after the wrapper's C mark (fix 505)",
   }
 });
 
-test("a profile's named Enter function is called after the C mark (fix 505)", async () => {
+test("a profile's named Enter function is called after the C mark (fix 505)", windowsOnly, async () => {
   const { s, out, waitFor } = await shellWithProfile('Set-PSReadLineKeyHandler -Key Enter -Function ValidateAndAcceptLine\r\n');
   try {
     await waitFor(MARK_A, 0, 20_000);
@@ -463,7 +468,7 @@ test('a row with no prompt or no dim run has no ghost, and nor does the exit fra
 
 // The probe of whether ConPTY passes SGR 2 and 7 through to the headless
 // terminal; a real Claude Code on Windows draws through ConPTY too.
-test('a real ConPTY passes the dim run through (fix 779)', async () => {
+test('a real ConPTY passes the dim run through (fix 779)', windowsOnly, async () => {
   const s = PtySession.spawn({
     file: 'powershell.exe',
     args: ['-NoProfile', '-NoLogo', '-NoExit', '-Command', '$null'],

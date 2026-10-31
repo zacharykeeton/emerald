@@ -68,6 +68,31 @@ export interface UpdaterDeps {
   // called once and only when there is a feed, since the module builds
   // its NsisUpdater on first touch and a dev build never needs it.
   updater: () => UpdaterLike;
+  // Whether this build updates itself (M9 fix 1025): absent is true; false
+  // is a Mac build, ad-hoc signed, which Squirrel.Mac will not update. Such
+  // a build checks, never downloads, and its badge opens the release page.
+  inApp?: boolean;
+  // Opens a version's release page, for a build that does not update itself.
+  openRelease?: (version: string) => void;
+}
+
+// The page a build that does not update itself sends its badge to (M9 fix
+// 1025).
+export function releasePageUrl(version: string): string {
+  return `https://github.com/${GITHUB_RELEASES.owner}/${GITHUB_RELEASES.repo}/releases/tag/v${version}`;
+}
+
+// Whether a check failed because the latest release has no latest-mac.yml
+// yet (M9 fix 1025): release.mjs publishes the Windows assets first and the
+// Mac workflow uploads its manifest 15 to 30 minutes later, or never when
+// its smoke fails. electron-updater 6.8.9 words it two ways with one code:
+// the github provider's `Cannot find latest-mac.yml in the latest release
+// artifacts` (GitHubProvider.js:125) and the generic one's `Cannot find
+// channel "latest-mac.yml" update info` (GenericProvider.js:27).
+export function isNoMacManifest(err: unknown): boolean {
+  if (err !== null && typeof err === 'object' && (err as { code?: unknown }).code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /Cannot find (channel ")?latest-mac\.yml/.test(message);
 }
 
 // The slice of electron-updater's AppUpdater this module uses, so a test
@@ -141,6 +166,10 @@ export function createUpdater(deps: UpdaterDeps): Updater {
   // a failure is shown to them; a check that fails on its own (no feed
   // served, the machine offline) is logged and the badge stays away.
   let asked = false;
+  // The version a build that does not update itself last said is out (M9
+  // fix 1025), so a check every four hours does not say it again.
+  let announced: string | null = null;
+  const inApp = deps.inApp !== false;
 
   const set = (next: Partial<UpdateState> & { phase: UpdatePhase }) => {
     // A phase that leaves checking is the check's answer, whatever it
@@ -169,7 +198,9 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     };
     updater.setFeedURL(feed);
     updater.on('checking-for-update', () => {
-      if (state.phase === 'idle' || state.phase === 'error') set({ phase: 'checking' });
+      // A build that does not update itself rests on available, so a check
+      // from there is counted too (M9 fix 1025).
+      if (state.phase === 'idle' || state.phase === 'error' || (!inApp && state.phase === 'available')) set({ phase: 'checking' });
     });
     updater.on('update-available', (info: { version?: string }) => {
       const latest = typeof info.version === 'string' ? info.version : null;
@@ -180,6 +211,16 @@ export function createUpdater(deps: UpdaterDeps): Updater {
         // A downloaded build is never dropped by a check with nothing newer.
         if (state.phase === 'ready') return;
         set({ phase: 'idle', latest, message: upToDate() });
+        return;
+      }
+      // A build that does not update itself (M9 fix 1025) stops at
+      // available: the badge opens the release page, nothing downloads.
+      if (!inApp) {
+        if (announced !== latest) {
+          announced = latest;
+          log(`updater: ${latest} is available (this is ${deps.current}); this build does not update itself, the badge opens its release page`);
+        }
+        set({ phase: 'available', latest, percent: null, message: null });
         return;
       }
       // One download at a time, whatever the version.
@@ -212,6 +253,16 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     });
     updater.on('error', (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
+      // A release with no Mac build yet is no update, quietly, asked or
+      // not (M9 fix 1025): a Mac build an earlier check found stays the one
+      // the badge opens, and otherwise the hint says why there is nothing.
+      if (!inApp && isNoMacManifest(err)) {
+        asked = false;
+        log('updater: the latest release has no latest-mac.yml yet; no update for this build');
+        if (state.latest !== null && isNewerVersion(state.latest, deps.current)) set({ phase: 'available', message: null });
+        else set({ phase: 'idle', message: `checked ${clock(now())}, no Mac build in the latest release yet` });
+        return;
+      }
       // A check that could not reach the feed at all is the plain case on
       // a box that only ever installed by hand (M9 fix 242): the badge
       // stays away and the menu item's hint says `no feed at <host>`,
@@ -285,6 +336,15 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     async act() {
       if (updater === null) return;
       if (state.phase === 'available') {
+        if (!inApp) {
+          // M9 fix 1025: the release page, never a download.
+          const v = state.latest;
+          if (v !== null) {
+            log(`updater: opening the release page of ${v}`);
+            deps.openRelease?.(v);
+          }
+          return;
+        }
         await download(true, state.latest);
         return;
       }

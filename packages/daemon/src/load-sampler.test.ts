@@ -5,7 +5,8 @@ import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LoadSampler, StubReplay, indexSweep, parseStub, parseSweepLine, readTree, sweepScript, treePids, treeReading, walkTree } from './load-sampler.ts';
+import { LoadSampler, SWEEP_END, StubReplay, indexSweep, parsePsCpu, parsePsSweep, parseStub, parseSweepLine, readTree, sweepScript, treePids, treeReading, unixSweepScript, walkTree } from './load-sampler.ts';
+import type { TreeReading } from './load-sampler.ts';
 import type { ProcRow, Sweep } from './load-sampler.ts';
 import { removeWithPatience } from '@emerald/shared/test-temp';
 
@@ -154,7 +155,7 @@ test('LoadSampler writes the sweep script to scriptPath before its child runs it
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-load-'));
   const scriptPath = path.join(dir, 'load-sweep.ps1');
   const log = { info: () => {}, warn: () => {}, error: () => {} } as unknown as import('./log.ts').Logger;
-  const sampler = new LoadSampler({ log, tickMs: 60_000, method: 'gp', scriptPath, targets: () => [], onTick: () => {} });
+  const sampler = new LoadSampler({ log, tickMs: 60_000, method: 'gp', scriptPath, platform: 'win32', targets: () => [], onTick: () => {} });
   sampler.start();
   try {
     assert.ok(fs.existsSync(scriptPath), 'the script file');
@@ -175,6 +176,7 @@ test('LoadSampler restarts a sweep child that stays alive and stops writing (M9 
     log,
     tickMs: 100,
     restartMs: 50,
+    platform: 'win32',
     spawnSweep: () => {
       const c = spawn(process.execPath, ['-e', hung], { stdio: ['ignore', 'pipe', 'pipe'] });
       children.push(c);
@@ -239,4 +241,70 @@ test('StubReplay hands each named session its next entry per tick, stops at the 
   assert.deepEqual(t4.get('A'), { sample: { at: 4000, cpu: 30, rss: 120 }, names: [] });
   assert.equal(t4.has('B'), false, 'no longer named');
   assert.equal(replay.tick(null, targets, 5000).size, 0, 'no file, nothing');
+});
+
+// M9 fix 1020: the Unix sweep. The shapes the two ps print: procps's on
+// the WSL box, and macOS's full-path comm with spaces and a login shell's
+// leading dash.
+const PROCPS_LINE = '      1       0 11776 00:00:02 systemd';
+const MAC_LINES = ['  501   1 20480   0:01.23 /Applications/Visual Studio Code.app/Contents/MacOS/Electron', '  777 501  4096   0:00.05 -zsh'];
+
+test('parsePsCpu reads procps and macOS times to ms, and -1 for anything else (M9 fix 1020)', () => {
+  assert.equal(parsePsCpu('00:00:02'), 2000);
+  assert.equal(parsePsCpu('1-02:03:04'), 93_784_000);
+  assert.equal(parsePsCpu('0:01.23'), 1230);
+  assert.equal(parsePsCpu('61:02.34'), 3_662_340);
+  assert.equal(parsePsCpu('x'), -1);
+});
+
+test('parsePsSweep reads both shapes, rss in bytes, the names bare, every start unknown (M9 fix 1020)', () => {
+  const s = parsePsSweep([PROCPS_LINE, ...MAC_LINES, 'garbage line'], 42);
+  assert.equal(s.at, 42);
+  assert.deepEqual(s.rows, [
+    { pid: 1, ppid: 0, rss: 11776 * 1024, cpuMs: 2000, name: 'systemd', startMs: -1 },
+    { pid: 501, ppid: 1, rss: 20480 * 1024, cpuMs: 1230, name: 'Electron', startMs: -1 },
+    { pid: 777, ppid: 501, rss: 4096 * 1024, cpuMs: 50, name: 'zsh', startMs: -1 },
+  ]);
+});
+
+test("two ps sweeps 4 s apart whose root's time moved 2 s read 50 percent (M9 fix 1020)", () => {
+  const a = parsePsSweep(['  501   1 20480   0:01.00 /bin/zsh'], 1000);
+  const b = parsePsSweep(['  501   1 20480   0:03.00 /bin/zsh'], 5000);
+  assert.equal(treeReading(a, b, 501)?.sample.cpu, 50);
+});
+
+test('unixSweepScript loops ps every tick, ending each block with the mark (M9 fix 1020)', () => {
+  const s = unixSweepScript(100);
+  assert.ok(s.includes('sleep 0.1'), s);
+  assert.ok(s.includes('ps -ww -A -o pid=,ppid=,rss=,time=,comm='), s);
+  assert.ok(s.includes(`echo ${SWEEP_END}`), s);
+  assert.ok(unixSweepScript(4000).includes('sleep 4;'), 'whole seconds as JS prints them');
+  assert.ok(unixSweepScript(1).includes('sleep 0.05'), 'floored');
+});
+
+test('off Windows a child writing ps blocks ended by the mark gives a reading for the root (M9 fix 1020)', async () => {
+  const later = MAC_LINES.map((l) => l.replace('0:01.23', '0:03.23'));
+  const blocks = [[...MAC_LINES, SWEEP_END].join('\n') + '\n', [...later, SWEEP_END].join('\n') + '\n'];
+  const code = 'const b = JSON.parse(process.argv.at(-1)); process.stdout.write(b[0]); setTimeout(() => { process.stdout.write(b[1]); setInterval(() => {}, 1000); }, 200);';
+  const log = { info: () => {}, warn: () => {}, error: () => {} } as unknown as import('./log.ts').Logger;
+  const ticks: Map<string, TreeReading>[] = [];
+  const sampler = new LoadSampler({
+    log,
+    tickMs: 60_000,
+    platform: 'linux',
+    spawnSweep: () => spawn(process.execPath, ['-e', code, JSON.stringify(blocks)], { stdio: ['ignore', 'pipe', 'pipe'] }),
+    targets: () => [{ id: 'S', name: 'smoke', pid: 501 }],
+    onTick: (r) => ticks.push(r),
+  });
+  sampler.start();
+  try {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && ticks.length === 0) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(ticks.length, 1, 'one reading, off the second block');
+    const reading = ticks[0]!.get('S');
+    assert.ok(reading !== undefined && reading.sample.cpu > 0, JSON.stringify(reading));
+    assert.ok(reading.names.includes('zsh'), reading.names.join(','));
+  } finally {
+    sampler.stop();
+  }
 });

@@ -56,11 +56,15 @@ function shimFolder(opts: { script: boolean; node: boolean; text?: string }): st
 // A home with no .local\bin, so this box's real claude.exe stays hidden.
 const emptyHome = folder();
 
+// npm's shim names its script with backslashes, which resolve to a file
+// on Windows alone; a test that resolves one runs there (M9 fix 1019).
+const windowsOnly = { skip: process.platform !== 'win32' };
+
 function launcher(dirs: string[], home = emptyHome): ClaudeLauncher {
-  return new ClaudeLauncher({ env: { PATH: dirs.join(path.delimiter), PATHEXT: '.EXE;.CMD;.BAT' }, home });
+  return new ClaudeLauncher({ env: { PATH: dirs.join(path.delimiter), PATHEXT: '.EXE;.CMD;.BAT' }, home, platform: 'win32' });
 }
 
-test('a shim with node.exe beside it runs that node on the script', () => {
+test('a shim with node.exe beside it runs that node on the script', windowsOnly, () => {
   const dir = shimFolder({ script: true, node: true });
   const cmd = launcher([dir]).command(['--resume', 'a&b']);
   assert.deepEqual(cmd, { file: path.join(dir, 'node.exe'), args: [path.join(dir, SCRIPT_REL), '--resume', 'a&b'] });
@@ -73,7 +77,7 @@ test("claude is found on the session's own environment when the launch hands one
   assert.equal(cmd.file, path.join(dir, 'claude.exe'));
 });
 
-test('with no node.exe beside the shim, the node on PATH runs the script', () => {
+test('with no node.exe beside the shim, the node on PATH runs the script', windowsOnly, () => {
   const dir = shimFolder({ script: true, node: false });
   const nodeDir = folder();
   fs.writeFileSync(path.join(nodeDir, 'node.exe'), '');
@@ -106,19 +110,52 @@ test("a claude.exe under the home's .local\\bin wins over the shim", () => {
   assert.deepEqual(cmd, { file: path.join(home, '.local', 'bin', 'claude.exe'), args: ['a'] });
 });
 
-test('with the mod, --plugin-dir comes before the session arguments on the native and the resolved shim paths (M9 fix 725)', () => {
+test('with the mod, --plugin-dir comes before the session arguments on the native and the resolved shim paths (M9 fix 725)', windowsOnly, () => {
   const home = folder();
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(home, '.local', 'bin', 'claude.exe'), '');
-  const native = new ClaudeLauncher({ env: { PATH: '' }, home, modDir: 'C:\\m' }).command(['--resume', 'x']);
+  const native = new ClaudeLauncher({ env: { PATH: '' }, home, modDir: 'C:\\m', platform: 'win32' }).command(['--resume', 'x']);
   assert.deepEqual(native.args, ['--plugin-dir', 'C:\\m', '--resume', 'x']);
   const dir = shimFolder({ script: true, node: true });
-  const shim = new ClaudeLauncher({ env: { PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' }, home: emptyHome, modDir: 'C:\\m' }).command(['--resume', 'x']);
+  const shim = new ClaudeLauncher({ env: { PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' }, home: emptyHome, modDir: 'C:\\m', platform: 'win32' }).command(['--resume', 'x']);
   assert.deepEqual(shim.args, [path.join(dir, SCRIPT_REL), '--plugin-dir', 'C:\\m', '--resume', 'x']);
   // M9 fix 741: the mod's channel command rides the launch's own env.
   const channel = { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve('C:\\m', '..', 'dist', 'main.js'), 'mod-channel']) };
   assert.deepEqual(native.env, channel);
   assert.deepEqual(shim.env, channel);
+});
+
+// M9 fix 1019: off Windows claude is the native installer's ~/.local/bin
+// link or a bare claude on the PATH, run as it is.
+function exeIn(dir: string, name: string): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, '');
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+function unixLauncher(dirs: string[], home = emptyHome): ClaudeLauncher {
+  return new ClaudeLauncher({ env: { PATH: dirs.join(path.delimiter) }, home, platform: 'linux' });
+}
+
+test('off Windows a claude on the PATH runs as it is (M9 fix 1019)', () => {
+  const dir = folder();
+  const claude = exeIn(dir, 'claude');
+  assert.deepEqual(unixLauncher([dir]).command(['--resume', 'x']), { file: claude, args: ['--resume', 'x'] });
+});
+
+test("off Windows a claude under the home's .local/bin wins over the PATH's (M9 fix 1019)", () => {
+  const dir = folder();
+  exeIn(dir, 'claude');
+  const home = folder();
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+  const local = exeIn(path.join(home, '.local', 'bin'), 'claude');
+  assert.equal(unixLauncher([dir], home).command([]).file, local);
+});
+
+test('off Windows a claude.cmd alone is not found, and the throw names claude (M9 fix 1019)', () => {
+  const dir = shimFolder({ script: true, node: true });
+  assert.throws(() => unixLauncher([dir]).command([]), { message: 'claude not found in ~/.local/bin or on PATH' });
 });
 
 test("resolveClaudeModDir answers off under EMERALD_CLAUDE_MOD=0 and the repo's cli/mod otherwise (M9 fix 725)", () => {

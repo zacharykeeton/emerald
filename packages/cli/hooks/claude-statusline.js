@@ -1,6 +1,7 @@
 'use strict';
 // Claude Code's status line command, installed by emmer hooks install as
-// ~/.emerald/hooks/claude-statusline.js and run through claude-statusline.cmd.
+// ~/.emerald/hooks/claude-statusline.js and run through claude-statusline.cmd,
+// or claude-statusline.sh off Windows (M9 fix 1021).
 // Claude Code hands it JSON on stdin after every turn: the model and how
 // full the context window is. Two things happen with it, in this order. It
 // goes to emmerd's hook sink as a StatusLine event, with the session id and
@@ -138,6 +139,8 @@ function postUnhosted(payload, event) {
 // installed is written for bash (Orca's is an `if [ -z ...` one-liner) and
 // cmd.exe cannot parse it.
 function previousShell(command) {
+  // Off Windows Claude Code runs a status line under the plain shell (M9 fix 1021).
+  if (process.platform !== 'win32') return { exe: '/bin/sh', args: ['-c', command], verbatim: false };
   const bash = findBash();
   if (bash !== null) return { exe: bash, args: ['-c', command], verbatim: false };
   return { exe: process.env['COMSPEC'] || 'cmd.exe', args: ['/d', '/s', '/c', `"${command}"`], verbatim: true };
@@ -173,8 +176,11 @@ function passThrough(body) {
     // of node processes, each running the next (M9 fix 468: an install
     // that did not know a backslash-spelled entry as its own kept it as
     // the previous one).
-    const self = path.join(__dirname, 'claude-statusline.cmd').replace(/\\/g, '/').toLowerCase();
-    if (previous.command.replace(/\\/g, '/').toLowerCase().includes(self)) return resolve(0);
+    // The .sh wrapper beside it is this wrapper too, off Windows (M9 fix 1021).
+    const had = previous.command.replace(/\\/g, '/').toLowerCase();
+    for (const name of ['claude-statusline.cmd', 'claude-statusline.sh']) {
+      if (had.includes(path.join(__dirname, name).replace(/\\/g, '/').toLowerCase())) return resolve(0);
+    }
     const shell = previousShell(previous.command);
     let child;
     try {

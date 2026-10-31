@@ -6,7 +6,7 @@ import type { TaskbarWindow } from './taskbar-policy.ts';
 // M9 fix 560: the taskbar's attention policy, pinned over a recording
 // window and a fake timer.
 
-function setup(opts: { held?: boolean; windows?: boolean } = {}) {
+function setup(opts: { held?: boolean; windows?: boolean; dock?: boolean } = {}) {
   const calls: string[] = [];
   const logs: string[] = [];
   const pulses: Array<{ ms: number; fn: () => void; stopped: boolean }> = [];
@@ -23,6 +23,7 @@ function setup(opts: { held?: boolean; windows?: boolean } = {}) {
   const policy = createTaskbarPolicy(() => win, {
     held: opts.held ?? false,
     windows: opts.windows ?? true,
+    ...(opts.dock === undefined ? {} : { dock: opts.dock }),
     log: (m) => (m.startsWith('taskbar progress') ? progress : logs).push(m),
     every: (ms, fn) => {
       const p = { ms, fn, stopped: false };
@@ -90,6 +91,28 @@ test('taskbar policy: off Windows the flash alone, no overlay and no pulse', () 
   s.policy.set({ wanting: 2, flash: true, working: 0, live: 0 });
   assert.deepEqual(s.calls, ['flash true']);
   assert.equal(s.pulses.length, 0);
+});
+
+test('taskbar policy: on the dock of a Mac the count on each change and the flash, no pulse, bar or tooltip (M9 fix 1024)', () => {
+  const s = setup({ windows: false, dock: true });
+  s.policy.set({ wanting: 2, flash: true, working: 1, live: 3 });
+  assert.deepEqual(s.calls, ['flash true', 'overlay 2 bright']);
+  assert.equal(s.policy.pulsing(), false);
+  assert.equal(s.pulses.length, 0);
+  s.calls.length = 0;
+  s.policy.set({ wanting: 2, flash: false, working: 1, live: 3 });
+  assert.deepEqual(s.calls, [], 'a repeat of the count does nothing');
+  s.policy.set({ wanting: 0, flash: false, working: 0, live: 3 });
+  assert.deepEqual(s.calls, ['flash false', 'overlay none']);
+  assert.deepEqual(s.bars, [], 'no bar and no tooltip on the dock');
+});
+
+test('taskbar policy: held on a Mac too, the dock never touched and the held lines as on Windows (M9 fix 1024)', () => {
+  const s = setup({ held: true, windows: false, dock: true });
+  s.policy.set({ wanting: 2, flash: true, working: 0, live: 2 });
+  s.policy.set({ wanting: 0, flash: false, working: 0, live: 2 });
+  assert.deepEqual(s.calls, []);
+  assert.deepEqual(s.logs, ['taskbar held under a private EMERALD_HOME: 2 wanting, flash', 'taskbar held under a private EMERALD_HOME: cleared']);
 });
 
 test('drawBadge: the text caps at 99, and the dim frame is half alpha', () => {

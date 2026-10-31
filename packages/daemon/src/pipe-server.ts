@@ -1,7 +1,8 @@
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, updateText } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, shellIdsFor, updateText } from '@emerald/shared';
 import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
@@ -204,7 +205,58 @@ export interface ClaimedPipe {
   held: net.Socket[];
 }
 
-export function claimPipe(pipePath: string): Promise<ClaimedPipe> {
+// How long the stale-socket probe waits for a connect to answer (M9 fix
+// 1015) before it leaves the file alone.
+export const STALE_PROBE_MS = 1000;
+
+// Off Windows the pipe is a Unix socket file, and a daemon killed hard
+// (SIGKILL, a crash) leaves it behind: the next listen fails EADDRINUSE and a
+// client's connect fails ECONNREFUSED (M9 fix 1015). A socket file whose
+// connect is refused is a dead daemon's, so it is unlinked; one that
+// answers, times out or fails any other way, or a path that is not a
+// socket, is left, and the listen after this then fails EADDRINUSE as the
+// single-instance check. The known limit: two daemons starting in the same
+// instant on a stale file can both unlink and both listen. The app's
+// autostart backoff and the CLI's one start make that rare, and no lock
+// file is added for it.
+export async function clearStaleSocket(pipePath: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  if (platform === 'win32') return;
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(pipePath);
+  } catch {
+    return;
+  }
+  if (!stat.isSocket()) return;
+  const refused = await new Promise<boolean>((resolve) => {
+    const socket = net.createConnection(pipePath);
+    const done = (answer: boolean) => {
+      clearTimeout(timer);
+      socket.removeAllListeners();
+      socket.on('error', () => {});
+      socket.destroy();
+      resolve(answer);
+    };
+    const timer = setTimeout(() => done(false), STALE_PROBE_MS);
+    socket.once('connect', () => done(false));
+    socket.once('error', (err: NodeJS.ErrnoException) => done(err.code === 'ECONNREFUSED'));
+  });
+  if (!refused) return;
+  try {
+    fs.unlinkSync(pipePath);
+  } catch {
+    // Gone already, or not ours to remove: the listen says which.
+  }
+}
+
+// The socket is the user's alone off Windows (M9 fix 1015); a named pipe's
+// rights are Windows' own.
+function restrictSocket(pipePath: string): void {
+  if (process.platform !== 'win32') fs.chmodSync(pipePath, 0o600);
+}
+
+export async function claimPipe(pipePath: string): Promise<ClaimedPipe> {
+  await clearStaleSocket(pipePath);
   return new Promise((resolve, reject) => {
     const held: net.Socket[] = [];
     const server = net.createServer((socket) => {
@@ -220,6 +272,7 @@ export function claimPipe(pipePath: string): Promise<ClaimedPipe> {
     server.once('error', reject);
     server.listen(pipePath, () => {
       server.off('error', reject);
+      restrictSocket(pipePath);
       resolve({ server, held });
     });
   });
@@ -331,7 +384,8 @@ export class PipeServer {
 
   // Rejects with EADDRINUSE when another daemon already owns the pipe, which
   // is the single-instance check.
-  listen(): Promise<void> {
+  async listen(): Promise<void> {
+    await clearStaleSocket(this.opts.pipePath);
     const server = net.createServer((socket) => this.onConnection(socket));
     this.server = server;
     return new Promise((resolve, reject) => {
@@ -339,6 +393,7 @@ export class PipeServer {
       server.once('error', onError);
       server.listen(this.opts.pipePath, () => {
         server.off('error', onError);
+        restrictSocket(this.opts.pipePath);
         server.on('error', (err) => this.opts.log.error('pipe server error', err));
         resolve();
       });
@@ -966,7 +1021,11 @@ class ClientConnection {
         if (kind !== 'claude' && kind !== 'shell') throw new SessionError('bad-request', `unknown session kind ${kind}`);
         // M9 fix 624: one of the hello's shells, for a plain shell alone.
         if (req.shell !== undefined) {
-          if (!isShellId(req.shell)) throw new SessionError('bad-request', `unknown shell ${String(req.shell)}; one of pwsh, powershell, gitbash, cmd`);
+          // M9 fix 1018: the ids this platform runs, so a Mac takes zsh and
+          // refuses pwsh, and Windows reads as before.
+          if (!isShellId(req.shell) || !shellIdsFor(process.platform).includes(req.shell)) {
+            throw new SessionError('bad-request', `unknown shell ${String(req.shell)}; one of ${shellIdsFor(process.platform).join(', ')}`);
+          }
           if (kind === 'claude') throw new SessionError('bad-request', 'shell is for kind shell, not claude');
         }
         const spawnReq: SpawnRequest = {

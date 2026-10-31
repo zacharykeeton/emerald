@@ -75,14 +75,18 @@ export async function runHookTest(scriptDest: string, deps: HookTestDeps = realD
 // The doubled quotes survive /s for a path with spaces and parentheses.
 // Asynchronous, never spawnSync, so a sink in the same process can answer;
 // killed after the timeout Claude Code gives the entry.
+// A shell script off Windows (M9 fix 1021) runs under sh, as its settings
+// entry does.
 function runScript(scriptDest: string, payload: string, env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve) => {
-    const child = spawn(process.env['COMSPEC'] ?? 'cmd.exe', ['/d', '/s', '/c', `""${scriptDest}""`], {
-      windowsVerbatimArguments: true,
-      env,
-      windowsHide: true,
-      stdio: ['pipe', 'ignore', 'ignore'],
-    });
+    const child = scriptDest.endsWith('.sh')
+      ? spawn('sh', [scriptDest], { env, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] })
+      : spawn(process.env['COMSPEC'] ?? 'cmd.exe', ['/d', '/s', '/c', `""${scriptDest}""`], {
+          windowsVerbatimArguments: true,
+          env,
+          windowsHide: true,
+          stdio: ['pipe', 'ignore', 'ignore'],
+        });
     const timer = setTimeout(() => child.kill(), HOOK_TIMEOUT_SECONDS * 1000);
     const done = () => {
       clearTimeout(timer);

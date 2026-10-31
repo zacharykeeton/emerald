@@ -96,3 +96,18 @@ test('drawIcon at 256 is the flush gem, full size, on a clear ground', () => {
   assert.equal(pixel(256, 0, 0).slice(6), '00', 'clear at the corner');
   assert.equal(pixel(256, 8, 128).slice(6), '00', 'clear beside the gem');
 });
+
+// M9 fix 1027: the Mac build's icon. Read by its header and two pixels
+// rather than compared to drawIcon(1024) byte for byte, since drawing 1024 px
+// costs the suite about 12 s.
+test('build/icon.png is the gem at 1024 px on a clear ground', () => {
+  const png = fs.readFileSync(path.resolve(import.meta.dirname, '..', '..', 'build', 'icon.png'));
+  assert.equal(png.subarray(12, 16).toString('ascii'), 'IHDR');
+  assert.equal(png.readUInt32BE(16), 1024, 'width');
+  assert.equal(png.readUInt32BE(20), 1024, 'height');
+  assert.equal(png[24], 8, 'bit depth');
+  assert.equal(png[25], 6, 'colour type RGBA');
+  const px = decodePng(png, 1024);
+  assert.equal(px[3], 0, 'clear at the corner');
+  assert.equal(px[(512 * 1024 + 512) * 4 + 3], 255, "opaque at the gem's centre");
+});

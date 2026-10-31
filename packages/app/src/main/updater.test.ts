@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
-import { createUpdater, isNoFeedError, updateFeedSpec } from './updater.ts';
+import { createUpdater, isNoFeedError, isNoMacManifest, releasePageUrl, updateFeedSpec } from './updater.ts';
 import type { FeedSpec, UpdaterLike } from './updater.ts';
 import type { UpdateState } from '../renderer/src/update-model.ts';
 
@@ -39,7 +39,7 @@ class FakeUpdater extends EventEmitter implements UpdaterLike {
   }
 }
 
-function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0.0.1:7420/' }, intervalMs = 4 * 3600 * 1000) {
+function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0.0.1:7420/' }, intervalMs = 4 * 3600 * 1000, extra: { inApp?: boolean; openRelease?: (v: string) => void } = {}) {
   const fake = new FakeUpdater();
   const pushed: UpdateState[] = [];
   const log: string[] = [];
@@ -62,6 +62,7 @@ function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0
       order.push(`posted ${version}`);
     },
     updater: () => fake,
+    ...extra,
   });
   return { fake, pushed, log, order, updater };
 }
@@ -349,4 +350,84 @@ test('a feed lost mid-download is never a badge left downloading: available on i
   assert.equal(updater.state().phase, 'error');
   assert.equal(updater.state().message, 'net::ERR_CONNECTION_REFUSED');
   assert.deepEqual(fake.calls, ['download', 'download']);
+});
+
+// M9 fix 1025: a Mac build is ad-hoc signed and does not update itself.
+function macSetup() {
+  const opened: string[] = [];
+  const s = setup({ provider: 'github', owner: 'zacharykeeton', repo: 'emerald' }, 4 * 3600 * 1000, { inApp: false, openRelease: (v) => opened.push(v) });
+  return { ...s, opened };
+}
+
+const noMacManifest = () =>
+  Object.assign(new Error('Cannot find latest-mac.yml in the latest release artifacts (https://github.com/zacharykeeton/emerald/releases/download/v0.1.2000/latest-mac.yml): HttpError: 404'), {
+    code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+  });
+
+test('a build that does not update itself: a newer build reads available, nothing downloads, the line once over two checks (M9 fix 1025)', () => {
+  const { fake, updater, log } = macSetup();
+  fake.emit('checking-for-update');
+  fake.emit('update-available', { version: '0.1.2000' });
+  assert.equal(updater.state().phase, 'available');
+  assert.equal(updater.state().latest, '0.1.2000');
+  assert.equal(updater.state().checks, 1);
+  // A check from available passes through checking and counts.
+  fake.emit('checking-for-update');
+  assert.equal(updater.state().phase, 'checking');
+  fake.emit('update-available', { version: '0.1.2000' });
+  assert.equal(updater.state().phase, 'available');
+  assert.equal(updater.state().checks, 2);
+  assert.deepEqual(fake.calls, [], 'no download, ever');
+  const line = 'updater: 0.1.2000 is available (this is 0.1.228); this build does not update itself, the badge opens its release page';
+  assert.equal(log.filter((l) => l === line).length, 1);
+});
+
+test('a build that does not update itself: the click opens the release page and downloads nothing (M9 fix 1025)', async () => {
+  const { fake, updater, log, opened } = macSetup();
+  fake.emit('checking-for-update');
+  fake.emit('update-available', { version: '0.1.2000' });
+  await updater.act();
+  assert.deepEqual(opened, ['0.1.2000']);
+  assert.deepEqual(fake.calls, []);
+  assert.equal(updater.state().phase, 'available');
+  assert.ok(log.includes('updater: opening the release page of 0.1.2000'));
+});
+
+test('a release with no latest-mac.yml yet is no update, quietly, asked or not (M9 fix 1025)', async () => {
+  const { fake, updater, log } = macSetup();
+  // On its own.
+  fake.emit('checking-for-update');
+  fake.emit('error', noMacManifest());
+  assert.deepEqual([updater.state().phase, updater.state().message], ['idle', 'checked 18:43, no Mac build in the latest release yet']);
+  // Asked.
+  await updater.act();
+  assert.equal(updater.state().phase, 'checking');
+  fake.emit('error', noMacManifest());
+  assert.deepEqual([updater.state().phase, updater.state().message], ['idle', 'checked 18:43, no Mac build in the latest release yet']);
+  assert.equal(log.filter((l) => l === 'updater: the latest release has no latest-mac.yml yet; no update for this build').length, 2);
+});
+
+test('a missing latest-mac.yml after an earlier find leaves that build available (M9 fix 1025)', () => {
+  const { fake, updater } = macSetup();
+  fake.emit('checking-for-update');
+  fake.emit('update-available', { version: '0.1.2000' });
+  fake.emit('checking-for-update');
+  fake.emit('error', noMacManifest());
+  assert.deepEqual([updater.state().phase, updater.state().latest], ['available', '0.1.2000']);
+});
+
+test('the same error on a build that updates itself takes the path it always took (M9 fix 1025)', async () => {
+  const { fake, updater } = setup({ provider: 'github', owner: 'zacharykeeton', repo: 'emerald' });
+  await updater.act();
+  fake.emit('error', noMacManifest());
+  assert.equal(updater.state().phase, 'error');
+});
+
+test('isNoMacManifest and releasePageUrl (M9 fix 1025)', () => {
+  assert.equal(isNoMacManifest(noMacManifest()), true);
+  assert.equal(isNoMacManifest(new Error('Cannot find channel "latest-mac.yml" update info: HttpError: 404')), true);
+  assert.equal(isNoMacManifest(Object.assign(new Error('x'), { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })), true);
+  assert.equal(isNoMacManifest(new Error('Cannot find latest.yml in the latest release artifacts')), false);
+  assert.equal(isNoMacManifest('net::ERR_CONNECTION_REFUSED'), false);
+  assert.equal(releasePageUrl('0.1.1015'), 'https://github.com/zacharykeeton/emerald/releases/tag/v0.1.1015');
 });

@@ -921,6 +921,9 @@ export interface EmeraldApi {
   // version: the app's own package version (M9 fix 234), 0.1.<first fix
   // id of the batch it was built at>.
   info(): Promise<{ homeDir: string; config: UserConfig; chime: ChimeMode; usageFloorMs: number; version: string }>;
+  // The platform the main process runs on, read synchronously so the
+  // first paint already knows it (M9 fix 1023).
+  platform: string;
   // Tells main the skin on start and on every flip (M9 fix 569), so it
   // recolours the title bar overlay, the window ground and the taskbar
   // badge, and opens the next window in it.
@@ -939,6 +942,12 @@ export interface EmeraldApi {
   // Both run the shipped CLI; either rejects when it cannot be run.
   hooksStatus(): Promise<HooksStatus>;
   hooksInstall(): Promise<HooksInstallResult>;
+  // The line that links emmer onto a Mac's PATH, or null (M9 fix 1026):
+  // off a Mac, in a dev tree, when emmer is on the login shell's PATH, or
+  // once dismissed in this launch.
+  pathLink(): Promise<string | null>;
+  // Keeps the PATH banner down in every window until the next launch.
+  dismissPathLink(): void;
   // One Test event through the installed hook to the daemon (M9 fix 606).
   hooksTest(): Promise<HooksTestResult>;
   // The main process pushes a status whenever Claude Code's settings file

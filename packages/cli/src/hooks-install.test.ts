@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   HOOK_EVENTS,
   HOOK_TIMEOUT_SECONDS,
+  commandFile,
   hookCommand,
   hooksStatus,
   installHooks,
@@ -20,7 +21,8 @@ import {
   uninstallHooks,
 } from './hooks-install.ts';
 
-const scriptSource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'claude-hook.cmd');
+const hooksDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks');
+const scriptSource = path.join(hooksDir, 'claude-hook.cmd');
 
 // A settings file shaped like the real one on this machine: Orca's hooks on
 // some of the same events, a matcher on the tool events, and unrelated keys.
@@ -45,15 +47,18 @@ function orcaSettings(): Record<string, unknown> {
   };
 }
 
-function setup(initial: Record<string, unknown> | string | null, prefix = 'emerald-hooks-install-') {
+// The hook's kind is its extension (M9 fix 1021): '.sh' installs the shell
+// script pair a Mac gets, on any platform.
+function setup(initial: Record<string, unknown> | string | null, prefix = 'emerald-hooks-install-', ext: '.cmd' | '.sh' = '.cmd') {
   const dir = mkTemp(prefix);
   const settingsPath = path.join(dir, 'claude', 'settings.json');
   if (initial !== null) {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, typeof initial === 'string' ? initial : JSON.stringify(initial, null, 2) + '\n');
   }
-  const scriptDest = path.join(dir, 'emerald', 'hooks', 'claude-hook.cmd');
-  return { opts: { settingsPath, scriptDest, scriptSource, nodePath: process.execPath }, settingsPath, scriptDest, dir };
+  const scriptDest = path.join(dir, 'emerald', 'hooks', `claude-hook${ext}`);
+  const source = path.join(hooksDir, `claude-hook${ext}`);
+  return { opts: { settingsPath, scriptDest, scriptSource: source, nodePath: process.execPath }, settingsPath, scriptDest, dir };
 }
 
 test.after(removeTemps);
@@ -311,6 +316,8 @@ test('status reports installed and missing events and the script state', () => {
 
 test('hookCommand quotes a forward-slash path', () => {
   assert.equal(hookCommand('C:\\Users\\Some One\\.emerald\\hooks\\claude-hook.cmd'), '"C:/Users/Some One/.emerald/hooks/claude-hook.cmd"');
+  // A shell script runs under sh (M9 fix 1021).
+  assert.equal(hookCommand('/Users/Some One/.emerald/hooks/claude-hook.sh'), 'sh "/Users/Some One/.emerald/hooks/claude-hook.sh"');
 });
 
 // Runs the installed wrapper the way Claude Code would, with the status
@@ -339,7 +346,11 @@ function runWrapper(cmdDest: string, input: string, env: Record<string, string>)
   });
 }
 
-test('the installed wrapper posts a StatusLine event to the sink and passes the previous status line through', async () => {
+// The .cmd runs below need Windows' cmd.exe; off Windows the .sh tests at
+// the end of the file are their mirror (M9 fix 1021).
+const onWindows = { skip: process.platform !== 'win32' };
+
+test('the installed wrapper posts a StatusLine event to the sink and passes the previous status line through', onWindows, async () => {
   const { opts, dir } = setup({});
   // The previous status line: a script that reads the JSON and answers with
   // the model, and exits 7, so both the output and the code can be seen to
@@ -416,7 +427,7 @@ async function fakeSink(): Promise<{ port: number; posts: unknown[]; requests: A
 const BASH_PREVIOUS = 'if [ -z "${NOPE-}" ]; then read -r line; printf "bash saw %s" "${line:0:1}"; exit 5; fi';
 const STATUS_JSON = JSON.stringify({ session_id: 'claude-9', model: { id: 'claude-fable-5-1', display_name: 'Fable' }, context_window: { used_percentage: 41.6 } });
 
-test('the wrapper runs a bash one-liner as the previous status line under bash, after the post', async () => {
+test('the wrapper runs a bash one-liner as the previous status line under bash, after the post', onWindows, async () => {
   const { opts } = setup({ statusLine: { type: 'command', command: BASH_PREVIOUS } });
   installHooks(opts);
   const sl = statusLinePaths(opts);
@@ -468,7 +479,7 @@ test('the wrapper posts under the packaged Emerald.exe as node with a bash previ
 // rather than a time. The install and the home both sit in folders with a
 // space and parentheses (M9 fix 598), as under a profile whose name has a
 // space.
-test('the hook of a Claude outside emerald posts with curl and never runs node (M9 fixes 467, 580)', async () => {
+test('the hook of a Claude outside emerald posts with curl and never runs node (M9 fixes 467, 580)', onWindows, async () => {
   const { opts, dir } = setup({}, 'emerald hooks (580) ');
   const mark = path.join(dir, 'node-ran');
   const standIn = path.join(dir, 'stand-in-node.cmd');
@@ -513,7 +524,7 @@ test('the hook of a Claude outside emerald posts with curl and never runs node (
 
 // The status line runs that name no session and no home must not find a
 // daemon.json under the profile of whoever runs the suite.
-test('a status line run with no session and no home posts nowhere, whatever the profile holds (M9 fix 597)', async () => {
+test('a status line run with no session and no home posts nowhere, whatever the profile holds (M9 fix 597)', onWindows, async () => {
   const { opts, dir } = setup({});
   installHooks(opts);
   const sl = statusLinePaths(opts);
@@ -532,7 +543,7 @@ test('a status line run with no session and no home posts nowhere, whatever the 
 });
 
 // The status line takes the unhosted post itself since M9 fix 599: the headers name the status line script.
-test('the status line of a Claude outside emerald posts StatusLine off daemon.json (M9 fix 599)', async () => {
+test('the status line of a Claude outside emerald posts StatusLine off daemon.json (M9 fix 599)', onWindows, async () => {
   const { opts, dir } = setup({}, 'emerald hooks (599) ');
   installHooks(opts);
   const sl = statusLinePaths(opts);
@@ -559,7 +570,7 @@ test('the status line of a Claude outside emerald posts StatusLine off daemon.js
 
 // emerald's own entries spelled with backslashes, as a hand edit or another
 // tool may write them, are emerald's (M9 fix 468, the ledger's M19).
-test('a backslash-spelled entry of the same install is replaced, and a backslash status line of ours is not kept as previous (M9 fix 468)', async () => {
+test('a backslash-spelled entry of the same install is replaced, and a backslash status line of ours is not kept as previous (M9 fix 468)', onWindows, async () => {
   const { opts, settingsPath, scriptDest } = setup(orcaSettings());
   installHooks(opts);
   const sl = statusLinePaths(opts);
@@ -719,4 +730,159 @@ test("uninstall takes out emerald's dead entries and a dead status line of ours,
   assert.ok(!text.includes('old-home'), 'no command of the old home is left');
   assert.ok(text.includes('Some Tool/hook.cmd'), "the stranger's dead entry stays");
   assert.equal(read(settingsPath)['statusLine'], undefined, 'the previous status line the first install kept was none');
+});
+
+// M9 fix 1021: off Windows the hook and the status line are shell scripts,
+// installed as `sh "<path>"`. These run the .sh arm on every platform by
+// naming a .sh hook; the ones that run the scripts need a real sh and skip
+// on Windows (the WSL run is their venue).
+
+test('an install of the .sh hook writes sh "<path>" on every event and the .sh status line (M9 fix 1021)', () => {
+  const previous = { type: 'command', command: 'echo prev-line' };
+  const { opts, settingsPath, scriptDest } = setup({ statusLine: previous }, 'emerald-hooks-sh-', '.sh');
+  installHooks(opts);
+  const after = read(settingsPath);
+  const want = `sh "${scriptDest.split(path.sep).join('/')}"`;
+  assert.equal(hookCommand(scriptDest), want);
+  for (const event of HOOK_EVENTS) {
+    const mine = hooksOf(after)[event]!.flatMap((g) => g.hooks).filter((h) => h.command === want);
+    assert.equal(mine.length, 1, `${event} carries the sh entry`);
+  }
+  const sl = statusLinePaths(opts);
+  assert.ok(sl.cmdDest.endsWith('claude-statusline.sh'), sl.cmdDest);
+  assert.ok(sl.cmdSource.endsWith('claude-statusline.sh'), sl.cmdSource);
+  assert.deepEqual(after['statusLine'], { type: 'command', command: `sh "${sl.cmdDest.split(path.sep).join('/')}"` });
+  const wrapper = fs.readFileSync(sl.cmdDest, 'utf8');
+  assert.ok(wrapper.startsWith('#!/bin/sh\n'), 'the wrapper is a shell script');
+  assert.ok(!wrapper.includes('\r'), 'written LF');
+  assert.ok(wrapper.includes(`"${process.execPath}"`), 'the node given fills the placeholder');
+  assert.ok(!wrapper.includes('__EMERALD_NODE__'));
+  const hook = fs.readFileSync(scriptDest, 'utf8');
+  assert.ok(hook.startsWith('#!/bin/sh\n') && !hook.includes('\r'), 'the hook is LF too');
+  const status = hooksStatus(opts);
+  assert.deepEqual(status.missing, []);
+  assert.equal(status.scriptPresent, true);
+  assert.equal(status.scriptStale, false);
+  assert.equal(status.statusLine, true);
+  uninstallHooks(opts);
+  assert.ok(!fs.existsSync(scriptDest) && !fs.existsSync(sl.cmdDest), 'both .sh files removed');
+  assert.deepEqual(read(settingsPath)['statusLine'], previous, 'the previous status line is back');
+});
+
+test('commandFile reads the path of an sh entry off Windows and nothing on Windows (M9 fix 1021)', () => {
+  for (const platform of ['darwin', 'linux'] as const) {
+    assert.equal(commandFile('sh "/Users/a b/.emerald/hooks/claude-hook.sh"', platform), '/Users/a b/.emerald/hooks/claude-hook.sh');
+    assert.equal(commandFile('sh /x/claude-hook.sh', platform), '/x/claude-hook.sh');
+  }
+  assert.equal(commandFile('sh "/Users/a b/.emerald/hooks/claude-hook.sh"', 'win32'), null);
+  assert.equal(commandFile('sh /x/claude-hook.sh', 'win32'), null);
+});
+
+// Runs a shell script the way Claude Code's entry does, `sh <file>`, with
+// the same env discipline as runWrapper. A script that exits before it
+// reads its input (no daemon.json) closes the pipe under the write, so a
+// stdin error is ignored, as Claude Code and runScript ignore it.
+function runSh(file: string, input: string, env: Record<string, string>): Promise<{ stdout: string; stderr: string; status: number | null }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('sh', [file], {
+      env: { ...process.env, EMERALD_SESSION_ID: '', EMERALD_HOOK_PORT: '', EMERALD_HOOK_TOKEN: '', EMERALD_HOME: path.dirname(path.dirname(file)), ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => (stdout += c));
+    child.stderr.on('data', (c) => (stderr += c));
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ stdout, stderr, status }));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  });
+}
+
+const offWindows = { skip: process.platform === 'win32' };
+
+test('the .sh hook of a Claude outside emerald posts off daemon.json with curl (M9 fix 1021)', offWindows, async () => {
+  const { opts, dir } = setup({}, 'emerald hooks (1021) ', '.sh');
+  installHooks(opts);
+  const home = path.join(dir, 'home (x) y');
+  fs.mkdirSync(home);
+  const payload = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'conv-1021', prompt: 'a "quoted" & spaced prompt' });
+  const sink = await fakeSink();
+  try {
+    const none = await runSh(opts.scriptDest, payload, { EMERALD_HOME: home });
+    assert.equal(none.status, 0);
+    assert.equal(sink.requests.length, 0, 'no daemon.json, no post');
+    const record = { pid: 1, pipe: '/x/emmerd.sock', protocolVersion: 1, version: '0', startedAt: 1, hookPort: sink.port, hookToken: 'ab'.repeat(24) };
+    const daemonJson = path.join(home, 'daemon.json');
+    fs.writeFileSync(daemonJson, JSON.stringify(record, null, 2) + '\n');
+    const some = await runSh(opts.scriptDest, payload, { EMERALD_HOME: home });
+    assert.equal(some.status, 0);
+    assert.equal(sink.requests.length, 1, `one post with a daemon.json (stderr: ${some.stderr})`);
+    const got = sink.requests[0]!;
+    assert.equal(got.headers['x-emerald-unhosted'], '1');
+    assert.equal(got.headers['x-emerald-session'], undefined, 'no session header: the daemon reads the body');
+    assert.equal(got.headers['x-emerald-token'], 'ab'.repeat(24));
+    assert.equal(got.headers['x-emerald-hook'], opts.scriptDest);
+    assert.equal(got.body, payload);
+    const { hookToken: _t, ...noToken } = record;
+    const { hookPort: _p, ...noPort } = record;
+    for (const text of [JSON.stringify(noToken, null, 2) + '\n', JSON.stringify(noPort, null, 2) + '\n', JSON.stringify(record)]) {
+      fs.writeFileSync(daemonJson, text);
+      const run = await runSh(opts.scriptDest, payload, { EMERALD_HOME: home });
+      assert.equal(run.status, 0);
+    }
+    assert.equal(sink.requests.length, 1, 'no further post from a record the script cannot read');
+  } finally {
+    sink.close();
+  }
+});
+
+test('the .sh hook of a hosted Claude posts with the session, token and hook headers (M9 fix 1021)', offWindows, async () => {
+  const { opts } = setup({}, 'emerald-hooks-sh-', '.sh');
+  installHooks(opts);
+  const sink = await fakeSink();
+  try {
+    const payload = JSON.stringify({ hook_event_name: 'Stop', session_id: 'conv-1' });
+    const run = await runSh(opts.scriptDest, payload, { EMERALD_SESSION_ID: 'emerald-1', EMERALD_HOOK_PORT: String(sink.port), EMERALD_HOOK_TOKEN: 'tok' });
+    assert.equal(run.status, 0);
+    assert.equal(sink.requests.length, 1, `one post (stderr: ${run.stderr})`);
+    const got = sink.requests[0]!;
+    assert.equal(got.headers['x-emerald-session'], 'emerald-1');
+    assert.equal(got.headers['x-emerald-token'], 'tok');
+    assert.equal(got.headers['x-emerald-hook'], opts.scriptDest);
+    assert.equal(got.headers['x-emerald-unhosted'], undefined);
+    assert.equal(got.body, payload);
+  } finally {
+    sink.close();
+  }
+});
+
+test('the .sh status line posts StatusLine and passes the previous one through under /bin/sh (M9 fix 1021)', offWindows, async () => {
+  const { opts } = setup({ statusLine: { type: 'command', command: 'echo prev-line' } }, 'emerald-hooks-sh-', '.sh');
+  installHooks(opts);
+  const sl = statusLinePaths(opts);
+  const sink = await fakeSink();
+  try {
+    const run = await runSh(sl.cmdDest, STATUS_JSON, { EMERALD_SESSION_ID: 'emerald-1', EMERALD_HOOK_PORT: String(sink.port), EMERALD_HOOK_TOKEN: 'tok' });
+    assert.equal(run.status, 0, `exit 0 (stderr: ${run.stderr})`);
+    assert.equal(run.stdout, 'prev-line\n', 'the previous status line ran under sh');
+    assert.equal(sink.posts.length, 1, 'one post');
+    assert.deepEqual(sink.posts[0], { ...JSON.parse(STATUS_JSON), hook_event_name: 'StatusLine' });
+  } finally {
+    sink.close();
+  }
+});
+
+test('a dead sh entry of an old home is ours and install takes it out (M9 fix 1021)', offWindows, () => {
+  const { opts, settingsPath, dir } = setup(null, 'emerald-hooks-sh-', '.sh');
+  installHooks(opts);
+  const oldHook = hookCommand(path.join(dir, 'old-home', 'hooks', 'claude-hook.sh'));
+  assert.ok(oldHook.startsWith('sh "'), oldHook);
+  const s = read(settingsPath);
+  hooksOf(s)['Stop']!.push({ hooks: [{ type: 'command', command: oldHook, timeout: 5 }] });
+  fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+  const dead = hooksStatus(opts).dead;
+  assert.deepEqual(dead.map((d) => `${d.event} ${d.ours}`), ['Stop true']);
+  const { removed } = installHooks(opts);
+  assert.equal(removed.length, 1);
+  assert.ok(!fs.readFileSync(settingsPath, 'utf8').includes('old-home'), 'no command of the old home is left');
 });

@@ -84,5 +84,7 @@ test('with a trace every kill but a probe is logged with its target first (M9 fi
 
 test('readProcessLine names this process by its parent and image (M9 fix 762)', () => {
   const line = readProcessLine(process.pid);
-  assert.ok(line !== null && line.startsWith(`${process.ppid} node.exe `), `got ${JSON.stringify(line)}`);
+  // The image is node.exe on Windows and node off it (M9 fix 1016).
+  const image = process.platform === 'win32' ? 'node.exe' : 'node';
+  assert.ok(line !== null && line.startsWith(`${process.ppid} ${image} `), `got ${JSON.stringify(line)}`);
 });

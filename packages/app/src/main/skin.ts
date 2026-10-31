@@ -87,8 +87,10 @@ export interface SkinWindow {
 
 // The emerald:skin-set handler's work: keep the skin, write it down when it
 // changed, repaint the window's chrome, and say so in the log, which is
-// what verify:skin reads.
-export function applySkin(win: SkinWindow | null, raw: unknown): void {
+// what verify:skin reads. A Mac has no title bar overlay to repaint
+// (M9 fix 1023: Electron has no setTitleBarOverlay on darwin), so only the
+// ground is set there; the log line is the same on every platform.
+export function applySkin(win: SkinWindow | null, raw: unknown, platform: NodeJS.Platform = process.platform): void {
   const skin = parseSkin(raw);
   if (skin !== current && file !== null) {
     try {
@@ -101,7 +103,7 @@ export function applySkin(win: SkinWindow | null, raw: unknown): void {
   const c = chromeOf(skin);
   if (win !== null && !win.isDestroyed()) {
     win.setBackgroundColor(c.bg);
-    win.setTitleBarOverlay({ color: c.overlay, symbolColor: c.symbol, height: TITLE_BAR_HEIGHT });
+    if (platform !== 'darwin') win.setTitleBarOverlay({ color: c.overlay, symbolColor: c.symbol, height: TITLE_BAR_HEIGHT });
   }
   log(`skin ${skin}: ground ${c.bg}, title bar overlay ${c.overlay}, symbols ${c.symbol}`);
 }

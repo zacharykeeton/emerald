@@ -48,7 +48,8 @@ async function main(): Promise<void> {
   // off the uptime rather than Date.now() at the write, which since fix
   // 454 comes seconds after the process started.
   const startedAt = Math.round(Date.now() - process.uptime() * 1000);
-  hideConsoleListAgent();
+  // The agent is ConPTY's, so there is nothing to hide off Windows (M9 fix 1016).
+  if (process.platform === 'win32') hideConsoleListAgent();
   fs.mkdirSync(logsDir(), { recursive: true });
   // Mirror to stderr when started from a terminal; a detached daemon has no stderr worth writing to.
   const logPath = path.join(logsDir(), 'emmerd.log');
@@ -183,7 +184,9 @@ async function main(): Promise<void> {
   // keeps the daemon's own and its shells, for a harness that puts a stub
   // on it (verify:cli's claude.cmd).
   const spawnEnv = process.env['EMERALD_SPAWN_PATH'] === 'inherit' ? null : new SpawnEnv({ log });
-  log.info(spawnEnv === null ? "spawn env: the daemon's own (EMERALD_SPAWN_PATH=inherit)" : 'spawn env: read from the registry at each spawn');
+  // Off Windows the read is the login shell's environment (M9 fix 1019).
+  const spawnEnvSource = process.platform === 'win32' ? 'registry' : 'login shell';
+  log.info(spawnEnv === null ? "spawn env: the daemon's own (EMERALD_SPAWN_PATH=inherit)" : `spawn env: read from the ${spawnEnvSource} at each spawn`);
   // The emerald mod (M9 fix 725), read once: EMERALD_CLAUDE_MOD=0 takes a
   // daemon restart, like every other knob here.
   const claudeMod = resolveClaudeModDir(process.env);

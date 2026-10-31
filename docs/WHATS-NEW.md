@@ -2,6 +2,22 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1015 to 1029, 2026-10-31
+
+Fifteen fixes, one change: Emerald runs on a Mac with Apple silicon. Nothing changes on Windows; this build is the same app there, and the daemon needs no restart.
+
+### Highlights
+
+**Emerald on a Mac.** From this release on, each release carries `Emerald-<version>-arm64.dmg` for a Mac with Apple silicon (M1 and later, macOS 14 or newer), built and smoke-tested on a Mac by the release itself, 15 to 30 minutes after the Windows installers appear. Open the dmg, drag Emerald to Applications, and clear the quarantine once, since the app is not signed with an Apple Developer ID: `xattr -cr /Applications/Emerald.app`. The README's "On a Mac" section has the whole of it.
+
+**`emmer` in a Mac terminal.** Until `emmer` is on your login shell's PATH, the window shows a banner with the one line that links it, `sudo mkdir -p /usr/local/bin && sudo ln -sf "/Applications/Emerald.app/Contents/Resources/bin/emmer" /usr/local/bin/emmer`, and a Copy button; **Not now** hides it until the next launch.
+
+### Details
+
+**What a Mac gets.** The three window buttons sit at the left of the title row, and the app menu has Quit on Cmd+Q; Cmd+C, Cmd+V and Cmd+W work as in any Mac app, while the app's own chords stay Ctrl, as on Windows, for now. The dock shows the count of sessions waiting for you and bounces when the chime would sound. A plain shell is your login shell, zsh, bash or sh (`emmer shell --shell` takes those three there), and a session started from an app opened in Finder still finds a `claude` from npm or Homebrew, since Emerald reads your login shell's PATH. The hooks install as shell scripts from the same banner as on Windows. A session's load reads as on Windows. A zsh or bash row does not yet show the command it is running or follow `cd`.
+
+**Updates on a Mac.** macOS applies an update only to a signed app, so a Mac build does not update itself: when a release is out the badge reads **Update available** and opens the release page, and the new dmg goes over the old app as the first did. A release whose Mac files have not landed yet reads as no update.
+
 ## Fixes 997 to 1014, 2026-10-30
 
 Eighteen fixes: a side question beside the chat view with `/btw`, Copy image on a picture's right-click, a large copy onto the Files rail that shows how far it has got, a set dragged where it cannot land that says so, `emmer prompt` printing Claude's whole reply, and a handful of small ones in the chat view, the empty pane, the usage band and the level banner. The daemon goes from level 77 to 78, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.

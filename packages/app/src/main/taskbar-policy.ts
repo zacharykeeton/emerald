@@ -48,7 +48,9 @@ const countOf = (v: unknown): number => (typeof v === 'number' && Number.isFinit
 
 export function createTaskbarPolicy(
   getWindow: () => TaskbarWindow | null,
-  opts: { held: boolean; windows: boolean; log: TaskbarLog; every: (ms: number, fn: () => void) => () => void },
+  // dock (M9 fix 1024): a Mac's dock, which shows the count on every change
+  // and the flash, and has no pulse, bar or tooltip.
+  opts: { held: boolean; windows: boolean; dock?: boolean; log: TaskbarLog; every: (ms: number, fn: () => void) => () => void },
 ): { set(req: AttentionRequest): void; dispose(): void; pulsing(): boolean } {
   let wanting = 0;
   let bright = true;
@@ -110,10 +112,11 @@ export function createTaskbarPolicy(
         if (!changed) return;
         stop();
         win.flashFrame(false);
-        if (opts.windows) paint();
+        if (opts.windows || opts.dock === true) paint();
         return;
       }
       if (flash) win.flashFrame(true);
+      if (opts.dock === true && changed) paint();
       if (!opts.windows) return;
       if (changed) paint();
       if (stopPulse === null) {

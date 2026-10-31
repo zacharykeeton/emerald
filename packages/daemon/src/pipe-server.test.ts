@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
-import { PROTOCOL_VERSION } from '@emerald/shared';
+import { PROTOCOL_VERSION, shellIdsFor } from '@emerald/shared';
 import type { Layout, ServerMessage, SessionInfo } from '@emerald/shared';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,8 +17,12 @@ import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer,
 import { SessionManager } from './session-manager.ts';
 import type { LoadTick } from './session-manager.ts';
 
+// A test that types PowerShell, finds a pwsh.exe or opens a Windows path
+// runs on Windows alone (M9 fix 1018); its assertions are as they were.
+const windowsOnly = { skip: process.platform !== 'win32' };
+
 // A private pipe name so the test never collides with a running emmerd.
-const PIPE = `\\\\.\\pipe\\emmerd-test-${process.pid}`;
+const PIPE =`\\\\.\\pipe\\emmerd-test-${process.pid}`;
 
 let server: PipeServer;
 let manager: SessionManager;
@@ -71,11 +75,20 @@ test('the hello carries the installed shells, and session.spawn refuses an unkno
   try {
     const res = await client.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
     const ids = (res.shells ?? []).map((o) => o.id);
-    assert.ok(ids[0] === 'pwsh' || ids[0] === 'powershell', `the default is a PowerShell: ${ids.join(', ')}`);
-    assert.equal(ids.at(-1), 'cmd');
+    if (process.platform === 'win32') {
+      assert.ok(ids[0] === 'pwsh' || ids[0] === 'powershell', `the default is a PowerShell: ${ids.join(', ')}`);
+      assert.equal(ids.at(-1), 'cmd');
+    } else {
+      // M9 fix 1018: off Windows sh is always listed.
+      assert.ok(ids.includes('sh'), `sh is listed: ${ids.join(', ')}`);
+    }
     const cwd = process.cwd();
-    await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'zsh' as never, cols: 80, rows: 24 }), { code: 'bad-request', message: 'unknown shell zsh; one of pwsh, powershell, gitbash, cmd' });
-    await assert.rejects(client.request('session.spawn', { kind: 'claude', cwd, shell: 'cmd', cols: 80, rows: 24 }), { code: 'bad-request', message: 'shell is for kind shell, not claude' });
+    await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'fish' as never, cols: 80, rows: 24 }), {
+      code: 'bad-request',
+      message: `unknown shell fish; one of ${shellIdsFor(process.platform).join(', ')}`,
+    });
+    const own = process.platform === 'win32' ? 'cmd' : 'sh';
+    await assert.rejects(client.request('session.spawn', { kind: 'claude', cwd, shell: own, cols: 80, rows: 24 }), { code: 'bad-request', message: 'shell is for kind shell, not claude' });
   } finally {
     client.close();
   }
@@ -869,7 +882,7 @@ test('file.open with url relays a page and refuses a path or a scheme (M9 fix 65
 // in a browser pane; the daemon holds it to an absolute .html or .htm
 // path with no url and no scheme, and an emerald-file: URL stays the
 // window's own.
-test('file.open with browser relays an .html path and refuses a relative path, another file, a url or a scheme (M9 fix 936)', async () => {
+test('file.open with browser relays an .html path and refuses a relative path, another file, a url or a scheme (M9 fix 936)', windowsOnly, async () => {
   const pipe = `${PIPE}-open-browser`;
   const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
   await own.listen();
@@ -898,7 +911,7 @@ test('file.open with browser relays an .html path and refuses a relative path, a
 // M9 fix 988: opener, the session whose emmer open asked, rides the push
 // beside a url or a page from the disk, and is refused anywhere else or
 // in a shape BROWSER_OPENER does not take.
-test('file.open relays an opener beside a url or a browser page and refuses it on a plain file or in a bad shape (M9 fix 988)', async () => {
+test('file.open relays an opener beside a url or a browser page and refuses it on a plain file or in a bad shape (M9 fix 988)', windowsOnly, async () => {
   const pipe = `${PIPE}-open-opener`;
   const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
   await own.listen();
@@ -1064,7 +1077,7 @@ test('hooks.test asks the sink, and a server without one answers false (M9 fix 6
   }
 });
 
-test('spawn, attach with replay, input, exit and kill guard', async () => {
+test('spawn, attach with replay, input, exit and kill guard', windowsOnly, async () => {
   const client = await PipeClient.connect(PIPE);
   await client.request('subscribe', { topics: ['sessions'] });
 
@@ -1118,7 +1131,7 @@ test('spawn, attach with replay, input, exit and kill guard', async () => {
   client.close();
 });
 
-test('one connection\'s second pty.attach replays the ring again and its one pty.detach ends the stream (what the app\'s attach broker counts on, M9 fix 866)', async () => {
+test('one connection\'s second pty.attach replays the ring again and its one pty.detach ends the stream (what the app\'s attach broker counts on, M9 fix 866)', windowsOnly, async () => {
   const client = await PipeClient.connect(PIPE);
   const { session } = await client.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 100, rows: 30 });
   try {
@@ -1437,7 +1450,7 @@ test('a row the mod kept goes to a level 66 window subscribed to sessions as tra
   }
 });
 
-test("session.spawn and session.resume wait on the server's spawnEnv, a refused spawn and a cli hello never ask it, and an app hello finds the shells on it (M9 fixes 971 and 996)", async () => {
+test("session.spawn and session.resume wait on the server's spawnEnv, a refused spawn and a cli hello never ask it, and an app hello finds the shells on it (M9 fixes 971 and 996)", windowsOnly, async () => {
   const ownManager = new SessionManager(silentLogger);
   const ownLayouts = new LayoutStore(path.join(mkTemp('emerald-pipe-971-'), 'state.json'), silentLogger);
   ownLayouts.load();
@@ -1459,7 +1472,7 @@ test("session.spawn and session.resume wait on the server's spawnEnv, a refused 
     await client.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
     assert.equal(asked, 0, 'a cli hello makes no read');
     const cwd = process.cwd();
-    await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'zsh' as never, cols: 80, rows: 24 }), { code: 'bad-request' });
+    await assert.rejects(client.request('session.spawn', { kind: 'shell', cwd, shell: 'fish' as never, cols: 80, rows: 24 }), { code: 'bad-request' });
     assert.equal(asked, 0, 'a refused spawn makes no read');
     const { session } = await client.request('session.spawn', { kind: 'shell', cwd, cols: 80, rows: 24 });
     assert.equal(asked, 1);

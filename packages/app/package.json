@@ -1,6 +1,6 @@
 {
   "name": "@emerald/app",
-  "version": "0.1.997",
+  "version": "0.1.1015",
   "private": true,
   "description": "emerald desktop app: pixels and keystrokes only, the daemon owns the state",
   "license": "MIT",
@@ -24,6 +24,8 @@
     "stage": "node scripts/stage.mjs",
     "pack:dir": "node scripts/pack.mjs --dir",
     "dist": "node scripts/pack.mjs",
+    "dist:mac": "node scripts/pack.mjs --mac",
+    "smoke:mac": "node scripts/smoke-mac.mjs",
     "release": "node scripts/release.mjs",
     "verify:stage": "node scripts/verify-m7-stage.mjs",
     "verify:package": "node scripts/verify-m7-package.mjs",

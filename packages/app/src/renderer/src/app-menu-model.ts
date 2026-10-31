@@ -21,7 +21,9 @@ export interface AppMenuItem {
 }
 
 // What the check item says beside its label for each phase of the updater.
-export function updateHint(update: UpdateState | null): string {
+// platform: off Windows a build does not update itself (M9 fix 1025), so
+// available names the release that is out rather than a retry.
+export function updateHint(update: UpdateState | null, platform: string = 'win32'): string {
   if (update === null) return '';
   switch (update.phase) {
     case 'off':
@@ -33,7 +35,7 @@ export function updateHint(update: UpdateState | null): string {
     case 'checking':
       return 'checking…';
     case 'available':
-      return `retry ${update.latest ?? ''}`;
+      return platform === 'win32' ? `retry ${update.latest ?? ''}` : `${update.latest ?? ''} available`;
     case 'downloading':
       return update.percent === null ? 'downloading…' : `downloading ${update.percent}%`;
     case 'ready':
@@ -47,7 +49,7 @@ export function updateHint(update: UpdateState | null): string {
 
 // windows: the daemon holds windows on the layout (M9 fix 866, level 73),
 // so New window goes second; an older daemon offers none.
-export function appMenuItems(version: string | null, update: UpdateState | null = null, skin: Skin = 'classic', usageRecord: boolean = false, windows = false): AppMenuItem[] {
+export function appMenuItems(version: string | null, update: UpdateState | null = null, skin: Skin = 'classic', usageRecord: boolean = false, windows = false, platform: string = 'win32'): AppMenuItem[] {
   return [
     // The file chooser (M9 fix 341), above the notes: the one item that
     // opens something of the person's own. Its chord is prefix-only, so
@@ -69,6 +71,6 @@ export function appMenuItems(version: string | null, update: UpdateState | null 
         'A local record of which emerald actions and views you use, for emmer usage report; kept in logs/usage.jsonl under your emerald home and never sent anywhere. Click to turn it ' +
         (usageRecord ? 'off' : 'on'),
     },
-    { action: 'check-updates', label: 'Check for updates', hint: updateHint(update), disabled: update === null || update.phase === 'off' },
+    { action: 'check-updates', label: 'Check for updates', hint: updateHint(update, platform), disabled: update === null || update.phase === 'off' },
   ];
 }

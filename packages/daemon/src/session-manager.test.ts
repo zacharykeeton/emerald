@@ -24,6 +24,11 @@ function tempDir(): string {
 
 test.after(removeTemps);
 
+// A test that spawns or types PowerShell or cmd runs on Windows alone (M9 fix
+// 1018: off Windows the default shell is the login shell); its assertions
+// are as they were.
+const windowsOnly = { skip: process.platform !== 'win32' };
+
 // A logger that keeps what the store says, error included, for the restart
 // tests whose restored list once came back empty with the reason swallowed
 // by the silent logger (M9 fix 708).
@@ -43,7 +48,7 @@ const restoredMessage = (log: { lines: string[] }, restarted: SessionManager): s
 // have to kill anything or wait on a prompt.
 const exitArgs = (code: number) => ['-NoProfile', '-Command', `exit ${code}`];
 
-test('every change lands in sessions.json, and a new manager restores the list as exited', async () => {
+test('every change lands in sessions.json, and a new manager restores the list as exited', windowsOnly, async () => {
   const dir = tempDir();
   const file = path.join(dir, 'sessions.json');
   const store = new SessionStore(file, silentLogger);
@@ -113,7 +118,7 @@ test('every change lands in sessions.json, and a new manager restores the list a
   }
 });
 
-test('a pty exit with no code is kept as unknown and survives a restart (M9 fix 831)', async () => {
+test('a pty exit with no code is kept as unknown and survives a restart (M9 fix 831)', windowsOnly, async () => {
   const dir = tempDir();
   const file = path.join(dir, 'sessions.json');
   const store = new SessionStore(file, silentLogger);
@@ -146,7 +151,7 @@ test('a pty exit with no code is kept as unknown and survives a restart (M9 fix 
   }
 });
 
-test('set writes the checkpoint one field at a time, persists it, and a resume keeps it', async () => {
+test('set writes the checkpoint one field at a time, persists it, and a resume keeps it', windowsOnly, async () => {
   const dir = tempDir();
   const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
@@ -219,7 +224,7 @@ test('set writes the checkpoint one field at a time, persists it, and a resume k
   }
 });
 
-test('compactAsk skips the engine\'s own compaction of a Claude session marked to keep whole while it is idle, waiting or done, and nothing else; a shell cannot be marked (M9 fix 773)', async () => {
+test('compactAsk skips the engine\'s own compaction of a Claude session marked to keep whole while it is idle, waiting or done, and nothing else; a shell cannot be marked (M9 fix 773)', windowsOnly, async () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   const claude: SessionInfo = {
     id: 'keep-1', kind: 'claude', name: 'proj', spawnCwd: process.cwd(), args: [], autoName: true, branch: null, lastPrompt: null, lastReply: null,
@@ -291,7 +296,7 @@ test('compactAsk skips the engine\'s own compaction of a Claude session marked t
   }
 });
 
-test("launchedWithMod answers for a shell while Claude runs in it, and not for a plain one (M9 fix 833)", () => {
+test("launchedWithMod answers for a shell while Claude runs in it, and not for a plain one (M9 fix 833)", windowsOnly, () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, claudeModDir: 'C:\\e\\cli\\mod' });
   try {
     const { id } = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 30'], cols: 80, rows: 24 });
@@ -304,7 +309,7 @@ test("launchedWithMod answers for a shell while Claude runs in it, and not for a
   }
 });
 
-test('the commit a session started on is read in its start folder at spawn, persisted, restored and kept through a resume (M9 fix 117)', async () => {
+test('the commit a session started on is read in its start folder at spawn, persisted, restored and kept through a resume (M9 fix 117)', windowsOnly, async () => {
   const dir = tempDir();
   const log = recordingLogger();
   const store = new SessionStore(path.join(dir, 'sessions.json'), log);
@@ -352,7 +357,7 @@ test('the commit a session started on is read in its start folder at spawn, pers
   }
 });
 
-test('an exited session frees its colour for the next spawn (M59)', async () => {
+test('an exited session frees its colour for the next spawn (M59)', windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
     const exit = once(manager, 'exit');
@@ -370,7 +375,7 @@ test('an exited session frees its colour for the next spawn (M59)', async () => 
   }
 });
 
-test('an exited or removed session with a commit in the last day keeps its colour out of the pool; an older commit frees it (M68)', async () => {
+test('an exited or removed session with a commit in the last day keeps its colour out of the pool; an older commit frees it (M68)', windowsOnly, async () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   let head = 'a'.repeat(40);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, readHead: async () => head });
@@ -410,7 +415,7 @@ test('an exited or removed session with a commit in the last day keeps its colou
   }
 });
 
-test('a new session is kept far from the live sessions of its own repository, a worktree counting as the repository (M9 fix 133)', async () => {
+test('a new session is kept far from the live sessions of its own repository, a worktree counting as the repository (M9 fix 133)', windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   const repoA = tempDir();
   const repoB = tempDir();
@@ -507,7 +512,7 @@ test('a session that was live when the daemon died restores with no exit code', 
   }
 });
 
-test('a restored session keeps its transcript path, and a resume keeps it until the new process names one (M9 fix 804)', () => {
+test('a restored session keeps its transcript path, and a resume keeps it until the new process names one (M9 fix 804)', windowsOnly, () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   const transcript = path.join(tempDir(), 'kept.jsonl');
   store.save([
@@ -651,7 +656,7 @@ test('over the pipe: a restored session lists, attaches with a note, reads empty
   }
 });
 
-test('resumePlan: a Claude session goes back to its conversation folder with --resume, a shell that hosted one gets the line typed (M48)', () => {
+test('resumePlan: a Claude session goes back to its conversation folder with --resume, a shell that hosted one gets the line typed (M48)', windowsOnly, () => {
   const conv = { id: 'abc', cwd: 'C:\\work\\proj\\sub', args: ['--model', 'opus'] };
   assert.deepEqual(resumePlan({ kind: 'claude', claudeSessionId: 'abc', args: ['--model', 'opus'], spawnCwd: 'C:\\work\\proj', conversation: conv }), { cwd: 'C:\\work\\proj\\sub', args: ['--model', 'opus', '--resume', 'abc'], typed: null });
   // Ours goes last, so a session started with --resume old picks up the bound one.
@@ -668,7 +673,7 @@ test('resumePlan: a Claude session goes back to its conversation folder with --r
   assert.deepEqual(resumePlan({ kind: 'shell', claudeSessionId: 'abc', args: [], spawnCwd: 'C:\\work', conversation: { id: 'abc', cwd: 'C:\\work\\sub', args: [] } }).typed, 'claude --resume abc');
 });
 
-test('resumePlan: a malformed saved id resumes like none, nothing typed and no --resume (M9 fix 508)', () => {
+test('resumePlan: a malformed saved id resumes like none, nothing typed and no --resume (M9 fix 508)', windowsOnly, () => {
   const bad = { id: 'x; y', cwd: 'C:\\work\\sub', args: [] };
   assert.deepEqual(resumePlan({ kind: 'shell', claudeSessionId: null, args: ['-NoProfile'], spawnCwd: 'C:\\work', conversation: bad }), { cwd: 'C:\\work', args: ['-NoProfile'], typed: null });
   assert.deepEqual(resumePlan({ kind: 'claude', claudeSessionId: 'x; y', args: ['--model', 'opus'], spawnCwd: 'C:\\work', conversation: bad }), { cwd: 'C:\\work', args: ['--model', 'opus'], typed: null });
@@ -788,7 +793,7 @@ test('the start commit is read again where Claude started when that is another f
   }
 });
 
-test("a session spawned or resumed with the registry's variables runs with them, and one given none keeps the daemon's (M9 fixes 971 and 996)", async () => {
+test("a session spawned or resumed with the registry's variables runs with them, and one given none keeps the daemon's (M9 fixes 971 and 996)", windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   // A shell that echoes its PATH and exits; its output collected until it
   // holds `want`, or, with no `want`, until it exits.
@@ -825,7 +830,7 @@ test("a session spawned or resumed with the registry's variables runs with them,
   }
 });
 
-test('a resumed shell that hosted a conversation starts in its folder and gets claude --resume typed at its first prompt (M48)', async () => {
+test('a resumed shell that hosted a conversation starts in its folder and gets claude --resume typed at its first prompt (M48)', windowsOnly, async () => {
   const shim = shimClaude();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
@@ -871,7 +876,7 @@ test('a resumed shell that hosted a conversation starts in its folder and gets c
   }
 });
 
-test('a resumed shell whose prompt never reports is not typed into (M48)', async () => {
+test('a resumed shell whose prompt never reports is not typed into (M48)', windowsOnly, async () => {
   const shim = shimClaude();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, resumeTypeTimeoutMs: 300 });
   try {
@@ -894,7 +899,7 @@ test('a resumed shell whose prompt never reports is not typed into (M48)', async
   }
 });
 
-test('resume gives an exited session a new PTY under the same id and persists it', async () => {
+test('resume gives an exited session a new PTY under the same id and persists it', windowsOnly, async () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
@@ -929,7 +934,7 @@ test('resume gives an exited session a new PTY under the same id and persists it
   }
 });
 
-test('over the pipe: a restored session resumes in spawnCwd and a re-attach streams the new PTY', async () => {
+test('over the pipe: a restored session resumes in spawnCwd and a re-attach streams the new PTY', windowsOnly, async () => {
   const dir = tempDir();
   const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);
   store.save([
@@ -1066,7 +1071,7 @@ test('a session carries the branch of its folder, re-read at turn boundaries and
   }
 });
 
-test('a shell reports its folder through its prompt: cd moves the session, its name and its branch', async () => {
+test('a shell reports its folder through its prompt: cd moves the session, its name and its branch', windowsOnly, async () => {
   // The prompt reports the long form of the path; os.tmpdir() may be the
   // 8.3 form (ZACHAR~1), so compare against the real path.
   const repo = fs.realpathSync.native(tempDir());
@@ -1095,7 +1100,7 @@ test('a shell reports its folder through its prompt: cd moves the session, its n
   }
 });
 
-test('a shell that sets its window title puts it on the session, throttled, and a resume starts with none', async () => {
+test('a shell that sets its window title puts it on the session, throttled, and a resume starts with none', windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
     const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 120, rows: 30 });
@@ -1147,7 +1152,7 @@ test('a shell that sets its window title puts it on the session, throttled, and 
   }
 });
 
-test('a spinner line on the stream puts the word on the session, the latest one, and a resume starts with none (M9 fix 158)', async () => {
+test('a spinner line on the stream puts the word on the session, the latest one, and a resume starts with none (M9 fix 158)', windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
     const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 120, rows: 30 });
@@ -1179,7 +1184,7 @@ test('a spinner line on the stream puts the word on the session, the latest one,
   }
 });
 
-test('a spinner word on a row at a permission ask puts it back at working with the ask gone (M9 fix 775)', async () => {
+test('a spinner word on a row at a permission ask puts it back at working with the ask gone (M9 fix 775)', windowsOnly, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
     const s = manager.spawn({ kind: 'shell', cwd: os.tmpdir(), cols: 120, rows: 30 });
@@ -1207,7 +1212,7 @@ test('a spinner word on a row at a permission ask puts it back at working with t
   }
 });
 
-test('a title from a bound Claude names the session and lands in sessions.json; a glyph flip does not write', async () => {
+test('a title from a bound Claude names the session and lands in sessions.json; a glyph flip does not write', windowsOnly, async () => {
   const dir = tempDir();
   const file = path.join(dir, 'sessions.json');
   const store = new SessionStore(file, silentLogger);
@@ -1289,7 +1294,7 @@ test('a title from a bound Claude names the session and lands in sessions.json; 
   }
 });
 
-test('kill with remove forgets the session once it has exited, and at once when it already had', async () => {
+test('kill with remove forgets the session once it has exited, and at once when it already had', windowsOnly, async () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   try {
@@ -1325,7 +1330,7 @@ test('kill with remove forgets the session once it has exited, and at once when 
   }
 });
 
-test('remove takes an exited session off the list, refuses a live one, and keeps the record marked removed (M57)', async () => {
+test('remove takes an exited session off the list, refuses a live one, and keeps the record marked removed (M57)', windowsOnly, async () => {
   const file = path.join(tempDir(), 'sessions.json');
   const store = new SessionStore(file, silentLogger);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
@@ -1354,7 +1359,7 @@ test('remove takes an exited session off the list, refuses a live one, and keeps
   }
 });
 
-test('a removed record survives a restart: restored as removed, never listed, still behind the flag (M57)', async () => {
+test('a removed record survives a restart: restored as removed, never listed, still behind the flag (M57)', windowsOnly, async () => {
   const file = path.join(tempDir(), 'sessions.json');
   const store = new SessionStore(file, silentLogger);
   const first = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
@@ -1633,7 +1638,7 @@ test('HEAD read before and after a git-writing call credits the first-parent com
   }
 });
 
-test("a subagent's Bash calls give its member a folder, a branch and the commits it made there, and move nothing on the parent (M61)", async () => {
+test("a subagent's Bash calls give its member a folder, a branch and the commits it made there, and move nothing on the parent (M61)", windowsOnly, async () => {
   const heads = new Map<string, string>();
   const reads: string[] = [];
   const readHead = async (cwd: string) => {
@@ -1752,7 +1757,7 @@ test("a subagent's Bash calls give its member a folder, a branch and the commits
   }
 });
 
-test('a Bash call that names no git is measured all the same when it runs in a repository, on the session and on a member, and not outside one (M9 fix 195)', async () => {
+test('a Bash call that names no git is measured all the same when it runs in a repository, on the session and on a member, and not outside one (M9 fix 195)', windowsOnly, async () => {
   // A folder with a .git in it, since the gate is the .git walk; the reads
   // are stubbed so no git runs and HEAD can be moved by hand.
   const repo = tempDir();
@@ -1833,7 +1838,7 @@ test('a Bash call that names no git is measured all the same when it runs in a r
   }
 });
 
-test("a member's git read credits nothing when HEAD moves under it, on the session too, and a hash another record holds is not credited twice (M9 fix 311)", async () => {
+test("a member's git read credits nothing when HEAD moves under it, on the session too, and a hash another record holds is not credited twice (M9 fix 311)", windowsOnly, async () => {
   const repo = tempDir();
   fs.mkdirSync(path.join(repo, '.git'));
   let head = 'a'.repeat(40);
@@ -1938,7 +1943,7 @@ test("a member's git read credits nothing when HEAD moves under it, on the sessi
   }
 });
 
-test('the range is asked from the hold\'s time, and a held null credits nothing for an unnamed command but still does for a git write (M9 fixes 470 and 471)', async () => {
+test('the range is asked from the hold\'s time, and a held null credits nothing for an unnamed command but still does for a git write (M9 fixes 470 and 471)', windowsOnly, async () => {
   const repo = tempDir();
   fs.mkdirSync(path.join(repo, '.git'));
   let head: string | null = 'a'.repeat(40);
@@ -1993,7 +1998,7 @@ test('the range is asked from the hold\'s time, and a held null credits nothing 
   }
 });
 
-test('a commit another session claims from an unnamed call is claimed once, by the committer, whichever post lands first (M9 fix 472)', async () => {
+test('a commit another session claims from an unnamed call is claimed once, by the committer, whichever post lands first (M9 fix 472)', windowsOnly, async () => {
   const repo = tempDir();
   fs.mkdirSync(path.join(repo, '.git'));
   let head = 'a'.repeat(40);
@@ -2047,7 +2052,7 @@ test('a commit another session claims from an unnamed call is claimed once, by t
   }
 });
 
-test("a member's head read that lands after its call's end is discarded, the pick credited once through the fallback, and the files answer before any spawn (M9 fix 311)", async () => {
+test("a member's head read that lands after its call's end is discarded, the pick credited once through the fallback, and the files answer before any spawn (M9 fix 311)", windowsOnly, async () => {
   const repo = tempDir();
   fs.mkdirSync(path.join(repo, '.git'));
   // Each spawned read is a deferred the test resolves by hand, in the
@@ -2123,7 +2128,7 @@ test("a member's head read that lands after its call's end is discarded, the pic
   }
 });
 
-test('two spellings of one folder group as one: the spawn folder, a hook cwd and a resume all take the real spelling (M9 fix 108)', async () => {
+test('two spellings of one folder group as one: the spawn folder, a hook cwd and a resume all take the real spelling (M9 fix 108)', windowsOnly, async () => {
   // Windows keeps a folder's case and hands out an 8.3 form beside the
   // long one; a lower-cased path is the spelling any machine can vary.
   const dir = tempDir();
@@ -2270,7 +2275,7 @@ test("a member's task carries the member (M9 fix 394): its TaskCreate's agent_id
   }
 });
 
-test("a shell's prompt marks put its last command on the record: running at Enter, ok or failed by the code at the next prompt, and a long one's end puts the row at done or errored until an ack or the next command (M9 fix 196)", async () => {
+test("a shell's prompt marks put its last command on the record: running at Enter, ok or failed by the code at the next prompt, and a long one's end puts the row at done or errored until an ack or the next command (M9 fix 196)", windowsOnly, async () => {
   // A second and a half is the line between short and long here, so a
   // sleep of two seconds is long and everything else is short.
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, shellDoneAfterMs: 1500 });
@@ -2343,7 +2348,7 @@ test("a shell's prompt marks put its last command on the record: running at Ente
   }
 });
 
-test("the files a session writes are kept on the record, one entry per path, a member's with its id, persisted and kept across a restart (M9 fix 198)", async () => {
+test("the files a session writes are kept on the record, one entry per path, a member's with its id, persisted and kept across a restart (M9 fix 198)", windowsOnly, async () => {
   const log = recordingLogger();
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), log);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
@@ -2445,7 +2450,7 @@ function countingStore(): { store: SessionStore; saves: () => number } {
   return { store, saves: () => n };
 }
 
-test("a member's activity line and a branch move are published without a save (M9 fix 459)", async () => {
+test("a member's activity line and a branch move are published without a save (M9 fix 459)", windowsOnly, async () => {
   const { store, saves } = countingStore();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, readHead: async () => null, readBranch: () => null });
   const changes: string[] = [];
@@ -2469,7 +2474,7 @@ test("a member's activity line and a branch move are published without a save (M
   }
 });
 
-test('a member keeps its last three tool phrases, oldest first, the latest its activity line (M9 fix 835)', async () => {
+test('a member keeps its last three tool phrases, oldest first, the latest its activity line (M9 fix 835)', windowsOnly, async () => {
   const { store, saves } = countingStore();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, readHead: async () => null, readBranch: () => null });
   const changes: Array<string[] | undefined> = [];
@@ -2499,7 +2504,7 @@ test('a member keeps its last three tool phrases, oldest first, the latest its a
   }
 });
 
-test('saves inside the coalescing window are written once, and keepScreens and close write a pending one at once (M9 fix 459)', async () => {
+test('saves inside the coalescing window are written once, and keepScreens and close write a pending one at once (M9 fix 459)', windowsOnly, async () => {
   const { store, saves } = countingStore();
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store, saveDelayMs: 250, readHead: async () => null, readBranch: () => null });
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -2536,7 +2541,7 @@ function boxShells(...ids: string[]) {
   return findShells().filter((o) => ids.includes(o.id));
 }
 
-test("refreshShells finds the shells again on the registry's Path and says when they change (M9 fix 996)", () => {
+test("refreshShells finds the shells again on the registry's Path and says when they change (M9 fix 996)", { skip: process.platform !== 'win32' }, () => {
   const lines: { msg: string; extra: unknown }[] = [];
   const noting = { info: (msg: string, extra?: unknown) => lines.push({ msg, extra }), warn() {}, error() {} };
   const manager = new SessionManager(noting, { staleCheckIntervalMs: 0, shells: boxShells('powershell', 'cmd') });
@@ -2557,7 +2562,7 @@ test("refreshShells finds the shells again on the registry's Path and says when 
   }
 });
 
-test('a spawn runs the shell asked for, records it, and refuses one not installed (M9 fix 624)', async () => {
+test('a spawn runs the shell asked for, records it, and refuses one not installed (M9 fix 624)', { skip: process.platform !== 'win32' }, async () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, shells: boxShells('powershell', 'cmd') });
   try {
     assert.deepEqual(manager.installedShells().map((o) => o.id), ['powershell', 'cmd']);
@@ -2579,7 +2584,7 @@ test('a spawn runs the shell asked for, records it, and refuses one not installe
   }
 });
 
-test('a cmd shell resumes as cmd, and a record whose shell has gone resumes in the default with a warning (M9 fix 624)', async () => {
+test('a cmd shell resumes as cmd, and a record whose shell has gone resumes in the default with a warning (M9 fix 624)', windowsOnly, async () => {
   const store = new SessionStore(path.join(tempDir(), 'sessions.json'), silentLogger);
   const warns: { msg: string; extra: unknown }[] = [];
   const noting = { info() {}, warn: (msg: string, extra?: unknown) => warns.push({ msg, extra }), error() {} };
@@ -2622,7 +2627,7 @@ test('a cmd shell resumes as cmd, and a record whose shell has gone resumes in t
   }
 });
 
-test('one load tick emits one load event and no changed (M9 fix 703)', () => {
+test('one load tick emits one load event and no changed (M9 fix 703)', windowsOnly, () => {
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0 });
   try {
     const a = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: exitArgs(0), cols: 80, rows: 24 }).id;

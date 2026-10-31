@@ -59,3 +59,11 @@ test('appMenuItems: the usage record item names its state, after the skin and be
   assert.equal(off.at(-1)!.action, 'check-updates');
   assert.equal(on.at(-1)!.action, 'check-updates');
 });
+
+// M9 fix 1025: off Windows the hint names the release that is out.
+test('appMenuItems: off Windows available names the release, not a retry', () => {
+  const update: UpdateState = { phase: 'available', current: '0.1.1015', latest: '0.1.1030', percent: null, message: null };
+  assert.equal(appMenuItems('0.1.1015', update, 'classic', false, false, 'darwin').at(-1)!.hint, '0.1.1030 available');
+  assert.equal(appMenuItems('0.1.1015', update, 'classic', false, false, 'win32').at(-1)!.hint, 'retry 0.1.1030');
+  assert.equal(appMenuItems('0.1.1015', update).at(-1)!.hint, 'retry 0.1.1030');
+});

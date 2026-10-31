@@ -2,15 +2,29 @@ export type SessionKind = 'claude' | 'shell';
 
 // The shells a plain shell session can run (M9 fix 624), in the order the
 // daemon reports the installed ones; the first installed is the default.
-export type ShellId = 'pwsh' | 'powershell' | 'gitbash' | 'cmd';
-export const SHELL_IDS: readonly ShellId[] = ['pwsh', 'powershell', 'gitbash', 'cmd'];
-// Windows Terminal's own names for the four profiles.
+// zsh, bash and sh are the Unix ones (M9 fix 1018); every id is valid on
+// every platform, since a stored id is read wherever its record is.
+export type ShellId = 'pwsh' | 'powershell' | 'gitbash' | 'cmd' | 'zsh' | 'bash' | 'sh';
+export const SHELL_IDS: readonly ShellId[] = ['pwsh', 'powershell', 'gitbash', 'cmd', 'zsh', 'bash', 'sh'];
+// Windows Terminal's own names for the four Windows profiles; a Unix shell
+// goes by its id.
 export const SHELL_LABELS: Record<ShellId, string> = {
   pwsh: 'PowerShell',
   powershell: 'Windows PowerShell',
   gitbash: 'Git Bash',
   cmd: 'Command Prompt',
+  zsh: 'zsh',
+  bash: 'bash',
+  sh: 'sh',
 };
+export const WINDOWS_SHELL_IDS: readonly ShellId[] = ['pwsh', 'powershell', 'gitbash', 'cmd'];
+export const UNIX_SHELL_IDS: readonly ShellId[] = ['zsh', 'bash', 'sh'];
+// The ids a daemon on this platform runs (M9 fix 1018). A plain string with
+// no default: this barrel is the renderer's too, and the renderer has no
+// process.
+export function shellIdsFor(platform: string): readonly ShellId[] {
+  return platform === 'win32' ? WINDOWS_SHELL_IDS : UNIX_SHELL_IDS;
+}
 // One shell the daemon found at its start, with the file it runs.
 export interface ShellOption {
   id: ShellId;

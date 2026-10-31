@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
-import { frontmatter, readSkills } from './skills.ts';
+import { frontmatter, readSkills, samePath } from './skills.ts';
 
 test.after(removeTemps);
 
@@ -122,4 +122,13 @@ test("readSkills: an enabled plugin's skills are named <plugin>:<skill>; a disab
   assert.deepEqual(await readSkills(claudeDir, null, root), [
     { name: 'on-plugin:brainstorm', description: "The plugin's brainstorm", scope: 'plugin' },
   ]);
+});
+
+// M9 fix 1025: a Mac's APFS is case-blind by default, so a path compare
+// there is the Windows one; Linux's is exact.
+test('samePath is case-blind on darwin and win32, exact on linux', () => {
+  assert.equal(samePath('/a/B', '/a/b', 'darwin'), true);
+  assert.equal(samePath('/a/B', '/a/b', 'win32'), true);
+  assert.equal(samePath('/a/B', '/a/b', 'linux'), false);
+  assert.equal(samePath('/a/b', '/a/b', 'linux'), true);
 });

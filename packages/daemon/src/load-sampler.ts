@@ -95,6 +95,9 @@ export interface LoadSamplerOptions {
   // dead or hung child is started again.
   spawnSweep?: () => ChildProcess;
   restartMs?: number;
+  // Which sweep the child runs (M9 fix 1020): PowerShell's JSON lines on
+  // win32, a `ps` block per tick anywhere else.
+  platform?: NodeJS.Platform;
   // The live sessions to sample, asked at every tick.
   targets: () => LoadTarget[];
   // One reading per session that got one this tick.
@@ -195,6 +198,59 @@ export function sweepScript(tickMs: number, method: SweepMethod): string {
     );
   }
   return lines.join('\n');
+}
+
+// Off Windows (M9 fix 1020) the child is one long-lived /bin/sh looping on
+// `ps` every tick, each block ended by SWEEP_END. The rate needs each
+// process's cumulative cpu time, so the column is `time`, never `pcpu`
+// (a lifetime average on Linux and a decaying one on macOS, never the rate
+// over the last tick). `-ww` keeps any ps from cutting a line at a terminal
+// width, `comm` is last since macOS prints the executable's full path there,
+// spaces and all, and `|| exit 3` makes a missing or failing ps an exit the
+// sampler logs and restarts rather than empty sweeps forever.
+export const SWEEP_END = '__emerald_sweep__';
+
+export function unixSweepScript(tickMs: number): string {
+  const seconds = Math.max(50, Math.floor(tickMs)) / 1000;
+  return `while :; do ps -ww -A -o pid=,ppid=,rss=,time=,comm= || exit 3; echo ${SWEEP_END}; sleep ${seconds}; done`;
+}
+
+// `ps`'s cpu time, `[[DD-]HH:]MM:SS[.hh]`, in ms (procps prints 00:01:02,
+// macOS 1:02.34, and 61:02.34 past an hour); -1 for anything else.
+export function parsePsCpu(s: string): number {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?$/.exec(s.trim());
+  if (m === null) return -1;
+  const [, dd, hh, mm, ss, frac] = m;
+  const fracMs = frac === undefined ? 0 : Math.round(Number(`0.${frac}`) * 1000);
+  return ((Number(dd ?? 0) * 24 + Number(hh ?? 0)) * 60 + Number(mm)) * 60_000 + Number(ss) * 1000 + fracMs;
+}
+
+const PS_ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/;
+
+// One block of the ps child into a Sweep: rss is KiB on both platforms,
+// the name the comm field's basename with a login shell's leading '-'
+// dropped (macOS's comm is the full path; Linux's the 15-character name).
+// Every start is -1: a Unix orphan is re-parented to init or a subreaper,
+// so the stale parent id fix 514 guards against does not occur, and -1
+// keeps every edge. `at` is the daemon's clock at the block's end, which is
+// what the rate's denominator needs (date cannot give ms on macOS).
+export function parsePsSweep(lines: readonly string[], at: number): Sweep {
+  const rows: ProcRow[] = [];
+  for (const line of lines) {
+    const m = PS_ROW.exec(line);
+    if (m === null) continue;
+    const comm = m[5]!.trim();
+    const base = comm.slice(comm.lastIndexOf('/') + 1);
+    rows.push({
+      pid: Number(m[1]),
+      ppid: Number(m[2]),
+      rss: Number(m[3]) * 1024,
+      cpuMs: parsePsCpu(m[4]!),
+      name: base.startsWith('-') ? base.slice(1) : base,
+      startMs: -1,
+    });
+  }
+  return { at, rows, childCpuMs: 0, wallMs: 0 };
 }
 
 // One line off the child; null for anything but a well-formed sweep.
@@ -375,6 +431,7 @@ export class LoadSampler {
   private readonly opts: LoadSamplerOptions;
   private readonly tickMs: number;
   private readonly method: SweepMethod;
+  private readonly platform: NodeJS.Platform;
   private child: ChildProcess | null = null;
   private restart: NodeJS.Timeout | null = null;
   private stubTimer: NodeJS.Timeout | null = null;
@@ -391,6 +448,7 @@ export class LoadSampler {
     this.opts = opts;
     this.tickMs = opts.tickMs ?? LOAD_TICK_MS;
     this.method = opts.method ?? 'gp';
+    this.platform = opts.platform ?? process.platform;
   }
 
   start(): void {
@@ -412,7 +470,7 @@ export class LoadSampler {
       this.stubTimer.unref();
       return;
     }
-    this.opts.log.info('load sampler: starting the sweep child', { method: this.method, tickMs: this.tickMs });
+    this.opts.log.info('load sampler: starting the sweep child', { method: this.platform === 'win32' ? this.method : 'ps', tickMs: this.tickMs });
     this.spawnChild();
   }
 
@@ -434,6 +492,9 @@ export class LoadSampler {
     try {
       if (this.opts.spawnSweep !== undefined) {
         child = this.opts.spawnSweep();
+      } else if (this.platform !== 'win32') {
+        // M9 fix 1020: no script file, the loop is one -c line.
+        child = spawn('/bin/sh', ['-c', unixSweepScript(this.tickMs)], { stdio: ['ignore', 'pipe', 'pipe'] });
       } else {
         // The script goes through a file when there is a place for it (see
         // scriptPath), else encoded, since a multi-line script with quotes
@@ -466,8 +527,21 @@ export class LoadSampler {
       this.watchdog.unref();
     }
     const rl = readline.createInterface({ input: child.stdout!, crlfDelay: Infinity });
+    // Off Windows a sweep is the block of ps lines up to SWEEP_END.
+    let block: string[] = [];
     rl.on('line', (line) => {
       if (this.child !== child) return;
+      if (this.platform !== 'win32') {
+        if (line !== SWEEP_END) {
+          block.push(line);
+          return;
+        }
+        const gathered = block;
+        block = [];
+        this.lastSweepAt = Date.now();
+        this.onSweep(parsePsSweep(gathered, Date.now()));
+        return;
+      }
       const sweep = parseSweepLine(line);
       // A line that does not parse is no answer to the watchdog.
       if (sweep === null) return;

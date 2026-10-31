@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isShellId } from '@emerald/shared';
+import { isShellId, shellIdsFor } from '@emerald/shared';
 import type { SessionInfo, SessionKind, ShellId } from '@emerald/shared';
 import { parse, positionals } from './args.ts';
 import { CliError, usageError } from './cli-error.ts';
 import { printJson, println } from './command.ts';
 import { connectHello, withDaemon } from './connect.ts';
 import { shortId } from './resolve.ts';
+import { shellIdsOf } from './shell-words.ts';
 
 const options = {
   json: { type: 'boolean', default: false },
@@ -24,11 +25,12 @@ const shellOptions = {
 // The level at which the daemon takes shell on session.spawn (M9 fix 624).
 const SHELL_LEVEL = 61;
 
-// --shell's value, one of the four ids; undefined when not given.
-export function parseShellId(value: string | undefined): ShellId | undefined {
+// --shell's value, one of this platform's ids (M9 fix 1018: zsh, bash or sh
+// off Windows); undefined when not given.
+export function parseShellId(value: string | undefined, platform: string = process.platform): ShellId | undefined {
   if (value === undefined) return undefined;
-  if (isShellId(value)) return value;
-  throw usageError(`--shell must be one of pwsh, powershell, gitbash, cmd, got ${JSON.stringify(value)}`);
+  if (isShellId(value) && shellIdsFor(platform).includes(value)) return value;
+  throw usageError(`--shell must be one of ${shellIdsOf(platform).join(', ')}, got ${JSON.stringify(value)}`);
 }
 
 // A session started from the CLI has no pane yet, so it gets the same size

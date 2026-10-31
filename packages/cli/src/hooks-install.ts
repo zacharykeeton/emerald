@@ -117,6 +117,8 @@ export function skillPaths(opts: HooksInstallOptions): SkillPaths {
 }
 
 export const STATUS_LINE_CMD = 'claude-statusline.cmd';
+// The wrapper off Windows (M9 fix 1021), picked when the hook is a .sh.
+export const STATUS_LINE_SH = 'claude-statusline.sh';
 export const STATUS_LINE_JS = 'claude-statusline.js';
 export const STATUS_LINE_PREVIOUS = 'statusline-previous.json';
 // Replaced in the shipped wrappers by the path of the Node they run on.
@@ -133,10 +135,12 @@ interface StatusLinePaths {
 export function statusLinePaths(opts: HooksInstallOptions): StatusLinePaths {
   const dest = path.dirname(opts.scriptDest);
   const source = path.dirname(opts.scriptSource);
+  // The wrapper follows the hook's kind: a .sh hook gets the .sh wrapper.
+  const wrapper = isShellScript(opts.scriptDest) ? STATUS_LINE_SH : STATUS_LINE_CMD;
   return {
-    cmdDest: path.join(dest, STATUS_LINE_CMD),
+    cmdDest: path.join(dest, wrapper),
     jsDest: path.join(dest, STATUS_LINE_JS),
-    cmdSource: path.join(source, STATUS_LINE_CMD),
+    cmdSource: path.join(source, wrapper),
     jsSource: path.join(source, STATUS_LINE_JS),
     previous: path.join(dest, STATUS_LINE_PREVIOUS),
   };
@@ -158,9 +162,16 @@ interface HookGroup {
 type Settings = Record<string, unknown>;
 
 // Forward slashes like Orca uses: the command runs through Claude Code's
-// shell on Windows and a backslash path would need escaping there.
+// shell on Windows and a backslash path would need escaping there. A shell
+// script runs as `sh "<path>"` (M9 fix 1021), so the file's mode after
+// packaging never matters and the quotes keep a space in the path intact.
 export function hookCommand(scriptPath: string): string {
+  if (isShellScript(scriptPath)) return `sh "${toForwardSlashes(scriptPath)}"`;
   return `"${toForwardSlashes(scriptPath)}"`;
+}
+
+function isShellScript(p: string): boolean {
+  return p.endsWith('.sh');
 }
 
 export function installHooks(opts: HooksInstallOptions): { changed: boolean; removed: DeadEntry[] } {
@@ -245,9 +256,11 @@ export function skillText(opts: HooksInstallOptions): string {
 }
 
 // A wrapper with the Node path filled in, CRLF like the other script;
-// the hook wrapper carries the placeholder too since M9 fix 233.
+// the hook wrapper carries the placeholder too since M9 fix 233. A shell
+// script is written LF (M9 fix 1021), since sh reads a CR as part of a word.
 export function renderStatusLineCmd(source: string, nodePath: string): string {
-  return toCrlf(fs.readFileSync(source, 'utf8').replace(NODE_PLACEHOLDER, nodePath));
+  const text = fs.readFileSync(source, 'utf8').replace(NODE_PLACEHOLDER, nodePath);
+  return isShellScript(source) ? text.replace(/\r?\n/g, '\n') : toCrlf(text);
 }
 
 function isOurStatusLine(value: unknown, cmdDest: string): boolean {
@@ -397,7 +410,10 @@ export function hooksStatus(opts: HooksInstallOptions): HooksStatus {
 // `~/...` or a variable resolves on the PATH or in a shell and is never
 // judged, so null.
 export function commandFile(command: string, platform: NodeJS.Platform = process.platform): string | null {
-  const t = command.trim();
+  let t = command.trim();
+  // Off Windows our own entries are `sh "<path>"` (M9 fix 1021): the word
+  // in front is dropped and the path after it judged.
+  if (platform !== 'win32' && /^sh\s+/.test(t)) t = t.replace(/^sh\s+/, '');
   let token: string;
   if (t.startsWith('"')) {
     const end = t.indexOf('"', 1);
@@ -412,10 +428,16 @@ export function commandFile(command: string, platform: NodeJS.Platform = process
 
 // An emerald hook or status line wrapper by its path's shape, whatever
 // home it was installed under. The slash before `hooks` keeps Orca's
-// `.../agent-hooks/claude-hook.cmd` out.
+// `.../agent-hooks/claude-hook.cmd` out. The .sh pair is the Mac's (M9 fix
+// 1021); it never occurs on Windows.
 function isOursByShape(file: string): boolean {
   const p = toForwardSlashes(file).toLowerCase();
-  return p.endsWith('/hooks/claude-hook.cmd') || p.endsWith('/hooks/claude-statusline.cmd');
+  return (
+    p.endsWith('/hooks/claude-hook.cmd') ||
+    p.endsWith('/hooks/claude-statusline.cmd') ||
+    p.endsWith('/hooks/claude-hook.sh') ||
+    p.endsWith('/hooks/claude-statusline.sh')
+  );
 }
 
 function deadFile(entry: unknown): string | null {

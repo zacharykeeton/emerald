@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { PROTOCOL_VERSION } from '@emerald/shared';
 import type { Requests, SessionInfo } from '@emerald/shared';
-import { readPipeToken, sameHome } from '@emerald/shared/pipe-name';
+import { isNoDaemon, readPipeToken, sameHome } from '@emerald/shared/pipe-name';
 import { CliError } from './cli-error.ts';
 import { pipePath, emeraldHome } from './paths.ts';
 import { PipeClient } from '@emerald/shared/pipe-client';
@@ -71,7 +71,7 @@ async function connectOnce(token: string | undefined): Promise<Connected | null 
   try {
     client = await PipeClient.connect(pipePath());
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (isNoDaemon((err as NodeJS.ErrnoException).code)) return null;
     throw new CliError(`could not connect to emmerd at ${pipePath()}: ${(err as Error).message}`);
   }
   let timer: NodeJS.Timeout | undefined;

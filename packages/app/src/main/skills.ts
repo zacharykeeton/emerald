@@ -71,11 +71,13 @@ async function readScope(dir: string, scope: SkillEntry['scope']): Promise<Skill
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const samePath = (a: string, b: string): boolean => {
+// Case-blind on Windows and on a Mac, whose APFS is case-insensitive by
+// default (M9 fix 1025); exact on Linux.
+export function samePath(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
   const x = path.resolve(a);
   const y = path.resolve(b);
-  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
-};
+  return platform !== 'linux' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
 
 // The folders whose .claude/skills the project scope reads, nearest first.
 async function projectLevels(folder: string, home: string): Promise<string[]> {

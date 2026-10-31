@@ -14724,3 +14724,38 @@ body.dragging-session[data-drag-refused] * {
   overflow-y: auto;
   min-height: 0;
 }
+
+/* M9 fix 1023: on a Mac the three window buttons sit at the left of the
+   title row (trafficLightPosition in the main process), so the row starts
+   past them; no overlay is drawn there, so the row is the window's width. */
+:root[data-platform="darwin"] .title-bar {
+  padding-left: 78px;
+}
+
+/* M9 fix 1026: the PATH banner on a Mac, the hooks banner's look under its
+   own class (the scripts wait for .banner to clear), the command left
+   selectable beside its Copy button. */
+.path-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--warn-bg);
+  font-size: 12px;
+}
+
+.path-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.path-banner-command {
+  font-family: "Cascadia Mono", Menlo, Consolas, monospace;
+  user-select: text;
+}
+
+.path-banner button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 12px;
+}

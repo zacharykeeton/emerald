@@ -718,3 +718,56 @@ test('copyPaceMs takes a whole number of milliseconds up to 1000 and nothing els
   assert.equal(copyPaceMs('2.5'), 0);
   assert.equal(copyPaceMs('5000'), 1000);
 });
+
+// M9 fix 1025: off Windows a case-only rename goes through when both
+// names are one entry (APFS by default), read by dev and ino. On this
+// box's NTFS one file under two cases is one entry, so both Unix arms
+// let it through; two real files on a case-sensitive volume (WSL's ext4)
+// still answer exists.
+test('renameEntry off Windows: a case-only rename of one entry goes through (M9 fix 1025)', () => {
+  const dir = tempDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'x');
+    if (process.platform === 'win32') {
+      assert.deepEqual(renameEntry(path.join(dir, 'a.txt'), path.join(dir, 'A.txt'), 'darwin'), { ok: true });
+      assert.deepEqual(renameEntry(path.join(dir, 'A.txt'), path.join(dir, 'a.txt'), 'linux'), { ok: true });
+    } else {
+      // A case-sensitive volume: A.txt does not exist, so the rename is a plain one.
+      assert.deepEqual(renameEntry(path.join(dir, 'a.txt'), path.join(dir, 'A.txt'), 'darwin'), { ok: true });
+      assert.ok(fs.existsSync(path.join(dir, 'A.txt')));
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('renameEntry on a case-sensitive volume: two real entries a case apart answer exists (M9 fix 1025)', { skip: process.platform === 'win32' }, () => {
+  const dir = tempDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'lower');
+    fs.writeFileSync(path.join(dir, 'A.txt'), 'upper');
+    assert.deepEqual(renameEntry(path.join(dir, 'a.txt'), path.join(dir, 'A.txt'), 'darwin'), { ok: false, reason: 'exists' });
+    assert.deepEqual(renameEntry(path.join(dir, 'a.txt'), path.join(dir, 'A.txt'), 'linux'), { ok: false, reason: 'exists' });
+    assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'lower');
+    assert.equal(fs.readFileSync(path.join(dir, 'A.txt'), 'utf8'), 'upper');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries on darwin compares a folder case-blind (M9 fix 1025)', { skip: process.platform !== 'win32' }, async () => {
+  const dir = tempDir();
+  try {
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const f = path.join(into, 'here.txt');
+    fs.writeFileSync(f, 'h');
+    const t = fakeTrash(dir);
+    assert.deepEqual(await moveEntries([f], into.toUpperCase(), 'auto', null, { trash: t.trash, platform: 'darwin' }), {
+      done: [{ from: f, to: path.join(into.toUpperCase(), 'here.txt'), result: 'here' }],
+    });
+    assert.deepEqual(t.handed, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -58,12 +58,38 @@ export function emeraldHomeOf(env: NodeJS.ProcessEnv): string {
   return namedHome(env) ?? path.join(os.homedir(), '.emerald');
 }
 
-export function pipePathOf(env: NodeJS.ProcessEnv = process.env, user: string = currentUser()): string {
+// The longest socket path the daemon takes off Windows (M9 fix 1015):
+// macOS caps a Unix socket's sun_path at 104 bytes with its NUL, Linux at
+// 108, so 100 leaves room on both.
+export const SOCKET_PATH_MAX_BYTES = 100;
+
+// Off Windows the daemon listens on a Unix socket in its home (M9 fix
+// 1015): no user hash, since the socket sits in the user's own home and a
+// private home gets its own socket for free. On win32 the named pipe is
+// today's, byte for byte.
+export function pipePathOf(env: NodeJS.ProcessEnv = process.env, user: string = currentUser(), platform: NodeJS.Platform = process.platform): string {
   const named = env['EMERALD_PIPE'];
   if (named !== undefined) return named;
+  if (platform !== 'win32') {
+    const p = path.join(path.resolve(emeraldHomeOf(env)), 'emmerd.sock');
+    const n = Buffer.byteLength(p);
+    if (n > SOCKET_PATH_MAX_BYTES) {
+      throw new Error(`emmerd's socket path is ${n} bytes, over the ${SOCKET_PATH_MAX_BYTES} a Unix socket can take: ${p}; set EMERALD_PIPE to a shorter path, or EMERALD_HOME to a shorter folder`);
+    }
+    return p;
+  }
   const base = `\\\\.\\pipe\\emmerd-${pipeUser(user)}`;
   const home = namedHome(env);
   return home === undefined ? base : `${base}-${sha1Hex8(homeKey(home))}`;
+}
+
+// Whether a connect's error means no daemon is there (M9 fix 1015): a
+// missing pipe or socket everywhere, and off Windows a socket file nobody
+// listens on, which a daemon killed hard leaves behind and which refuses
+// the connect with ECONNREFUSED rather than ENOENT.
+export function isNoDaemon(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
+  if (code === 'ENOENT') return true;
+  return platform !== 'win32' && code === 'ECONNREFUSED';
 }
 
 // The pipe token (M9 fix 612): <home>/daemon.json's pipeToken when it is a

@@ -16,7 +16,17 @@ export function envValue(env: NodeJS.ProcessEnv, name: string): string | undefin
 // Resolve an executable the way cmd.exe would, so the daemon spawns it
 // directly instead of going through a shell (a shell in between would make
 // PTY exit mean "shell exited", not "program exited").
-export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
+//
+// Off Windows (M9 fix 1018) it resolves as a Unix shell does: PATH read by
+// its exact name (names are case-sensitive there), each folder tried with
+// the name as given (no PATHEXT, case kept), the first regular file that is
+// executable; a name holding a slash is checked as it is.
+export function findOnPath(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== 'win32') return findOnUnixPath(name, env);
   const dirs = (envValue(env, 'PATH') ?? '').split(path.delimiter).filter(Boolean);
   const exts = path.extname(name) ? [''] : (envValue(env, 'PATHEXT') ?? '.EXE;.CMD;.BAT').split(';');
   for (const dir of dirs) {
@@ -28,6 +38,30 @@ export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env): 
         // Not here; keep looking.
       }
     }
+  }
+  return null;
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    if (!fs.statSync(p).isFile()) return false;
+    // Node treats X_OK as F_OK on Windows, so a unit test's empty file
+    // passes there; on a Unix box the mode bit is read.
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findOnUnixPath(name: string, env: NodeJS.ProcessEnv): string | null {
+  if (name.includes('/')) return isExecutableFile(name) ? name : null;
+  // path.delimiter is ':' on any real Unix; on Windows it is ';', which is
+  // what lets the unit tests run this arm there.
+  const dirs = (env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    if (isExecutableFile(candidate)) return candidate;
   }
   return null;
 }

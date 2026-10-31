@@ -39,6 +39,17 @@ test('CLAUDE_CONFIG_DIR alone gives its settings.json (M9 fix 544)', () => {
   withEnv(undefined, config, () => assert.equal(hookOptions(undefined).settingsPath, path.join(config, 'settings.json')));
 });
 
+test('off Windows the hook is claude-hook.sh, on Windows claude-hook.cmd, shipped and installed alike (M9 fix 1021)', () => {
+  const mac = hookOptions(undefined, 'darwin');
+  assert.ok(mac.scriptDest.endsWith('claude-hook.sh'), mac.scriptDest);
+  assert.ok(mac.scriptSource.endsWith('claude-hook.sh'), mac.scriptSource);
+  const linux = hookOptions(undefined, 'linux');
+  assert.ok(linux.scriptDest.endsWith('claude-hook.sh') && linux.scriptSource.endsWith('claude-hook.sh'));
+  const win = hookOptions(undefined, 'win32');
+  assert.ok(win.scriptDest.endsWith('claude-hook.cmd'), win.scriptDest);
+  assert.ok(win.scriptSource.endsWith('claude-hook.cmd'), win.scriptSource);
+});
+
 test('neither variable gives ~/.claude/settings.json, and a CLAUDE_CONFIG_DIR of spaces the same (M9 fix 544)', () => {
   const home = path.join(os.homedir(), '.claude', 'settings.json');
   withEnv(undefined, undefined, () => assert.equal(hookOptions(undefined).settingsPath, home));

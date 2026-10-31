@@ -32,6 +32,17 @@ import { wireWindowDrag } from './window-drag.ts';
 import { encodeRequestError } from './request-error.ts';
 import { createUseRecord } from './use-record.ts';
 import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
+import { menuHead, titleBarOptions } from './mac-window.ts';
+import { askPathLink } from './path-link.ts';
+
+// os.userInfo() throws for a uid with no passwd entry.
+function userShellOrNull(): string | null {
+  try {
+    return os.userInfo().shell;
+  } catch {
+    return null;
+  }
+}
 import { PipeClient } from './pipe-client.ts';
 import { listSchemes, windowsTerminalSettingsFiles } from './schemes.ts';
 import { HistoryWatcher, readAgentsRunning, readTranscriptCost, readTurns, readUsage, repoRoot, scanHistory } from './history.ts';
@@ -44,7 +55,7 @@ import { setGitRunnerLog } from './git-runner.ts';
 import { fetchUsage } from './usage.ts';
 import { cappedEdges, cappedNow, usageByKey } from './usage-edges.ts';
 import { autoUpdater } from 'electron-updater';
-import { createUpdater, updateFeedSpec } from './updater.ts';
+import { createUpdater, releasePageUrl, updateFeedSpec } from './updater.ts';
 import { postGapPoster, postInstallPoster } from './install-poster.ts';
 import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
 import { wireUpdateRelay } from './update-relay.ts';
@@ -450,6 +461,10 @@ const updater = createUpdater({
     autoUpdater.forceDevUpdateConfig = !app.isPackaged;
     return autoUpdater;
   },
+  // M9 fix 1025: a Mac build is ad-hoc signed and Squirrel.Mac updates only
+  // a signed app, so it checks and its badge opens the release page.
+  inApp: process.platform === 'win32',
+  openRelease: (v) => void shell.openExternal(releasePageUrl(v)),
 });
 ipcMain.handle('emerald:update-state', () => updater.state());
 
@@ -496,7 +511,9 @@ const browserDriver = wireBrowserDriver(client, {
 // seconds on a show event the installer never lets it see.
 const installMarker = path.join(emeraldHomeOf(process.env), 'installing.json');
 function launchInGap(): boolean {
-  if (!app.isPackaged) return false;
+  // The marker is the NSIS install's (M9 fix 1025): a Mac build never
+  // installs itself.
+  if (!app.isPackaged || process.platform !== 'win32') return false;
   const marker = readMarker(installMarker);
   const now = Date.now();
   const state = gapState(marker, appVersion(), now);
@@ -584,7 +601,9 @@ function sweepRetryMs(): number {
 }
 let sweepRan = false;
 function sweepPendingAfterConnect(): void {
-  if (!app.isPackaged || sweepRan) return;
+  // updaterCacheDir is NSIS's pending folder under %LOCALAPPDATA% (M9 fix
+  // 1025): nothing to sweep off Windows.
+  if (!app.isPackaged || sweepRan || process.platform !== 'win32') return;
   sweepRan = true;
   const version = appVersion();
   const first = sweepPending(updaterCacheDir(), version);
@@ -705,6 +724,22 @@ ipcMain.handle('emerald:hooks-test', async (): Promise<HooksTestResult> => {
   const t = (json as Record<string, unknown> | null)?.['test'];
   if (!isHookTestOutcome(t)) throw new Error('emmer hooks status --test gave no test result');
   return { result: t };
+});
+
+// The PATH link on a Mac (M9 fix 1026, path-link.ts): asked of the login
+// shell once per launch whatever the windows, and a Copy or Not now in one
+// window keeps it down in every later window of this launch; the next
+// launch asks again.
+let pathLinkAsk: Promise<string | null> | null = null;
+let pathLinkDismissed = false;
+ipcMain.handle('emerald:path-link', async (): Promise<string | null> => {
+  if (pathLinkDismissed) return null;
+  pathLinkAsk ??= askPathLink({ platform: process.platform, packaged: app.isPackaged, resourcesPath: process.resourcesPath, env: process.env, userShell: userShellOrNull(), log });
+  const c = await pathLinkAsk;
+  return pathLinkDismissed ? null : c;
+});
+ipcMain.on('emerald:path-link-dismiss', () => {
+  pathLinkDismissed = true;
 });
 
 ipcMain.handle('emerald:hooks-install', async (): Promise<HooksInstallResult> => {
@@ -1053,7 +1088,8 @@ function createWindow(id: string | null, index: number): void {
     minHeight: 400,
     backgroundColor: chrome.bg,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: chrome.overlay, symbolColor: chrome.symbol, height: TITLE_BAR_HEIGHT },
+    // M9 fix 1023: the overlay off darwin, the traffic lights' place on it.
+    ...titleBarOptions(chrome),
     autoHideMenuBar: true,
     show: !background,
     skipTaskbar: background,
@@ -1575,6 +1611,8 @@ app.whenReady().then(() => {
   // their own so the file open relay holds from the click (M9 fix 549).
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
+      // M9 fix 1023: on a Mac the app menu first, for Quit and Cmd+Q.
+      ...menuHead(),
       { role: 'fileMenu' },
       { role: 'editMenu' },
       {

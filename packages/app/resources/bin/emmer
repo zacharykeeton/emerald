@@ -6,10 +6,25 @@
 # as typed. Git Bash still turns an argument that looks like a POSIX path
 # (/clear) into a Windows one, as for every Windows program; MSYS_NO_PATHCONV=1
 # on the call stops that, and pwd -W gives main.js in Windows form so the shim
-# works either way.
-res=$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })
+# works either way. It also serves the Mac bundle, Emerald.app/Contents/
+# Resources/bin, and the PATH link to it (M9 fix 1022): the link is followed
+# to the shim itself first, with POSIX readlink alone since macOS's has no -f,
+# and the bundle's own executable runs the CLI as Node.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+res=$(cd "$(dirname "$self")/.." && { pwd -W 2>/dev/null || pwd; })
 if [ -f "$res/../Emerald.exe" ]; then
   export ELECTRON_RUN_AS_NODE=1
   exec "$res/../Emerald.exe" "$res/cli/dist/main.js" "$@"
+fi
+if [ -f "$res/../MacOS/Emerald" ]; then
+  export ELECTRON_RUN_AS_NODE=1
+  exec "$res/../MacOS/Emerald" "$res/cli/dist/main.js" "$@"
 fi
 exec node "$res/cli/dist/main.js" "$@"

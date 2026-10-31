@@ -2,7 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import type { Logger } from './log.ts';
-import { MACHINE_KEY, REUSE_MS, SpawnEnv, USER_KEY, VOLATILE_KEY, parseRegQuery, registryEnv } from './spawn-path.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
+import { LOGIN_REUSE_MS, MACHINE_KEY, REUSE_MS, SpawnEnv, USER_KEY, VOLATILE_KEY, loginShellArgs, loginShellCommand, parseLoginEnv, parseRegQuery, registryEnv } from './spawn-path.ts';
+
+test.after(removeTemps);
 
 // The shape reg.exe prints, read on this box (M9 fix 971).
 const USER_OUT = [
@@ -81,6 +86,7 @@ test('SpawnEnv.read queries the three keys, shares a read in flight and reuses a
   const sp = new SpawnEnv({
     log: recorder(),
     env: {},
+    platform: 'win32',
     now: () => now,
     query: (key: string) => {
       asked.push(key);
@@ -106,6 +112,7 @@ test('SpawnEnv.read answers null on a failed read, never rejects, and logs the t
   const sp = new SpawnEnv({
     log,
     env: {},
+    platform: 'win32',
     now: () => now,
     query: (key: string) => {
       if (mode === 'reject') return Promise.reject(new Error('reg failed'));
@@ -143,6 +150,7 @@ test('SpawnEnv.read logs nothing for a good first read, and names the U+FFFD and
   const sp = new SpawnEnv({
     log,
     env: {},
+    platform: 'win32',
     now: () => now,
     query: (key: string) => {
       if (key !== MACHINE_KEY) return Promise.resolve(outFor(key));
@@ -166,9 +174,117 @@ test('SpawnEnv.read logs nothing for a good first read, and names the U+FFFD and
   assert.ok(log.lines.at(-1)?.includes('the machine key has no Path value'), log.lines.join('\n'));
 });
 
+// M9 fix 1016: there is no registry off Windows, so nothing is queried and
+// nothing is logged; fix 1019 reads the login shell there, stood in for
+// here by a run that prints an empty environment between the marks.
+test('SpawnEnv.read off Windows asks no registry and logs nothing (M9 fix 1016)', async () => {
+  for (const platform of ['linux', 'darwin'] as const) {
+    const log = recorder();
+    let asked = 0;
+    const sp = new SpawnEnv({
+      log,
+      env: {},
+      platform,
+      query: () => {
+        asked += 1;
+        return Promise.resolve(MACHINE_OUT);
+      },
+      shellRead: (mark) => Promise.resolve(`${mark}{}${mark}`),
+    });
+    assert.deepEqual(await sp.read(), {}, platform);
+    assert.equal(asked, 0, `${platform}: no query`);
+    assert.deepEqual(log.lines, [], `${platform}: nothing logged`);
+  }
+});
+
 test("SpawnEnv.read on this box's own registry answers the logon's USERNAME and a Path (M9 fix 996)", { skip: process.platform !== 'win32' }, async () => {
   const layer = await new SpawnEnv({ log: recorder() }).read();
   assert.ok(layer !== null, 'the read failed');
   assert.equal(layer['USERNAME'], os.userInfo().username);
   assert.ok((layer['Path'] ?? '') !== '');
+});
+
+// M9 fix 1019: the login shell's environment, between two marks.
+test("parseLoginEnv takes the text between the marks, less the shell's own bookkeeping (M9 fix 1019)", () => {
+  const fixture = 'banner\nMARK{"PATH":"/opt/homebrew/bin:/usr/bin","PWD":"/x","SHLVL":"2","_":"/usr/bin/env","HOME":"/Users/me","ELECTRON_RUN_AS_NODE":"1"}MARK';
+  assert.deepEqual(parseLoginEnv(fixture, 'MARK'), { PATH: '/opt/homebrew/bin:/usr/bin', HOME: '/Users/me' });
+  assert.equal(parseLoginEnv('MARK{"PATH":"/a"}', 'MARK'), null, 'no second mark');
+  assert.equal(parseLoginEnv('MARK{bad MARK', 'MARK'), null, 'no JSON between them');
+  assert.equal(parseLoginEnv('nothing here', 'MARK'), null, 'no mark at all');
+});
+
+test('loginShellArgs runs zsh, bash and fish interactive, and loginShellCommand refuses a quoted path (M9 fix 1019)', () => {
+  assert.deepEqual(loginShellArgs('/bin/zsh', 'c'), ['-i', '-l', '-c', 'c']);
+  assert.deepEqual(loginShellArgs('/usr/local/bin/bash', 'c'), ['-i', '-l', '-c', 'c']);
+  assert.deepEqual(loginShellArgs('/bin/sh', 'c'), ['-l', '-c', 'c']);
+  assert.equal(loginShellCommand("/a'b", 'm'), null);
+  assert.equal(loginShellCommand('/x/node', 'm'), `'/x/node' -e 'process.stdout.write(process.argv[1]+JSON.stringify(process.env)+process.argv[1])' m`);
+});
+
+test('SpawnEnv.read off Windows reuses a good login read for 30 s, past the 2 s reuse (M9 fix 1019)', async () => {
+  const log = recorder();
+  let now = 0;
+  let runs = 0;
+  const sp = new SpawnEnv({
+    log,
+    env: {},
+    platform: 'darwin',
+    now: () => now,
+    shellRead: (mark) => {
+      runs += 1;
+      return Promise.resolve(`hint\n${mark}{"PATH":"/opt/homebrew/bin:/usr/bin","SHLVL":"1"}${mark}`);
+    },
+  });
+  assert.deepEqual(await sp.read(), { PATH: '/opt/homebrew/bin:/usr/bin' });
+  now = 10_000;
+  assert.deepEqual(await sp.read(), { PATH: '/opt/homebrew/bin:/usr/bin' });
+  assert.equal(runs, 1, 'one run for two reads 10 s apart');
+  now = LOGIN_REUSE_MS + 1000;
+  await sp.read();
+  assert.equal(runs, 2, 'a read at 31 s runs again');
+  assert.deepEqual(log.lines, [], 'a good read logs nothing');
+});
+
+test('SpawnEnv.read off Windows answers the last good read on a failure, warns once a stretch, and says when it reads again (M9 fix 1019)', async () => {
+  const log = recorder();
+  let now = 0;
+  let mode: 'good' | 'reject' | 'nomarks' = 'good';
+  const sp = new SpawnEnv({
+    log,
+    env: { SHELL: '/bin/zsh' },
+    platform: 'darwin',
+    now: () => now,
+    shellRead: (mark) => {
+      if (mode === 'reject') return Promise.reject(new Error('timed out after 3000 ms'));
+      if (mode === 'nomarks') return Promise.resolve('a profile that broke before the command');
+      return Promise.resolve(`${mark}{"PATH":"/good"}${mark}`);
+    },
+  });
+  assert.deepEqual(await sp.read(), { PATH: '/good' });
+  mode = 'reject';
+  now += LOGIN_REUSE_MS + 1;
+  assert.deepEqual(await sp.read(), { PATH: '/good' }, 'the last good read');
+  mode = 'nomarks';
+  now += LOGIN_REUSE_MS + 1;
+  assert.deepEqual(await sp.read(), { PATH: '/good' }, 'no marks counts as a failure');
+  assert.equal(log.lines.length, 1, 'one warn over two failures');
+  assert.ok(log.lines[0]!.startsWith("warn spawn env: the login shell read failed, sessions get the last good read or the daemon's own environment until it reads again"), log.lines[0]);
+  assert.ok(log.lines[0]!.includes('"shell":"/bin/zsh"'), log.lines[0]);
+  mode = 'good';
+  now += LOGIN_REUSE_MS + 1;
+  assert.deepEqual(await sp.read(), { PATH: '/good' });
+  assert.equal(log.lines.at(-1), 'info spawn env: the login shell read again');
+
+  const never = new SpawnEnv({ log: recorder(), env: {}, platform: 'linux', shellRead: () => Promise.reject(new Error('no shell')) });
+  assert.equal(await never.read(), null, 'a read that never worked answers null');
+});
+
+test("a real login shell's read puts the profile's PATH first, past its banner (M9 fix 1019)", { skip: process.platform === 'win32' }, async () => {
+  const home = mkTemp('emerald-login-');
+  fs.writeFileSync(path.join(home, '.profile'), 'PATH="$HOME/bin:$PATH"\necho banner-from-profile\n');
+  const sp = new SpawnEnv({ log: recorder(), env: { HOME: home, PATH: '/usr/bin:/bin', SHELL: '/bin/bash' } });
+  const layer = await sp.read();
+  assert.ok(layer !== null, 'the read failed');
+  assert.ok((layer['PATH'] ?? '').startsWith(path.join(home, 'bin')), layer['PATH']);
+  assert.equal(layer['SHLVL'], undefined, 'the shell bookkeeping is dropped');
 });

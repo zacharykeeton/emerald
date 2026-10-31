@@ -63,7 +63,21 @@ function lineScript(): string {
   return script;
 }
 
-export function readProcessLine(pid: number): string | null {
+// Off Windows the same line comes from one `ps` (M9 fix 1016), as
+// `<ppid> <basename of argv0> <args>`; argv0 is the first word of args, so
+// a path with a space in it reads oddly, which a trace line allows. -ww
+// keeps ps from cutting the line at a terminal width.
+export function readProcessLine(pid: number, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32') {
+    try {
+      const out = spawnSync('ps', ['-ww', '-o', 'ppid=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C' } });
+      const m = /^\s*(\d+)\s+(\S+)(.*)$/.exec((out.stdout ?? '').split('\n')[0] ?? '');
+      if (m === null) return null;
+      return `${m[1]} ${path.basename(m[2]!)} ${m[2]}${m[3]}`.trimEnd();
+    } catch {
+      return null;
+    }
+  }
   try {
     const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lineScript(), String(pid)], {
       encoding: 'utf8',

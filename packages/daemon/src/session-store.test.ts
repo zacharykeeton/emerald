@@ -353,7 +353,7 @@ test('the shell round trips, and an entry with none or one of the wrong shape lo
   const shellInfo = (id: string, over: Partial<SessionInfo> = {}) => info({ id, kind: 'shell', args: [], conversation: null, claudeSessionId: null, ...over });
   assert.equal(toPersisted(shellInfo('x', { shell: 'gitbash' })).shell, 'gitbash');
   const { shell: _s, ...old } = toPersisted(shellInfo('a'));
-  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [toPersisted(shellInfo('g', { shell: 'gitbash' })), old, { ...toPersisted(shellInfo('z')), shell: 'zsh' }] }));
+  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: [toPersisted(shellInfo('g', { shell: 'gitbash' })), old, { ...toPersisted(shellInfo('z')), shell: 'fish' }] }));
   const loaded = new SessionStore(file, silentLogger).load();
   assert.deepEqual(
     loaded.map((s) => [s.id, s.shell]),

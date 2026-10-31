@@ -184,13 +184,25 @@ export function isEmeraldMod(dir: string): boolean {
 // installed mod's folder, and its sessions would load two copies, both
 // posting under the mod's one header, which the sink does not fold, so
 // every mod event would land twice.
-export function pluginDirs(modDir: string | null, inherited: string | undefined, isMod: (dir: string) => boolean = isEmeraldMod): string {
-  const own = modDir === null ? null : path.resolve(modDir).toLowerCase();
+//
+// Claude Code splits the variable on node's path.delimiter, so off Windows
+// (M9 fix 1018) the list is joined by ':' (written as the literal, so a test
+// on Windows can ask for it), and the compare is case-blind on darwin (APFS
+// is case-insensitive by default) and exact on linux.
+export function pluginDirs(
+  modDir: string | null,
+  inherited: string | undefined,
+  isMod: (dir: string) => boolean = isEmeraldMod,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const sep = platform === 'win32' ? ';' : ':';
+  const fold = platform === 'linux' ? (p: string) => p : (p: string) => p.toLowerCase();
+  const own = modDir === null ? null : fold(path.resolve(modDir));
   const kept = (inherited ?? '')
-    .split(';')
+    .split(sep)
     .filter((dir) => dir !== '')
-    .filter((dir) => path.resolve(dir).toLowerCase() !== own && !isMod(dir));
-  return (modDir === null ? kept : [modDir, ...kept]).join(';');
+    .filter((dir) => fold(path.resolve(dir)) !== own && !isMod(dir));
+  return (modDir === null ? kept : [modDir, ...kept]).join(sep);
 }
 
 // A plain shell session (M9 fix 624: the shell picked among the ones the
@@ -205,20 +217,30 @@ export function pluginDirs(modDir: string | null, inherited: string | undefined,
 // args, since a variable collides with no argument. Every shell names the
 // emerald mod first in CLAUDE_CODE_PLUGIN_DIRS (M9 fix 833), so a claude
 // typed into it loads the mod however it was typed.
+//
+// zsh and bash with no args of their own run as a login shell (M9 fix
+// 1018), so the dev's PATH and prompt come up; it is interactive because
+// its stdin is the pty. sh runs bare. With args each runs them alone. No
+// prompt, rc or mark is injected on Unix yet: a Unix row gets no OSC 133
+// marks and no OSC 9;9 folder.
 export class ShellLauncher implements SessionLauncher {
   private readonly bashrcPath: string;
   private readonly modDir: string | null;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly platform: NodeJS.Platform;
 
-  constructor(opts: { bashrcPath: string; modDir?: string | null; env?: NodeJS.ProcessEnv }) {
+  constructor(opts: { bashrcPath: string; modDir?: string | null; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }) {
     this.bashrcPath = opts.bashrcPath;
     this.modDir = opts.modDir ?? null;
     this.env = opts.env ?? process.env;
+    this.platform = opts.platform ?? process.platform;
   }
 
   // The mod's variable for a launch, or nothing with no mod.
   private modEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-    return this.modDir === null ? {} : { CLAUDE_CODE_PLUGIN_DIRS: pluginDirs(this.modDir, env['CLAUDE_CODE_PLUGIN_DIRS']) };
+    return this.modDir === null
+      ? {}
+      : { CLAUDE_CODE_PLUGIN_DIRS: pluginDirs(this.modDir, env['CLAUDE_CODE_PLUGIN_DIRS'], isEmeraldMod, this.platform) };
   }
 
   // `env` is the session's own (M9 fix 996): the mod's variable, cmd's
@@ -230,8 +252,14 @@ export class ShellLauncher implements SessionLauncher {
         return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } }, env);
       case 'cmd':
         return this.withMod({ file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(env['PROMPT']) } }, env);
+      case 'zsh':
+      case 'bash':
+        return this.withMod({ file: shell.file, args: extraArgs.length > 0 ? extraArgs : ['-l'] }, env);
+      case 'sh':
+        return this.withMod({ file: shell.file, args: extraArgs }, env);
       default: {
-        const file = shell?.file ?? findOnPath('pwsh.exe', env) ?? 'powershell.exe';
+        if (!shell && this.platform !== 'win32') return this.withMod({ file: '/bin/sh', args: extraArgs }, env);
+        const file = shell?.file ?? findOnPath('pwsh.exe', env, this.platform) ?? 'powershell.exe';
         const args = extraArgs.length === 0 ? ['-NoExit', '-Command', PROMPT_WRAPPER] : extraArgs;
         return this.withMod({ file, args: ['-NoLogo', ...args] }, env);
       }

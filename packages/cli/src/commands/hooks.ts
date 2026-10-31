@@ -23,12 +23,15 @@ const options = {
 
 // The shipped hook script sits in packages/cli/hooks, one level above src
 // and dist alike. Installing copies it under ~/.emerald so the settings entry
-// keeps working after the repo moves.
-export function hookOptions(settings: string | undefined): HooksInstallOptions {
+// keeps working after the repo moves. Off Windows the hook is the shell
+// script (M9 fix 1021); everything after this reads the file's extension,
+// never the platform, so a test runs the .sh arm on Windows by naming one.
+export function hookOptions(settings: string | undefined, platform: NodeJS.Platform = process.platform): HooksInstallOptions {
+  const file = platform === 'win32' ? 'claude-hook.cmd' : 'claude-hook.sh';
   return {
     settingsPath: settings ?? process.env['CLAUDE_SETTINGS'] ?? path.join(claudeConfigDir(), 'settings.json'),
-    scriptDest: path.join(emeraldHome(), 'hooks', 'claude-hook.cmd'),
-    scriptSource: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'hooks', 'claude-hook.cmd'),
+    scriptDest: path.join(emeraldHome(), 'hooks', file),
+    scriptSource: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'hooks', file),
   };
 }
 

@@ -19,9 +19,8 @@
 // thirty seconds whatever happens, which is the part that does not depend
 // on having guessed the stall right.
 
-import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { isSameProcess, systemProbes } from '@emerald/shared/process-identity';
+import { isSameProcess, killTree, systemProbes } from '@emerald/shared/process-identity';
 import type { ReaperProbes } from '@emerald/shared/process-identity';
 
 // The identity check lives in shared since M9 fix 494, where the app's
@@ -39,7 +38,9 @@ export const REAPER_DEADLINE_MS = 30_000;
 
 export function reap(pid: number, startedAt: number, probes: ReaperProbes = systemProbes): void {
   if (!isSameProcess(pid, startedAt, probes)) return;
-  spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
+  // taskkill /t on Windows, a ps-read tree off it (M9 fix 1016); there is
+  // nowhere to report a failure, as before.
+  killTree(pid);
 }
 
 // Run as a script (`node reaper.js <pid> <startedAt>`) but importable by

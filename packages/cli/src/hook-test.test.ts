@@ -16,10 +16,12 @@ const scriptSource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 test.after(() => removeTemps());
 
-function installed(): string {
+// The .sh hook is the Mac's (M9 fix 1021); runScript runs it under sh.
+function installed(ext: '.cmd' | '.sh' = '.cmd'): string {
   const dir = mkTemp('emerald-hook-test-');
-  const scriptDest = path.join(dir, 'emerald', 'hooks', 'claude-hook.cmd');
-  installHooks({ settingsPath: path.join(dir, 'claude', 'settings.json'), scriptDest, scriptSource, nodePath: process.execPath });
+  const scriptDest = path.join(dir, 'emerald', 'hooks', `claude-hook${ext}`);
+  const source = path.join(path.dirname(scriptSource), `claude-hook${ext}`);
+  installHooks({ settingsPath: path.join(dir, 'claude', 'settings.json'), scriptDest, scriptSource: source, nodePath: process.execPath });
   return scriptDest;
 }
 
@@ -90,7 +92,8 @@ test('a daemon older than the level is old-daemon and gets no post', async () =>
   }
 });
 
-test('the Test goes through the hosted branch with the daemon.json values, overriding the environment', async () => {
+// It runs the .cmd under cmd.exe; the .sh test below is its mirror off Windows.
+test('the Test goes through the hosted branch with the daemon.json values, overriding the environment', { skip: process.platform !== 'win32' }, async () => {
   const script = installed();
   const sink = await fakeSink();
   const saved = { id: process.env['EMERALD_SESSION_ID'], port: process.env['EMERALD_HOOK_PORT'] };
@@ -109,6 +112,22 @@ test('the Test goes through the hosted branch with the daemon.json values, overr
     else process.env['EMERALD_SESSION_ID'] = saved.id;
     if (saved.port === undefined) delete process.env['EMERALD_HOOK_PORT'];
     else process.env['EMERALD_HOOK_PORT'] = saved.port;
+    sink.close();
+  }
+});
+
+test('the Test runs the .sh hook under sh through the hosted branch (M9 fix 1021)', { skip: process.platform === 'win32' }, async () => {
+  const script = installed('.sh');
+  const sink = await fakeSink();
+  try {
+    assert.equal(await runHookTest(script, deps(sink, HOOK_TEST_LEVEL)), 'passed');
+    assert.equal(sink.requests.length, 1);
+    const got = sink.requests[0]!;
+    assert.equal(got.headers['x-emerald-session'], 'emerald-test');
+    assert.equal(got.headers['x-emerald-token'], 'tok606');
+    assert.equal(got.headers['x-emerald-hook'], script);
+    assert.equal((JSON.parse(got.body) as { hook_event_name: string }).hook_event_name, 'Test');
+  } finally {
     sink.close();
   }
 });

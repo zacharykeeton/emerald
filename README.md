@@ -1,6 +1,6 @@
 # Emerald
 
-Emerald is a desktop app for running and supervising several Claude Code sessions at once on Windows.
+Emerald is a desktop app for running and supervising several Claude Code sessions at once on Windows and on a Mac with Apple silicon.
 Each session gets a pane in a split layout and a row in the sidebar that says whether it is working, waiting or needs you, beside the commit graph of the repository it works in.
 A daemon owns the terminals, so closing the window leaves every session running and the next window picks them up.
 
@@ -11,6 +11,7 @@ This repository holds Emerald's code under the MIT licence, its installers on th
 ## Requirements
 
 - Windows 10 or 11, on arm64 or x64.
+- macOS 14 or newer on Apple silicon (M1 and later). There is no Intel build.
 - Git and Claude Code on the PATH.
 - Node 24 or newer, only to build from source. The installed app brings its own.
 
@@ -39,6 +40,10 @@ Emerald checks the releases every few hours. When a new one is out it downloads 
 1. Remove Emerald in Settings, Apps, Installed apps. That removes the program, the PATH entry, the "Open with" entries for `.md` and `.json`, the two **Open in Emerald** items, and Emerald's hooks in `~/.claude/settings.json`, putting your previous status line back and removing the `emmer-cli` skill. An Emerald older than 0.1.620 leaves the hooks behind: there, run `emmer hooks uninstall` in a terminal first.
 2. What stays, for you to delete if you want it gone: `~/.emerald` (your layouts, the session list and the logs), `%APPDATA%\emerald` (the window's own settings) and `%LOCALAPPDATA%\emerald-updater` (downloaded installers).
 
+## On a Mac
+
+Download `Emerald-<version>-arm64.dmg` from the latest release, open it and drag Emerald to Applications. The app is not signed with an Apple Developer ID, so macOS says it is damaged or cannot be checked until its quarantine is cleared, once per download: `xattr -cr /Applications/Emerald.app`. For `emmer` in a terminal, link it onto the PATH: `sudo mkdir -p /usr/local/bin && sudo ln -sf "/Applications/Emerald.app/Contents/Resources/bin/emmer" /usr/local/bin/emmer`; the window shows this line in a banner while `emmer` is not on the PATH. There is no in-app update on a Mac, since macOS applies an update only to a signed app: the badge says when a release is out and opens its page, and the new dmg goes over the old app the same way, quarantine and all. The app's chords are Ctrl on a Mac too for now, as on Windows; Cmd+C, Cmd+V and Cmd+Q do what they do in any Mac app, and Cmd+W closes the window. To uninstall, quit Emerald and drag it to the Trash, run `emmer hooks uninstall` first if the hooks are installed, and delete what stays if you want it gone: `~/.emerald`, `~/Library/Application Support/emerald` (the window's own settings) and the link, `sudo rm /usr/local/bin/emmer`.
+
 ## Build from source
 
 With Git and Node 24 or newer:
@@ -53,6 +58,8 @@ npm run dist -w @emerald/app -- --x64
 ```
 
 On an x64 PC that writes `packages/app/release-x64/Emerald-setup-<version>-x64.exe`. On an ARM PC leave out `-- --x64`; the installer lands in `packages/app/release/` as `Emerald-setup-<version>-arm64.exe`. Run the installer as above. One you built yourself carries no mark of the web, so SmartScreen does not stop it.
+
+On a Mac with Apple silicon the last command is `npm run dist:mac -w @emerald/app`, which writes `packages/app/release-mac/Emerald-<version>-arm64.dmg`; a dmg you built yourself carries no quarantine, so the `xattr` step is not needed.
 
 The first `dist` downloads Electron and the NSIS tools; later builds take a few minutes. A build of your own never shows the update badge; to update, `git pull`, run the four build commands again and install the new installer over the old one. Your sessions and layouts stay.
 

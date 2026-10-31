@@ -25,17 +25,22 @@ export interface ClaudeLauncherOptions {
   // The emerald mod's folder (M9 fix 725), loaded with --plugin-dir ahead
   // of the session's own arguments; null launches without it.
   modDir?: string | null;
+  // The platform the launch resolves for (M9 fix 1019); process.platform
+  // by default, named by a test to run the other arm.
+  platform?: NodeJS.Platform;
 }
 
 export class ClaudeLauncher implements SessionLauncher {
   private readonly env: NodeJS.ProcessEnv;
   private readonly home: string;
   readonly modDir: string | null;
+  private readonly platform: NodeJS.Platform;
 
   constructor(opts: ClaudeLauncherOptions = {}) {
     this.env = opts.env ?? process.env;
     this.home = opts.home ?? os.homedir();
     this.modDir = opts.modDir ?? null;
+    this.platform = opts.platform ?? process.platform;
   }
 
   // `env` is the session's own (M9 fix 996), so a claude installed since
@@ -43,13 +48,13 @@ export class ClaudeLauncher implements SessionLauncher {
   command(extraArgs: string[], _shell?: ShellOption | null, env: NodeJS.ProcessEnv = this.env): LaunchCommand {
     const file = this.resolveClaude(env);
     if (file === null) {
-      throw new Error('claude.exe not found in ~/.local/bin or on PATH');
+      throw new Error(this.platform === 'win32' ? 'claude.exe not found in ~/.local/bin or on PATH' : 'claude not found in ~/.local/bin or on PATH');
     }
     // Only the command line carries the flag; the record's own args (what
     // session.list and emmer resume show) stay the user's.
     const args = this.modDir === null ? [...extraArgs] : ['--plugin-dir', this.modDir, ...extraArgs];
     const channel = this.modChannelEnv();
-    if (file.toLowerCase().endsWith('.cmd')) {
+    if (this.platform === 'win32' && file.toLowerCase().endsWith('.cmd')) {
       const resolved = resolveNpmShim(file, env);
       if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args], ...channel };
       return { file, args, note: SHIM_NOTE, ...channel };
@@ -68,9 +73,18 @@ export class ClaudeLauncher implements SessionLauncher {
 
   private resolveClaude(env: NodeJS.ProcessEnv): string | null {
     // The native installer puts it here and may not be on PATH for a detached daemon.
+    if (this.platform !== 'win32') {
+      // M9 fix 1019: on a Mac the native installer's link (statSync follows
+      // it into ~/.local/share/claude/versions), else the PATH's. The file
+      // runs as it is, a binary or a #! script alike; the kernel reads the
+      // shebang when node-pty execs it.
+      const local = path.join(this.home, '.local', 'bin', 'claude');
+      if (isFile(local)) return local;
+      return findOnPath('claude', env, this.platform);
+    }
     const local = path.join(this.home, '.local', 'bin', 'claude.exe');
     if (isFile(local)) return local;
-    return findOnPath('claude.exe', env) ?? findOnPath('claude', env);
+    return findOnPath('claude.exe', env, this.platform) ?? findOnPath('claude', env, this.platform);
   }
 }
 
@@ -100,7 +114,7 @@ function resolveNpmShim(shim: string, env: NodeJS.ProcessEnv): { node: string; s
   const script = path.join(dir, last);
   if (!isFile(script)) return null;
   const beside = path.join(dir, 'node.exe');
-  const node = isFile(beside) ? beside : findOnPath('node.exe', env);
+  const node = isFile(beside) ? beside : findOnPath('node.exe', env, 'win32');
   if (node === null) return null;
   return { node, script };
 }

@@ -20,11 +20,13 @@ export function nodeCommand(runner: Runner): NodeCommand {
   return { exe: node ?? process.execPath, env };
 }
 
-function findNode(): string | null {
-  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
-  for (const dir of dirs) {
-    const candidate = path.join(dir, 'node.exe');
-    if (fs.existsSync(candidate)) return candidate;
+// The first node on the PATH: node.exe on Windows, node elsewhere (M9 fix
+// 1025; a dev build off Windows fell back to self before).
+export function findNode(pathVar: string = process.env['PATH'] ?? '', platform: NodeJS.Platform = process.platform, exists: (p: string) => boolean = fs.existsSync): string | null {
+  const name = platform === 'win32' ? 'node.exe' : 'node';
+  for (const dir of pathVar.split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(dir, name);
+    if (exists(candidate)) return candidate;
   }
   return null;
 }

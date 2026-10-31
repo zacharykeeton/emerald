@@ -86,7 +86,7 @@ export function TitleBar() {
   // The badge at the row's right (M9 fix 239): a newer build in the feed,
   // the download, the restart; nothing at all otherwise, so the row is
   // what it was for a build with no feed.
-  const badge = update === null ? null : updateBadge(update.current, update.latest, update.phase, update.percent, update.message);
+  const badge = update === null ? null : updateBadge(update.current, update.latest, update.phase, update.percent, update.message, window.emerald.platform);
   return (
     <div className="title-bar" hidden={fullscreen}>
       <button ref={markRef} className="title-bar-mark" title="Menu" aria-haspopup="menu" aria-expanded={menuOpen} data-glint={glint || undefined} data-usage={usageRecord ? 'on' : 'off'} onClick={() => setMenuOpen((o) => !o)}>
@@ -99,7 +99,7 @@ export function TitleBar() {
           onClose={() => setMenuOpen(false)}
           className="app-menu"
           anchor={markRef.current}
-          items={appMenuItems(version, update, skin, usageRecord, windowsSupported(daemon)).map((item) => ({
+          items={appMenuItems(version, update, skin, usageRecord, windowsSupported(daemon), window.emerald.platform).map((item) => ({
             label: item.label,
             hint: item.hint,
             disabled: item.disabled,

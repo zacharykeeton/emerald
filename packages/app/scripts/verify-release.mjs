@@ -120,6 +120,9 @@ const heading = /^##\s+(.+?)\s*$/m.exec(whatsNew)?.[1];
 const notesLine = /^--- notes: (.+) \((\d+) lines\)$/m.exec(r.out);
 expect(notesLine !== null && notesLine[1] === heading, `the notes are the newest section of docs/WHATS-NEW.md (${notesLine?.[1]}, ${notesLine?.[2]} lines)`);
 expect(/^--- the code: v\S+ tags zacharykeeton\/emerald's default branch, /m.test(r.out), 'the code line names the public repo');
+// M9 fix 1029: spelled with literals rather than through macAssetNames, so
+// the script and the helper are read against each other.
+expect(r.out.includes(`--- the Mac build: publishing v${version} starts mac.yml on zacharykeeton/emerald, which uploads Emerald-${version}-arm64.dmg, Emerald-${version}-arm64.zip, latest-mac.yml to the release\n`), 'the dry run names the Mac build the workflow uploads');
 
 const ghLine = /^--- gh (.+)$/m.exec(r.out)?.[1] ?? '';
 const prefix = `release create v${version} --draft --repo zacharykeeton/emerald --title "Emerald ${version}" --notes-file `;

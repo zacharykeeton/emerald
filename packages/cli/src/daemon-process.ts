@@ -1,8 +1,9 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { killTree } from '@emerald/shared/process-identity';
 import { CliError } from './cli-error.ts';
 import { daemonInfoPath, pipePath } from './paths.ts';
 
@@ -92,10 +93,11 @@ export function spawnDaemon(daemonMain: string): void {
 
 // Node's process.kill on Windows is TerminateProcess, which never runs the
 // daemon's shutdown handler, and the shells it spawned would linger as
-// orphans. taskkill /t takes the whole tree the way the verify scripts do.
+// orphans. taskkill /t takes the whole tree the way the verify scripts do;
+// off Windows killTree reads the tree through ps (M9 fix 1016).
 export function killProcessTree(pid: number): void {
-  const result = spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
-  if (result.error !== undefined) throw new CliError(`taskkill failed: ${result.error.message}`);
+  const err = killTree(pid);
+  if (err !== null) throw new CliError(`${process.platform === 'win32' ? 'taskkill' : 'kill'} failed: ${err}`);
 }
 
 export function sleep(ms: number): Promise<void> {

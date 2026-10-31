@@ -1,4 +1,5 @@
 import type { Command } from '../command.ts';
+import { shellSummary } from '../shell-words.ts';
 
 // One command's place in the list (M9 fix 736): its name and summary for
 // `emmer help`, and a loader, so a run imports the one command it runs and
@@ -14,7 +15,7 @@ export interface CommandEntry {
 export const commands: CommandEntry[] = [
   { name: 'ls', summary: 'list sessions in sidebar order', load: () => import('./ls.ts').then((m) => m.default) },
   { name: 'new', summary: 'start a Claude session in a folder', load: () => import('./new.ts').then((m) => m.default) },
-  { name: 'shell', summary: 'start a plain shell session in a folder; --shell picks pwsh, powershell, gitbash or cmd', load: () => import('./shell.ts').then((m) => m.default) },
+  { name: 'shell', summary: shellSummary(), load: () => import('./shell.ts').then((m) => m.default) },
   { name: 'send', summary: 'type text into a session', load: () => import('./send.ts').then((m) => m.default) },
   { name: 'read', summary: 'print what a session has written to its terminal', load: () => import('./read.ts').then((m) => m.default) },
   { name: 'wait', summary: 'block until a session reaches a state, goes quiet, stalls or exits', load: () => import('./wait.ts').then((m) => m.default) },

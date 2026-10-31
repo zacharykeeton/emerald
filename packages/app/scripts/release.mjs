@@ -10,6 +10,9 @@
 // assets are read back from GitHub, each name and size checked against the
 // local file, and only when all match is the draft published, since the user
 // handed the Publish click to the session at the install of fixes 888 to 917.
+// The Mac files are not this script's (M9 fix 1029): .github/workflows/mac.yml
+// builds them on a macOS runner and its run uploads them to the published
+// release, so the read-back counts the five Windows assets alone.
 //
 //   npm run release -w @emerald/app                 build, check, draft
 //   npm run release -w @emerald/app -- --no-build   use release/ and release-x64/ as they are
@@ -26,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLatestYml } from '@emerald/shared';
-import { appUpdateTarget, installerName, mergeLatestYml, PUBLIC_RELEASES_REPO, releaseCreateArgs, releaseNotes } from '@emerald/shared/release';
+import { appUpdateTarget, installerName, macAssetNames, mergeLatestYml, PUBLIC_RELEASES_REPO, releaseCreateArgs, releaseNotes } from '@emerald/shared/release';
 import { sha512Base64 } from '../../cli/dist/feed.js';
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,6 +160,7 @@ function main() {
       console.log(`--- notes: ${notes.heading} (${lines} lines)`);
       console.log(`--- the code: v${version} tags ${PUBLIC_RELEASES_REPO}'s default branch, which node scripts/export-public.mjs --update and a push put at Emerald ${version} first`);
       console.log(`--- gh ${ghArgs.map(quoteArg).join(' ')}`);
+      console.log(`--- the Mac build: publishing v${version} starts mac.yml on ${PUBLIC_RELEASES_REPO}, which uploads ${macAssetNames(version).join(', ')} to the release`);
       if (publish) console.log(`--- then, once the draft's five assets read back with the local names and sizes: gh release edit v${version} --repo ${PUBLIC_RELEASES_REPO} --draft=false --latest`);
       return;
     }
@@ -184,6 +188,13 @@ function main() {
     if (pub.status !== 0) refuse(`gh release edit failed; v${version} stays a draft`);
     const latest = run('gh', ['api', `repos/${PUBLIC_RELEASES_REPO}/releases/latest`, '--jq', '.tag_name + " " + .published_at']);
     console.log(`published v${version} on ${PUBLIC_RELEASES_REPO}; releases/latest reads ${latest.stdout.trim()}`);
+    // M9 fix 1029: the Mac files are the workflow's. Nothing waits on its
+    // run or refuses on it: the Windows release is complete without it.
+    const names = macAssetNames(version);
+    console.log(`the Mac build: mac.yml uploads ${names.join(', ')} to v${version} when its run passes; gh run watch it, then gh release view v${version} --repo ${PUBLIC_RELEASES_REPO} lists eight assets`);
+    const runs = run('gh', ['run', 'list', '--workflow', 'mac.yml', '--repo', PUBLIC_RELEASES_REPO, '--limit', '1']);
+    const listed = runs.status === 0 ? runs.stdout.trim() : '';
+    console.log(listed !== '' ? listed : '(no run listed yet; GitHub can take a minute to start one)');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -146,8 +146,11 @@ function make(p: string, write: (target: string) => void): FileMade {
 // that stops it is `refused`, with `busy` set for EBUSY and EPERM so the
 // rail can say a session holds the folder. The gap between the check and
 // the rename is microseconds, the same race writeFileText's comment
-// accepts.
-export function renameEntry(from: string, to: string): FileRenamed {
+// accepts. M9 fix 1025: off Windows a case-only rename skips the check
+// only when both names are one entry (the same dev and ino: APFS by
+// default, or any case-blind volume), so a case-sensitive volume with two
+// real entries still answers exists and nothing is overwritten.
+export function renameEntry(from: string, to: string, platform: NodeJS.Platform = process.platform): FileRenamed {
   let a: string;
   let b: string;
   try {
@@ -159,7 +162,8 @@ export function renameEntry(from: string, to: string): FileRenamed {
   if (path.dirname(a) !== path.dirname(b)) return { ok: false, reason: 'refused', busy: false };
   if (a === b) return { ok: true };
   const isBusy = (code: string | undefined) => code === 'EBUSY' || code === 'EPERM';
-  if (!(process.platform === 'win32' && a.toLowerCase() === b.toLowerCase())) {
+  const caseOnly = a.toLowerCase() === b.toLowerCase();
+  if (!(caseOnly && (platform === 'win32' || sameEntry(a, b)))) {
     try {
       fs.lstatSync(b);
       return { ok: false, reason: 'exists' };
@@ -274,6 +278,17 @@ export async function walkTree(src: string): Promise<TreeWalk> {
   return { dirs, files };
 }
 
+// Whether two paths name one entry on disk (M9 fix 1025).
+function sameEntry(a: string, b: string): boolean {
+  try {
+    const x = fs.lstatSync(a);
+    const y = fs.lstatSync(b);
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
+}
+
 export interface MoveDeps {
   trash: (target: string) => Promise<void>;
   rename?: (from: string, to: string) => Promise<void>;
@@ -288,6 +303,8 @@ export interface MoveDeps {
   now?: () => number;
   // Milliseconds slept after each copied file, EMERALD_COPY_PACE_MS's.
   pace?: number;
+  // The platform whose path compare applies (M9 fix 1025); a test names it.
+  platform?: NodeJS.Platform;
 }
 
 // An entry the drop can act on, or the outcome that stops it before
@@ -297,11 +314,13 @@ type Planned = { src: string; to: string; kind: 'dir' | 'file' } | { outcome: Mo
 const errCode = (err: unknown): string | undefined => (err as NodeJS.ErrnoException).code;
 
 export async function moveEntries(paths: readonly string[], dir: string, mode: MoveMode, replace: readonly string[] | null, deps: MoveDeps): Promise<FilesMoved> {
-  const win32 = process.platform === 'win32';
-  const same = (a: string, b: string) => (win32 ? a.toLowerCase() === b.toLowerCase() : a === b);
+  // Case-blind on Windows and on a Mac, whose APFS is case-insensitive by
+  // default (M9 fix 1025); exact on Linux.
+  const blind = (deps.platform ?? process.platform) !== 'linux';
+  const same = (a: string, b: string) => (blind ? a.toLowerCase() === b.toLowerCase() : a === b);
   const under = (child: string, parent: string) => {
     const prefix = parent.endsWith(path.sep) ? parent : parent + path.sep;
-    return win32 ? child.toLowerCase().startsWith(prefix.toLowerCase()) : child.startsWith(prefix);
+    return blind ? child.toLowerCase().startsWith(prefix.toLowerCase()) : child.startsWith(prefix);
   };
   let into: string;
   try {

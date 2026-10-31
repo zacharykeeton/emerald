@@ -6,11 +6,11 @@
 //
 //   stage/
 //     daemon/package.json, dist/*.js
-//     cli/package.json, dist/**/*.js, hooks/claude-hook.cmd and the status line files, mod/ (the emerald mod, M9 fix 725), skills/emmer-cli/SKILL.md
+//     cli/package.json, dist/**/*.js, hooks/claude-hook.cmd and the status line files, their .sh pair for a Mac (M9 fix 1021), mod/ (the emerald mod, M9 fix 725), skills/emmer-cli/SKILL.md
 //     node_modules/@emerald/shared/package.json, dist/*.js
-//     node_modules/node-pty/package.json, lib/*.js, prebuilds/win32-<arch>/
+//     node_modules/node-pty/package.json, lib/*.js, prebuilds/<platform>-<arch>/ (linux: build/Release/pty.node staged there)
 //     node_modules/@xterm/headless/package.json, lib-headless/xterm-headless.js
-//     bin/emmer.cmd, emmer (the Git Bash shim, M9 fix 884), emmer-path.ps1
+//     bin/emmer.cmd, emmer (the Git Bash shim, M9 fix 884, and the Mac bundle's and its PATH link's, M9 fix 1022), emmer-path.ps1
 //     schemes/*.json, the terminal's shipped colour schemes (M9 fix 225)
 //     WHATS-NEW.md, the notes the What's New tab shows (M9 fix 227)
 //
@@ -63,7 +63,11 @@ function require(file, hint) {
   if (!fs.existsSync(file)) throw new Error(`${file} is missing (${hint})`);
 }
 
-export function stage({ arch = 'arm64' } = {}) {
+export function stage({ arch = 'arm64', platform = process.platform } = {}) {
+  // M9 fix 1027: the folder of node-pty's prebuild for the target platform.
+  // Linux has none (npm ci compiles build/Release/pty.node); that arm is for
+  // the WSL runs of the Mac batch and ships nothing.
+  const prebuild = platform === 'linux' ? null : `${platform}-${arch}`;
   const daemon = path.join(repoRoot, 'packages', 'daemon');
   const cli = path.join(repoRoot, 'packages', 'cli');
   const shared = path.join(repoRoot, 'packages', 'shared');
@@ -71,7 +75,8 @@ export function stage({ arch = 'arm64' } = {}) {
   require(path.join(daemon, 'dist', 'main.js'), 'run npm run build at the repo root');
   require(path.join(cli, 'dist', 'main.js'), 'run npm run build at the repo root');
   require(path.join(shared, 'dist', 'index.js'), 'run npm run build at the repo root');
-  require(path.join(nodePty, 'prebuilds', `win32-${arch}`, 'pty.node'), 'npm install did not fetch node-pty 1.1.0');
+  if (prebuild !== null) require(path.join(nodePty, 'prebuilds', prebuild, 'pty.node'), 'npm install did not fetch node-pty 1.1.0');
+  else require(path.join(nodePty, 'build', 'Release', 'pty.node'), 'npm ci did not build node-pty (install build-essential and python3)');
 
   fs.rmSync(stageDir, { recursive: true, force: true });
 
@@ -80,7 +85,7 @@ export function stage({ arch = 'arm64' } = {}) {
 
   copyFile(path.join(cli, 'package.json'), path.join(stageDir, 'cli', 'package.json'));
   copyTree(path.join(cli, 'dist'), path.join(stageDir, 'cli', 'dist'), isRuntimeJs);
-  for (const f of ['claude-hook.cmd', 'claude-statusline.cmd', 'claude-statusline.js']) {
+  for (const f of ['claude-hook.cmd', 'claude-statusline.cmd', 'claude-statusline.js', 'claude-hook.sh', 'claude-statusline.sh']) {
     copyFile(path.join(cli, 'hooks', f), path.join(stageDir, 'cli', 'hooks', f));
   }
   // The emerald mod (M9 fix 725), by name, so its register.test.tsx stays out.
@@ -99,11 +104,20 @@ export function stage({ arch = 'arm64' } = {}) {
   const ptyOut = path.join(stageDir, 'node_modules', 'node-pty');
   copyFile(path.join(nodePty, 'package.json'), path.join(ptyOut, 'package.json'));
   copyTree(path.join(nodePty, 'lib'), path.join(ptyOut, 'lib'), isRuntimeJs);
-  copyTree(
-    path.join(nodePty, 'prebuilds', `win32-${arch}`),
-    path.join(ptyOut, 'prebuilds', `win32-${arch}`),
-    (name) => !name.endsWith('.pdb'),
-  );
+  if (prebuild !== null) {
+    copyTree(
+      path.join(nodePty, 'prebuilds', prebuild),
+      path.join(ptyOut, 'prebuilds', prebuild),
+      (name) => !name.endsWith('.pdb'),
+    );
+  } else {
+    // node-gyp leaves a second pty.node under obj.target/; only the one at
+    // the top goes, to where loadNativeModule looks for a prebuild.
+    copyTree(path.join(nodePty, 'build', 'Release'), path.join(ptyOut, 'prebuilds', `linux-${arch}`), (_name, rel) => rel === 'pty.node');
+  }
+  // node-pty runs spawn-helper as a program on a Mac, and whether the npm
+  // tarball keeps its executable bit has not been read.
+  if (platform === 'darwin') fs.chmodSync(path.join(ptyOut, 'prebuilds', prebuild, 'spawn-helper'), 0o755);
 
   // The headless xterm behind read --screen (M17): one JS bundle, no
   // dependencies of its own. Left out of the stage until the M29 install
@@ -117,6 +131,7 @@ export function stage({ arch = 'arm64' } = {}) {
   copyFile(path.join(appDir, 'resources', 'bin', 'emmer.cmd'), path.join(stageDir, 'bin', 'emmer.cmd'));
   copyFile(path.join(appDir, 'resources', 'bin', 'emmer-path.ps1'), path.join(stageDir, 'bin', 'emmer-path.ps1'));
   copyFile(path.join(appDir, 'resources', 'bin', 'emmer'), path.join(stageDir, 'bin', 'emmer'));
+  fs.chmodSync(path.join(stageDir, 'bin', 'emmer'), 0o755);
   // The colour schemes land under resources/schemes next to app.asar,
   // where main/index.ts's resolveSchemesDir reads them in a packaged app.
   copyTree(path.join(appDir, 'resources', 'schemes'), path.join(stageDir, 'schemes'), (name) => name.endsWith('.json'));

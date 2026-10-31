@@ -1,0 +1,66 @@
+# M9 fix 1028: the Mac build. electron-builder cannot make a dmg on
+# Windows, so a macOS runner of the public repository (free there) builds
+# it on every published release, runs the packaged app's smoke and uploads
+# the dmg, the zip and latest-mac.yml to that release. A push to a ci/mac-*
+# branch runs the same and keeps the files as the run's artifact; a
+# dispatch with a tag rebuilds an existing release's Mac files.
+name: mac
+on:
+  release:
+    types: [published]
+  push:
+    branches: ['ci/mac-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'A release tag (v0.1.N) to build and upload to; empty keeps the files as the run artifact'
+        required: false
+        default: ''
+permissions:
+  contents: write
+jobs:
+  mac:
+    # Apple silicon. macos-14's image is retired on 2026-11-02 and was
+    # already browned out at the first push (actions/runner-images#13518).
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build -w @emerald/app
+      - run: npm run dist:mac -w @emerald/app
+      - name: smoke
+        run: npm run smoke:mac -w @emerald/app -- --out "$RUNNER_TEMP/smoke"
+      - name: smoke logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: warn
+      - name: upload to the release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(node -p "require('./packages/app/package.json').version")
+          test "$TAG" = "v$v" || { echo "mac: the tag $TAG is not v$v, the version this build carries"; exit 1; }
+          gh release upload "$TAG" "packages/app/release-mac/Emerald-$v-arm64.dmg" "packages/app/release-mac/Emerald-$v-arm64.zip" packages/app/release-mac/latest-mac.yml --clobber --repo zacharykeeton/emerald
+      - name: keep the build
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: emerald-mac
+          path: |
+            packages/app/release-mac/*.dmg
+            packages/app/release-mac/*.zip
+            packages/app/release-mac/latest-mac.yml

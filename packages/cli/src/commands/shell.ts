@@ -1,10 +1,11 @@
 import type { Command } from '../command.ts';
+import { shellSummary, shellUsage } from '../shell-words.ts';
 import { spawnCommand } from '../spawn.ts';
 
 const command: Command = {
   name: 'shell',
-  summary: 'start a plain shell session in a folder; --shell picks pwsh, powershell, gitbash or cmd',
-  usage: 'emmer shell <dir> [--name <label>] [--shell pwsh|powershell|gitbash|cmd] [--json] [-- <shell args>]',
+  summary: shellSummary(),
+  usage: shellUsage(),
   run: (argv) => spawnCommand('shell', argv),
 };
 

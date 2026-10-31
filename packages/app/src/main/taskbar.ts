@@ -1,8 +1,9 @@
-import { nativeImage } from 'electron';
+import { app, nativeImage } from 'electron';
 import type { BrowserWindow, NativeImage } from 'electron';
 import type { AttentionRequest } from '../preload/api.ts';
 import { BADGE_SIZE, badgeColour, createTaskbarPolicy, drawBadge } from './taskbar-policy.ts';
 import { currentSkin } from './skin.ts';
+import { createDockSignal } from './dock-signal.ts';
 import type { TaskbarLog, TaskbarWindow } from './taskbar-policy.ts';
 
 // The taskbar button as an attention signal (M9 fix 104). From another
@@ -22,6 +23,11 @@ export interface Taskbar {
   set(req: AttentionRequest): void;
   dispose(): void;
 }
+
+// One dock for every window on a Mac (M9 fix 1024): the signal is shared,
+// made at the first taskbar, and each taskbar is one key in it.
+let dockSignal: ReturnType<typeof createDockSignal> | null = null;
+let nextDockKey = 0;
 
 export function createTaskbar(getWindow: () => BrowserWindow | null, log: TaskbarLog): Taskbar {
   const frames = new Map<string, NativeImage>();
@@ -50,14 +56,29 @@ export function createTaskbar(getWindow: () => BrowserWindow | null, log: Taskba
       setTooltip: (text) => win.setThumbnailToolTip(text),
     };
   };
-  const policy = createTaskbarPolicy(adapt, {
+  // On a Mac the dock stands in for the button, and no badge frame is drawn.
+  const dock = process.platform === 'darwin' ? app.dock : undefined;
+  const key = nextDockKey++;
+  const dockAdapt = (): TaskbarWindow | null => {
+    const win = getWindow();
+    if (dock === undefined || win === null || win.isDestroyed()) return null;
+    return (dockSignal ??= createDockSignal(dock)).windowFor(key);
+  };
+  const policy = createTaskbarPolicy(dock !== undefined ? dockAdapt : adapt, {
     held: process.env['EMERALD_HOME'] !== undefined,
     windows: process.platform === 'win32',
+    dock: dock !== undefined,
     log,
     every: (ms, fn) => {
       const timer = setInterval(fn, ms);
       return () => clearInterval(timer);
     },
   });
-  return { set: (req) => policy.set(req), dispose: () => policy.dispose() };
+  return {
+    set: (req) => policy.set(req),
+    dispose: () => {
+      policy.dispose();
+      dockSignal?.drop(key);
+    },
+  };
 }

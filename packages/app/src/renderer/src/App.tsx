@@ -17,6 +17,7 @@ import { useGitWatchRoots } from './git-watch.ts';
 import { focusTerminal, treeKeepsKeysOnPanes } from './focus.ts';
 import { installFocusHistory } from './focus-history.ts';
 import { HooksBanner } from './HooksBanner.tsx';
+import { PathBanner } from './PathBanner.tsx';
 import { configurePrefix, installKeybindings } from './keys.ts';
 import { installUseRecord, recordUse } from './use-record.ts';
 import { outsideOpenUse } from './use-record-model.ts';
@@ -128,6 +129,7 @@ export function App() {
       {!connected && <div className="banner">Disconnected from emmerd, reconnecting</div>}
       <DaemonBanner />
       <HooksBanner />
+      <PathBanner />
       <div className="app-body">
         <Sidebar />
         <div className="app-center">

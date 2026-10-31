@@ -90,6 +90,19 @@ test('applySkin: keeps the skin in the file, repaints the chrome and logs the li
   assert.equal(currentSkin(), 'emerald');
 });
 
+test('applySkin on darwin: the ground alone, no overlay to repaint, the same log line (M9 fix 1023)', () => {
+  const lines: string[] = [];
+  initSkin(path.join(dir, 'darwin.json'), (m) => lines.push(m));
+  const win = fakeWindow();
+  applySkin(win, 'classic', 'darwin');
+  assert.deepEqual(win.calls, ['setBackgroundColor #1e1e1e']);
+  assert.deepEqual(lines, ['skin classic: ground #1e1e1e, title bar overlay #202020, symbols #9a9a9a']);
+  const w32 = fakeWindow();
+  applySkin(w32, 'classic', 'win32');
+  assert.deepEqual(w32.calls, ['setBackgroundColor #1e1e1e', 'setTitleBarOverlay {"color":"#202020","symbolColor":"#9a9a9a","height":26}']);
+  assert.equal(lines[1], lines[0], 'the line verify:skin reads is the same on both');
+});
+
 test('CHROME equals the --chrome-* tokens of both blocks in style.css', () => {
   const raw = fs.readFileSync(fileURLToPath(new URL('../renderer/src/style.css', import.meta.url)), 'utf8');
   const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');

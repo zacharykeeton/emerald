@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DAEMON_FEATURE_LEVEL, Limits, PROTOCOL_VERSION } from '@emerald/shared';
-import { pipePathOf, readPipeToken, sameHome } from '@emerald/shared/pipe-name';
-import { processIdentityAsync } from '@emerald/shared/process-identity';
+import { isNoDaemon, pipePathOf, readPipeToken, sameHome } from '@emerald/shared/pipe-name';
+import { killTree, processIdentityAsync } from '@emerald/shared/process-identity';
 import type { ClientMessage, RequestType, Requests, ShellOption } from '@emerald/shared';
 // The shared one-connection client (M9 fix 665); this class keeps the name
 // PipeClient, since index.ts, update-relay.ts and the tests read it.
@@ -216,7 +216,14 @@ export class PipeClient extends EventEmitter {
       return false;
     }
     this.opts.log(line);
-    spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true }).on('error', (err) => this.opts.log(`taskkill failed: ${String(err)}`));
+    // An async taskkill on Windows (a synchronous spawn would block the
+    // window's main process under the antivirus hold); off it the ps-read
+    // tree kill, which is a ps and signals (M9 fix 1016).
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true }).on('error', (err) => this.opts.log(`taskkill failed: ${String(err)}`));
+    else {
+      const err = killTree(pid);
+      if (err !== null) this.opts.log(`kill failed: ${err}`);
+    }
     return true;
   }
 
@@ -263,7 +270,7 @@ export class PipeClient extends EventEmitter {
         retriedToken = false;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') {
+        if (isNoDaemon(code)) {
           if (Date.now() >= nextStartAt) {
             tries += 1;
             this.startDaemon(tries);

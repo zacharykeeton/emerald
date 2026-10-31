@@ -62,6 +62,10 @@ asar: true
 # rather than the asar, so there is nothing to rebuild.
 npmRebuild: false
 nodeGypRebuild: false
+# M9 fix 1027: signs the Mac build ad hoc after the resources are copied and
+# before electron-builder's own signing step (skipped, identity null), so the
+# dmg and the zip carry its signature; it does nothing on Windows.
+afterPack: build/after-pack.cjs
 
 win:
   target:
@@ -89,3 +93,27 @@ nsis:
   # comment of updater-cache.ts).
   runAfterFinish: false
   artifactName: ${productName}-setup-${version}-${arch}.${ext}
+
+# M9 fix 1027: Apple silicon only, built on the macOS runner of
+# .github/workflows/mac.yml (electron-builder cannot make a dmg on
+# Windows). Unsigned: identity null skips electron-builder's signing and
+# build/after-pack.cjs signs the bundle ad hoc, since Apple silicon
+# refuses to run a binary with no signature at all. The zip is the one
+# electron-updater's Mac path reads; latest-mac.yml names it.
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# The dmg is for a person to open; the updater reads the zip, so the dmg
+# gets no blockmap or update entry of its own.
+dmg:
+  writeUpdateInfo: false

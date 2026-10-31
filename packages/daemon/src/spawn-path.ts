@@ -5,9 +5,13 @@
 // started is in the next pane without a daemon restart. A name the registry
 // does not hold keeps the daemon's value. The daemon's own environment is
 // left alone.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
+import { killTree } from '@emerald/shared/process-identity';
 import type { Logger } from './log.ts';
+import { loginShell } from './shells.ts';
 
 export const MACHINE_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
 export const USER_KEY = 'HKCU\\Environment';
@@ -24,6 +28,50 @@ export const REUSE_MS = 2000;
 // How long an app's hello waits on a read before it answers the shells it
 // holds (M9 fix 996); a read that lands later refreshes them for the next.
 export const HELLO_WAIT_MS = 500;
+
+// Off Windows (M9 fix 1019) the layer is the login shell's environment: a
+// run held longer than LOGIN_TIMEOUT_MS fails, a good read is reused for
+// LOGIN_REUSE_MS, and the names below are the shell's own bookkeeping and
+// the read's own variable, none of which a session should inherit from it.
+export const LOGIN_TIMEOUT_MS = 3000;
+export const LOGIN_REUSE_MS = 30_000;
+export const LOGIN_DROPPED: ReadonlySet<string> = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'ELECTRON_RUN_AS_NODE']);
+
+// zsh, bash and fish read their rc files only when interactive, which is
+// where a dev's PATH lines usually are.
+export function loginShellArgs(shell: string, command: string): string[] {
+  const base = path.basename(shell);
+  return base === 'zsh' || base === 'bash' || base === 'fish' ? ['-i', '-l', '-c', command] : ['-l', '-c', command];
+}
+
+// The command the login shell runs: the daemon's own executable as node
+// (ELECTRON_RUN_AS_NODE in the packaged app) printing the environment
+// between two copies of the mark. Null when the path holds a single quote,
+// which the read counts as a failure.
+export function loginShellCommand(execPath: string, mark: string): string | null {
+  if (execPath.includes("'")) return null;
+  return `'${execPath}' -e 'process.stdout.write(process.argv[1]+JSON.stringify(process.env)+process.argv[1])' ${mark}`;
+}
+
+// The text between the first and the second mark, as an environment: every
+// string value but the dropped names. Null when a mark is missing, the text
+// does not parse, or it is not an object.
+export function parseLoginEnv(out: string, mark: string): Record<string, string> | null {
+  const start = out.indexOf(mark);
+  if (start < 0) return null;
+  const end = out.indexOf(mark, start + mark.length);
+  if (end < 0) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(out.slice(start + mark.length, end));
+  } catch {
+    return null;
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && !LOGIN_DROPPED.has(k)) env[k] = v;
+  return env;
+}
 
 // reg.exe by its full path, never off the PATH this module is rebuilding.
 // The whole key is queried: it costs the same as one value, and every value
@@ -119,6 +167,12 @@ export interface SpawnEnvOptions {
   env?: NodeJS.ProcessEnv;
   query?: (key: string) => Promise<string>;
   now?: () => number;
+  // The platform whose read runs (M9 fix 1016), process.platform when
+  // absent: the registry on win32, the login shell off it.
+  platform?: NodeJS.Platform;
+  // The test's stand-in for the login shell's run (M9 fix 1019): the
+  // stdout as text for the read's mark.
+  shellRead?: (mark: string) => Promise<string>;
 }
 
 export class SpawnEnv {
@@ -126,7 +180,11 @@ export class SpawnEnv {
   private readonly env: NodeJS.ProcessEnv;
   private readonly query: (key: string) => Promise<string>;
   private readonly now: () => number;
+  private readonly platform: NodeJS.Platform;
+  private readonly shellRead: (mark: string) => Promise<string>;
   private last: { layer: Record<string, string>; at: number } | null = null;
+  // The login shell's last good read (M9 fix 1019), kept past a failure.
+  private loginLast: { layer: Record<string, string>; at: number } | null = null;
   private inFlight: Promise<Record<string, string> | null> | null = null;
   private failing = false;
 
@@ -135,6 +193,8 @@ export class SpawnEnv {
     this.env = opts.env ?? process.env;
     this.query = opts.query ?? ((key) => regQuery(key, this.env));
     this.now = opts.now ?? Date.now;
+    this.platform = opts.platform ?? process.platform;
+    this.shellRead = opts.shellRead ?? ((mark) => this.defaultShellRead(mark));
   }
 
   // Never rejects: a failed read answers null, the session keeps the
@@ -149,7 +209,89 @@ export class SpawnEnv {
     return reading;
   }
 
-  private async readOnce(): Promise<Record<string, string> | null> {
+  private readOnce(): Promise<Record<string, string> | null> {
+    return this.platform === 'win32' ? this.readRegistry() : this.readLoginShell();
+  }
+
+  // There is no registry off Windows (M9 fix 1016); the login shell's
+  // environment is read instead (M9 fix 1019), so a Mac app started from
+  // Finder, whose PATH is launchd's, still finds a claude from npm or
+  // Homebrew. A good read is kept LOGIN_REUSE_MS; a failure answers the last
+  // good read whatever its age, or null when there has been none, so a slow
+  // or broken profile costs at most one LOGIN_TIMEOUT_MS wait per reuse
+  // window and never the PATH a session had a minute ago.
+  private async readLoginShell(): Promise<Record<string, string> | null> {
+    if (this.loginLast !== null && this.now() - this.loginLast.at < LOGIN_REUSE_MS) return this.loginLast.layer;
+    const mark = randomUUID().replace(/-/g, '');
+    try {
+      const layer = parseLoginEnv(await this.shellRead(mark), mark);
+      if (layer === null) throw new Error('the login shell printed no environment between the marks');
+      this.loginLast = { layer, at: this.now() };
+      if (this.failing) {
+        this.failing = false;
+        this.log.info('spawn env: the login shell read again');
+      }
+      return layer;
+    } catch (err) {
+      if (!this.failing) {
+        this.failing = true;
+        this.log.warn("spawn env: the login shell read failed, sessions get the last good read or the daemon's own environment until it reads again", {
+          shell: loginShell(this.env),
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return this.loginLast?.layer ?? null;
+    }
+  }
+
+  // The login shell run once (M9 fix 1019): its whole environment printed
+  // as JSON between two marks by the daemon's own executable as node, since
+  // a profile's banner or a distro's hint can write to stdout before it.
+  private defaultShellRead(mark: string): Promise<string> {
+    const shell = loginShell(this.env);
+    const command = loginShellCommand(process.execPath, mark);
+    if (command === null) return Promise.reject(new Error(`the daemon's path holds a quote: ${process.execPath}`));
+    return new Promise((resolve, reject) => {
+      // Its own session (detached), so an interactive shell never takes a
+      // terminal's process group from a daemon run in the foreground.
+      const child = spawn(shell, loginShellArgs(shell, command), {
+        env: { ...this.env, ELECTRON_RUN_AS_NODE: '1' },
+        cwd: os.homedir(),
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '';
+      let settled = false;
+      child.stdout!.on('data', (chunk: Buffer) => {
+        out += chunk.toString('utf8');
+      });
+      // bash -i with no tty writes its job control notes here; dropped.
+      child.stderr!.on('data', () => {});
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // killTree, not process.kill(-pid): the daemon's kill guard refuses
+        // any pid at or under 0 (kill-guard.ts).
+        if (child.pid !== undefined) killTree(child.pid);
+        reject(new Error(`timed out after ${LOGIN_TIMEOUT_MS} ms`));
+      }, LOGIN_TIMEOUT_MS);
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0 && !out.includes(mark)) reject(new Error(`the login shell exited ${code}`));
+        else resolve(out);
+      });
+    });
+  }
+
+  private async readRegistry(): Promise<Record<string, string> | null> {
     try {
       // Every query wrapped so one that throws synchronously is a failed
       // read too.
