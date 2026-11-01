@@ -42,6 +42,9 @@ process.env['EMERALD_OPEN_LOG'] = openedLinks;
 // chooser being a native dialog no script can drive.
 const pickedDir = path.join(os.tmpdir(), 'emerald-verify', 'm9-picked');
 process.env['EMERALD_PICK_FOLDER'] = pickedDir;
+// M9 fix 1035: the light scheme the fix 1035 block writes, and until then
+// no Windows Terminal schemes, so the run no longer lists the person's own.
+process.env['EMERALD_WT_SETTINGS'] = path.join(process.env['EMERALD_HOME'], 'wt-settings-1035.json');
 const { blockRunner, CTRL, SHIFT, daemonPid, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
@@ -78,6 +81,7 @@ const BLOCKS = [
   { name: 'fix-787', fixes: ['fix-787', 'fix-813', 'fix-814'], needs: [] },
   { name: 'fix-899', fixes: ['fix-899', 'fix-902'], needs: [] },
   { name: 'fix-900', fixes: ['fix-900'], needs: [] },
+  { name: 'fix-1035', fixes: ['fix-1035'], needs: [] },
   // Restarts the daemon and crashes the new one, ending every session it
   // held: it stays the last block whatever lands after it (M9 fix 815).
   { name: 'fix-815', fixes: ['fix-815'], needs: [] },
@@ -207,7 +211,7 @@ try {
   await s.waitFor(`!!document.querySelector('.splitview.zoomed')`, 'the button zoomed pane 1');
   const zoomedRead = await zoomRead();
   // The sibling is hidden under the zoom, not unmounted, so its button stays in the DOM.
-  expect(zoomedRead.active === true && zoomedRead.title === 'Unfocus, back to the layout', `the button is lit while zoomed, got ${JSON.stringify(zoomedRead)}`);
+  expect(zoomedRead.active === true && zoomedRead.title === 'Unfocus, back to the layout (Ctrl+Shift+Z)', `the button is lit while zoomed, got ${JSON.stringify(zoomedRead)}`);
   const zoomedWidth = await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}]').getBoundingClientRect().width`);
   const panesWidth = await s.evalJs(`document.querySelector('.splitview').getBoundingClientRect().width`);
   expect(Math.abs(zoomedWidth - panesWidth) < 2, `the zoomed pane spans the tab: ${zoomedWidth} of ${panesWidth}`);
@@ -4279,6 +4283,140 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
     }
     await s.evalJs(`document.querySelector(${JSON.stringify(pane900(P1) + ' .pane-close')}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(row900(shell900.id))})`, "fix 900's shell row gone", 10_000);
+  });
+  await block('fix-1035', async () => {
+    // M9 fix 1035: a Claude pane whose scheme and Claude Code's own theme
+    // disagree shows a band under its title. Claude Code's theme is seeded
+    // into the harness's private config (never the person's), the pane is
+    // a shell marked Claude by a posted SessionStart, and every read is of
+    // that pane alone, since the prelude's dropped shell is Claude-marked
+    // too and shows its own band under a light window scheme.
+    const config1035 = process.env['CLAUDE_CONFIG_DIR'];
+    expect(
+      typeof config1035 === 'string' && path.resolve(config1035) === path.resolve(process.env['EMERALD_HOME'], 'claude-config'),
+      `fix 1035: the harness Claude config is the private one under the home, got ${config1035}`,
+    );
+    const settings1035 = path.join(config1035, 'settings.json');
+    const seed1035 = (value) => {
+      let json = {};
+      try {
+        json = JSON.parse(fs.readFileSync(settings1035, 'utf8'));
+      } catch {}
+      if (value === null) delete json.theme;
+      else json.theme = value;
+      fs.writeFileSync(settings1035, JSON.stringify(json, null, 2));
+    };
+    const focus1035 = () => s.evalJs(`window.dispatchEvent(new Event('focus'))`);
+    const pane1035 = (id) => '[data-pane-id=' + JSON.stringify(id) + ']';
+    const row1035 = (id) => '.sidebar-row[data-session-id=' + JSON.stringify(id) + ']';
+    const windowRow1035 = (name) => `[...document.querySelectorAll('.menu-sub[data-parent="The window"] .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(name)})`;
+    // fix 438's light scheme (verify-m10-files.mjs), the one Windows
+    // Terminal scheme this run lists.
+    const lightScheme1035 = {
+      name: 'Verify Light',
+      background: '#ffffff',
+      foreground: '#101010',
+      cursorColor: '#101010',
+      selectionBackground: '#cce4ff',
+      black: '#101010',
+      red: '#aa0000',
+      green: '#007a33',
+      yellow: '#8a6d00',
+      blue: '#0057b7',
+      purple: '#7a3e9d',
+      cyan: '#00728a',
+      white: '#d0d0d0',
+      brightBlack: '#5c5c5c',
+      brightRed: '#c00000',
+      brightGreen: '#009944',
+      brightYellow: '#a68300',
+      brightBlue: '#1a73e8',
+      brightPurple: '#8e44ad',
+      brightCyan: '#009bb0',
+      brightWhite: '#ffffff',
+    };
+    fs.writeFileSync(process.env['EMERALD_WT_SETTINGS'], JSON.stringify({ colorSchemes: [lightScheme1035] }));
+    // The skin's default scheme, which a pick of puts no key in storage.
+    const defaultScheme1035 = await s.evalJs('document.documentElement.dataset.scheme ?? null');
+    const shell1035 = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: os.homedir(), cols: 80, rows: 24 })).session;
+    let P = null;
+    try {
+      seed1035('dark');
+      P = await placeRight(shell1035.id);
+      const band1035 = pane1035(P) + ' .claude-theme-note';
+      const post1035 = async (payload) => {
+        const daemon = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+        const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+          method: 'POST',
+          headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': shell1035.id },
+          body: JSON.stringify({ session_id: 'sim-m9-1035', cwd: os.homedir(), ...payload }),
+        });
+        expect(res.status === 204, `fix 1035: sink answered 204 for ${payload.hook_event_name}`);
+      };
+      await post1035({ hook_event_name: 'SessionStart', source: 'startup' });
+      for (const end = Date.now() + 10_000; ; await sleep(200)) {
+        const rec = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === shell1035.id);
+        if (rec?.claudeSessionId === 'sim-m9-1035') break;
+        expect(Date.now() < end, `fix 1035: the shell is bound to the posted Claude session, got ${JSON.stringify(rec?.claudeSessionId)}`);
+      }
+      await s.waitFor(`window.emerald.claudeTheme().then((r) => r.kind === 'dark')`, 'main reads the seeded dark theme', 5000);
+      await focus1035();
+      await sleep(400);
+      expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(band1035)})`)), `fix 1035: no band on the default ${defaultScheme1035} scheme under a dark Claude theme`);
+
+      // The window on the light scheme: the dark theme on it shows the note.
+      await chooseMenu(s, P, 'The window');
+      await s.waitFor(`!!${windowRow1035('Verify Light')}`, 'Verify Light on the window list', 5000);
+      await s.evalJs(`${windowRow1035('Verify Light')}.click()`);
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`document.documentElement.dataset.scheme === 'Verify Light'`, 'the window on Verify Light', 5000);
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(band1035 + '[data-pairing="dark-on-light"]')})`, 'the dark-on-light band under the title', 5000);
+      const words1035 = await s.evalJs(`document.querySelector(${JSON.stringify(band1035 + ' .claude-theme-note-text')}).textContent`);
+      expect(words1035 === 'Claude Code is drawing in its dark theme on this light scheme. Type /theme in the session and pick Light.', `fix 1035: the dark-on-light words, got ${JSON.stringify(words1035)}`);
+      const place1035 = await s.evalJs(
+        `(() => { const n = document.querySelector(${JSON.stringify(band1035)}); const r = n.getBoundingClientRect(); const text = n.querySelector('.claude-theme-note-text'); return { after: n.previousElementSibling?.classList.contains('pane-title') ?? false, height: r.height, width: r.width, lineHeight: parseFloat(getComputedStyle(text).lineHeight) || null, textHeight: text.getBoundingClientRect().height }; })()`,
+      );
+      expect(place1035.after, `fix 1035: the band sits right under the pane title, got ${JSON.stringify(place1035)}`);
+      step(`fix 1035: the band takes ${place1035.height} px from the pane's terminal in a pane ${place1035.width} px wide (text ${place1035.textHeight} px at a ${place1035.lineHeight} px line)`);
+
+      // Dismiss keeps it down.
+      await s.evalJs(`document.querySelector(${JSON.stringify(band1035 + ' .claude-theme-note-dismiss')}).click()`);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(band1035)}) && localStorage.getItem('emerald.claudeThemeNote') === '["dark-on-light"]'`, 'the band dismissed and kept', 5000);
+
+      // A flip to light forgets the dismissal; a flip back to dark shows it again.
+      seed1035('light');
+      await focus1035();
+      await s.waitFor(`localStorage.getItem('emerald.claudeThemeNote') === '[]'`, 'a light read forgets the dark-on-light dismissal', 5000);
+      expect(!(await s.evalJs(`!!document.querySelector(${JSON.stringify(band1035)})`)), 'fix 1035: no band for a light theme on a light scheme');
+      seed1035('dark');
+      await focus1035();
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(band1035 + '[data-pairing="dark-on-light"]')})`, 'the band back after the theme flipped again', 5000);
+
+      // The -ansi themes follow the terminal and take no note.
+      seed1035('dark-ansi');
+      await focus1035();
+      await s.waitFor(`!document.querySelector(${JSON.stringify(band1035)})`, 'no band for dark-ansi', 5000);
+
+      // The mirror: a light theme on a dark scheme.
+      await chooseMenu(s, P, 'The window');
+      await s.waitFor(`!!${windowRow1035(defaultScheme1035)}`, `${defaultScheme1035} on the window list`, 5000);
+      await s.evalJs(`${windowRow1035(defaultScheme1035)}.click()`);
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(defaultScheme1035)}`, 'the window back on its default scheme', 5000);
+      seed1035('light');
+      await focus1035();
+      await s.waitFor(`!!document.querySelector(${JSON.stringify(band1035 + '[data-pairing="light-on-dark"]')})`, 'the light-on-dark band', 5000);
+      const mirror1035 = await s.evalJs(`document.querySelector(${JSON.stringify(band1035 + ' .claude-theme-note-text')}).textContent`);
+      expect(mirror1035 === 'Claude Code is drawing in its light theme on this dark scheme. Type /theme in the session and pick Dark.', `fix 1035: the light-on-dark words, got ${JSON.stringify(mirror1035)}`);
+      step("M9 fix 1035: a Claude pane on a light scheme under Claude Code's dark theme shows the note under its title, Dismiss keeps it down until the theme flips, the -ansi themes take none, and a light theme on a dark scheme shows the mirror");
+    } finally {
+      seed1035(null);
+      await focus1035();
+      await s.evalJs(`localStorage.removeItem('emerald.claudeThemeNote')`);
+      expect((await s.evalJs(`localStorage.getItem('emerald.scheme')`)) === null, 'fix 1035: the window left on its default scheme with no stored pick');
+      if (P !== null) await s.evalJs(`document.querySelector(${JSON.stringify(pane1035(P) + ' .pane-close')})?.click()`);
+      await s.waitFor(`!document.querySelector(${JSON.stringify(row1035(shell1035.id))})`, "fix 1035's row gone", 15_000);
+    }
   });
   await block('fix-815', async () => {
     // M9 fix 815: a daemon the window started that ends on a crash code

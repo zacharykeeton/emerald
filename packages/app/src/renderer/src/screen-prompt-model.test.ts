@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialog, promptExcerpt } from './screen-prompt-model.ts';
+import { askChosenKey } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
 import { ARROW_KEYS_TITLE, btwPanel, cardOptions, cardPress, optionTitle } from './screen-prompt-model.ts';
@@ -301,6 +302,18 @@ test('freeAnswerKeys: the digit unless the pointer is there, then the clears and
   assert.deepEqual(freeAnswerKeys(askQuestion(FREE_MOVED)!, 'Medium please'), { move: null, text: 'Medium please' });
   const typed = ASK_ONE.map((r) => (r === '  4. Type something.' ? '❯ 4. 444' : r === '❯ 1. Green' ? '  1. Green' : r));
   assert.deepEqual(freeAnswerKeys(askQuestion(typed)!, 'Medium please'), { move: null, text: '\x7f\x7f\x7fMedium please' });
+});
+
+test('askChosenKey: the free row while it is focused or holds unsent text, else Claude Code\'s pointer, the Submit row included (fix 1045)', () => {
+  const one = askQuestion(ASK_ONE)!;
+  assert.equal(askChosenKey(one, '', false, true), '1');
+  assert.equal(askChosenKey(one, '', true, true), '4');
+  assert.equal(askChosenKey(one, 'Medium please', false, true), '4');
+  assert.equal(askChosenKey(one, 'Medium please', false, false), '1', 'not yet seeded, the last dialog\'s text');
+  assert.equal(askChosenKey(askQuestion(FREE_TYPED)!, 'Medium please', false, true), '4', 'the pointer is there and the field is as the screen has it');
+  const onSubmit = askQuestion(MULTI_ONE.map((r) => (r === '❯ 1. [ ] Lint' ? '  1. [ ] Lint' : r === '     Submit' ? '❯    Submit' : r)))!;
+  assert.equal(askChosenKey(onSubmit, '', false, true), 'submit');
+  assert.equal(askChosenKey(onSubmit, '', true, true), '4');
 });
 
 // M9 fix 845: three screens of a multi-select captured from a real Claude

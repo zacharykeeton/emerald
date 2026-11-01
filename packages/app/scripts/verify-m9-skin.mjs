@@ -7,11 +7,16 @@
 // Emerald values, with every token of the Emerald block resolving to its
 // own value in the real window. The mark (fix 570), the gem (fix 571) and
 // the palettes (fix 572) each have a block of their own below, and so do
-// the find bar's highlights across a flip (fix 594). The Classic
+// the find bar's highlights across a flip (fix 594). The light default
+// schemes (fix 1034) have a block of their own, light-schemes, which sets
+// data-theme on <html> through CDP rather than the menu. The Classic
 // scripts hold the Classic reads; this one holds their Emerald twins.
 // The harness runs on Classic by EMERALD_SKIN=classic, which cdp.mjs's
 // launch sets (M9 fix 628, Emerald the default otherwise); the last block,
-// default, alone unsets it and reads the default.
+// default, alone unsets it and reads the default. The theme block (M9
+// fixes 1032 and 1033) picks on the app menu's Theme submenu and stands
+// Windows' answer in with EMERALD_SYSTEM_THEME_FILE, a text file main
+// polls, so no run ever flips the person's own Windows theme.
 // Uses a private home and pipe unless the environment already names them.
 // Run: npm run verify:skin -w @emerald/app
 // One block and what it needs: npm run verify:skin -w @emerald/app -- --only colours
@@ -38,6 +43,9 @@ const BLOCKS = [
   { name: 'palette', fixes: ['fix-572'], needs: [] },
   { name: 'find', fixes: ['fix-594'], needs: [] },
   { name: 'monaco', fixes: ['fix-655'], needs: [] },
+  { name: 'light-tokens', fixes: ['fix-1030'], needs: [] },
+  { name: 'theme', fixes: ['fix-1032', 'fix-1033'], needs: [] },
+  { name: 'light-schemes', fixes: ['fix-1034'], needs: [] },
   { name: 'default', fixes: ['fix-628'], needs: [] },
 ];
 const { block, blocksRun, partial } = blockRunner(BLOCKS);
@@ -59,8 +67,15 @@ step(`watchdog armed at ${watchdogMs / 1000} s${partial ? ' (--only)' : ''}`);
 // main's skin.json, and a stale one would open the window on the last
 // run's ground.
 const skinFile = path.join(process.env['EMERALD_HOME'], 'skin.json');
+// M9 fix 1032: main's theme.json (freshState removes it too) and the text
+// file standing in for Windows' answer, missing being dark, so every block
+// but theme runs as before.
+const themeFile = path.join(process.env['EMERALD_HOME'], 'theme.json');
+const systemThemeFile = path.join(process.env['EMERALD_HOME'], 'system-theme.txt');
 fs.rmSync(skinFile, { force: true });
-s = await launch(freshPort(), { freshState: true });
+fs.rmSync(themeFile, { force: true });
+fs.rmSync(systemThemeFile, { force: true });
+s = await launch(freshPort(), { freshState: true, env: { EMERALD_SYSTEM_THEME_FILE: systemThemeFile } });
 
 // '#rrggbb' to the 'rgb(r, g, b)' a computed style reads.
 const rgbOf = (hex) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
@@ -91,6 +106,36 @@ async function skinTo(s, skin) {
   await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent.startsWith('Skin: ')).click()`);
   await s.waitFor(`(document.documentElement.dataset.skin ?? 'classic') === ${JSON.stringify(skin)}`, `the app menu's Skin item put the window on ${skin}`, 5000);
 }
+// The theme's reads (M9 fixes 1032 and 1033): <html>'s data-theme, absent
+// under dark; the app menu's Theme row; its submenu's rows with the check
+// mark taken off the label; and the person's route to a pick.
+const themeNow = (s) => s.evalJs(`document.documentElement.dataset.theme ?? 'dark'`);
+const themeRow = (s) =>
+  s.evalJs(
+    `(() => { const items = [...document.querySelectorAll('.app-menu .menu-item')]; const index = items.findIndex((b) => b.querySelector('.menu-label').textContent.startsWith('Theme: ')); return index === -1 ? null : { label: items[index].querySelector('.menu-label').textContent, index }; })()`,
+  );
+const subRows = (s) =>
+  s.evalJs(
+    `[...document.querySelectorAll('.menu-sub .menu-item')].map((b) => ({ label: b.querySelector('.menu-label').textContent.replace(/^✓/, ''), checked: b.dataset.checked === 'true', hint: b.querySelector('.menu-hint')?.textContent ?? '' }))`,
+  );
+async function openThemeSub(s) {
+  await openAppMenu(s);
+  await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent.startsWith('Theme: ')).click()`);
+  await s.waitFor(`!!document.querySelector('.menu-sub .menu-item')`, 'the Theme submenu');
+}
+async function pickTheme(s, label) {
+  await openThemeSub(s);
+  await s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(label)}).click()`);
+  await s.waitFor(`!document.querySelector('.app-menu')`, `the menu closed on ${label}`);
+}
+const readThemeJson = () => {
+  try {
+    return JSON.parse(fs.readFileSync(themeFile, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+const bodyBg = (s) => s.evalJs(`getComputedStyle(document.body).backgroundColor`);
 // A node-side poll, for reads off the main log and the home folder.
 async function until(fn, what, ms = 5000) {
   const deadline = Date.now() + ms;
@@ -784,7 +829,7 @@ try {
     await openWindowList();
     const rows = await menuLabels();
     expect(
-      JSON.stringify(rows.map((l) => l.label)) === JSON.stringify(['emerald gem', 'emerald', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night']) && rows[0].checked === 'true' && rows.slice(1).every((l) => l.checked === 'false'),
+      JSON.stringify(rows.map((l) => l.label)) === JSON.stringify(['emerald gem', 'emerald', 'emerald gem light', 'emerald light', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night']) && rows[0].checked === 'true' && rows.slice(1).every((l) => l.checked === 'false'),
       `emerald gem first and checked, got ${JSON.stringify(rows)}`,
     );
     await s.key('Escape', 'Escape', 27);
@@ -1007,6 +1052,300 @@ try {
           await sleep(500);
         }
       }
+    }
+  });
+
+  // M9 fix 1030: the light theme's tokens. data-theme="light" on <html>
+  // puts the two light blocks of style.css on. This block sets it by CDP
+  // only, never through a menu, so it stands alone whether or not the
+  // Theme item has landed, and it sets it again after every skinTo in case
+  // the renderer re-applies the theme on a skin flip. It starts as monaco
+  // does and leaves the window on Classic with no data-theme, no session
+  // and one empty pane, the state default relaunches from anyway.
+  await block('light-tokens', async () => {
+    // monaco leaves its words.ts tab open over the Panes tab.
+    await s.evalJs(`document.querySelectorAll('.tab-file .tab-close').forEach((b) => b.click())`);
+    await s.waitFor(`!document.querySelector('.tab-file')`, 'no file tab left open for the light-tokens block', 5000);
+    for (const x of (await zreq(s, 'session.list', {})).sessions) {
+      await zreq(s, x.state === 'exited' ? 'session.remove' : 'session.kill', x.state === 'exited' ? { sessionId: x.id } : { sessionId: x.id, remove: true }).catch(() => {});
+    }
+    const ltLayout = await getLayout(s);
+    const ltLeaf = leaves(ltLayout)[0];
+    await zreq(s, 'layout.set', { layout: { ...ltLayout, root: { ...ltLeaf, sessionId: null, view: null }, focusedPaneId: ltLeaf.id } });
+    await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'one empty pane for the light-tokens block', 10000);
+    // A folder named, since the empty pane's row 1 is monaco's seed, gone by now.
+    await startSession(s, { kind: 'shell', cwd: fs.realpathSync.native(os.tmpdir()) });
+    const ltAfter = await getLayout(s);
+    const ltSession = leaves(ltAfter).find((l) => l.id === ltAfter.focusedPaneId).sessionId;
+    const lightOn = () => s.evalJs("document.documentElement.dataset.theme = 'light'");
+    const lightOff = () => s.evalJs('delete document.documentElement.dataset.theme');
+    // An element built, its computed props read, and removed, as colours's probe does.
+    const probeStyle = (html, sel, props) =>
+      s.evalJs(
+        `(() => { const d = document.createElement('div'); d.innerHTML = ${JSON.stringify(html)}; document.body.append(d); const c = getComputedStyle(d.querySelector(${JSON.stringify(sel)})); const out = { ${props.map((p) => `${p}: c.${p}`).join(', ')} }; d.remove(); return out; })()`,
+      );
+    const ltCss = fs.readFileSync(path.join(repoRoot, 'packages', 'app', 'src', 'renderer', 'src', 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    // A block's names off the file, keyed on its exact head.
+    const blockNames = (head) => {
+      const at = ltCss.indexOf(`${head} {`);
+      expect(at >= 0, `the ${head} block in style.css`);
+      const body = ltCss.slice(ltCss.indexOf('{', at) + 1, ltCss.indexOf('}', at));
+      return [...body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]);
+    };
+    const resolvesAll = async (head) => {
+      const names = blockNames(head);
+      expect(names.length > 80, `the ${head} block's names, ${names.length}`);
+      const misses = [];
+      for (const [name, value] of names) {
+        const got = await resolved(s, `var(${name})`);
+        const want = await resolved(s, value);
+        if (got !== want) misses.push(`${name}: ${got} for ${want}`);
+      }
+      expect(misses.length === 0, `every name of ${head} resolves to its own value, misses ${JSON.stringify(misses)}`);
+    };
+    const buttonRead = () => probeStyle('<button>x</button>', 'button', ['backgroundColor', 'color']);
+    const ringRead = async () => (await probeStyle('<button class="menu-swatch" data-active></button>', '.menu-swatch', ['borderTopColor'])).borderTopColor;
+    const schemeRead = () => s.evalJs('getComputedStyle(document.documentElement).colorScheme');
+    const bodyRead = () => s.evalJs('getComputedStyle(document.body).backgroundColor');
+    const frames = [];
+
+    // Classic light.
+    await lightOn();
+    expect((await token(s, '--bg')) === '#f8f8f8', `Classic light --bg, got ${await token(s, '--bg')}`);
+    expect((await bodyRead()) === 'rgb(248, 248, 248)', `the body on Classic light's ground, got ${await bodyRead()}`);
+    expect((await schemeRead()) === 'light', `color-scheme light under Classic light, got ${await schemeRead()}`);
+    await resolvesAll(':root[data-theme="light"]');
+    expect((await token(s, '--attention-peak')) === '22%', `the wash's peak under Classic light, got ${await token(s, '--attention-peak')}`);
+    const classicButton = await buttonRead();
+    const classicFill = await resolved(s, 'var(--focus-fill)');
+    expect(classicButton.backgroundColor === classicFill && classicFill === 'rgb(232, 163, 61)' && classicButton.color === 'rgb(32, 22, 8)', `a Classic light button on --focus-fill with its dark ink, got ${JSON.stringify(classicButton)} for ${classicFill}`);
+    expect((await token(s, '--focus')) === '#8a5400', `Classic light's --focus is the stroke, not the fill, got ${await token(s, '--focus')}`);
+    expect((await ringRead()) === 'rgb(20, 20, 20)', `the swatch ring is --text-hi under Classic light, got ${await ringRead()}`);
+    frames.push(await s.screenshot('m9-skin-light-classic.png'));
+
+    // Emerald light, and the wash at its peak.
+    await skinTo(s, 'emerald');
+    await lightOn();
+    expect((await token(s, '--bg')) === '#f7f9f8', `Emerald light --bg, got ${await token(s, '--bg')}`);
+    expect((await bodyRead()) === 'rgb(247, 249, 248)', `the body on Emerald light's ground, got ${await bodyRead()}`);
+    expect((await schemeRead()) === 'light', `color-scheme light under Emerald light, got ${await schemeRead()}`);
+    await resolvesAll(':root[data-skin="emerald"][data-theme="light"]');
+    const emeraldButton = await buttonRead();
+    const emeraldFill = await resolved(s, 'var(--focus-fill)');
+    expect(emeraldButton.backgroundColor === emeraldFill && emeraldFill === 'rgb(62, 207, 142)' && emeraldButton.color === 'rgb(4, 32, 15)', `an Emerald light button on --focus-fill with its dark ink, got ${JSON.stringify(emeraldButton)} for ${emeraldFill}`);
+    expect((await token(s, '--focus')) === '#0b7548', `Emerald light's --focus is the stroke, got ${await token(s, '--focus')}`);
+    expect((await ringRead()) === 'rgb(17, 22, 20)', `the swatch ring is --text-hi under Emerald light, got ${await ringRead()}`);
+    const rowSel = `.sidebar-row[data-session-id=${JSON.stringify(ltSession)}]`;
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel)})`, "the shell's sidebar row", 5000);
+    const wash = await s.evalJs(
+      `(() => { const row = document.querySelector(${JSON.stringify(rowSel)}); row.setAttribute('data-attention', 'needs-input'); const peak = getComputedStyle(row).getPropertyValue('--attention-peak').trim(); const a = row.getAnimations().find((x) => x.animationName === 'attention-pulse'); if (a) { a.pause(); a.currentTime = 900; } return { peak, paused: !!a, bg: getComputedStyle(row).backgroundColor }; })()`,
+    );
+    expect(wash.peak === '22%' && wash.paused, `the waiting row's wash peaks at 22% under Emerald light, got ${JSON.stringify(wash)}`);
+    step(`light-tokens: the waiting row at its peak under Emerald light reads ${wash.bg}`);
+    frames.push(await s.screenshot('m9-skin-light-emerald.png'));
+    frames.push(await s.screenshotOf('m9-skin-light-gem.png', '.title-bar-mark', { scale: 4, pad: 4 }));
+    frames.push(await s.screenshotOf('m9-skin-light-wash.png', '.sidebar-row[data-attention]', { scale: 2, pad: 2 }));
+    await s.evalJs(`document.querySelector(${JSON.stringify(rowSel)})?.removeAttribute('data-attention')`);
+    step('M9 fix 1030: under data-theme light, set by CDP, Classic reads --bg #f8f8f8 and Emerald #f7f9f8 with color-scheme light, every name of both light blocks resolves to its own value, a button fills with --focus-fill and its dark ink, the swatch ring is --text-hi, and the wash peaks at 22%');
+    step(`M9 fix 1030: light frames written: ${frames.filter((f) => f !== null).join(', ')}`);
+
+    // Dark again, both skins.
+    await lightOff();
+    const emeraldDark = await buttonRead();
+    expect((await token(s, '--bg')) === '#1a1f1d', `Emerald dark --bg back, got ${await token(s, '--bg')}`);
+    expect(emeraldDark.backgroundColor === 'rgb(62, 207, 142)', `the Emerald dark button, got ${JSON.stringify(emeraldDark)}`);
+    expect((await ringRead()) === 'rgb(240, 238, 234)', `the swatch ring near white under dark, got ${await ringRead()}`);
+    expect((await schemeRead()) === 'dark', `color-scheme dark again, got ${await schemeRead()}`);
+    await skinTo(s, 'classic');
+    await lightOff();
+    const classicDark = await buttonRead();
+    expect((await token(s, '--bg')) === '#1e1e1e', `Classic dark --bg back, got ${await token(s, '--bg')}`);
+    expect(classicDark.backgroundColor === 'rgb(232, 163, 61)', `the Classic dark button, got ${JSON.stringify(classicDark)}`);
+    step('M9 fix 1030: with data-theme removed both skins read their dark values again');
+    await zreq(s, 'session.kill', { sessionId: ltSession, remove: true }).catch(() => {});
+  });
+
+  // M9 fixes 1032 and 1033: the theme. Starts and leaves Classic, no
+  // data-theme, the pick dark (the harness's pin, then theme.json), no
+  // session and the menu shut; it starts no shell or Claude, so no pane's
+  // rows are read and no Claude theme band can show.
+  await block('theme', async () => {
+    // monaco leaves a file tab over the Panes tab; the reload below waits
+    // for the empty pane, so none may be left open.
+    await s.evalJs(`document.querySelectorAll('.tab-file .tab-close').forEach((b) => b.click())`);
+    await s.waitFor(`!document.querySelector('.tab-file')`, 'no file tab left open for the theme block', 5000);
+    expect(mainLog().includes('window opens in the classic skin, dark theme'), `main opened the window on the dark theme, got ${mainLog().split(/\r?\n/).filter((l) => l.includes('window opens')).join(' | ')}`);
+    expect(mainLog().includes('theme pick dark: dark now (stubbed by '), "main's start line names the pinned pick and the stub");
+    expect((await themeNow(s)) === 'dark', 'no data-theme at the start');
+    await openAppMenu(s);
+    const skinRow = await skinItem(s);
+    const row = await themeRow(s);
+    expect(row !== null && skinRow !== null && row.index === skinRow.index + 1 && row.label === 'Theme: Dark', `the Theme row right after the skin's reads Theme: Dark, got ${JSON.stringify({ row, skinRow })}`);
+    await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')][${row.index}].click()`);
+    await s.waitFor(`!!document.querySelector('.menu-sub .menu-item')`, 'the Theme submenu');
+    const rows1 = await subRows(s);
+    expect(
+      JSON.stringify(rows1) ===
+        JSON.stringify([
+          { label: 'Follow Windows', checked: false, hint: '' },
+          { label: 'Light', checked: false, hint: '' },
+          { label: 'Dark', checked: true, hint: '' },
+        ]),
+      `the submenu reads Follow Windows, Light and Dark with Dark checked, got ${JSON.stringify(rows1)}`,
+    );
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.app-menu')`, 'Escape closed the menu');
+    await s.evalJs(`window.__theme1032 = true`);
+    await pickTheme(s, 'Light');
+    await s.waitFor(`document.documentElement.dataset.theme === 'light'`, 'data-theme light', 5000);
+    expect((await token(s, '--bg')) === '#f8f8f8', `the Classic light --bg, got ${await token(s, '--bg')}`);
+    await s.waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(248, 248, 248)'`, 'the Classic light ground on the body', 5000);
+    await until(() => mainLog().includes('theme light (pick light), skin classic: ground #f8f8f8, title bar overlay #f2f2f2, symbols #404040'), "main's light chrome line");
+    await until(() => readThemeJson()?.pick === 'light', 'theme.json {"pick":"light"}');
+    expect(await s.evalJs(`window.__theme1032 === true`), 'no reload');
+    step('fix 1032: the harness opens on the dark pin, and Light on the Theme submenu puts data-theme="light" on <html> with --bg #f8f8f8 under Classic, theme.json {"pick":"light"} and main\'s light chrome line, with no reload');
+
+    const { identifier } = await s.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `document.addEventListener('DOMContentLoaded', () => { window.__firstTheme = document.documentElement.dataset.theme ?? null; window.__firstThemeBg = getComputedStyle(document.body).backgroundColor; }, { once: true });`,
+    });
+    await s.send('Page.reload');
+    await s.waitFor(`!!document.querySelector('.app-body')`, 'the app after the reload', 20000);
+    await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'the empty pane after the reload');
+    const first = await s.evalJs(`({ theme: window.__firstTheme ?? null, bg: window.__firstThemeBg ?? null })`);
+    await s.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    expect(first.theme === 'light' && first.bg === 'rgb(248, 248, 248)', `data-theme light and the light ground by DOMContentLoaded, got ${JSON.stringify(first)}`);
+    step('fix 1032: a reload with Light picked has data-theme="light" and the body at rgb(248, 248, 248) by DOMContentLoaded, before React renders');
+
+    await skinTo(s, 'emerald');
+    expect((await token(s, '--bg')) === '#f7f9f8', `the Emerald light --bg, got ${await token(s, '--bg')}`);
+    expect((await themeNow(s)) === 'light', 'still light after the skin flip');
+    await until(() => mainLog().includes('skin emerald: ground #f7f9f8, title bar overlay #f1f4f2, symbols #3d4542'), "main's Emerald light skin line");
+    step('fix 1032: under light the Emerald skin reads --bg #f7f9f8 and main\'s skin line names the light overlay #f1f4f2');
+
+    await openThemeSub(s);
+    const lightRow = await themeRow(s);
+    const rows4 = await subRows(s);
+    expect(lightRow?.label === 'Theme: Light' && rows4[1]?.label === 'Light' && rows4[1].checked && !rows4[0].checked && !rows4[2].checked, `the row reads Theme: Light with Light checked, got ${JSON.stringify({ lightRow, rows4 })}`);
+    await s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === 'Dark').click()`);
+    await s.waitFor(`!document.querySelector('.app-menu')`, 'the menu closed on Dark');
+    await s.waitFor(`document.documentElement.dataset.theme === undefined`, 'data-theme gone', 5000);
+    expect((await token(s, '--bg')) === '#1a1f1d', `the Emerald dark --bg, got ${await token(s, '--bg')}`);
+    await until(() => mainLog().includes('theme dark (pick dark), skin emerald: ground #1a1f1d, title bar overlay #1c211f, symbols #9a9a9a'), "main's dark chrome line");
+    await until(() => readThemeJson()?.pick === 'dark', 'theme.json {"pick":"dark"}');
+    step('fix 1033: Dark on the Theme submenu brings today\'s values back (no data-theme, --bg #1a1f1d, theme.json {"pick":"dark"})');
+
+    fs.writeFileSync(systemThemeFile, 'dark');
+    await pickTheme(s, 'Follow Windows');
+    await until(() => mainLog().includes('theme dark (pick system), skin emerald: ground #1a1f1d, title bar overlay #1c211f, symbols #9a9a9a'), "main's line for Follow Windows on a dark OS");
+    expect((await themeNow(s)) === 'dark', 'dark under a dark stub');
+    await openThemeSub(s);
+    const sysRow = await themeRow(s);
+    const rows5 = await subRows(s);
+    expect(sysRow?.label === 'Theme: follow Windows' && JSON.stringify(rows5[0]) === JSON.stringify({ label: 'Follow Windows', checked: true, hint: 'dark now' }), `the row reads Theme: follow Windows, its first row checked with dark now, got ${JSON.stringify({ sysRow, rows5 })}`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.app-menu')`, 'Escape closed the menu');
+    fs.writeFileSync(systemThemeFile, 'light');
+    await s.waitFor(`document.documentElement.dataset.theme === 'light'`, 'the window followed the stub to light', 5000);
+    expect((await token(s, '--bg')) === '#f7f9f8', `the Emerald light --bg on the follow, got ${await token(s, '--bg')}`);
+    await until(() => mainLog().includes('theme light (pick system), skin emerald: ground #f7f9f8, title bar overlay #f1f4f2, symbols #3d4542'), "main's line for the follow to light");
+    await openThemeSub(s);
+    const rows5b = await subRows(s);
+    expect(rows5b[0]?.hint === 'light now', `the Follow Windows hint reads light now, got ${JSON.stringify(rows5b)}`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.app-menu')`, 'Escape closed the menu');
+    fs.writeFileSync(systemThemeFile, 'dark');
+    await s.waitFor(`document.documentElement.dataset.theme === undefined`, 'the window followed the stub back to dark', 5000);
+    expect((await token(s, '--bg')) === '#1a1f1d', `the Emerald dark --bg on the follow back, got ${await token(s, '--bg')}`);
+    step('fix 1032: under Follow Windows the window follows a stubbed Windows answer both ways with no restart, the hint reading dark now and light now, main\'s line naming pick system');
+
+    await pickTheme(s, 'Dark');
+    await until(() => readThemeJson()?.pick === 'dark', 'theme.json back to dark');
+    await skinTo(s, 'classic');
+    fs.rmSync(systemThemeFile, { force: true });
+    expect((await themeNow(s)) === 'dark' && (await bodyBg(s)) === 'rgb(30, 30, 30)', 'the block leaves Classic on dark');
+  });
+
+  // M9 fix 1034: each skin's light default scheme. The theme is set on
+  // <html> through CDP, not the theme menu, so the block stands alone.
+  await block('light-schemes', async () => {
+    // fix 1034 (light-schemes) starts here
+    for (const x of (await zreq(s, 'session.list', {})).sessions) {
+      await zreq(s, x.state === 'exited' ? 'session.remove' : 'session.kill', x.state === 'exited' ? { sessionId: x.id } : { sessionId: x.id, remove: true }).catch(() => {});
+    }
+    const lsLayout = await getLayout(s);
+    const lsLeaf = leaves(lsLayout)[0];
+    await zreq(s, 'layout.set', { layout: { ...lsLayout, root: { ...lsLeaf, sessionId: null, view: null }, focusedPaneId: lsLeaf.id } });
+    await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'one empty pane for the light-schemes block', 10000);
+    await skinTo(s, 'classic');
+    await s.evalJs(`delete document.documentElement.dataset.theme`);
+    expect((await s.evalJs(`localStorage.getItem('emerald.scheme')`)) === null, 'no scheme is picked when the light-schemes block starts');
+    await startFromEmpty(s);
+
+    const probeJs = `(() => ({
+      hosts: [...document.querySelectorAll('.term-host')].map((h) => ({ bg: h.emeraldTerm.options.theme.background, ground: getComputedStyle(h).backgroundColor })),
+      root: document.documentElement.dataset.scheme ?? null,
+      paneBg: document.documentElement.style.getPropertyValue('--pane-bg'),
+    }))()`;
+    const openPaneMenu = async () => {
+      await s.evalJs(`(() => { const t = document.querySelector('.term-host').closest('.pane').querySelector('.pane-title'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + r.height / 2 })); })()`);
+      await s.waitFor(`!!document.querySelector('.pane-menu')`, 'the pane menu');
+    };
+    const menuLabels = () => s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].map((b) => ({ label: b.querySelector('.menu-label').textContent.replace(/^✓/, ''), checked: b.dataset.checked ?? null }))`);
+    const openWindowList = async () => {
+      await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'The window').click()`);
+      await s.waitFor(`!!document.querySelector('.menu-sub[data-parent="The window"]')`, "the window's scheme list");
+    };
+    const pickByHand = async (name) => {
+      await openPaneMenu();
+      await openWindowList();
+      await s.evalJs(`[...document.querySelectorAll('.menu-sub .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(name)}).click()`);
+      await s.key('Escape', 'Escape', 27);
+    };
+    const storedIs = (value, what) => s.waitFor(`localStorage.getItem('emerald.scheme') === ${JSON.stringify(value)}`, what, 5000);
+    const lightTo = (on) => s.evalJs(on ? `document.documentElement.dataset.theme = 'light'` : `delete document.documentElement.dataset.theme`);
+    // hex is lowercase, since the store lowers it.
+    const groundIs = (hex, name, what) =>
+      s.waitFor(`(() => { const p = ${probeJs}; return p.hosts.length > 0 && p.hosts.every((h) => h.bg === ${JSON.stringify(hex)} && h.ground === ${JSON.stringify(rgbOf(hex))}) && p.paneBg === ${JSON.stringify(hex)} && p.root === ${JSON.stringify(name)}; })()`, what, 5000);
+
+    await groundIs('#1e1e1e', 'emerald', 'Classic dark: emerald');
+    await lightTo(true);
+    await groundIs('#f8f8f8', 'emerald light', 'Classic light: emerald light on the attribute alone');
+    await skinTo(s, 'emerald');
+    await groundIs('#f7f9f8', 'emerald gem light', 'Emerald light: emerald gem light');
+    await openPaneMenu();
+    await openWindowList();
+    const lightRows = await menuLabels();
+    expect(
+      JSON.stringify(lightRows.map((l) => l.label)) === JSON.stringify(['emerald gem light', 'emerald light', 'emerald gem', 'emerald', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night']) && lightRows[0].checked === 'true' && lightRows.slice(1).every((l) => l.checked === 'false'),
+      `the light defaults first, the first checked, got ${JSON.stringify(lightRows)}`,
+    );
+    await s.key('Escape', 'Escape', 27);
+    await lightTo(false);
+    await groundIs('#1a1f1d', 'emerald gem', 'Emerald dark again when the attribute goes');
+    await storedIs(null, 'the theme flips stored nothing');
+    step('M9 fix 1034: with no pick the shells follow the theme, emerald light (#f8f8f8) under Classic and emerald gem light (#f7f9f8) under Emerald, the window list puts the light defaults first, and the dark defaults come back when the attribute goes');
+
+    await skinTo(s, 'classic');
+    await pickByHand('emerald gem');
+    await storedIs('emerald gem', 'emerald gem picked on Classic is stored');
+    await groundIs('#1a1f1d', 'emerald gem', 'the pick on Classic dark');
+    await lightTo(true);
+    await groundIs('#1a1f1d', 'emerald gem', 'the dark pick holds under light on Classic');
+    await skinTo(s, 'emerald');
+    await groundIs('#1a1f1d', 'emerald gem', 'and on Emerald');
+    await storedIs('emerald gem', 'the pick is still stored after the flips');
+    await pickByHand('emerald gem light');
+    await storedIs(null, 'the light default picked under light stores nothing');
+    await groundIs('#f7f9f8', 'emerald gem light', 'the light default on the ground');
+    await lightTo(false);
+    await groundIs('#1a1f1d', 'emerald gem', 'with no pick it follows the theme back to dark');
+    step('M9 fix 1034: a dark scheme picked by hand (emerald gem, on Classic) holds under light on both skins; the light default picked under light clears the key and follows the theme back');
+
+    await skinTo(s, 'classic');
+    await storedIs(null, 'the block ends on Classic with no scheme picked');
+    await lightTo(false);
+    for (const x of (await zreq(s, 'session.list', {})).sessions) {
+      await zreq(s, 'session.kill', { sessionId: x.id, remove: true }).catch(() => {});
     }
   });
 

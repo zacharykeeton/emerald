@@ -197,15 +197,18 @@ try {
   // (verify:files reads the strip at every width); the tooltips keep
   // every word.
   const railTabs = await s.evalJs(
-    `(() => { const tabs = [...document.querySelectorAll('.rail-tab')]; const row = document.querySelector('.rail-tabs'); const shown = (t) => { const l = t.querySelector('.rail-tab-label'); return getComputedStyle(l).display !== 'none' ? l.textContent : ''; }; return { words: tabs.map(shown), titles: tabs.map((t) => t.title), fits: row.scrollWidth <= row.clientWidth, width: row.clientWidth }; })()`,
+    `(() => { const tabs = [...document.querySelectorAll('.rail-tab')]; const row = document.querySelector('.rail-tabs'); const shown = (t) => { const l = t.querySelector('.rail-tab-label'); return getComputedStyle(l).display !== 'none' ? l.textContent : ''; }; return { words: tabs.map(shown), active: tabs.map((t) => (t.dataset.active !== undefined ? t.querySelector('.rail-tab-label').textContent : '')), titles: tabs.map((t) => t.title), fits: row.scrollWidth <= row.clientWidth, width: row.clientWidth }; })()`,
   );
-  // M9 fix 885: the default rail is RAIL_DEFAULT_WIDTH and shows four
-  // words, Stats added; its title names the folder when the rail is on one.
+  // M9 fix 885: the default rail is RAIL_DEFAULT_WIDTH; the Stats title
+  // names the folder when the rail is on one. M9 fix 1037: five tabs, and
+  // at the default rail only the active one keeps its word, so the words
+  // read the active tab's label where it is and nothing elsewhere
+  // ('Files,,,,' on this fresh state).
   const railRoot885 = await s.evalJs(`document.querySelector('.files-rail').dataset.root ?? ''`);
   const statsTitle885 = railRoot885 === '' ? 'Statistics' : railTabs.titles[3];
-  expect(railTabs.words.join(',') === 'Files,Activity,Sessions,Stats', `at the default rail the four tabs show their words (fix 885), got ${railTabs.words.join(',')}`);
+  expect(railTabs.words.length === 5 && railTabs.words.join(',') === railTabs.active.join(',') && railTabs.active.filter((w) => w !== '').length === 1, `at the default rail only the active tab shows its word (fix 1037), got ${railTabs.words.join(',')}`);
   expect(
-    railTabs.titles.join(',') === `Files,What the sessions did: the day's time above, the repository's commits below,Sessions of Claude Code on this machine,${statsTitle885}` && (railRoot885 !== '' ? railTabs.titles[3].startsWith('Statistics of ') : true),
+    railTabs.titles.join(',') === `Files,What the sessions did: the day's time above, the repository's commits below,Sessions of Claude Code on this machine,${statsTitle885},What fills the focused session's context` && (railRoot885 !== '' ? railTabs.titles[3].startsWith('Statistics of ') : true),
     `the tooltips keep their words, got ${railTabs.titles.join(',')} (root ${JSON.stringify(railRoot885)})`,
   );
   expect(railTabs.fits, `the tab row fits the ${railTabs.width}px rail`);

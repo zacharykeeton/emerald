@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { MOD_APPEND, MOD_HOOK_NAME, MOD_SUBMIT } from '@emerald/shared';
+import { MOD_APPEND, MOD_CONTEXT, MOD_HOOK_NAME, MOD_SUBMIT } from '@emerald/shared';
 import { promptCacheKept } from '@emerald/shared/hook-log';
 import type { HookOutcome, HookPayload, SessionState } from '@emerald/shared';
 import { rotateHookLog, trimGenerations } from './activity.ts';
@@ -140,6 +140,13 @@ export function trimPayload(payload: HookPayload): HookPayload {
     const row = fields['row'] as { type?: unknown; content?: unknown } | null | undefined;
     const blocks = Array.isArray(row?.content) ? row.content.length : 0;
     return { ...fields, row: { type: row?.type, blocks } } as HookPayload;
+  }
+  // The mod's context breakdown (M9 fix 1036) runs to about 12 KB a post;
+  // the log keeps its totals and its size.
+  if (payload.hook_event_name === MOD_CONTEXT) {
+    const b = fields['breakdown'] as { model?: unknown; totalTokens?: unknown; rawMaxTokens?: unknown; percentage?: unknown } | null | undefined;
+    const bytes = b === undefined ? 0 : JSON.stringify(b).length;
+    return { ...fields, breakdown: { model: b?.model, totalTokens: b?.totalTokens, rawMaxTokens: b?.rawMaxTokens, percentage: b?.percentage, bytes } } as HookPayload;
   }
   if (payload.tool_input === undefined && payload.tool_response === undefined) return payload;
   const state = { cut: false };

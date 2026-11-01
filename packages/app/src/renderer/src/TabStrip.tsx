@@ -435,7 +435,7 @@ function HistoryChevrons() {
     const i = stop(step);
     const entry = i === null ? undefined : focusHistory.entries[i];
     const word = step === -1 ? 'Back' : 'Forward';
-    const title = entry === undefined ? `Nothing to go ${word.toLowerCase()} to` : `${word} to ${describeEntry(entry, layout, sessions, tabTitles)} (Ctrl+Alt+${step === -1 ? 'Left' : 'Right'})`;
+    const title = entry === undefined ? `Nothing to go ${word.toLowerCase()} to` : `${word} to ${describeEntry(entry, layout, sessions, tabTitles)} (${plainKeyFor(step === -1 ? 'history-back' : 'history-forward')})`;
     return (
       <button
         className="tab-history-step"

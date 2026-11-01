@@ -3,6 +3,7 @@ import { addressShown, addressUrl, isLocalPageUrl } from '@emerald/shared';
 import type { DesignNote } from '@emerald/shared';
 import { browserPage, registerBrowserSlot, toolbarShown, useBrowserPage } from './browser-layer.ts';
 import { designTargetOf, sendDesign } from './design.ts';
+import { plainKeyFor } from './keys-model.ts';
 import { addNote, deleteNote, editNote, noteTitle, removeSent } from './design-model.ts';
 import { getUiState, setDesignNotes, setDesignPane, setDesignTray, useUi } from './ui.ts';
 import { useStore } from './store.ts';
@@ -26,7 +27,7 @@ const BAD_ADDRESS = 'Only http and https pages open here; type an address such a
 // hint is short and its full sentence is the span's title.
 const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
 const TRAY_HINT = 'Note · Esc back to the page';
-const TRAY_TITLE = 'Typing a note. Click the page to pick again, or press C or S there; Esc or Ctrl+Enter hands the keys back to the page, and Ctrl+Shift+D ends the mode';
+const TRAY_TITLE = `Typing a note. Click the page to pick again, or press C or S there; Esc or Ctrl+Enter hands the keys back to the page, and ${plainKeyFor('design-mode')} ends the mode`;
 
 // The browser pane's body (M9 fix 659): a toolbar over a <webview>. The
 // address bar takes an http or https URL, a host or host:port, or words
@@ -268,7 +269,7 @@ export function BrowserView({ paneId, url, onUrl, toolbar }: Props) {
           <button
             className="files-button browser-design"
             aria-label="Design Mode"
-            title="Design Mode: pick an element to send to Claude (Ctrl+Shift+D)"
+            title={`Design Mode: pick an element to send to Claude (${plainKeyFor('design-mode')})`}
             aria-pressed={designOn}
             disabled={!pageOn}
             onClick={() => setDesignPane(designOn ? null : paneId)}

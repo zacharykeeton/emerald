@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { SchemeSkin } from '../renderer/src/scheme-model.ts';
+import type { SchemeSkin, SchemeTheme } from '../renderer/src/scheme-model.ts';
 import { mergeSchemes, schemeFromWindowsTerminal, schemesFromWindowsTerminal } from '../renderer/src/scheme-model.ts';
 import type { TerminalScheme } from '../renderer/src/scheme-model.ts';
 
@@ -52,7 +52,10 @@ export async function windowsTerminalSettingsFiles(localAppData: string | undefi
   return out;
 }
 
-export async function listSchemes(sources: SchemeSources, log: (msg: string) => void, skin: SchemeSkin): Promise<TerminalScheme[]> {
+// The renderer orders the list again under its own theme when it lands
+// (scheme-store.ts loadSchemes), so main's order matters only until then;
+// main passes the theme it resolved (fixes 1032 and 1034, wired at the merge).
+export async function listSchemes(sources: SchemeSources, log: (msg: string) => void, skin: SchemeSkin, theme: SchemeTheme = 'dark'): Promise<TerminalScheme[]> {
   const shipped: TerminalScheme[] = [];
   let files: string[] = [];
   try {
@@ -82,5 +85,5 @@ export async function listSchemes(sources: SchemeSources, log: (msg: string) => 
     own = schemesFromWindowsTerminal(text);
     break;
   }
-  return mergeSchemes(shipped, own, skin);
+  return mergeSchemes(shipped, own, skin, theme);
 }

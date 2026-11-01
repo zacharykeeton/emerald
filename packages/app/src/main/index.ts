@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, powerMonitor, protocol, screen, session, shell } from 'electron';
+import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron';
 import type { WebContents } from 'electron';
 import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, isLocalPageUrl, LOCAL_PAGE_SCHEME, paneShowingIn, windowHolding, windowsOf } from '@emerald/shared';
 import { Readable } from 'node:stream';
@@ -31,7 +31,9 @@ import { createTaskbar } from './taskbar.ts';
 import { wireWindowDrag } from './window-drag.ts';
 import { encodeRequestError } from './request-error.ts';
 import { createUseRecord } from './use-record.ts';
-import { applySkin, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
+import { applySkin, applyTheme, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
+import { applyThemePick, attachNativeTheme, currentTheme, fileNativeTheme, initTheme, themeUpdated } from './theme.ts';
+import type { ThemeState } from './theme.ts';
 import { menuHead, titleBarOptions } from './mac-window.ts';
 import { askPathLink } from './path-link.ts';
 
@@ -46,8 +48,11 @@ function userShellOrNull(): string | null {
 import { PipeClient } from './pipe-client.ts';
 import { listSchemes, windowsTerminalSettingsFiles } from './schemes.ts';
 import { HistoryWatcher, readAgentsRunning, readTranscriptCost, readTurns, readUsage, repoRoot, scanHistory } from './history.ts';
+import { readContextHistory } from './context-history.ts';
 import { claudeHome } from './claude-home.ts';
 import { readSkills } from './skills.ts';
+import { overridePlaces, readSkillOverrides, undoSkillOverrides, writeSkillOverrides } from './skill-overrides.ts';
+import type { SkillOverrideEdit } from '../preload/api.ts';
 import { savePastedPng } from './paste-file.ts';
 import { startLoopDelayLog } from './loop-delay.ts';
 import { rotateLogAtStart } from './log-rotate.ts';
@@ -73,6 +78,9 @@ import type { UpdateState } from '../renderer/src/update-model.ts';
 import { USAGE_FLOOR_MS } from '../renderer/src/usage-model.ts';
 import { WINDOWS_LEVEL } from '../renderer/src/daemon-model.ts';
 import type { DaemonInfo } from './pipe-client.ts';
+import { claudeConfigDir } from '@emerald/shared/claude-home';
+import { claudeThemePaths, readClaudeTheme } from './claude-theme.ts';
+import type { ClaudeThemeRead } from '../preload/api.ts';
 
 // Where emmerd's main.js lives. In development this file is bundled to
 // packages/app/out/main/index.js, so the daemon's build sits three levels up
@@ -742,6 +750,21 @@ ipcMain.on('emerald:path-link-dismiss', () => {
   pathLinkDismissed = true;
 });
 
+// Claude Code's own theme (M9 fix 1035, claude-theme.ts), read fresh on
+// every ask since a /theme pick in a session lands in its settings file;
+// logged only when the answer changes, since every window focus asks.
+let lastClaudeTheme = '';
+ipcMain.handle('emerald:claude-theme', async (): Promise<ClaudeThemeRead> => {
+  const configDir = claudeConfigDir();
+  const r = await readClaudeTheme({ ...claudeThemePaths(process.env, os.homedir(), configDir), themes: path.join(configDir, 'themes') });
+  const line = `claude theme ${r.theme || '(unreadable)'} from ${r.source}: ${r.kind}`;
+  if (line !== lastClaudeTheme) {
+    lastClaudeTheme = line;
+    log(line);
+  }
+  return r;
+});
+
 ipcMain.handle('emerald:hooks-install', async (): Promise<HooksInstallResult> => {
   const { code, json } = await runCliJson(cli, ['hooks', 'install', '--json']);
   if (code !== 0) throw new Error(`emmer hooks install exited ${code}`);
@@ -876,7 +899,7 @@ ipcMain.handle('emerald:folder-icon', (_event, dir: string) => folderIcon(dir));
 
 // The terminal's colour schemes (schemes.ts, M9 fix 225): the shipped
 // ones and the person's Windows Terminal ones, read on every call.
-ipcMain.handle('emerald:schemes-list', async () => listSchemes({ shippedDir: resolveSchemesDir(), settingsFiles: await windowsTerminalSettingsFiles(process.env['LOCALAPPDATA']) }, log, currentSkin()));
+ipcMain.handle('emerald:schemes-list', async () => listSchemes({ shippedDir: resolveSchemesDir(), settingsFiles: await windowsTerminalSettingsFiles(process.env['LOCALAPPDATA']) }, log, currentSkin(), currentTheme().theme));
 
 // The account's Claude usage for the sidebar footer (usage.ts). Read on
 // every call; the renderer decides how often to ask. Each reading is
@@ -943,6 +966,21 @@ ipcMain.on('emerald:skin-get', (event) => {
   event.returnValue = currentSkin();
 });
 
+// The theme (M9 fix 1032): main keeps the pick in theme.json, resolves
+// Follow Windows through nativeTheme (attached in whenReady), repaints
+// every window's chrome and tells every page. A pick always repaints and
+// tells, so another window's menu label moves with the pick even when the
+// theme does not.
+initTheme(path.join(emeraldHomeOf(process.env), 'theme.json'), log);
+const themeChanged = (state: ThemeState) => {
+  for (const w of allWindows()) applyTheme(w);
+  sendAll('emerald:theme-changed', state);
+};
+ipcMain.on('emerald:theme-set', (_event, pick: unknown) => themeChanged(applyThemePick(pick)));
+ipcMain.on('emerald:theme-get', (event) => {
+  event.returnValue = currentTheme();
+});
+
 // The History panel's scan of Claude Code's transcripts (history.ts). The
 // watcher follows history.jsonl only while the panel is showing.
 const historyWatcher = new HistoryWatcher(() => {
@@ -954,6 +992,8 @@ ipcMain.handle('emerald:history-usage', (_event, conversation: string, known: st
 ipcMain.handle('emerald:history-cost', (_event, file: string) => readTranscriptCost(file, log));
 ipcMain.handle('emerald:history-agents', (_event, conversation: string) => readAgentsRunning(conversation, log));
 ipcMain.handle('emerald:history-project', (_event, dir: string) => repoRoot(dir));
+// The Context tab's skill and MCP history over every transcript (M9 fix 1039).
+ipcMain.handle('emerald:history-context', (_event, transcript: string | null) => readContextHistory(typeof transcript === 'string' ? transcript : null, log));
 // On while any window's History panel shows (M9 fix 866).
 ipcMain.handle('emerald:history-watch', (event, on: boolean) => {
   if (on) historyOn.add(event.sender.id);
@@ -963,6 +1003,13 @@ ipcMain.handle('emerald:history-watch', (event, on: boolean) => {
 // The chat box's `/` menu (M9 fix 719): the skills Claude Code would
 // take in the session's folder, read off disk.
 ipcMain.handle('emerald:skills-list', (_event, folder: string | null) => readSkills(claudeHome(), folder));
+// The Context tab's listing switch (M9 fixes 1041 and 1042): Claude Code's
+// skillOverrides over its four scopes, and the two scopes emerald writes.
+// The places are read on every call, so a harness's CLAUDE_CONFIG_DIR is
+// the user scope and never the person's own.
+ipcMain.handle('emerald:skill-overrides-read', (_event, folder: string) => readSkillOverrides(folder, overridePlaces()));
+ipcMain.handle('emerald:skill-overrides-write', (_event, folder: string, scope: 'local' | 'user', edits: SkillOverrideEdit[]) => writeSkillOverrides(folder, scope, edits, overridePlaces()));
+ipcMain.handle('emerald:skill-overrides-undo', (_event, id: number) => undoSkillOverrides(id, overridePlaces()));
 
 // The clipboard for Ctrl+V in a pane (M9 fix 92), Electron 44's async
 // clipboard. Text wins; an image is reported only when there is no text,
@@ -1069,7 +1116,9 @@ function createWindow(id: string | null, index: number): void {
   // menu bar goes with the frame; the application menu below stays for
   // its accelerators. The minimum keeps the three columns and the buttons
   // from overlapping at a size nobody works at.
-  const chrome = chromeOf(currentSkin());
+  // M9 fix 1032: the theme too, so a light window's ground and caption
+  // buttons are right before the renderer speaks.
+  const chrome = chromeOf(currentSkin(), currentTheme().theme);
   // A person's later window opens 32 px down and right of the one they
   // were in (M9 fix 866); no window keeps its size or place yet.
   // A window a drop outside every window opened sits where it was dropped
@@ -1107,7 +1156,8 @@ function createWindow(id: string | null, index: number): void {
   if (id === null) startup = win;
   else windows.set(id, win);
   spotIndex.set(win, index);
-  log(id === null ? `window opens in the ${currentSkin()} skin` : `window ${id} opens in the ${currentSkin()} skin`);
+  const look = `the ${currentSkin()} skin, ${currentTheme().theme} theme`;
+  log(id === null ? `window opens in ${look}` : `window ${id} opens in ${look}`);
   if (background) {
     // Past the primary display alone was in plain view on a machine with
     // a display to its right (fix 48), so the spot is past the union; a
@@ -1648,6 +1698,22 @@ app.whenReady().then(() => {
   // it is something in before-quit or will-quit. Here and not beside
   // window-all-closed, so a handed-over or gap launch writes none.
   app.on('quit', (_event, exitCode) => log(`quit, exit code ${exitCode}`));
+  // M9 fix 1032: the theme's OS half, before the first window so its first
+  // frame is right. EMERALD_SYSTEM_THEME_FILE stands a text file in for
+  // Windows' answer under a verify run, which must never flip the person's
+  // own setting. 'updated' fires on a real flip and on every themeSource
+  // set; the focus read catches a flip whose event went missing. Both are
+  // idempotent (themeUpdated answers only when the resolved theme moved).
+  const stub = process.env['EMERALD_SYSTEM_THEME_FILE'];
+  const native = stub === undefined || stub === '' ? nativeTheme : fileNativeTheme(stub);
+  const themeAtStart = attachNativeTheme(native);
+  log(`theme pick ${themeAtStart.pick}: ${themeAtStart.theme} now${stub === undefined || stub === '' ? '' : ` (stubbed by ${stub})`}`);
+  const followTheme = () => {
+    const next = themeUpdated();
+    if (next !== null) themeChanged(next);
+  };
+  native.on('updated', followTheme);
+  app.on('browser-window-focus', followTheme);
   createWindow(null, 0);
   // A layout that arrived before the window (it never does, the connect
   // being async) is applied now.

@@ -177,8 +177,9 @@ try {
   // The right-click menu on an empty pane. The last section is the
   // terminal's colour schemes (M9 fixes 225, 648): a heading and two rows,
   // This session (off limits with no session in the pane) and The window,
-  // each opening a list of the six shipped schemes (emerald gem, the Emerald
-  // skin's default, after emerald, M9 fix 572).
+  // each opening a list of the eight shipped schemes (emerald gem, the Emerald
+  // skin's default, after emerald, M9 fix 572; the two light defaults after
+  // the dark two, fix 1034).
   await openMenuOn(s, p2);
   const items = await menuItems(s);
   expect(
@@ -336,7 +337,7 @@ try {
   expect(rowNamed(rows, 'New shell here').title === "A shell in this session's folder, beside it", `New shell here says the shell goes beside the session, got ${JSON.stringify(rowNamed(rows, 'New shell here')?.title)}`);
   await openSub('This session');
   let sub = await subRows();
-  expect(JSON.stringify(sub.map((r) => [r.label, r.checked])) === JSON.stringify([["The window's", 'true'], ['emerald', 'false'], ['emerald gem', 'false'], ['Dracula', 'false'], ['One Dark', 'false'], ['Solarized Dark', 'false'], ['Tokyo Night', 'false']]), `the session's list checks The window's alone, got ${JSON.stringify(sub)}`);
+  expect(JSON.stringify(sub.map((r) => [r.label, r.checked])) === JSON.stringify([["The window's", 'true'], ['emerald', 'false'], ['emerald gem', 'false'], ['emerald light', 'false'], ['emerald gem light', 'false'], ['Dracula', 'false'], ['One Dark', 'false'], ['Solarized Dark', 'false'], ['Tokyo Night', 'false']]), `the session's list checks The window's alone, got ${JSON.stringify(sub)}`);
   await chooseSub('Solarized Dark');
   await s.waitFor(`${hostOf(p4)}.emeraldTerm.options.theme.background === '#002b36'`, "pane 4's terminal on Solarized Dark");
   expect((await sessionScheme(s4)) === 'Solarized Dark', 'the pick is on the session\'s record');
@@ -640,8 +641,10 @@ try {
   // Open a file… first (M9 fix 341), its plain chord since M9 fix 364.
   // The skin item (M9 fix 569) sits before the check item, which stays last.
   // New window (M9 fix 866) goes second, the harness daemon being at level 73;
-  // the usage record's switch (M9 fix 887) sits after the skin.
-  expect(JSON.stringify(appList) === JSON.stringify(['Open a file…|Ctrl+Shift+G', 'New window|', `What's new|${version}`, 'Key cheat sheet|Ctrl+Shift+?', 'Run an action…|Ctrl+Shift+P', 'Skin: Classic|', 'Usage record: off|', 'Check for updates|off in this build']), "Open a file with its chord, New window, What's new with the version, the cheat sheet and the palette with their keys, the skin item, the usage record, Check for updates off, got " + JSON.stringify(appList));
+  // the usage record's switch (M9 fix 887) sits after the skin. The theme
+  // item (M9 fix 1033) after the skin reads Dark under the harness's
+  // EMERALD_THEME pin with no theme.json, its hint the submenu's caret.
+  expect(JSON.stringify(appList) === JSON.stringify(['Open a file…|Ctrl+Shift+G', 'New window|', `What's new|${version}`, 'Key cheat sheet|Ctrl+Shift+?', 'Run an action…|Ctrl+Shift+P', 'Skin: Classic|', 'Theme: Dark|›', 'Usage record: off|', 'Check for updates|off in this build']), "Open a file with its chord, New window, What's new with the version, the cheat sheet and the palette with their keys, the skin item, the theme item, the usage record, Check for updates off, got " + JSON.stringify(appList));
   expect(await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')].at(-1).disabled`), 'the check item is disabled while the updater is off');
   const menuBox = await s.evalJs(`(() => { const m = document.querySelector('.app-menu').getBoundingClientRect(); const z = document.querySelector('.title-bar-mark').getBoundingClientRect(); return { under: m.top >= z.bottom - 1, left: Math.abs(m.left - z.left) <= 2 }; })()`);
   expect(menuBox.under && menuBox.left, `the menu hangs from the mark's bottom left (${JSON.stringify(menuBox)})`);
@@ -668,8 +671,8 @@ try {
   await s.click(mark.x, mark.y);
   await s.waitFor(`!!document.querySelector('.app-menu')`, 'the app menu for the usage switch');
   const usageOff887 = await usageItem887();
-  // Item 6 of 8: New window (M9 fix 866) sits second at the harness's level 73.
-  expect(usageOff887.i === 6 && usageOff887.n === 8 && usageOff887.label === 'Usage record: off' && usageOff887.title.includes('never sent anywhere') && usageOff887.title.endsWith('Click to turn it on'), `the usage record is item 6 of 8, off, with its title (${JSON.stringify(usageOff887)})`);
+  // Item 7 of 9: New window (M9 fix 866) sits second at the harness's level 73, the theme (M9 fix 1033) after the skin.
+  expect(usageOff887.i === 7 && usageOff887.n === 9 && usageOff887.label === 'Usage record: off' && usageOff887.title.includes('never sent anywhere') && usageOff887.title.endsWith('Click to turn it on'), `the usage record is item 7 of 9, off, with its title (${JSON.stringify(usageOff887)})`);
   await s.evalJs(`[...document.querySelectorAll('.app-menu .menu-item')][${usageOff887.i}].click()`);
   await s.waitFor(`!document.querySelector('.app-menu') && document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the usage switch on from the app menu');
   expect(await s.evalJs(`JSON.parse(localStorage.getItem('emerald.attention')).usage === true`), 'the switch is kept in emerald.attention');
@@ -934,17 +937,17 @@ try {
     await s.type(text);
     await s.waitFor(`document.querySelectorAll(${JSON.stringify(overlayRows768)}).length === ${count}`, `${count} rows for ${text}`);
   };
-  await openPalette768('colours:', 6);
+  await openPalette768('colours:', 8);
   const colours768 = await s.evalJs(`(() => ({ rows: [...document.querySelectorAll(${JSON.stringify(overlayRows768)})].map((r) => ({ label: r.querySelector('.action-label').textContent, scope: r.dataset.scope, scheme: r.dataset.scheme, checked: r.dataset.checked ?? null })), groups: [...document.querySelectorAll('.picker-overlay .palette-group')].map((g) => g.textContent) }))()`);
-  const names768 = ['emerald', 'emerald gem', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'];
-  expect(JSON.stringify(colours768.rows.map((r) => r.scheme)) === JSON.stringify(names768) && colours768.rows.every((r) => r.scope === 'window' && r.label === `Terminal colours: ${r.scheme}`), `the window rows list the six schemes, got ${JSON.stringify(colours768)}`);
+  const names768 = ['emerald', 'emerald gem', 'emerald light', 'emerald gem light', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'];
+  expect(JSON.stringify(colours768.rows.map((r) => r.scheme)) === JSON.stringify(names768) && colours768.rows.every((r) => r.scope === 'window' && r.label === `Terminal colours: ${r.scheme}`), `the window rows list the eight schemes, got ${JSON.stringify(colours768)}`);
   expect(JSON.stringify(colours768.rows.filter((r) => r.checked === 'true').map((r) => r.scheme)) === JSON.stringify([root768]), `the window's scheme is checked alone, got ${JSON.stringify(colours768)}`);
   expect(JSON.stringify(colours768.groups) === JSON.stringify(['Terminal colours']), `the group is Terminal colours alone, got ${JSON.stringify(colours768.groups)}`);
   const target768 = root768 === 'Dracula' ? 'Tokyo Night' : 'Dracula';
   await pickRow768(`.picker-overlay .action-row[data-scope="window"][data-scheme=${JSON.stringify(target768)}]`);
   await s.waitFor(`!document.querySelector('.picker-overlay') && document.documentElement.dataset.scheme === ${JSON.stringify(target768)}`, 'the window on the picked scheme');
   expect((await sessionScheme(tileSession.id)) === null, 'the session has no scheme of its own yet');
-  await openPalette768('this session:', 7);
+  await openPalette768('this session:', 9);
   const session768 = await s.evalJs(`(() => [...document.querySelectorAll(${JSON.stringify(overlayRows768)})].map((r) => ({ label: r.querySelector('.action-label').textContent, scope: r.dataset.scope, checked: r.dataset.checked ?? null })))()`);
   expect(session768.every((r) => r.scope === 'session') && session768[0].label === "This session: The window's" && session768[0].checked === 'true', `the clear row is first and checked, got ${JSON.stringify(session768)}`);
   await pickRow768(`.picker-overlay .action-row[data-scope="session"][data-scheme="Solarized Dark"]`);
@@ -955,7 +958,7 @@ try {
   }
   expect(own768 === 'Solarized Dark', `the session's record holds Solarized Dark, got ${own768}`);
   await s.waitFor(`${hostOf(tilePane)}.emeraldTerm.options.theme.background === '#002b36'`, "the session's terminal on Solarized Dark");
-  await openPalette768('this session:', 7);
+  await openPalette768('this session:', 9);
   await s.key('Enter', 'Enter', 13);
   let cleared768 = 'x';
   for (let i = 0; i < 50 && cleared768 !== null; i++) {
@@ -963,7 +966,7 @@ try {
     if (cleared768 !== null) await sleep(100);
   }
   expect(cleared768 === null, 'the clear row empties the session record');
-  await openPalette768('colours:', 6);
+  await openPalette768('colours:', 8);
   await pickRow768(`.picker-overlay .action-row[data-scope="window"][data-scheme=${JSON.stringify(root768)}]`);
   await s.waitFor(`document.documentElement.dataset.scheme === ${JSON.stringify(root768)}`, 'the window back on its scheme');
   step("M9 fix 768: >colours: lists Terminal colours: <name> with the window's checked and Enter sets the window's scheme; >this session: lists This session: The window's and the schemes, and Enter puts Solarized Dark on the session's record and clears it again");

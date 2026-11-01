@@ -127,7 +127,9 @@ export const PROTOCOL_VERSION = 1;
 //  77: M9 fix 976, needs-input with the reason switch on SessionInfo, a Claude session at rest at Claude Code's Change effort level? or Switch model? confirmation read off its screen
 //  77: M9 fix 996, shells on the hello found again at each app hello on the PATH the registry holds then, waiting at most 500 ms for the read, so a shell installed since the daemon started is offered at the window's next connect; a new session's whole environment from the registry at its spawn
 //  78: M9 fix 1001, queued on session.submit's reply, set when the mod's word says queued or no word came in time while the turn ran, so a send to a row read idle says it waits behind a turn
-export const DAEMON_FEATURE_LEVEL = 78;
+//  79: M9 fix 1036, context on SessionInfo, the emerald mod's breakdown of the context window off its Context post, and session.context, which asks a session's mod for one through its channel (mod.context)
+//  79: M9 fix 1040, the context view, { kind: 'context', sessionId } in a layout, the context of one session in a pane
+export const DAEMON_FEATURE_LEVEL = 79;
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -173,6 +175,9 @@ export interface ModRow {
 // (M9 fix 775), and the daemon raises when the spinner draws again on a
 // row at a permission ask: the call is running, so its ask was answered.
 export const MOD_TOOL_RUNNING = 'ToolRunning';
+
+// The event the emerald mod posts with the session's context breakdown (M9 fix 1036), as its hook_event_name: what $.session.usage({ breakdown }) answers, less the grid, and how it was counted; the reducer keeps it on the session as context. register.js carries the literal.
+export const MOD_CONTEXT = 'Context';
 
 // Requests: every one has an id and gets exactly one Reply with that id.
 // pty.input and pty.resize are fire-and-forget (no id, no reply) because they are hot.
@@ -376,6 +381,12 @@ export interface Requests {
   // prompt waits behind a turn, or no word came in time while the row was
   // working, so a caller that read the row idle still says queued.
   'session.submit': { req: { sessionId: string; text: string };                    res: { via: 'mod' | 'typed'; queued?: true } };
+  // Ask a Claude session's mod for its context breakdown (M9 fix 1036):
+  // with the mod's channel up the daemon pushes mod.context and answers
+  // asked; the breakdown itself arrives later as a session.changed. mod
+  // says whether the session's mod has posted at all, so a caller tells a
+  // Claude with no mod from one typed into a shell, which has no channel.
+  'session.context': { req: { sessionId: string; detail: 'summary' | 'full' };    res: { asked: boolean; mod: boolean } };
 }
 
 // A session's last screen (M9 fix 159): the rows and the cursor the
@@ -448,4 +459,7 @@ export type ServerMessage =
   // A prompt for the emerald mod to submit (M9 fix 741), to the session's
   // mod.channel connection alone. The mod posts ModSubmit with the
   // submitId and whether the prompt entered (M9 fix 781).
-  | { type: 'mod.submit'; sessionId: string; text: string; submitId?: string };
+  | { type: 'mod.submit'; sessionId: string; text: string; submitId?: string }
+  // An ask for the session's context breakdown (M9 fix 1036), to the
+  // session's mod.channel connection alone; the mod posts Context.
+  | { type: 'mod.context'; sessionId: string; detail: 'summary' | 'full' };

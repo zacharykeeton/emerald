@@ -10,6 +10,7 @@ import { titleCounts, titleSummary } from './title-bar-model.ts';
 import { HeadingUnits } from './roster.tsx';
 import { updateBadge } from './update-model.ts';
 import { setSkin, useSkin } from './skin.ts';
+import { setThemePick, useTheme } from './theme.ts';
 import { setUsageRecord, useUi } from './ui.ts';
 import { TitleGem } from './title-gem.tsx';
 import { titleGlint } from './title-gem-model.ts';
@@ -27,6 +28,7 @@ import type { UpdateState } from './update-model.ts';
 export function TitleBar() {
   const { sessions, layout, daemon } = useStore('sessions', 'layout', 'daemon');
   const skin = useSkin();
+  const theme = useTheme();
   const { sidebarCollapsed, usageRecord } = useUi();
   // The running shells for the units (M9 fix 354): one Set that holds
   // while its members do, so the row renders on a shell starting or
@@ -99,28 +101,49 @@ export function TitleBar() {
           onClose={() => setMenuOpen(false)}
           className="app-menu"
           anchor={markRef.current}
-          items={appMenuItems(version, update, skin, usageRecord, windowsSupported(daemon), window.emerald.platform).map((item) => ({
-            label: item.label,
-            hint: item.hint,
-            disabled: item.disabled,
-            title: item.title,
-            onClick: () => {
-              setMenuOpen(false);
-              if (item.action === 'check-updates') {
-                recordUse('check-updates', 'menu');
-                void window.emerald.update.act();
-              } else if (item.action === 'toggle-skin') {
-                recordUse('toggle-skin', 'menu');
-                setSkin(skin === 'emerald' ? 'classic' : 'emerald');
-              } else if (item.action === 'new-window') {
-                // M9 fix 866: the daemon opens it on the layout and main opens the window.
-                recordUse('new-window', 'menu');
-                void window.emerald.request('window.open', {}).catch((err: unknown) => console.warn('[emerald] new window failed', err));
-              } else if (item.action === 'toggle-usage-record') {
-                setUsageRecord(!usageRecord);
-              } else void runAction(item.action, 'menu');
-            },
-          }))}
+          items={appMenuItems(version, update, skin, usageRecord, windowsSupported(daemon), window.emerald.platform, theme).map((item) =>
+            // M9 fix 1033: the theme row opens its submenu (Menu draws the
+            // caret alone for an undefined hint); a pick closes the menu,
+            // as the skin item's click does.
+            item.submenu !== undefined
+              ? {
+                  label: item.label,
+                  hint: undefined,
+                  onClick: () => undefined,
+                  submenu: item.submenu.map((t) => ({
+                    label: t.label,
+                    hint: t.hint,
+                    checked: t.checked,
+                    onClick: () => {
+                      setMenuOpen(false);
+                      recordUse('set-theme', 'menu');
+                      setThemePick(t.pick);
+                    },
+                  })),
+                }
+              : {
+                  label: item.label,
+                  hint: item.hint,
+                  disabled: item.disabled,
+                  title: item.title,
+                  onClick: () => {
+                    setMenuOpen(false);
+                    if (item.action === 'check-updates') {
+                      recordUse('check-updates', 'menu');
+                      void window.emerald.update.act();
+                    } else if (item.action === 'toggle-skin') {
+                      recordUse('toggle-skin', 'menu');
+                      setSkin(skin === 'emerald' ? 'classic' : 'emerald');
+                    } else if (item.action === 'new-window') {
+                      // M9 fix 866: the daemon opens it on the layout and main opens the window.
+                      recordUse('new-window', 'menu');
+                      void window.emerald.request('window.open', {}).catch((err: unknown) => console.warn('[emerald] new window failed', err));
+                    } else if (item.action === 'toggle-usage-record') {
+                      setUsageRecord(!usageRecord);
+                    } else if (item.action !== 'theme') void runAction(item.action, 'menu');
+                  },
+                },
+          )}
         />
       )}
       <span className="title-bar-name">emerald</span>

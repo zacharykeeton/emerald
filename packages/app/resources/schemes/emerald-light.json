@@ -1,0 +1,23 @@
+{
+  "name": "emerald light",
+  "background": "#F8F8F8",
+  "foreground": "#202020",
+  "cursorColor": "#8A5400",
+  "selectionBackground": "#B9D3F0",
+  "black": "#202020",
+  "red": "#B02E3B",
+  "green": "#2F7D43",
+  "yellow": "#8A5400",
+  "blue": "#2A66AD",
+  "purple": "#8E3C8A",
+  "cyan": "#137566",
+  "white": "#E6E6E6",
+  "brightBlack": "#5E5E5E",
+  "brightRed": "#9E2734",
+  "brightGreen": "#256A37",
+  "brightYellow": "#734600",
+  "brightBlue": "#22599A",
+  "brightPurple": "#7A3277",
+  "brightCyan": "#0F6457",
+  "brightWhite": "#FFFFFF"
+}

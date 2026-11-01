@@ -4,7 +4,7 @@ import type { SessionInfo } from '@emerald/shared';
 import { ackIfDone, sendAskSubmit, sendFreeAnswer, typeInto } from './actions.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
-import { askQuestion, askReview, cardOptions, cardPress, dialogKey, freeOption, freeText, optionTitle, pressOver, promptExcerpt } from './screen-prompt-model.ts';
+import { askChosenKey, askQuestion, askReview, cardOptions, cardPress, dialogKey, freeOption, freeText, optionTitle, pressOver, promptExcerpt } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab, AskVisit } from './screen-prompt-model.ts';
@@ -140,6 +140,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
   const freeOpt = ask === null ? null : freeOption(ask);
   const shownKey = shown === null ? null : dialogKey(shown.rows, shown.cursor);
   const [free, setFree] = useState('');
+  const [freeFocused, setFreeFocused] = useState(false);
   const freeRef = useRef<HTMLInputElement>(null);
   const seededKey = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -147,6 +148,8 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
     seededKey.current = shownKey;
     setFree(freeOpt === null ? '' : freeText(freeOpt));
   }, [shownKey, freeOpt]);
+  // M9 fix 1045: the row marked as chosen, as the chat view's card does.
+  const chosen = ask === null || review !== null ? undefined : askChosenKey(ask, free, freeFocused, seededKey.current === shownKey);
   const sendFree = () => {
     if (pressed !== null || free.trim() === '') return;
     if (ask !== null && !ask.multi) setVisit(visitAnswered(liveVisit));
@@ -254,6 +257,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
               key={o.key}
               className="answer-popover-option answer-popover-free"
               data-key={o.key}
+              data-pointer={chosen === o.key ? 'true' : undefined}
               data-sent={sentMark}
               onClick={(ev) => {
                 if (ev.target !== freeRef.current) freeRef.current?.focus();
@@ -267,6 +271,8 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
                 title="Sends this answer to the session"
                 value={free}
                 onChange={(ev) => setFree(ev.target.value)}
+                onFocus={() => setFreeFocused(true)}
+                onBlur={() => setFreeFocused(false)}
                 // As the box below: the card's own press handler keeps the
                 // terminal's focus, and the input needs it to take typing.
                 onMouseDown={(ev) => ev.stopPropagation()}
@@ -285,7 +291,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
               />
             </div>
           ) : (
-            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
+            <button key={o.key} type="button" className="answer-popover-option" data-key={o.key} data-pointer={(chosen === undefined ? 'pointer' in o && o.pointer : chosen === o.key) ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
               <span className="answer-popover-key">{o.key}</span>
               <span className="answer-popover-text">
                 <span className="answer-popover-label">{o.label}</span>
@@ -295,7 +301,7 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
           ),
         )}
         {submitShown && ask.submit !== null && (
-          <button type="button" className="answer-popover-option answer-popover-submit" data-key="submit" data-pointer={ask.submit.pointer ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
+          <button type="button" className="answer-popover-option answer-popover-submit" data-key="submit" data-pointer={(chosen === undefined ? ask.submit.pointer : chosen === 'submit') ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
             <span className="answer-popover-label">{ask.submit.label}</span>
           </button>
         )}

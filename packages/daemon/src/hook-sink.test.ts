@@ -554,6 +554,13 @@ test('trimPayload cuts an array past the kilobyte and leaves a scalar alone', ()
   assert.equal(trimPayload(bare), bare, 'a payload with no tool fields is the same object');
 });
 
+test("trimPayload keeps a Context's totals and its size, not its breakdown (M9 fix 1036)", () => {
+  const breakdown = { categories: Array.from({ length: 12 }, (_, i) => ({ name: `c${i}`, tokens: i * 100, color: 'x', isDeferred: false, kind: 'used' })), totalTokens: 86400, maxTokens: 200000, rawMaxTokens: 200000, percentage: 43, model: 'claude-opus-5-5', mcpTools: [], memoryFiles: [], agents: [] };
+  const out = trimPayload({ hook_event_name: 'Context', session_id: 'c1', detail: 'full', breakdown });
+  assert.equal(out.detail, 'full');
+  assert.deepEqual(out.breakdown, { model: 'claude-opus-5-5', totalTokens: 86400, rawMaxTokens: 200000, percentage: 43, bytes: JSON.stringify(breakdown).length });
+});
+
 test('the log rotates while the sink runs: every line present in order across hooks.1.jsonl and the fresh file, and the lines written mid-swap kept (M9 fix 429)', async () => {
   const file = path.join(mkTemp('emerald-hooks-rot-'), 'hooks.jsonl');
   const own = await HookSink.listen(() => ({ outcome: 'applied', from: 'idle', to: 'working' }), { preferredPort: 0, token: TOKEN, eventLogPath: file, log: silentLogger });

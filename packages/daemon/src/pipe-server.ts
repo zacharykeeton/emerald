@@ -132,6 +132,8 @@ interface ServerHooks {
   // the session's mod.submit pushes, and a session.submit is pushed to it.
   openModChannel: (sessionId: string, client: ClientConnection) => void;
   submitToMod: (req: Requests['session.submit']['req']) => Promise<Requests['session.submit']['res']>;
+  // An ask for the session's context breakdown on its mod channel (M9 fix 1036).
+  askContext: (sessionId: string, detail: 'summary' | 'full') => Promise<{ asked: boolean; mod: boolean }>;
 }
 
 type FileOpenAsk = Requests['file.open']['req'];
@@ -488,6 +490,7 @@ export class PipeServer {
       },
       openModChannel: (sessionId, channel) => this.openModChannel(sessionId, channel),
       submitToMod: (req) => this.submitToMod(req),
+      askContext: (sessionId, detail) => this.askContext(sessionId, detail),
     });
     this.clients.add(client);
     socket.once('close', () => {
@@ -585,39 +588,61 @@ export class PipeServer {
     }
   }
 
+  // A session's mod channel, held for when it is not up yet: a hosted
+  // Claude whose mod has posted but whose channel is not up (the first
+  // second after it went idle) is waited on up to MOD_CHANNEL_WAIT_MS (M9
+  // fix 776); one whose channel was up and went, or whose mod never posted
+  // (--safe-mode), answers null at once. The submit and the context ask
+  // (M9 fix 1036) both wait here; the log lines are the submit's of fix 776.
+  private async modChannelFor(sessionId: string): Promise<ClientConnection | null> {
+    const id8 = sessionId.slice(0, 8);
+    const up = this.modChannels.get(sessionId);
+    if (up !== undefined) return up;
+    if (this.modEverUp.has(sessionId) || this.opts.modSeen?.(sessionId) !== true) return null;
+    const waitMs = this.opts.modChannelWaitMs ?? MOD_CHANNEL_WAIT_MS;
+    this.opts.log.info(`mod channel awaited for ${id8}`);
+    const channel = await new Promise<ClientConnection | null>((resolve) => {
+      const wake = (c: ClientConnection | null): void => {
+        clearTimeout(timer);
+        resolve(c);
+      };
+      const timer = setTimeout(() => {
+        const waits = this.modWaits.get(sessionId);
+        const i = waits?.indexOf(wake) ?? -1;
+        if (waits !== undefined && i !== -1) waits.splice(i, 1);
+        if (waits !== undefined && waits.length === 0) this.modWaits.delete(sessionId);
+        resolve(null);
+      }, waitMs);
+      const waits = this.modWaits.get(sessionId) ?? [];
+      waits.push(wake);
+      this.modWaits.set(sessionId, waits);
+    });
+    if (channel === null) this.opts.log.info(`mod channel not up for ${id8} after ${waitMs} ms: typed`);
+    return channel;
+  }
+
+  // An ask for a Claude session's context breakdown (M9 fix 1036): pushed
+  // on its mod channel, which answers with a Context post; mod says whether
+  // its mod has posted at all, so a caller tells a Claude typed into a
+  // shell (mod, no channel) from one with no mod.
+  private async askContext(sessionId: string, detail: 'summary' | 'full'): Promise<Requests['session.context']['res']> {
+    const id8 = sessionId.slice(0, 8);
+    const mod = this.opts.modSeen?.(sessionId) === true;
+    const channel = await this.modChannelFor(sessionId);
+    if (channel === null) {
+      this.opts.log.info(`mod context for ${id8}: no channel`);
+      return { asked: false, mod };
+    }
+    channel.send({ type: 'mod.context', sessionId, detail });
+    this.opts.log.info(`mod context for ${id8}: ${detail}`);
+    return { asked: true, mod };
+  }
+
   // No text is logged, as browser.run logs no argument.
-  // A hosted Claude whose mod has posted but whose channel is not up yet
-  // (the first second after it went idle) is held for the channel, up to
-  // MOD_CHANNEL_WAIT_MS (M9 fix 776); one whose channel was up and went,
-  // or whose mod never posted (--safe-mode), is typed at once.
   private async submitToMod(req: Requests['session.submit']['req']): Promise<Requests['session.submit']['res']> {
     const id8 = req.sessionId.slice(0, 8);
-    let channel: ClientConnection | null = this.modChannels.get(req.sessionId) ?? null;
-    if (channel === null) {
-      if (this.modEverUp.has(req.sessionId) || this.opts.modSeen?.(req.sessionId) !== true) return { via: 'typed' };
-      const waitMs = this.opts.modChannelWaitMs ?? MOD_CHANNEL_WAIT_MS;
-      this.opts.log.info(`mod channel awaited for ${id8}`);
-      channel = await new Promise<ClientConnection | null>((resolve) => {
-        const wake = (c: ClientConnection | null): void => {
-          clearTimeout(timer);
-          resolve(c);
-        };
-        const timer = setTimeout(() => {
-          const waits = this.modWaits.get(req.sessionId);
-          const i = waits?.indexOf(wake) ?? -1;
-          if (waits !== undefined && i !== -1) waits.splice(i, 1);
-          if (waits !== undefined && waits.length === 0) this.modWaits.delete(req.sessionId);
-          resolve(null);
-        }, waitMs);
-        const waits = this.modWaits.get(req.sessionId) ?? [];
-        waits.push(wake);
-        this.modWaits.set(req.sessionId, waits);
-      });
-      if (channel === null) {
-        this.opts.log.info(`mod channel not up for ${id8} after ${waitMs} ms: typed`);
-        return { via: 'typed' };
-      }
-    }
+    const channel = await this.modChannelFor(req.sessionId);
+    if (channel === null) return { via: 'typed' };
     // M9 fix 781: the mod posts what its submit answered (ModSubmit on the
     // hook sink, modSubmitAnswered below); a prompt the engine did not
     // enter is the caller's to type.
@@ -1243,6 +1268,15 @@ class ClientConnection {
         const text = expectString(req, 'text');
         this.manager.get(sessionId);
         return this.hooks.submitToMod({ sessionId, text });
+      }
+      case 'session.context': {
+        // M9 fix 1036: the ask goes to the session's mod channel; the
+        // breakdown comes back later as a session.changed.
+        const sessionId = expectString(req, 'sessionId');
+        this.manager.get(sessionId);
+        const detail = req.detail;
+        if (detail !== 'summary' && detail !== 'full') throw new SessionError('bad-request', 'detail must be summary or full');
+        return this.hooks.askContext(sessionId, detail);
       }
       case 'hooks.test': {
         // Checked before the lookup, so a server with no sink still refuses a bad id.

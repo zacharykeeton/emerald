@@ -91,3 +91,14 @@ test('the shipped emerald gem derives its editor rules from its own colours', ()
   assert.equal(of('string.value.json'), '3ecf8e');
   assert.equal(colors['editor.background'], '#1a1f1d');
 });
+
+test('the shipped light schemes give the editor Monaco’s light base (fix 1034)', () => {
+  for (const [file, ground] of [['emerald-gem-light.json', '#f7f9f8'], ['emerald-light.json', '#f8f8f8']] as const) {
+    const json = JSON.parse(readFileSync(new URL('../../../resources/schemes/' + file, import.meta.url), 'utf8')) as unknown;
+    const scheme = schemeFromWindowsTerminal(json, 'shipped');
+    assert.ok(scheme !== null, file);
+    const { base, colors } = schemeTheme(scheme).data;
+    assert.equal(base, 'vs', file);
+    assert.equal(colors['editor.background'], ground, file);
+  }
+});

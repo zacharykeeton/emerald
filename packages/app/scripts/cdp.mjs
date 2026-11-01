@@ -248,7 +248,8 @@ function windowLines(logs) {
 // EMERALD_WHATS_NEW=on for the step that tests the What's New tab's opening
 // (M9 fix 227), which every other launch turns off so no script meets a
 // surprise tab on its fresh profile, and EMERALD_SKIN: undefined for
-// verify:skin's default block, which unsets the Classic pin (M9 fix 628).
+// verify:skin's default block, which unsets the Classic pin (M9 fix 628),
+// as it may EMERALD_THEME, the dark pin beside it (M9 fix 1032).
 export async function launch(port, opts = {}) {
   const home = opts.pair?.home ?? emeraldHome;
   const profile = profileOf(home);
@@ -256,7 +257,10 @@ export async function launch(port, opts = {}) {
   // nor that daemon's sessions listed as exited, nor the localStorage a
   // run killed on this home left behind.
   if (opts.freshState) {
-    for (const f of ['state.json', 'sessions.json', 'daemon.json']) fs.rmSync(path.join(home, f), { force: true });
+    // theme.json (M9 fix 1032): one left by a verify:skin run that died
+    // mid-block would open every later script on its pick and beat the
+    // dark pin, a wrong colour read rather than an error. skin.json stays.
+    for (const f of ['state.json', 'sessions.json', 'daemon.json', 'theme.json']) fs.rmSync(path.join(home, f), { force: true });
     // M9 fix 621: a window that has not quite let go of its profile (a
     // relaunch in verify:files, a rerun right after a failed run) failed
     // the whole run with EPERM here. It is tried again every 200 ms for
@@ -295,6 +299,11 @@ export async function launch(port, opts = {}) {
     // verify:skin their Emerald twins. Before opts.env, so a launch can
     // override it.
     EMERALD_SKIN: 'classic',
+    // M9 fix 1032: the theme follows Windows by default; the harness runs
+    // on dark, without which every script that reads a computed colour
+    // fails on a box whose Windows is set to light. A theme.json naming a
+    // pick still wins, which is how verify:skin's theme block picks.
+    EMERALD_THEME: 'dark',
     EMERALD_CLAUDE_HOME: harnessClaudeHome(home),
     CLAUDE_SETTINGS: process.env['CLAUDE_SETTINGS'] ?? path.join(home, 'claude-settings.json'),
     CLAUDE_CONFIG_DIR: claudeConfig,

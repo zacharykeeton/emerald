@@ -235,11 +235,13 @@ try {
   expect(window.includes(`"claudeSessionId": "${firstRow.claudeSessionId}"`), 'second session saw the first session bound to its Claude session id');
   const firstEvents = hookEvents(first.id);
   const secondEvents = hookEvents(second.id);
-  // The status line's posts (StatusLine, Measure) are not Claude's hook
-  // events and race SessionStart: on the private config (M9 fix 997) the
-  // status line is this checkout's node wrapper and landed first, where
-  // the user's installed one had landed second.
-  const firstHookEvents = firstEvents.filter((e) => !/^(StatusLine|Measure):/.test(e));
+  // The status line's posts (StatusLine, Measure) and the mod's Context
+  // (M9 fix 1036, asked on the first Measure, and accepted on trust before
+  // the bind) are not Claude's hook events and race SessionStart: on the
+  // private config (M9 fix 997) the status line is this checkout's node
+  // wrapper and landed first, where the user's installed one had landed
+  // second.
+  const firstHookEvents = firstEvents.filter((e) => !/^(StatusLine|Measure|Context):/.test(e));
   expect(firstHookEvents[0] === 'SessionStart:applied', `first hook events: ${firstEvents.join(' ')}`);
   expect(secondEvents.includes('SessionStart:applied') && secondEvents.includes('Stop:applied'), `second hook events: ${secondEvents.join(' ')}`);
   // M9 fix 726: the -p session loads --plugin-dir fresh.

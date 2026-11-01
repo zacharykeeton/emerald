@@ -13,11 +13,11 @@ function tmp(): string {
 
 test.after(removeTemps);
 
-test('the shipped folder holds the six, emerald first under Classic and emerald gem first under Emerald, each a whole scheme', async () => {
+test('the shipped folder holds the eight, emerald first under Classic and emerald gem first under Emerald, each a whole scheme', async () => {
   const list = await listSchemes({ shippedDir, settingsFiles: [] }, () => {}, 'classic');
   assert.deepEqual(
     list.map((s) => s.name),
-    ['emerald', 'emerald gem', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'],
+    ['emerald', 'emerald gem', 'emerald light', 'emerald gem light', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'],
   );
   assert.ok(list.every((s) => s.source === 'shipped'));
   // The terminal's own palette as Pane.tsx had it (M38).
@@ -29,7 +29,7 @@ test('the shipped folder holds the six, emerald first under Classic and emerald 
   const flipped = await listSchemes({ shippedDir, settingsFiles: [] }, () => {}, 'emerald');
   assert.deepEqual(
     flipped.map((s) => s.name),
-    ['emerald gem', 'emerald', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'],
+    ['emerald gem', 'emerald', 'emerald gem light', 'emerald light', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'],
   );
   const gem = flipped[0];
   assert.equal(gem?.background, '#1a1f1d');
@@ -39,6 +39,24 @@ test('the shipped folder holds the six, emerald first under Classic and emerald 
   assert.equal(gem?.magenta, '#c586c0');
   assert.equal(gem?.brightBlack, '#6b7571');
   assert.equal(gem?.brightWhite, '#ffffff');
+  const light = await listSchemes({ shippedDir, settingsFiles: [] }, () => {}, 'emerald', 'light');
+  assert.deepEqual(
+    light.map((s) => s.name),
+    ['emerald gem light', 'emerald light', 'emerald gem', 'emerald', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night'],
+  );
+  const gemLight = light[0];
+  assert.equal(gemLight?.background, '#f7f9f8');
+  assert.equal(gemLight?.foreground, '#1d2421');
+  assert.equal(gemLight?.cursor, '#0b7548');
+  assert.equal(gemLight?.selection, '#b9d3f0');
+  assert.equal(gemLight?.green, '#0b7548');
+  assert.equal(gemLight?.magenta, '#8e3c8a');
+  assert.equal(gemLight?.brightWhite, '#ffffff');
+  const classicLight = light[1];
+  assert.equal(classicLight?.background, '#f8f8f8');
+  assert.equal(classicLight?.foreground, '#202020');
+  assert.equal(classicLight?.cursor, '#8a5400');
+  assert.equal(classicLight?.yellow, '#8a5400');
 });
 
 test('the person’s settings.json adds theirs after the shipped ones; a missing file is no error', async () => {
@@ -76,11 +94,11 @@ test('the person’s settings.json adds theirs after the shipped ones; a missing
   );
   const logs: string[] = [];
   const list = await listSchemes({ shippedDir, settingsFiles: [path.join(dir, 'missing.json'), file] }, (m) => logs.push(m), 'classic');
-  assert.equal(list.length, 7);
-  assert.equal(list[6]?.name, 'Verify Teal');
-  assert.equal(list[6]?.source, 'windows-terminal');
+  assert.equal(list.length, 9);
+  assert.equal(list[8]?.name, 'Verify Teal');
+  assert.equal(list[8]?.source, 'windows-terminal');
   assert.equal(logs.join(' | '), '');
-  assert.equal((await listSchemes({ shippedDir, settingsFiles: [path.join(dir, 'missing.json')] }, (m) => logs.push(m), 'classic')).length, 6);
+  assert.equal((await listSchemes({ shippedDir, settingsFiles: [path.join(dir, 'missing.json')] }, (m) => logs.push(m), 'classic')).length, 8);
   assert.equal(logs.join(' | '), '');
 });
 

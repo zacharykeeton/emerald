@@ -125,12 +125,13 @@ export function Sidebar() {
   // Collapsed leaves a thin rail with the one button that brings it back,
   // so the sidebar is never a chord away from being lost.
   if (sidebarCollapsed) {
+    const showTitle = `Show sidebar (${plainKeyFor('toggle-sidebar')})`;
     return (
       <div className="sidebar-rail">
-        <button className="sidebar-expand" title="Show sidebar (Ctrl+Shift+B)" onClick={toggleSidebar} onMouseDown={(ev) => ev.preventDefault()}>
+        <button className="sidebar-expand" title={showTitle} onClick={toggleSidebar} onMouseDown={(ev) => ev.preventDefault()}>
           »
         </button>
-        <span className="sidebar-rail-label" onClick={toggleSidebar}>
+        <span className="sidebar-rail-label" title={showTitle} onClick={toggleSidebar}>
           Sessions
         </span>
       </div>
@@ -179,7 +180,7 @@ export function Sidebar() {
         }}
       >
         <span>Sessions</span>
-        <button className="sidebar-collapse" title="Hide sidebar (Ctrl+Shift+B)" onClick={toggleSidebar}>
+        <button className="sidebar-collapse" title={`Hide sidebar (${plainKeyFor('toggle-sidebar')})`} onClick={toggleSidebar}>
           «
         </button>
       </div>
@@ -1438,7 +1439,7 @@ function RowMenu({ menu, session, onScreen, showOffscreen, onShowHere, onShowBes
           },
           disabled: changed === 0,
           hint: changed === null || changed === 0 ? undefined : `${changed} ${changed === 1 ? 'file' : 'files'}`,
-          title: changed === 0 ? 'Nothing changed in this worktree' : `The changes in ${session.cwd} as a diff, with comments sent back as one prompt (Ctrl+Shift+R)`,
+          title: changed === 0 ? 'Nothing changed in this worktree' : `The changes in ${session.cwd} as a diff, with comments sent back as one prompt (${plainKeyFor('review')})`,
           separator: true,
         },
         // M9 fix 85: the conversation's transcript as a read-only tab,

@@ -518,8 +518,12 @@ export class SessionManager extends EventEmitter {
     rec.kept = null;
     if (rec.typeAtPrompt) clearTimeout(rec.typeAtPrompt.timer);
     rec.typeAtPrompt = plan.typed === null ? null : { line: plan.typed, timer: this.typeTimer(rec, plan.typed) };
+    // The old process's context breakdown goes with it, beside contextWindow
+    // below (M9 fix 1036); a destructure, since a key set to undefined is
+    // refused.
+    const { context: _context, ...kept } = rec.info;
     rec.info = {
-      ...rec.info,
+      ...kept,
       // Live facts start over; identity (id, name, spawnCwd, createdAt) stays,
       // and so does the last turn: a resumed Claude picks that conversation
       // up, in the folder it was started in (M48).

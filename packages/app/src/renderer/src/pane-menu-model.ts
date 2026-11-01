@@ -114,7 +114,8 @@ export function sessionPaneMenu({ session, sessionId, zoomed, onlyPane, splitKin
 }
 
 export interface ViewPaneFacts {
-  kind: 'commits' | 'activity' | 'file' | 'browser';
+  // M9 fix 1040: 'context', the context of one session in a pane.
+  kind: 'commits' | 'activity' | 'file' | 'browser' | 'context';
   // The commits view's folder; null for the others.
   folder: string | null;
   zoomed: boolean;
@@ -151,7 +152,8 @@ export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept
       title: toolbar ? "Hide the toolbar row (Back, Forward, Reload, the address and the rest); the pane's header stays" : 'The toolbar row back',
     });
   } else if (kind === 'file') items.push({ run: 'open-as-tab', label: 'Open as a tab', action: null, title: 'The same file on the tab strip; the pane stays' });
-  else if (kind !== 'browser' && stateKept) {
+  // A context pane (M9 fix 1040) keeps its title bar, as a file pane does.
+  else if (kind !== 'browser' && kind !== 'context' && stateKept) {
     items.push({
       run: 'toggle-chrome',
       label: chrome ? 'Hide the chrome' : 'Show the chrome',
@@ -179,7 +181,7 @@ export function viewPaneMenu({ kind, folder, zoomed, onlyPane, chrome, stateKept
       run: 'hide',
       label: 'Close pane',
       action: 'close-pane',
-      title: onlyPane ? 'Empty this pane' : kind === 'file' ? 'Close this pane; the file stays in the rail' : kind === 'browser' ? 'Close this pane and its page' : kind === 'activity' ? 'Close this pane; the Activity tab of the files rail still has the day' : 'Close this pane; the Activity tab of the files rail still has the graph',
+      title: onlyPane ? 'Empty this pane' : kind === 'file' ? 'Close this pane; the file stays in the rail' : kind === 'browser' ? 'Close this pane and its page' : kind === 'context' ? 'Close this pane; the Context tab of the files rail still has it' : kind === 'activity' ? 'Close this pane; the Activity tab of the files rail still has the day' : 'Close this pane; the Activity tab of the files rail still has the graph',
       separator: true,
     },
   );
@@ -200,6 +202,17 @@ export function closeTitle(session: SessionInfo | undefined, onlyPane: boolean):
   if (session.state === 'exited') return `Close: forget ${session.name} and ${pane}`;
   if (session.kind === 'shell') return `Close: kill ${session.name} and ${pane}`;
   return `Close: kill ${session.name} and ${pane}; it waits under exited for 10 seconds, where Resume brings it back, then leaves the list`;
+}
+
+// M9 fix 1046: the zoom button names its chord in both states, the user's ask of 2026-10-31.
+export function zoomTitle(zoomed: boolean): string {
+  return zoomed ? `Unfocus, back to the layout (${plainKeyFor('toggle-focus')})` : `Focus, this pane alone in the tab (${plainKeyFor('toggle-focus')})`;
+}
+
+// M9 fix 1047: the pane menu's Copy row. The hint is isCopyKey's chord, a
+// terminal key with no BINDINGS entry, so it is written out.
+export function copyRow(selection: string): { label: string; hint: string; disabled: boolean; title: string } {
+  return { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: selection === '', title: selection === '' ? 'Nothing selected' : 'Copy the selection' };
 }
 
 // M9 fix 126: a view pane has no session to keep running, so its hide

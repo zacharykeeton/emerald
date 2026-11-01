@@ -125,7 +125,7 @@ async function main() {
   // M9 fix 225: the terminal's shipped colour schemes ride along, where
   // the installed app's resolveSchemesDir reads them.
   const schemes = fs.existsSync(path.join(stageCopy, 'schemes')) ? fs.readdirSync(path.join(stageCopy, 'schemes')).filter((f) => f.endsWith('.json')) : [];
-  expect(schemes.length === 6 && schemes.includes('emerald.json') && schemes.includes('emerald-gem.json') && schemes.includes('solarized-dark.json'), `the six colour schemes are staged under schemes/ (${schemes.join(', ')})`);
+  expect(schemes.length === 8 && schemes.includes('emerald.json') && schemes.includes('emerald-gem.json') && schemes.includes('emerald-gem-light.json') && schemes.includes('emerald-light.json') && schemes.includes('solarized-dark.json'), `the eight colour schemes are staged under schemes/ (${schemes.join(', ')})`);
 
   // M9 fix 602: the stage ships only what runs; no test helper or pipe client
   // in the staged daemon or shared, and every module there built from a

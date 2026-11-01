@@ -708,6 +708,27 @@ test('mod.channel takes a session\'s prompts and session.submit routes through i
   }
 });
 
+test('session.context asks the session\'s mod channel for its breakdown and answers whether it asked (M9 fix 1036)', async () => {
+  const cli = await PipeClient.connect(PIPE);
+  const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  try {
+    assert.deepEqual(await cli.request('session.context', { sessionId: session.id, detail: 'summary' }), { asked: false, mod: false }, 'no channel: nobody asked');
+    await assert.rejects(cli.request('session.context', { sessionId: session.id, detail: 'all' } as never), { code: 'bad-request', message: 'detail must be summary or full' });
+    await assert.rejects(cli.request('session.context', { sessionId: 'nope', detail: 'full' }), { code: 'not-found' });
+
+    const channel = await PipeClient.connect(PIPE);
+    await channel.request('mod.channel', { sessionId: session.id });
+    const pushed = waitFor(channel, (m) => m.type === 'mod.context');
+    assert.deepEqual(await cli.request('session.context', { sessionId: session.id, detail: 'full' }), { asked: true, mod: false });
+    assert.deepEqual(await pushed, { type: 'mod.context', sessionId: session.id, detail: 'full' });
+    channel.close();
+    await once(channel, 'close');
+  } finally {
+    await cli.request('session.kill', { sessionId: session.id });
+    cli.close();
+  }
+});
+
 test('a send to a session whose mod posted waits for its channel, and one never seen or whose channel went is typed at once (M9 fix 776)', async () => {
   const pipe = `${PIPE}-776`;
   const seen = new Set<string>();

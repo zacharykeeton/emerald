@@ -106,6 +106,21 @@ try {
   expect((await selection441()) === '', `the right-click's copy clears the selection, got ${JSON.stringify(await selection441())}`);
   step('a right-click with a selection copied it and cleared it');
 
+  // M9 fix 1047: the pane menu's Copy row over a terminal selection, opened
+  // by Shift+right-click, which keeps the xterm selection.
+  await s.waitFor(`!document.querySelector('.corner-note')`, 'the corner note gone', 4000);
+  await setClip441('before-1047');
+  expect((await selectLine441()) === copyLine441, 'fix 1047: the line is selected again');
+  await s.rightClick(mid441.x, mid441.y, SHIFT);
+  await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(p2.id)}`, 'fix 1047: the pane menu on pane 2');
+  const copyRow1047 = await s.evalJs(`(() => { const it = [...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Copy'); if (!it) return null; const was = !it.disabled; it.click(); return was; })()`);
+  expect(copyRow1047 === true, `fix 1047: the Copy row was on the menu and enabled, got ${copyRow1047}`);
+  await s.waitFor(`window.emerald.clipboard.read().then((c) => c.text === ${JSON.stringify(copyLine441)})`, 'fix 1047: the Copy row copied the line', 3000);
+  await s.waitFor(`document.querySelector('.corner-note')?.textContent === ${JSON.stringify(`Copied ${[...copyLine441].length} characters`)}`, 'fix 1047: the corner note', 3000);
+  expect((await selection441()) === copyLine441, 'fix 1047: the selection is kept');
+  await s.evalJs(`${hostOf441}.emeraldTerm.clearSelection()`);
+  step('fix 1047: Shift+right-click over a terminal selection offers Copy, which copies it with its note and keeps it selected');
+
   await s.key('C', 'KeyC', 67, CTRL | SHIFT);
   await sleep(400);
   expect((await clip441()) === copyLine441, 'Ctrl+Shift+C with nothing selected leaves the clipboard alone');

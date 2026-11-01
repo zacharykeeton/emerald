@@ -14,7 +14,8 @@ import { fileIcon } from './file-icons.ts';
 import { folderName, parentPath } from './files-model.ts';
 import { CommitsPanel } from './CommitsPanel.tsx';
 import { EmptyPane } from './EmptyPane.tsx';
-import { ClockIcon } from './icons.tsx';
+import { ClockIcon, ContextIcon } from './icons.tsx';
+import { ContextView, ContextViewTitle } from './ContextView.tsx';
 import { Menu } from './Menu.tsx';
 import { menuHint, viewPaneMenu } from './pane-menu-model.ts';
 import type { PaneMenuRun } from './pane-menu-model.ts';
@@ -100,9 +101,11 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   // controls together, on the view record, so it is one pane's and
   // survives with the layout. The menu on the bare box is the way back.
   // A file pane (M9 fix 180) keeps its chrome: its header is the tab's.
-  const chrome = view.kind === 'file' || view.kind === 'browser' || view.chrome !== false;
+  // A context pane (M9 fix 1040) keeps its chrome too: its title carries
+  // the session, the reading and Recount.
+  const chrome = view.kind === 'file' || view.kind === 'browser' || view.kind === 'context' || view.chrome !== false;
   const setChrome = (shown: boolean) => {
-    if (view.kind === 'file' || view.kind === 'browser') return;
+    if (view.kind === 'file' || view.kind === 'browser' || view.kind === 'context') return;
     const { chrome: _chrome, ...rest } = view;
     void editTab((t) => setPaneView(t, paneId, shown ? rest : { ...rest, chrome: false }), paneId).catch(warn('chrome'));
   };
@@ -274,6 +277,8 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
             </svg>
           ) : file !== null ? (
             <img className="pane-view-file-icon" src={fileIcon(folderName(file.path), 'file').url} width={14} height={14} alt="" draggable={false} />
+          ) : view.kind === 'context' ? (
+            <ContextIcon />
           ) : (
             <ClockIcon className="pane-view-clock" />
           )}
@@ -330,6 +335,8 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
             </span>
             <span className="pane-cwd">{parentPath(file.path)}</span>
           </>
+        ) : view.kind === 'context' ? (
+          <ContextViewTitle sessionId={view.sessionId} />
         ) : (
           <span className="pane-name" title={`The activity of every session in this window`}>
             {viewName(view)}
@@ -400,6 +407,11 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
         <div className="pane-view" tabIndex={-1} data-view={view.kind}>
           <BrowserView paneId={paneId} url={view.url} toolbar={view.toolbar !== false} onUrl={(url) => void editTab((t) => setPaneView(t, paneId, withPageUrl(view, url)), paneId).catch(warn('browser url'))} />
         </div>
+      ) : view.kind === 'context' ? (
+        // M9 fix 1040: the context of one session, every column.
+        <div className="pane-view" tabIndex={-1} data-view="context">
+          <ContextView sessionId={view.sessionId} />
+        </div>
       ) : (
         // Focusable so a click here takes the keyboard from the terminal
         // that had it, and so Home reaches the view's own key handler.
@@ -423,5 +435,6 @@ function sameView(a: PaneView, b: PaneView): boolean {
   if (a.kind === 'commits') return b.kind === 'commits' && a.folder === b.folder;
   if (a.kind === 'activity') return b.kind === 'activity' && a.window === b.window;
   if (a.kind === 'browser') return b.kind === 'browser' && a.url === b.url && a.profile === b.profile;
+  if (a.kind === 'context') return b.kind === 'context' && a.sessionId === b.sessionId;
   return b.kind === 'file' && a.path === b.path;
 }

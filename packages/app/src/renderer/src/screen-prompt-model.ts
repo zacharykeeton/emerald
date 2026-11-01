@@ -412,6 +412,21 @@ export function freeAnswerKeys(ask: AskQuestion, text: string): { move: string |
   return { move: o.key, text: typed };
 }
 
+// M9 fix 1045: the row a question card draws as chosen (its data-pointer).
+// The Type something row while the person is answering there, its input
+// focused or holding text not yet sent; else the row Claude Code's own
+// pointer is on, the Submit row as 'submit'; else none. No key is sent
+// for it: Claude Code's pointer moves when the answer goes.
+// `seeded` says the input has been seeded for the dialog on show; until
+// then its text is the last dialog's.
+export function askChosenKey(ask: AskQuestion, free: string, focused: boolean, seeded: boolean): string | null {
+  const o = freeOption(ask);
+  if (o !== null && (focused || (seeded && free !== freeText(o)))) return o.key;
+  const at = ask.options.find((x) => x.pointer);
+  if (at !== undefined) return at.key;
+  return ask.submit?.pointer === true ? 'submit' : null;
+}
+
 // M9 fix 845: how many Downs take a multi-select's pointer to its Submit
 // (or Next) row. The list options are those above Chat about this, the
 // last of them the free row, and Down on that row reaches the button.

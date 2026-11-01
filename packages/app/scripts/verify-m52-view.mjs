@@ -1490,8 +1490,8 @@ try {
   await openWindowList();
   const schemeRows = await subLabels();
   expect(
-    JSON.stringify(schemeRows.map((l) => l.label)) === JSON.stringify(['emerald', 'emerald gem', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night']),
-    `the six shipped schemes, emerald first and emerald gem second, got ${JSON.stringify(schemeRows.map((l) => l.label))}`,
+    JSON.stringify(schemeRows.map((l) => l.label)) === JSON.stringify(['emerald', 'emerald gem', 'emerald light', 'emerald gem light', 'Dracula', 'One Dark', 'Solarized Dark', 'Tokyo Night']),
+    `the eight shipped schemes, emerald first, emerald gem second, the two light defaults next, got ${JSON.stringify(schemeRows.map((l) => l.label))}`,
   );
   expect(schemeRows[0].checked === 'true' && schemeRows.slice(1).every((l) => l.checked === 'false'), `emerald is the checked one, got ${JSON.stringify(schemeRows)}`);
   let sp = await schemeProbe();

@@ -2,6 +2,22 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1030 to 1047, 2026-10-31
+
+Eighteen fixes: a light theme for the whole app, the shells included, that follows Windows; a Context tab on the rail that shows what fills a Claude session's context window and lets you turn skills off; and five small ones in the chat view and the panes. The daemon goes from level 78 to 79, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+
+### Highlights
+
+**A light theme.** The app menu has a `Theme:` item after the skin's, a submenu of Follow Windows, Light and Dark. Follow Windows is the default: the window is light or dark as Windows is, and follows a change of Windows' own setting with no restart. Both skins have a light form, Emerald's on a pale green-grey with the gem's green kept for what is filled, and under light the shells and the editor wear a light scheme too, `emerald light` or `emerald gem light`, unless you picked a scheme by hand, which holds in both themes. Claude Code draws in a theme of its own, so a Claude pane whose scheme and Claude Code's theme disagree says so in a band under its title, with the one command that switches it (`/theme` in the session); the band's × hides it until the pairing changes.
+
+**The Context tab.** The rail's fifth tab shows what fills the focused Claude session's context window: the total against the window, a grid of squares by part (the system prompt, the system tools, the MCP tools and their instructions, custom agents, memory files, skills and messages, with what is free), and the parts as sections sorted by tokens, each opening to its items and lighting its squares. Recount counts every part again exactly, and ⤢ opens the same view in a pane. The Skills section groups your skills by what you can do about them and gives each its uses, when it was last used and its tokens over the last seven days, read off every Claude transcript on the machine (the first read takes some seconds). A skill row's switch turns that skill off in this folder or in every folder, written to Claude Code's own settings, with Undo; it takes effect for new sessions.
+
+### Details
+
+**Chat view.** A `/clear` puts the context dial and its card back at an empty conversation, 0 of the same window, while the session's running tokens and cost carry on. A chat-view pane dragged to another layout tab, onto the + or onto another pane keeps its face, its mode and its text size. The question card marks the row you chose, the Type something row included.
+
+**Panes.** Every tooltip on a control that has a chord names the chord, the pane header's Unfocus first. The pane menu has a Copy row above Copy on select, greyed out with nothing selected; over a terminal the menu opens on Shift+right-click.
+
 ## Fixes 1015 to 1029, 2026-10-31
 
 Fifteen fixes, one change: Emerald runs on a Mac with Apple silicon. Nothing changes on Windows; this build is the same app there, and the daemon needs no restart.

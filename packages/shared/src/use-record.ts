@@ -142,6 +142,7 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'empty-start-shell', label: "Start a shell from an empty pane", group: 'clicks' },
   { name: 'empty-start-claude', label: 'Start a Claude session from an empty pane', group: 'clicks' },
   { name: 'toggle-skin', label: 'Switch the skin', group: 'clicks' },
+  { name: 'set-theme', label: 'Pick the theme', group: 'clicks' },
   { name: 'check-updates', label: 'Check for updates', group: 'clicks' },
   { name: 'file-launch', label: 'Open a file from Explorer', group: 'clicks' },
   { name: 'folder-launch', label: 'Open a folder from Explorer', group: 'clicks' },

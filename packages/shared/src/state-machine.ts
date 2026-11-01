@@ -1,5 +1,5 @@
 import { isSessionId } from './session.ts';
-import type { ContextWindow, NeedsInputReason, SessionCache, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
+import type { ContextBreakdown, ContextWindow, NeedsInputReason, SessionCache, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
 import { Limits } from './limits.ts';
 import { ackable, folderName, runningKind, staleSince, titleGlyph, titleText } from './session-label.ts';
 import { askWords, toolPhrase } from './tool-phrase.ts';
@@ -80,6 +80,11 @@ export interface HookPayload {
     changed?: string[];
     model?: string | null;
   };
+  // The mod's Context (M9 fix 1036): how the breakdown was counted
+  // ('summary' or 'full') and the breakdown itself, less its grid,
+  // checked by applyContext before it lands on the session.
+  detail?: string;
+  breakdown?: unknown;
   // Stop: the background tasks (subagents and shells) still running when
   // the turn ended. Claude Code wakes the agent again when one finishes.
   background_tasks?: unknown;
@@ -282,7 +287,7 @@ function startsAfterEnd(session: SessionInfo, payload: HookPayload): boolean {
 // just cleared. A new claude's line carries its own id and still applies,
 // and one after a resume's SessionStart finds the id bound again.
 function lateFromLeft(session: SessionInfo, payload: HookPayload): boolean {
-  if (payload.hook_event_name !== 'StatusLine' && payload.hook_event_name !== 'Measure') return false;
+  if (payload.hook_event_name !== 'StatusLine' && payload.hook_event_name !== 'Measure' && payload.hook_event_name !== 'Context') return false;
   if (session.claudeSessionId !== null) return false;
   const last = spansOf(session).at(-1);
   return last !== undefined && last.endedAt !== null && last.conversation === payload.session_id;
@@ -357,7 +362,10 @@ function closeSpan(session: SessionInfo, at: number): SessionInfo {
 function leave(session: SessionInfo, at: number): SessionInfo {
   let next = closeSpan(session, at);
   if (session.kind === 'shell') {
-    next = { ...next, claudeSessionId: null, lastEventAt: null, model: null, effort: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null, ...(next.keepWhole === true ? { keepWhole: false } : {}) };
+    // The breakdown went with its Claude (M9 fix 1036); a destructure,
+    // since a key set to undefined is refused.
+    const { context: _context, ...rest } = next;
+    next = { ...rest, claudeSessionId: null, lastEventAt: null, model: null, effort: null, contextPercent: null, contextWindow: null, tokens: null, costUsd: null, cache: null, tasks: [], cwd: next.shellCwd ?? next.cwd, groupCwd: next.shellCwd ?? next.groupCwd, transcriptPath: null, ...(next.keepWhole === true ? { keepWhole: false } : {}) };
   }
   return transition(followAutoName(clearTeam(next), null), 'idle', at, null);
 }
@@ -520,6 +528,8 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
   if (payload.hook_event_name === 'StatusLine') return applyStatusLine(session, payload);
   // Nor does the mod's measure (M9 fix 739).
   if (payload.hook_event_name === 'Measure') return applyMeasure(session, payload);
+  // Nor does the mod's context breakdown (M9 fix 1036).
+  if (payload.hook_event_name === 'Context') return applyContext(session, payload, at);
 
   // Any accepted event proves the session is alive, whatever it says.
   let next: SessionInfo = { ...session, lastEventAt: at, stale: false, staleThresholdMs: null };
@@ -561,6 +571,15 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     if ((next.endReason ?? null) !== null) next = { ...next, endReason: null };
     // A compact restarts the session object mid-turn; Claude is still working.
     if ((payload.source ?? payload.session_start_type) === 'compact') return next;
+    // M9 fix 1043: a /clear opens an empty conversation, so the dial reads
+    // 0 and the window's counts start over with its size kept. Claude
+    // Code's first status line after it carries a null percent and no
+    // current_usage, which applyStatusLine reads as "keep the last". The
+    // running token sum stays; the cost is Claude Code's own and its next
+    // line says 0.
+    if ((payload.source ?? payload.session_start_type) === 'clear') {
+      next = { ...next, contextPercent: 0, contextWindow: next.contextWindow === null ? null : { ...next.contextWindow, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 } };
+    }
     if (typeof payload.cwd === 'string' && payload.cwd !== '' && payload.cwd !== next.groupCwd) next = { ...next, groupCwd: payload.cwd };
     // The conversation a resume would pick up (M48): this one, in this
     // folder, with the args a Claude session was started with (a shell's
@@ -1219,6 +1238,24 @@ function applyMeasure(session: SessionInfo, payload: HookPayload): SessionInfo {
     ...(finite(context?.tokens) ? { total_input_tokens: context.tokens } : {}),
   };
   return applyStatusLine(session, { hook_event_name: 'StatusLine', context_window: contextWindow, ...(finite(usd) ? { cost: { total_cost_usd: usd } } : {}) });
+}
+
+// The mod's context breakdown (M9 fix 1036), kept whole on the session as
+// context, the last post to arrive winning, so a Measure's summary after a
+// Recount's full puts detail back to summary. A post that is not a
+// breakdown returns the same object, which the daemon reads as no change;
+// the grid is dropped here too, should a mod ever send it.
+function applyContext(session: SessionInfo, payload: HookPayload, at: number): SessionInfo {
+  const detail = payload.detail;
+  if (detail !== 'summary' && detail !== 'full') return session;
+  const b = payload.breakdown;
+  if (b === null || typeof b !== 'object' || Array.isArray(b)) return session;
+  const r = b as Record<string, unknown>;
+  const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
+  if (!Array.isArray(r.categories) || !finite(r.totalTokens) || !finite(r.rawMaxTokens) || !finite(r.percentage)) return session;
+  const { gridRows: _grid, ...rest } = r;
+  const context = { ...rest, at, detail } as unknown as ContextBreakdown;
+  return { ...session, context };
 }
 
 // The running sum of the status line's counts (M9 fix 143). Claude Code

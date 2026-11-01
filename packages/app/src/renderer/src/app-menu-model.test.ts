@@ -13,6 +13,7 @@ test('appMenuItems: Open a file (M9 fix 341, its chord since fix 364), then What
       ['cheat-sheet', 'Key cheat sheet', 'Ctrl+Shift+?'],
       ['open-actions', 'Run an action…', 'Ctrl+Shift+P'],
       ['toggle-skin', 'Skin: Classic', ''],
+      ['theme', 'Theme: follow Windows', ''],
       ['toggle-usage-record', 'Usage record: off', ''],
       ['check-updates', 'Check for updates', ''],
     ],
@@ -51,13 +52,41 @@ test('appMenuItems: the skin item names the skin on show, before Check for updat
 
 test('appMenuItems: the usage record item names its state, after the skin and before Check for updates (M9 fix 887)', () => {
   const off = appMenuItems('0.1.228');
-  assert.deepEqual([off[5]!.action, off[5]!.label, off[5]!.hint], ['toggle-usage-record', 'Usage record: off', '']);
-  assert.ok(off[5]!.title!.endsWith('Click to turn it on'));
+  assert.deepEqual([off[6]!.action, off[6]!.label, off[6]!.hint], ['toggle-usage-record', 'Usage record: off', '']);
+  assert.ok(off[6]!.title!.endsWith('Click to turn it on'));
   const on = appMenuItems('0.1.228', null, 'classic', true);
-  assert.equal(on[5]!.label, 'Usage record: on');
-  assert.ok(on[5]!.title!.endsWith('Click to turn it off'));
+  assert.equal(on[6]!.label, 'Usage record: on');
+  assert.ok(on[6]!.title!.endsWith('Click to turn it off'));
   assert.equal(off.at(-1)!.action, 'check-updates');
   assert.equal(on.at(-1)!.action, 'check-updates');
+});
+
+test('appMenuItems: the theme item after the skin names the pick and holds a submenu of Follow Windows, Light and Dark (fix 1033)', () => {
+  const item = (theme?: { pick: 'system' | 'light' | 'dark'; theme: 'light' | 'dark' }, platform = 'win32') => appMenuItems('0.1.228', null, 'classic', false, false, platform, theme)[5]!;
+  const def = item();
+  assert.equal(def.action, 'theme');
+  assert.equal(def.label, 'Theme: follow Windows');
+  assert.deepEqual(def.submenu, [
+    { pick: 'system', label: 'Follow Windows', hint: 'dark now', checked: true },
+    { pick: 'light', label: 'Light', hint: '', checked: false },
+    { pick: 'dark', label: 'Dark', hint: '', checked: false },
+  ]);
+  assert.equal(item({ pick: 'system', theme: 'light' }).submenu![0]!.hint, 'light now');
+  const light = item({ pick: 'light', theme: 'light' });
+  assert.equal(light.label, 'Theme: Light');
+  assert.deepEqual(
+    light.submenu!.map((t) => [t.label, t.checked, t.hint]),
+    [
+      ['Follow Windows', false, ''],
+      ['Light', true, ''],
+      ['Dark', false, ''],
+    ],
+  );
+  assert.equal(item({ pick: 'dark', theme: 'dark' }).label, 'Theme: Dark');
+  const mac = item(undefined, 'darwin');
+  assert.equal(mac.label, 'Theme: follow macOS');
+  assert.equal(mac.submenu![0]!.label, 'Follow macOS');
+  assert.equal(appMenuItems('0.1.228')[4]!.submenu, undefined, 'the skin item has no submenu');
 });
 
 // M9 fix 1025: off Windows the hint names the release that is out.

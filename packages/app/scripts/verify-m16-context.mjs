@@ -15,6 +15,7 @@
 // gone; a click on either reading opens the context card with the bar,
 // the legend, the compaction point and the last request's counts.
 // The private daemon runs at the current feature level, so no banner.
+// M9 fix 1043: a /clear's three hooks put the dial back at 0%.
 // Uses a private home and pipe unless the environment already names them.
 // Run: npm run verify:context -w @emerald/app
 import fs from 'node:fs';
@@ -947,6 +948,28 @@ try {
     await s.waitFor(`!document.querySelector(${JSON.stringify(hostedRow)})`, 'fix 833: the hosted shell row is gone', 8000);
   }
   step('M9 fix 833: a shell names the emerald mod in CLAUDE_CODE_PLUGIN_DIRS, its row offers Keep whole while idle once a Claude reports in, the mark skips an auto compaction at idle, and it goes when that Claude leaves');
+
+  {
+    // M9 fix 1043: a /clear's SessionEnd, SessionStart and the null status line Claude Code posts after it.
+    const titlePercent = `[data-pane-id=${JSON.stringify(p1)}] .pane-context-percent`;
+    const rowPercent = `${liveRow} .sidebar-row-context-percent`;
+    await s.waitFor(`document.querySelector(${JSON.stringify(titlePercent)})?.textContent === '25%'`, 'fix 1043: the title reads 25% before the clear', 5000);
+    await postLive({ hook_event_name: 'SessionEnd', reason: 'clear' });
+    await postLive({ hook_event_name: 'SessionStart', source: 'clear', session_id: 'sim-m16-1043' });
+    await postLive({
+      hook_event_name: 'StatusLine',
+      session_id: 'sim-m16-1043',
+      model: { id: 'claude-opus-5', display_name: 'Opus 5 (1M context)' },
+      workspace: { current_dir: fixture },
+      context_window: { total_input_tokens: 0, total_output_tokens: 0, context_window_size: 1000000, current_usage: null, used_percentage: null, remaining_percentage: null },
+      cost: { total_cost_usd: 0 },
+    });
+    await s.waitFor(`document.querySelector(${JSON.stringify(titlePercent)})?.textContent === '0%' && document.querySelector(${JSON.stringify(rowPercent)})?.textContent === '0%'`, 'fix 1043: the title and the row read 0% after the clear', 5000);
+    const rec1043 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === live.id);
+    expect(rec1043?.claudeSessionId === 'sim-m16-1043' && rec1043.contextPercent === 0, `fix 1043: the record is on the new id at 0, got ${rec1043?.claudeSessionId} ${rec1043?.contextPercent}`);
+    expect(JSON.stringify(rec1043.contextWindow) === JSON.stringify({ size: 1000000, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 }), `fix 1043: the window's counts are at 0 with its size kept, got ${JSON.stringify(rec1043.contextWindow)}`);
+  }
+  step("M9 fix 1043: a /clear's SessionEnd, SessionStart and null status line read 0% on the title and the row, the window's counts at 0 with its 1M size kept");
 
   await zreq(s, 'session.kill', { sessionId: live.id, remove: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(liveRow)})`, 'the live claude row is gone', 8000);

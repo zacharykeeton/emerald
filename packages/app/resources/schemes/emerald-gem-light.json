@@ -1,0 +1,23 @@
+{
+  "name": "emerald gem light",
+  "background": "#F7F9F8",
+  "foreground": "#1D2421",
+  "cursorColor": "#0B7548",
+  "selectionBackground": "#B9D3F0",
+  "black": "#1D2421",
+  "red": "#B02E3B",
+  "green": "#0B7548",
+  "yellow": "#835D00",
+  "blue": "#2A66AD",
+  "purple": "#8E3C8A",
+  "cyan": "#127783",
+  "white": "#E6EBE8",
+  "brightBlack": "#5C6661",
+  "brightRed": "#9E2734",
+  "brightGreen": "#08653E",
+  "brightYellow": "#6E4E00",
+  "brightBlue": "#22599A",
+  "brightPurple": "#7A3277",
+  "brightCyan": "#0E6670",
+  "brightWhite": "#FFFFFF"
+}

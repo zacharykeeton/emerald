@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applySkin, CHROME, currentSkin, defaultSkin, initSkin, parseSkin, readSkinFile } from './skin.ts';
+import { applySkin, applyTheme, CHROME, currentSkin, defaultSkin, initSkin, parseSkin, readSkinFile } from './skin.ts';
 import type { SkinWindow } from './skin.ts';
+import { initTheme } from './theme.ts';
 
 // Main's half of the skin (M9 fix 569): the file it keeps, the chrome it
 // paints and the line it logs, which verify:skin reads.
@@ -13,6 +14,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-skin-test-'));
 // The harness pins Classic through EMERALD_SKIN (M9 fix 628); a value from
 // the shell that runs the suite must not reach the defaults read here.
 delete process.env['EMERALD_SKIN'];
+// The dark pin beside it (M9 fix 1032), for the same reason.
+delete process.env['EMERALD_THEME'];
 test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 function fakeWindow(destroyed = false): SkinWindow & { calls: string[] } {
@@ -103,7 +106,32 @@ test('applySkin on darwin: the ground alone, no overlay to repaint, the same log
   assert.equal(lines[1], lines[0], 'the line verify:skin reads is the same on both');
 });
 
-test('CHROME equals the --chrome-* tokens of both blocks in style.css', () => {
+test('applySkin and applyTheme under the light theme paint the light chrome and log their lines (fix 1032)', () => {
+  const themeFile = path.join(dir, 'theme-light.json');
+  fs.writeFileSync(themeFile, '{"pick":"light"}\n');
+  assert.deepEqual(initTheme(themeFile, () => {}), { pick: 'light', theme: 'light' });
+  const lines: string[] = [];
+  initSkin(path.join(dir, 'light-skin.json'), (m) => lines.push(m));
+  try {
+    const win = fakeWindow();
+    applySkin(win, 'emerald');
+    assert.deepEqual(win.calls, ['setBackgroundColor #f7f9f8', 'setTitleBarOverlay {"color":"#f1f4f2","symbolColor":"#3d4542","height":26}']);
+    assert.equal(lines[0], 'skin emerald: ground #f7f9f8, title bar overlay #f1f4f2, symbols #3d4542');
+    const w2 = fakeWindow();
+    applyTheme(w2);
+    assert.deepEqual(w2.calls, ['setBackgroundColor #f7f9f8', 'setTitleBarOverlay {"color":"#f1f4f2","symbolColor":"#3d4542","height":26}']);
+    assert.equal(lines[1], 'theme light (pick light), skin emerald: ground #f7f9f8, title bar overlay #f1f4f2, symbols #3d4542');
+    const mac = fakeWindow();
+    applyTheme(mac, 'darwin');
+    assert.deepEqual(mac.calls, ['setBackgroundColor #f7f9f8'], 'the ground alone on darwin');
+    assert.equal(lines[2], lines[1], 'the same line on every platform');
+  } finally {
+    // A missing file puts it back to dark for every other test.
+    assert.equal(initTheme(path.join(dir, 'theme-missing.json'), () => {}).theme, 'dark');
+  }
+});
+
+test('CHROME equals the --chrome-* tokens of the four blocks in style.css (fix 1032)', () => {
   const raw = fs.readFileSync(fileURLToPath(new URL('../renderer/src/style.css', import.meta.url)), 'utf8');
   const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
   const body = (head: string) => {
@@ -112,8 +140,14 @@ test('CHROME equals the --chrome-* tokens of both blocks in style.css', () => {
     return css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at));
   };
   const read = (b: string, name: string) => new RegExp(`${name}:\\s*(#[0-9a-f]{6})`).exec(b)![1];
-  for (const [skin, head] of [['classic', ':root'], ['emerald', ':root[data-skin="emerald"]']] as const) {
+  const blocks = [
+    ['classic', 'dark', ':root'],
+    ['emerald', 'dark', ':root[data-skin="emerald"]'],
+    ['classic', 'light', ':root[data-theme="light"]'],
+    ['emerald', 'light', ':root[data-skin="emerald"][data-theme="light"]'],
+  ] as const;
+  for (const [skin, theme, head] of blocks) {
     const b = body(head);
-    assert.deepEqual({ bg: read(b, '--chrome-bg'), overlay: read(b, '--chrome-overlay'), symbol: read(b, '--chrome-symbol') }, CHROME[skin], skin);
+    assert.deepEqual({ bg: read(b, '--chrome-bg'), overlay: read(b, '--chrome-overlay'), symbol: read(b, '--chrome-symbol') }, CHROME[skin][theme], `${skin} ${theme}`);
   }
 });

@@ -199,3 +199,14 @@ test('the shade chords: Ctrl+Shift+U and U after the prefix for Shade or lift al
 test('the look-first actions: the tab keys, the jump to the waiting session and the shade chords (M9 fixes 189, 201 and 873)', () => {
   assert.deepEqual([...LOOK_FIRST_ACTIONS].sort(), ['jump-waiting', 'next-layout-tab', 'next-tab', 'prev-layout-tab', 'prev-tab', 'shade-all', 'shade-pane']);
 });
+
+test('the chords the tooltips name, unchanged by the move to plainKeyFor (fix 1046)', () => {
+  assert.equal(plainKeyFor('toggle-sidebar'), 'Ctrl+Shift+B');
+  assert.equal(plainKeyFor('toggle-files'), 'Ctrl+Shift+F');
+  assert.equal(plainKeyFor('design-mode'), 'Ctrl+Shift+D');
+  assert.equal(plainKeyFor('review'), 'Ctrl+Shift+R');
+  assert.equal(plainKeyFor('history-back'), 'Ctrl+Alt+Left');
+  assert.equal(plainKeyFor('history-forward'), 'Ctrl+Alt+Right');
+  assert.equal(plainKeyFor('toggle-focus'), 'Ctrl+Shift+Z');
+  assert.equal(plainKeyFor('new-layout-tab'), '');
+});

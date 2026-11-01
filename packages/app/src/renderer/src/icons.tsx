@@ -83,6 +83,17 @@ export function StatsIcon({ size = 14, className = 'tab-icon' }: IconProps) {
   );
 }
 
+// The Context tab's icon (M9 fix 1037): a dial, the reading's ◔ drawn as a
+// stroke icon.
+export function ContextIcon({ size = 14, className = 'tab-icon' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M8 8V2.5A5.5 5.5 0 0 1 13.5 8Z" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function ShadeIcon({ size = 13, className = 'pane-shade-icon' }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">

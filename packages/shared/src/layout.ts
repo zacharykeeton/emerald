@@ -84,7 +84,9 @@ export type FilePaneView = { kind: 'file'; path: string; view?: FileTabView };
 // M9 fix 969: openedBy, the EMERALD_SESSION_ID of the session whose emmer browser open made the pane, absent for a pane the person opened (and for one from emmer open <url>); emmer browser close puts away only a pane whose openedBy is the caller's.
 // M9 fix 986: zoom, the page's own whole zoom level when it differs from the window's, kept only when not 0 and within the app's zoom steps, so a quit and relaunch brings the page back at it.
 export type BrowserPaneView = { kind: 'browser'; url: string; root?: string; profile?: string; toolbar?: false; openedBy?: string; zoom?: number };
-export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView;
+// M9 fix 1040: the context of one session in a pane, the rail's Context tab with every column; sessionId is emerald's session id, nothing else is kept.
+export type ContextPaneView = { kind: 'context'; sessionId: string };
+export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | BrowserPaneView | ContextPaneView;
 
 export type LayoutNode =
   | { kind: 'split'; id: string; direction: SplitDirection; ratio: number; first: LayoutNode; second: LayoutNode }

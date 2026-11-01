@@ -33,7 +33,7 @@ import { terminalMayHandle } from './keys.ts';
 import { CTRL_V, enterSequence, isCopyKey, isModifierKey, isPasteKey, plainKeyFor } from './keys-model.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSwatches } from './Menu.tsx';
-import { closeTitle, hideTitle, menuHint, sessionPaneMenu } from './pane-menu-model.ts';
+import { closeTitle, hideTitle, menuHint, sessionPaneMenu, zoomTitle, copyRow } from './pane-menu-model.ts';
 import type { PaneMenuRun } from './pane-menu-model.ts';
 import { registerPaneMenu } from './pane-menus.ts';
 import { recordUse } from './use-record.ts';
@@ -50,6 +50,7 @@ import { loadSchemes, setScheme, useScheme } from './scheme-store.ts';
 import { useRates } from './rates-store.ts';
 import { resolveScheme, themeOf } from './scheme-model.ts';
 import type { XtermTheme } from './scheme-model.ts';
+import { ClaudeThemeNote } from './ClaudeThemeNote.tsx';
 import { liveSamples, rateText, shellMarkTitle, shellRunning } from './session-mark-model.ts';
 import { useSqueeze } from './squeeze.ts';
 import { paneTextVars } from './pane-text.ts';
@@ -141,7 +142,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // preview a folder gets, since the drop opens a file view there rather
   // than typing anything.
   const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file && sessionId != null ? 'file' : sessionDrag.target.zone;
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
   const [renaming, setRenaming] = useState(false);
   // The name's width when the rename box replaced it (M9 fix 93): the box
   // keeps that room, so it never comes up empty in a narrow title.
@@ -169,7 +170,13 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
     // The scheme list is asked again on each open (M9 fix 225), so a
     // scheme added to Windows Terminal meanwhile is on the menu.
     loadSchemes();
-    setMenu({ x: ev.clientX, y: ev.clientY });
+    // M9 fix 1047: the selection the menu opens on, for its Copy row; read now,
+    // never when the row is clicked.
+    const dom = window.getSelection();
+    let selection = '';
+    if (dom !== null && !dom.isCollapsed && dom.rangeCount > 0 && rootRef.current?.contains(dom.getRangeAt(0).commonAncestorContainer) === true) selection = dom.toString();
+    if (selection === '' && face === 'terminal' && sessionId !== null) selection = termSelections.get(sessionId)?.() ?? '';
+    setMenu({ x: ev.clientX, y: ev.clientY, selection });
   };
   // The terminal's colour scheme (M9 fix 225): the menu's last section,
   // a list for the window and one for this pane's session (M9 fixes
@@ -476,6 +483,8 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
           <PaneActions paneId={paneId} onlyPane={onlyPane} session={session} shaded={shaded} folder={session?.cwd ?? null} face={claudePane ? face : undefined} />
         </div>
       )}
+      {/* M9 fix 1035: Claude Code's own theme against this pane's scheme */}
+      {claudePane && face === 'terminal' && session !== undefined && <ClaudeThemeNote session={session} />}
       {menu !== null && (
         <Menu
           x={menu.x}
@@ -520,7 +529,10 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
                 onClick: () => undefined,
               },
             ];
-          }).concat(copyOnSelectItem(copyOnSelect), schemeMenuItems(schemeState, session))}
+          }).concat(
+            sessionId === null ? [] : [{ ...copyRow(menu.selection), separator: true, onClick: () => { setMenu(null); copyAndNote(menu.selection, paneId); } }],
+            copyOnSelectItem(copyOnSelect, sessionId === null),
+            schemeMenuItems(schemeState, session))}
         />
       )}
       {sessionId === null ? (
@@ -672,12 +684,14 @@ function ShadeButton({ paneId, session, shaded }: { paneId: string; session: Ses
 // M9 fix 441, moved here by fix 491: the window's one terminal setting
 // sits on every pane's menu, the empty pane's included, between Close
 // pane and the scheme section. A setting leaves the menu open.
-function copyOnSelectItem(copyOnSelect: boolean): MenuItem[] {
+// M9 fix 1047: a Copy row sits directly above it on a pane with a session,
+// taking the rule, so the two read as one group.
+function copyOnSelectItem(copyOnSelect: boolean, separator: boolean): MenuItem[] {
   return [
     {
       label: 'Copy on select',
       checked: copyOnSelect,
-      separator: true,
+      separator,
       title: 'Copy a selection in any terminal or chat pane as the mouse is let go; Ctrl+Shift+C and a right-click copy either way',
       onClick: () => setCopyOnSelect(!copyOnSelect),
     },
@@ -846,7 +860,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
         <button
           className="pane-zoom"
           data-active={zoomed || undefined}
-          title={zoomed ? 'Unfocus, back to the layout' : `Focus, this pane alone in the tab (${plainKeyFor('toggle-focus')})`}
+          title={zoomTitle(zoomed)}
           onClick={() => zoomHere(paneId)}
         >
           <ZoomIcon zoomed={zoomed} />
@@ -1563,6 +1577,8 @@ type BlockedRef = React.RefObject<() => boolean>;
 // for when each terminal attached for itself.
 const parked = new Map<string, { handle: TerminalHandle; timer: ReturnType<typeof setTimeout> }>();
 const PARK_MS = 250;
+// M9 fix 1047: each session's terminal selection, read by the pane menu's Copy row; set when a handle is made and deleted when it is disposed, unless a newer handle on the session has taken the key (a moved pane's new handle is made before the old one's PARK_MS is up).
+const termSelections = new Map<string, () => string>();
 // M9 fix 356: the waits before each new WebGL addon after a lost context.
 const WEBGL_RETRY_MS = [1000, 2000, 4000];
 
@@ -1962,7 +1978,11 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     refit();
   };
 
+  const readSelection = () => (term.hasSelection() ? term.getSelection() : '');
+  termSelections.set(sessionId, readSelection);
+
   const dispose = () => {
+    if (termSelections.get(sessionId) === readSelection) termSelections.delete(sessionId);
     host.removeEventListener('mousedown', onRightButton, { capture: true });
     host.removeEventListener('mouseup', onRightButton, { capture: true });
     observer.disconnect();

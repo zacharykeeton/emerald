@@ -2,6 +2,7 @@ import { plainKeyFor } from './keys-model.ts';
 import type { Action } from './keys-model.ts';
 import type { UpdateState } from './update-model.ts';
 import type { Skin } from './skin.ts';
+import type { ThemePick, ThemeState } from './theme.ts';
 
 // The app menu under the title row's Z mark (M9 fix 234): the three things
 // a person could only reach by a chord or the palette, each with a hint
@@ -11,13 +12,22 @@ import type { Skin } from './skin.ts';
 // updater's own state, so a person can see where an update stands without
 // waiting for the four-hourly check or the badge.
 export interface AppMenuItem {
-  action: Action | 'check-updates' | 'toggle-skin' | 'new-window' | 'toggle-usage-record';
+  action: Action | 'check-updates' | 'toggle-skin' | 'theme' | 'new-window' | 'toggle-usage-record';
   label: string;
   hint: string;
   // The updater is off in this build (a dev build or EMERALD_NO_UPDATE), so
   // the item says so and a click does nothing.
   disabled?: boolean;
   title?: string;
+  // The theme item's picks (M9 fix 1033); no other item has a submenu.
+  submenu?: AppMenuThemeItem[];
+}
+
+export interface AppMenuThemeItem {
+  pick: ThemePick;
+  label: string;
+  hint: string;
+  checked: boolean;
 }
 
 // What the check item says beside its label for each phase of the updater.
@@ -49,7 +59,17 @@ export function updateHint(update: UpdateState | null, platform: string = 'win32
 
 // windows: the daemon holds windows on the layout (M9 fix 866, level 73),
 // so New window goes second; an older daemon offers none.
-export function appMenuItems(version: string | null, update: UpdateState | null = null, skin: Skin = 'classic', usageRecord: boolean = false, windows = false, platform: string = 'win32'): AppMenuItem[] {
+export function appMenuItems(
+  version: string | null,
+  update: UpdateState | null = null,
+  skin: Skin = 'classic',
+  usageRecord: boolean = false,
+  windows = false,
+  platform: string = 'win32',
+  theme: ThemeState = { pick: 'system', theme: 'dark' },
+): AppMenuItem[] {
+  const os = platform === 'darwin' ? 'macOS' : 'Windows';
+  const themeLabel = theme.pick === 'light' ? 'Theme: Light' : theme.pick === 'dark' ? 'Theme: Dark' : `Theme: follow ${os}`;
   return [
     // The file chooser (M9 fix 341), above the notes: the one item that
     // opens something of the person's own. Its chord is prefix-only, so
@@ -62,6 +82,20 @@ export function appMenuItems(version: string | null, update: UpdateState | null 
     // The skin (M9 fix 569): the label names the skin on show, and a click
     // flips to the other, stored, with no restart.
     { action: 'toggle-skin', label: skin === 'emerald' ? 'Skin: Emerald' : 'Skin: Classic', hint: '' },
+    // The theme (M9 fix 1033): the label names the pick, its submenu the
+    // three picks. Only Follow Windows carries a hint, what it comes to
+    // now, since the OS's own answer cannot be read while a pick forces it
+    // (the probe of fix 1032).
+    {
+      action: 'theme',
+      label: themeLabel,
+      hint: '',
+      submenu: [
+        { pick: 'system', label: `Follow ${os}`, hint: theme.pick === 'system' ? `${theme.theme} now` : '', checked: theme.pick === 'system' },
+        { pick: 'light', label: 'Light', hint: '', checked: theme.pick === 'light' },
+        { pick: 'dark', label: 'Dark', hint: '', checked: theme.pick === 'dark' },
+      ],
+    },
     // The usage record's switch (M9 fix 887), moved here from the speaker button's menu: the label names its state and a click flips it, as the skin's does.
     {
       action: 'toggle-usage-record',

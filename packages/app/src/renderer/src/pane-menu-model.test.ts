@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo } from '@emerald/shared';
-import { closeTitle, hideTitle, menuHint, paneOnlyItems, sessionPaneMenu, viewPaneMenu } from './pane-menu-model.ts';
+import { closeTitle, hideTitle, menuHint, paneOnlyItems, sessionPaneMenu, viewPaneMenu, zoomTitle, copyRow } from './pane-menu-model.ts';
 import { aSession } from './test-support.ts';
 
 const session = (over: Partial<SessionInfo> = {}): SessionInfo => aSession({ id: 's1', kind: 'claude', name: 'emerald', cwd: 'C:\\work\\emerald', ...over });
@@ -99,12 +99,19 @@ test('a view pane offers its own items first: the chrome toggle, the file as a t
   }
 });
 
-test('the close and hide tooltips', () => {
+test('the close, hide and zoom tooltips (fix 1046)', () => {
+  assert.equal(zoomTitle(false), 'Focus, this pane alone in the tab (Ctrl+Shift+Z)');
+  assert.equal(zoomTitle(true), 'Unfocus, back to the layout (Ctrl+Shift+Z)');
   assert.equal(closeTitle(undefined, true), 'Nothing to close');
   assert.equal(closeTitle(session({ kind: 'shell' }), true), 'Close: kill emerald and leave the pane empty');
   assert.equal(closeTitle(session({ state: 'exited' }), false), 'Close: forget emerald and close the pane');
   assert.equal(hideTitle(false, true), "Close this pane (Ctrl+Shift+W); the view can be opened again from the rail's Activity tab");
   assert.equal(hideTitle(true, false), 'Empty this pane (Ctrl+Shift+W); the session keeps running and stays in the sidebar');
+});
+
+test('copyRow: enabled on a selection, Nothing selected without one (fix 1047)', () => {
+  assert.deepEqual(copyRow('abc'), { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: false, title: 'Copy the selection' });
+  assert.deepEqual(copyRow(''), { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: true, title: 'Nothing selected' });
 });
 
 // M9 fix 537: a split gives an empty pane by default, whatever the folder.
@@ -123,6 +130,12 @@ test('a browser pane has no chrome item and no Open as a tab, and its close says
   const page = viewPaneMenu({ kind: 'browser', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' });
   assert.deepEqual(page.map((i) => i.label), ['Split right', 'Split down', 'Focus', 'Reset page zoom', 'Show a session here', 'Close pane']);
   assert.equal(page.at(-1)!.title, 'Close this pane and its page');
+});
+
+test('a context pane has no chrome item, and its close says the rail still has it (M9 fix 1040)', () => {
+  const items = viewPaneMenu({ kind: 'context', folder: null, zoomed: false, onlyPane: false, chrome: true, stateKept: true, splitKind: 'shell' });
+  assert.equal(items.some((i) => i.run === 'toggle-chrome'), false);
+  assert.equal(items.at(-1)!.title, 'Close this pane; the Context tab of the files rail still has it');
 });
 
 // M9 fix 647: the installed shells past the default are items of the

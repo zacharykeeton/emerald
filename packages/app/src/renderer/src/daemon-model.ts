@@ -263,6 +263,15 @@ export function statsSupported(daemon: DaemonInfo | null): boolean {
   return daemon !== null && daemonLevel(daemon) >= STATS_LEVEL;
 }
 
+// The level at which the daemon keeps the mod's context breakdown on the
+// session and answers session.context (M9 fix 1036); under an older one
+// the rail's Context tab says to restart and asks nothing (M9 fix 1037).
+export const CONTEXT_LEVEL = 79;
+
+export function contextSupported(daemon: DaemonInfo | null): boolean {
+  return daemon !== null && daemonLevel(daemon) >= CONTEXT_LEVEL;
+}
+
 // The level at which the daemon keeps a browser view's toolbar flag (M9 fix 839); an older daemon's validator drops the field, so a pane on one offers no item.
 export const BROWSER_TOOLBAR_LEVEL = 71;
 

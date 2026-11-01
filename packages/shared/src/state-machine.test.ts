@@ -1023,6 +1023,30 @@ test('StatusLine sets the effort off effort.level (M9 fix 799): a line with a mo
   assert.equal(reduce(shell, hook('SessionEnd', { reason: 'exit' })).effort, null);
 });
 
+test('SessionStart on a /clear reads the dial at 0 and the window counts at 0 with the size kept, the sum running on; a compact or a resume touches neither (M9 fix 1043)', () => {
+  const full = { context_window_size: 1000000, total_input_tokens: 420000, used_percentage: 42, current_usage: { input_tokens: 2, output_tokens: 300, cache_creation_input_tokens: 1000, cache_read_input_tokens: 418998 } };
+  const seen = reduce(session(), hook('StatusLine', { context_window: full, cost: { total_cost_usd: 6.13 } }));
+  assert.equal(seen.contextPercent, 42);
+  const ended = reduce(seen, hook('SessionEnd', { reason: 'clear' }));
+  const started = reduce(ended, hook('SessionStart', { source: 'clear', session_id: 'claude-session-2' }));
+  const line = hook('StatusLine', { session_id: 'claude-session-2', model: { display_name: 'Opus 5' }, context_window: { context_window_size: 1000000, total_input_tokens: 0, used_percentage: null as unknown as number, current_usage: null as unknown as undefined }, cost: { total_cost_usd: 0 } });
+  const after = reduce(started, line);
+  assert.equal(after.contextPercent, 0);
+  assert.deepEqual(after.contextWindow, { size: 1000000, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 });
+  assert.deepEqual(after.tokens, seen.tokens, 'the sum runs on');
+  assert.equal(after.costUsd, 0, "Claude Code's own line says $0");
+  const next = reduce(after, hook('StatusLine', { session_id: 'claude-session-2', context_window: { current_usage: { input_tokens: 5, output_tokens: 10, cache_creation_input_tokens: 2000, cache_read_input_tokens: 0 } } }));
+  assert.deepEqual(next.contextWindow, { size: 1000000, used: 0, cacheRead: 0, cacheWrite: 2000, fresh: 5, output: 10 });
+  assert.deepEqual(next.tokens, { fresh: 7, cacheWrite: 3000, cacheRead: 418998, output: 310 }, 'the new request adds whole to the sum');
+  const viaType = reduce(reduce(seen, hook('SessionEnd', { reason: 'clear' })), hook('SessionStart', { session_start_type: 'clear', session_id: 'claude-session-3' }));
+  assert.equal(viaType.contextPercent, 0);
+  for (const source of ['compact', 'resume']) {
+    const r = reduce(seen, hook('SessionStart', { source }));
+    assert.equal(r.contextPercent, 42);
+    assert.equal(r.contextWindow, seen.contextWindow);
+  }
+});
+
 test('runningKind: a shell says claude while a Claude session id is bound, and SessionEnd unbinds a shell only', () => {
   const shell = session({ kind: 'shell', claudeSessionId: null });
   assert.equal(runningKind(shell), 'shell');
@@ -1718,6 +1742,66 @@ test('a Measure sets the context percent and the cost and leaves the model, the 
   assert.equal(after.state, 'working');
   assert.equal(after.lastEventAt, T0 + 1, 'a measure says nothing about whether Claude is busy');
   assert.equal(reduce(after, hook('Measure', { measure: { changed: ['rateLimits'], rateLimits: [{ kind: 'five_hour', percentUsed: 30 }] } })), after, 'a limits-only measure changes nothing on the row');
+});
+
+// M9 fix 1036: the mod's breakdown as $.session.usage({ breakdown }) answers
+// it, with a grid of one square the reducer must drop.
+const BREAKDOWN = {
+  categories: [
+    { name: 'System prompt', tokens: 3100, color: 'promptBorder', isDeferred: false, kind: 'used' },
+    { name: 'Free space', tokens: 80600, color: 'promptBorder', isDeferred: false, kind: 'free' },
+  ],
+  totalTokens: 86400,
+  maxTokens: 200000,
+  rawMaxTokens: 200000,
+  autocompactSource: 'default',
+  percentage: 43,
+  model: 'claude-opus-5-5',
+  memoryFiles: [{ path: 'C:/repo/CLAUDE.md', type: 'Project', tokens: 11300 }],
+  mcpTools: [{ name: 'mcp__docs__read', serverName: 'docs', tokens: 420, isLoaded: true }],
+  agents: [],
+  skills: { totalSkills: 1, includedSkills: 1, tokens: 90, skillFrontmatter: [{ name: 'batch', source: 'projectSettings', tokens: 90 }] },
+  isAutoCompactEnabled: true,
+  autoCompactThreshold: 167000,
+  apiUsage: null,
+};
+const GRID = { gridRows: [[{ color: 'promptBorder', isFilled: true, categoryName: 'System prompt', tokens: 3100, percentage: 1.55 }]] };
+
+test('a Context keeps the breakdown less its grid on the session and leaves the state, the clock and the figures (M9 fix 1036)', () => {
+  const before = session({ state: 'working', lastEventAt: T0 + 1, contextPercent: 43, contextWindow: { size: 200000, used: 86400, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 } });
+  const after = reduce(before, hook('Context', { detail: 'summary', breakdown: { ...BREAKDOWN, ...GRID } }, T0 + 7000));
+  assert.deepEqual(after.context, { ...BREAKDOWN, at: T0 + 7000, detail: 'summary' });
+  assert.equal(after.state, 'working');
+  assert.equal(after.lastEventAt, T0 + 1, 'a breakdown says nothing about whether Claude is busy');
+  assert.equal(after.contextPercent, 43);
+  assert.deepEqual(after.contextWindow, before.contextWindow);
+});
+
+test('the last Context wins, so a summary after a full reads summary again (M9 fix 1036)', () => {
+  const full = reduce(session(), hook('Context', { detail: 'full', breakdown: BREAKDOWN }, T0 + 10));
+  assert.equal(full.context?.detail, 'full');
+  const summary = reduce(full, hook('Context', { detail: 'summary', breakdown: { ...BREAKDOWN, totalTokens: 90000, percentage: 45 } }, T0 + 20));
+  assert.equal(summary.context?.detail, 'summary');
+  assert.equal(summary.context?.totalTokens, 90000);
+  assert.equal(summary.context?.percentage, 45);
+  assert.equal(summary.context?.at, T0 + 20);
+});
+
+test('a Context with another detail or no categories changes nothing (M9 fix 1036)', () => {
+  const s = session();
+  assert.equal(reduce(s, hook('Context', { detail: 'other', breakdown: BREAKDOWN })), s);
+  const { categories: _categories, ...noCategories } = BREAKDOWN;
+  assert.equal(reduce(s, hook('Context', { detail: 'summary', breakdown: noCategories })), s);
+});
+
+test("a shell's SessionEnd drops the breakdown and a late Context from the Claude that left is foreign (M9 fix 1036)", () => {
+  const shell = reduce(reduce(session({ kind: 'shell', claudeSessionId: null }), hook('SessionStart', { source: 'startup' })), hook('Context', { detail: 'summary', breakdown: BREAKDOWN }));
+  assert.equal(shell.context?.totalTokens, 86400);
+  const left = reduce(shell, hook('SessionEnd', { reason: 'prompt_input_exit' }));
+  assert.equal('context' in left, false);
+  const late = hook('Context', { detail: 'summary', breakdown: BREAKDOWN });
+  assert.equal(classifyHook(left, { hook_event_name: 'Context', session_id: BOUND }), 'ignored-foreign');
+  assert.equal(reduce(left, late), left);
 });
 
 test('TurnStart moves nothing but the clock (M9 fix 738)', () => {

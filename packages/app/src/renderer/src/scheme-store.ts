@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react';
 import emeraldScheme from '../../../resources/schemes/emerald.json';
 import emeraldGemScheme from '../../../resources/schemes/emerald-gem.json';
-import { SCHEME_KEY, orderSchemes, pickScheme, schemeFromWindowsTerminal, storedPick, themeOf } from './scheme-model.ts';
-import type { SchemeSkin, TerminalScheme, XtermTheme } from './scheme-model.ts';
+import emeraldGemLightScheme from '../../../resources/schemes/emerald-gem-light.json';
+import emeraldLightScheme from '../../../resources/schemes/emerald-light.json';
+import { SCHEME_KEY, orderSchemes, pageTheme, pickScheme, schemeFromWindowsTerminal, storedPick, themeOf } from './scheme-model.ts';
+import type { SchemeSkin, SchemeTheme, TerminalScheme, XtermTheme } from './scheme-model.ts';
 import { getSkin, subscribeSkin } from './skin.ts';
 import { onOtherWindowWrite } from './other-window.ts';
 
@@ -13,8 +15,8 @@ import { onOtherWindowWrite } from './other-window.ts';
 // followed across windows since M9 fix 926. Every terminal reads
 // the theme through useScheme and sets term.options.theme when it
 // changes, and the pane's ground follows through --pane-bg on the root
-// (style.css, the .term-host rules), so a light scheme does not sit in a
-// dark box with a hard edge. Apart from ui.ts, since that file mirrors
+// (style.css, the .term-host rules). Each skin has a light default since
+// fix 1034, picked by data-theme on <html>. Apart from ui.ts, since that file mirrors
 // what the panes and the sidebar do and this is one setting with a list
 // behind it. M9 fix 244: a session can wear a scheme of its own, kept
 // on its record by the daemon (session.set's scheme), and each terminal
@@ -27,6 +29,9 @@ interface SchemeState {
   // The skin the state was resolved under, so a flip hands every reader a
   // new state.
   skin: SchemeSkin;
+  // The theme the state was resolved under, so a flip hands every reader a
+  // new state. Not named theme, which is the xterm theme's field below.
+  appTheme: SchemeTheme;
   schemes: readonly TerminalScheme[];
   // The name picked, or null for the default; kept even when the list
   // does not hold it (the person's Windows Terminal scheme went away),
@@ -46,11 +51,11 @@ function builtIn(json: unknown, file: string): TerminalScheme {
   if (scheme === null) throw new Error(`resources/schemes/${file} is not a colour scheme`);
   return scheme;
 }
-export const BUILT_IN_SCHEMES: readonly TerminalScheme[] = [builtIn(emeraldScheme, 'emerald.json'), builtIn(emeraldGemScheme, 'emerald-gem.json')];
+export const BUILT_IN_SCHEMES: readonly TerminalScheme[] = [builtIn(emeraldScheme, 'emerald.json'), builtIn(emeraldGemScheme, 'emerald-gem.json'), builtIn(emeraldLightScheme, 'emerald-light.json'), builtIn(emeraldGemLightScheme, 'emerald-gem-light.json')];
 
-function resolve(schemes: readonly TerminalScheme[], picked: string | null, skin: SchemeSkin): Pick<SchemeState, 'current' | 'theme'> {
+function resolve(schemes: readonly TerminalScheme[], picked: string | null, skin: SchemeSkin, appTheme: SchemeTheme): Pick<SchemeState, 'current' | 'theme'> {
   // The ?? only types it; the built-in list is never empty.
-  const current = pickScheme(schemes, picked, skin) ?? BUILT_IN_SCHEMES[0]!;
+  const current = pickScheme(schemes, picked, skin, appTheme) ?? BUILT_IN_SCHEMES[0]!;
   return { current, theme: themeOf(current) };
 }
 
@@ -66,8 +71,10 @@ function loadPicked(): string | null {
 let state: SchemeState = (() => {
   const picked = loadPicked();
   const skin = getSkin();
-  const schemes = orderSchemes(BUILT_IN_SCHEMES, skin);
-  return { skin, schemes, picked, ...resolve(schemes, picked, skin) };
+  // light-main-menu's renderer writes data-theme; this store only reads it.
+  const appTheme = pageTheme();
+  const schemes = orderSchemes(BUILT_IN_SCHEMES, skin, appTheme);
+  return { skin, appTheme, schemes, picked, ...resolve(schemes, picked, skin, appTheme) };
 })();
 const listeners = new Set<() => void>();
 let asked = false;
@@ -100,8 +107,8 @@ export function loadSchemes(): Promise<readonly TerminalScheme[]> {
     .then((schemes) => {
       // Ordered again here, so a list main sorted before a flip landed is
       // put right and no IPC ordering is relied on.
-      const list = orderSchemes(schemes.length === 0 ? BUILT_IN_SCHEMES : schemes, state.skin);
-      setState({ ...state, schemes: list, ...resolve(list, state.picked, state.skin) });
+      const list = orderSchemes(schemes.length === 0 ? BUILT_IN_SCHEMES : schemes, state.skin, state.appTheme);
+      setState({ ...state, schemes: list, ...resolve(list, state.picked, state.skin, state.appTheme) });
       return list;
     })
     .catch((err: unknown) => {
@@ -129,8 +136,8 @@ export function useScheme(): SchemeState {
 // The pick, by name; the skin's default clears the key so a fresh
 // profile and one that chose it read the same (M9 fix 572).
 export function setScheme(name: string): void {
-  const picked = storedPick(name, state.skin);
-  setState({ ...state, picked, ...resolve(state.schemes, picked, state.skin) });
+  const picked = storedPick(name, state.skin, state.appTheme);
+  setState({ ...state, picked, ...resolve(state.schemes, picked, state.skin, state.appTheme) });
   try {
     if (picked === null) localStorage.removeItem(SCHEME_KEY);
     else localStorage.setItem(SCHEME_KEY, picked);
@@ -149,14 +156,25 @@ applyGround(state.current);
 subscribeSkin(() => {
   const skin = getSkin();
   if (skin === state.skin) return;
-  const schemes = orderSchemes(state.schemes, skin);
-  setState({ ...state, skin, schemes, ...resolve(schemes, state.picked, skin) });
+  const schemes = orderSchemes(state.schemes, skin, state.appTheme);
+  setState({ ...state, skin, schemes, ...resolve(schemes, state.picked, skin, state.appTheme) });
 });
+
+// A theme flip re-resolves the window's scheme under the new theme's
+// default, as a skin flip does; a pick is a name, so it holds (fix 1034).
+// MutationObserver callbacks run before the next paint, so the ground and
+// the terminals move with the tokens in the same frame.
+new MutationObserver(() => {
+  const appTheme = pageTheme();
+  if (appTheme === state.appTheme) return;
+  const schemes = orderSchemes(state.schemes, state.skin, appTheme);
+  setState({ ...state, appTheme, schemes, ...resolve(schemes, state.picked, state.skin, appTheme) });
+}).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
 // Another window of the profile wrote it (M9 fix 926): this window takes
 // it as it lands, so it shows the same and its next write does not put the
 // old value back.
 onOtherWindowWrite(SCHEME_KEY, () => {
   const picked = loadPicked();
-  if (picked !== state.picked) setState({ ...state, picked, ...resolve(state.schemes, picked, state.skin) });
+  if (picked !== state.picked) setState({ ...state, picked, ...resolve(state.schemes, picked, state.skin, state.appTheme) });
 });

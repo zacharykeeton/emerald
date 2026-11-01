@@ -40,19 +40,37 @@ export interface TerminalScheme {
 // the skin's.
 export const CLASSIC_SCHEME = 'emerald';
 export const EMERALD_SCHEME = 'emerald gem';
+// The light default of each skin (fix 1034), picked when the window is light.
+export const CLASSIC_LIGHT_SCHEME = 'emerald light';
+export const EMERALD_LIGHT_SCHEME = 'emerald gem light';
 // skin.ts's Skin, spelled here because this file is shared with main and
 // skin.ts touches the DOM; every caller passes its Skin, the same union.
 export type SchemeSkin = 'classic' | 'emerald';
-export function defaultScheme(skin: SchemeSkin): string {
+// The same for the theme: spelled here because this file is shared with
+// main, the way SchemeSkin is; the renderer reads it off data-theme.
+export type SchemeTheme = 'light' | 'dark';
+
+// The theme on the page's <html> (data-theme="light", written by the
+// theme menu; absent for dark), or dark where there is no page. Main and
+// node:test import this file under a config with no DOM types, hence the
+// structural read of globalThis rather than document (fix 1034).
+export function pageTheme(): SchemeTheme {
+  const doc = (globalThis as { document?: { documentElement?: { dataset?: Record<string, string | undefined> } } }).document;
+  return doc?.documentElement?.dataset?.['theme'] === 'light' ? 'light' : 'dark';
+}
+
+export function defaultScheme(skin: SchemeSkin, theme: SchemeTheme): string {
+  if (theme === 'light') return skin === 'emerald' ? EMERALD_LIGHT_SCHEME : CLASSIC_LIGHT_SCHEME;
   return skin === 'emerald' ? EMERALD_SCHEME : CLASSIC_SCHEME;
 }
-// A pick of the skin's own default is "follow the skin" and stores
-// nothing, so it moves with a flip; any other pick, the other skin's
-// default included, is stored and holds across every flip. So on Classic,
-// picking emerald follows the skin; to keep Classic's palette under
-// Emerald, pick emerald while on Emerald.
-export function storedPick(name: string, skin: SchemeSkin): string | null {
-  return name === defaultScheme(skin) ? null : name;
+// A pick of the current skin and theme's own default is "follow" and
+// stores nothing, so it moves with every flip of either; any other pick,
+// a dark default included, is stored and holds in both themes (fix 1034).
+// A pick stored before that build is a name and reads unchanged. So to
+// keep the dark gem in a light window, pick emerald gem while the window
+// is light.
+export function storedPick(name: string, skin: SchemeSkin, theme: SchemeTheme): string | null {
+  return name === defaultScheme(skin, theme) ? null : name;
 }
 export const SCHEME_KEY = 'emerald.scheme';
 // Windows Terminal's field for each of ours where the names differ.
@@ -134,12 +152,17 @@ function parseJsonc(text: string): unknown {
   }
 }
 
-// The skin's default first, the other skin's second, the rest as given.
-// A stable sort keeps a person's schemes after the shipped ones.
-export function orderSchemes(list: readonly TerminalScheme[], skin: SchemeSkin): TerminalScheme[] {
-  const first = defaultScheme(skin);
-  const second = defaultScheme(skin === 'emerald' ? 'classic' : 'emerald');
-  const rank = (s: TerminalScheme): number => (s.name === first ? 0 : s.name === second ? 1 : 2);
+// The current theme's two defaults first (the skin's, then the other
+// skin's), then the other theme's two in the same order, the rest as
+// given. A stable sort keeps a person's schemes after the shipped ones.
+export function orderSchemes(list: readonly TerminalScheme[], skin: SchemeSkin, theme: SchemeTheme): TerminalScheme[] {
+  const other: SchemeSkin = skin === 'emerald' ? 'classic' : 'emerald';
+  const otherTheme: SchemeTheme = theme === 'light' ? 'dark' : 'light';
+  const names = [defaultScheme(skin, theme), defaultScheme(other, theme), defaultScheme(skin, otherTheme), defaultScheme(other, otherTheme)];
+  const rank = (s: TerminalScheme): number => {
+    const i = names.indexOf(s.name);
+    return i === -1 ? 4 : i;
+  };
   return [...list].sort((a, b) => rank(a) - rank(b));
 }
 
@@ -147,8 +170,8 @@ export function orderSchemes(list: readonly TerminalScheme[], skin: SchemeSkin):
 // skin's second, the rest as given), then the person's under their names,
 // a person's scheme with a shipped scheme's name dropped so the menu
 // never lists a name twice.
-export function mergeSchemes(shipped: readonly TerminalScheme[], own: readonly TerminalScheme[], skin: SchemeSkin): TerminalScheme[] {
-  const out = orderSchemes(shipped, skin);
+export function mergeSchemes(shipped: readonly TerminalScheme[], own: readonly TerminalScheme[], skin: SchemeSkin, theme: SchemeTheme): TerminalScheme[] {
+  const out = orderSchemes(shipped, skin, theme);
   const names = new Set(out.map((s) => s.name.toLowerCase()));
   for (const s of own) {
     if (names.has(s.name.toLowerCase())) continue;
@@ -160,12 +183,12 @@ export function mergeSchemes(shipped: readonly TerminalScheme[], own: readonly T
 
 // The scheme a pick names, else the default, else the first; null on an
 // empty list (the handler has not answered yet).
-export function pickScheme(schemes: readonly TerminalScheme[], name: string | null, skin: SchemeSkin): TerminalScheme | null {
+export function pickScheme(schemes: readonly TerminalScheme[], name: string | null, skin: SchemeSkin, theme: SchemeTheme): TerminalScheme | null {
   if (name !== null) {
     const hit = schemes.find((s) => s.name === name);
     if (hit !== undefined) return hit;
   }
-  return schemes.find((s) => s.name === defaultScheme(skin)) ?? schemes[0] ?? null;
+  return schemes.find((s) => s.name === defaultScheme(skin, theme)) ?? schemes[0] ?? null;
 }
 
 // The scheme a pane's terminal wears (M9 fix 244): the session's own
@@ -175,12 +198,12 @@ export function pickScheme(schemes: readonly TerminalScheme[], name: string | nu
 // another machine, or a Windows Terminal scheme since deleted) wears
 // the window's and reads as not its own, and comes back when the list
 // does, since the name stays on the record.
-export function resolveScheme(schemes: readonly TerminalScheme[], sessionScheme: string | null | undefined, windowPicked: string | null, skin: SchemeSkin): { scheme: TerminalScheme | null; own: boolean } {
+export function resolveScheme(schemes: readonly TerminalScheme[], sessionScheme: string | null | undefined, windowPicked: string | null, skin: SchemeSkin, theme: SchemeTheme = pageTheme()): { scheme: TerminalScheme | null; own: boolean } {
   if (sessionScheme !== null && sessionScheme !== undefined) {
     const hit = schemes.find((s) => s.name === sessionScheme);
     if (hit !== undefined) return { scheme: hit, own: true };
   }
-  return { scheme: pickScheme(schemes, windowPicked, skin), own: false };
+  return { scheme: pickScheme(schemes, windowPicked, skin, theme), own: false };
 }
 
 // The selection as xterm draws it: the scheme's colour at the alpha the

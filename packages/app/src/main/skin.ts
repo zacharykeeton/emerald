@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import type { Skin } from '../preload/api.ts';
+import type { Skin, Theme } from '../preload/api.ts';
+import { currentTheme } from './theme.ts';
 
 export type { Skin };
 
@@ -19,12 +20,19 @@ export interface Chrome {
   symbol: string;
 }
 
-// The --chrome-bg, --chrome-overlay and --chrome-symbol tokens of the two
-// blocks in style.css, kept here since main paints before the renderer
-// can speak; skin.test.ts holds them equal to the CSS.
-export const CHROME: Record<Skin, Chrome> = {
-  classic: { bg: '#1e1e1e', overlay: '#202020', symbol: '#9a9a9a' },
-  emerald: { bg: '#1a1f1d', overlay: '#1c211f', symbol: '#9a9a9a' },
+// The --chrome-bg, --chrome-overlay and --chrome-symbol tokens of the four
+// blocks in style.css (each skin dark and light, M9 fix 1032), kept here
+// since main paints before the renderer can speak; skin.test.ts holds them
+// equal to the CSS.
+export const CHROME: Record<Skin, Record<Theme, Chrome>> = {
+  classic: {
+    dark: { bg: '#1e1e1e', overlay: '#202020', symbol: '#9a9a9a' },
+    light: { bg: '#f8f8f8', overlay: '#f2f2f2', symbol: '#404040' },
+  },
+  emerald: {
+    dark: { bg: '#1a1f1d', overlay: '#1c211f', symbol: '#9a9a9a' },
+    light: { bg: '#f7f9f8', overlay: '#f1f4f2', symbol: '#3d4542' },
+  },
 };
 
 // The skin a launch takes when nothing names one (M9 fix 628): Emerald,
@@ -74,8 +82,8 @@ export function currentSkin(): Skin {
   return current;
 }
 
-export function chromeOf(skin: Skin): Chrome {
-  return CHROME[skin];
+export function chromeOf(skin: Skin, theme: Theme): Chrome {
+  return CHROME[skin][theme];
 }
 
 // The window as applySkin needs it, so the test can hand it a fake.
@@ -100,10 +108,22 @@ export function applySkin(win: SkinWindow | null, raw: unknown, platform: NodeJS
     }
   }
   current = skin;
-  const c = chromeOf(skin);
-  if (win !== null && !win.isDestroyed()) {
-    win.setBackgroundColor(c.bg);
-    if (platform !== 'darwin') win.setTitleBarOverlay({ color: c.overlay, symbolColor: c.symbol, height: TITLE_BAR_HEIGHT });
-  }
+  const c = chromeOf(skin, currentTheme().theme);
+  paint(win, c, platform);
   log(`skin ${skin}: ground ${c.bg}, title bar overlay ${c.overlay}, symbols ${c.symbol}`);
+}
+
+function paint(win: SkinWindow | null, c: Chrome, platform: NodeJS.Platform): void {
+  if (win === null || win.isDestroyed()) return;
+  win.setBackgroundColor(c.bg);
+  if (platform !== 'darwin') win.setTitleBarOverlay({ color: c.overlay, symbolColor: c.symbol, height: TITLE_BAR_HEIGHT });
+}
+
+// A theme pick or flip (M9 fix 1032): the same repaint for the skin held,
+// and a line verify:skin reads, the same on every platform.
+export function applyTheme(win: SkinWindow | null, platform: NodeJS.Platform = process.platform): void {
+  const t = currentTheme();
+  const c = chromeOf(current, t.theme);
+  paint(win, c, platform);
+  log(`theme ${t.theme} (pick ${t.pick}), skin ${current}: ground ${c.bg}, title bar overlay ${c.overlay}, symbols ${c.symbol}`);
 }

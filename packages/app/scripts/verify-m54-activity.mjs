@@ -2500,9 +2500,12 @@ try {
   // M9 fix 885: the rail keeps its Stats tab under a daemon at level 31,
   // with the level message (the activity pane is focused after a reload,
   // so the rail may be on no folder, and the message comes first).
-  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 4, 'four rail tabs under the older daemon (fix 885)');
+  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 5, 'five rail tabs under the older daemon (fix 1037)');
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="stats"]').click()`);
   await s.waitFor(`document.querySelector('.files-rail .stats-view[data-state="old"] .stats-message')?.textContent === 'Statistics need emmerd at level 70 or later; restart it from the banner.'`, 'the level message on the rail\'s Stats', 10000);
+  // M9 fix 1037: the Context tab says the same under the older daemon and asks nothing.
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
+  await s.waitFor(`document.querySelector('.files-rail .rail-context[data-state="old"] .rail-context-message')?.textContent === 'The context breakdown needs emmerd at level 79 or later; restart it from the banner.'`, 'the level message on the rail\'s Context (fix 1037)', 10000);
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="timeline"]').click()`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'timeline'`, 'the rail back on Activity');
   step('M9 fix 885: the rail keeps its Stats tab under a daemon at level 31, with the level message');

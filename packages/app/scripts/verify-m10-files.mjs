@@ -36,7 +36,7 @@ process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m10';
 const openedPaths = path.join(os.tmpdir(), 'emerald-verify', `m10-opened-${process.pid}.log`);
 fs.rmSync(openedPaths, { force: true });
 process.env['EMERALD_OPEN_LOG'] = openedPaths;
-const { CTRL, SHIFT, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, setInput, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, emeraldHome, expect, freshPort, getLayout, getTabs, harnessClaudeHome, killTree, launch, leaves, repoRoot, setInput, sleep, startSession, startSessionByKey, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 // `emmer open` against this window's pipe (the helper verify-m11-tabs.mjs
 // has; M9 fixes 683, 685 and 686 open files through it).
@@ -152,6 +152,9 @@ const sessionOf = async (s, paneId) => {
 
 // The fix 436 step relaunches with a cap of 3 on a parent it seeds.
 let liftParent = null;
+// M9 fix 1040's folder of its own, and the transcript it seeds.
+let context1040 = null;
+let transcript1040 = null;
 // M9 fix 438: let, not const, since its own step below closes this window
 // and relaunches pointed at a settings file with a new scheme, the way
 // verify-m19-history.mjs and verify-m52-view.mjs already reassign theirs;
@@ -727,7 +730,7 @@ try {
   await s.waitFor(`${filesCount} === '4'`, 'the Files tab counts the four changed files', 8000).catch(() => {});
   const filesCount4 = await s.evalJs(filesCount);
   expect(filesCount4 === '4', `the Files tab counts the four changed files: ${filesCount4}`);
-  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 4, 'four rail tabs');
+  expect((await s.evalJs(`document.querySelectorAll('.rail-tab').length`)) === 5, 'five rail tabs');
   const countsOf = (n) => `(document.querySelector('.files-row[data-path=' + JSON.stringify(${JSON.stringify(repo + '\\')} + ${JSON.stringify(n)}) + ']')?.querySelector('.changes-counts')?.textContent ?? null)`;
   await s.waitFor(`${countsOf('added.txt')} === '+1 −0' && ${countsOf('staged.txt')} === '+1 −1' && ${countsOf('tracked.txt')} === '+1 −1'`, 'the counts on the changed rows', 8000);
   expect((await s.evalJs(countsOf('new.txt'))) === '+1 −0', 'the untracked row carries its line count (M9 fix 965)');
@@ -1269,27 +1272,43 @@ try {
 
   // The strip at a narrow rail (three tabs since fix 70, every one with
   // an icon since M49, the third word Sessions since fix 83, a fourth,
-  // Stats, since fix 885): the four words at 390px and at the 310px
-  // break (a two-digit count needs 308), every tab an icon under it,
-  // the strip still fitting at 160px.
+  // Stats, since fix 885, a fifth, Context, since fix 1037): every word
+  // from W5 (the first rail-tabs query's width plus one, plus the strip's
+  // 12px of padding), only the active tab's word a pixel under it, every
+  // tab an icon a pixel under W1 (the second query's), the strip still
+  // fitting at 160px. The two numbers are read off the built rules, so a
+  // remeasure of the fit rule moves this block with it.
   const stripAt = async (w) => {
     await s.evalJs(`document.querySelector('.files-rail').style.width = '${w}px'`);
     await sleep(120);
     return s.evalJs(`[...document.querySelectorAll('.rail-tab')].map(t => { const label = t.querySelector('.rail-tab-label'); const icon = t.querySelector('.files-icon'); return t.dataset.tab + '=' + (getComputedStyle(label).display !== 'none' ? 'w' : '') + (getComputedStyle(icon).display !== 'none' ? 'i' : ''); }).join(',') + ' ' + (document.querySelector('.rail-tabs').scrollWidth <= document.querySelector('.rail-tabs').clientWidth ? 'fits' : 'overflows')`);
   };
-  const wide = await stripAt(390);
-  expect(wide === 'files=wi,timeline=wi,history=wi,stats=wi fits', `at 390px the four words show with their icons (${wide})`);
-  const wideEdge = await stripAt(310);
-  expect(wideEdge === 'files=wi,timeline=wi,history=wi,stats=wi fits', `and still at 310px, the break (${wideEdge})`);
-  const narrow = await stripAt(300);
-  expect(narrow === 'files=i,timeline=i,history=i,stats=i fits', `at 300px every tab is an icon (${narrow})`);
+  const stripRules1037 = await s.evalJs(
+    `(() => { const out = []; for (const sheet of document.styleSheets) { let rules; try { rules = sheet.cssRules; } catch { continue; } for (const r of rules) if (r instanceof CSSContainerRule && r.containerName === 'rail-tabs') { const m = /max-width:\\s*([\\d.]+)px/.exec(r.containerQuery); if (m) out.push(Number(m[1])); } } return out.sort((a, b) => b - a); })()`,
+  );
+  expect(stripRules1037.length === 2, `the strip has its two fit queries (fix 1037), got ${JSON.stringify(stripRules1037)}`);
+  const w5Rail = stripRules1037[0] + 1 + 12;
+  const w1Rail = stripRules1037[1] + 1 + 12;
+  const tabKeys = ['files', 'timeline', 'history', 'stats', 'context'];
+  const activeTab1037 = await s.evalJs(`document.querySelector('.rail-tab[data-active]')?.dataset.tab ?? null`);
+  const stripWant = (worded) => tabKeys.map((k) => `${k}=${worded === 'all' || (worded === 'active' && k === activeTab1037) ? 'wi' : 'i'}`).join(',') + ' fits';
+  const wide = await stripAt(w5Rail + 10);
+  expect(wide === stripWant('all'), `at ${w5Rail + 10}px the five words show with their icons (${wide})`);
+  const wideEdge = await stripAt(w5Rail);
+  expect(wideEdge === stripWant('all'), `and still at ${w5Rail}px, the break (${wideEdge})`);
+  const under5 = await stripAt(w5Rail - 1);
+  expect(under5 === stripWant('active'), `at ${w5Rail - 1}px only the active tab (${activeTab1037}) keeps its word (${under5})`);
+  const at1 = await stripAt(w1Rail);
+  expect(at1 === stripWant('active'), `and still at ${w1Rail}px (${at1})`);
+  const under1 = await stripAt(w1Rail - 1);
+  expect(under1 === stripWant('none'), `at ${w1Rail - 1}px every tab is an icon (${under1})`);
   const least = await stripAt(160);
-  expect(least === 'files=i,timeline=i,history=i,stats=i fits', `and the strip still fits at 160px (${least})`);
+  expect(least === stripWant('none'), `and the strip still fits at 160px (${least})`);
   await s.evalJs(`document.querySelector('.files-rail').style.width = ''`);
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
   await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'files'`, 'back on Files');
   await s.screenshot('m45-rail.png');
-  step('the tab strip keeps its four words at 390px and 310px and drops all four to icons under 310 (fix 885)');
+  step(`the tab strip keeps its five words from ${w5Rail}px, the active tab's word alone under it and every tab an icon under ${w1Rail}, fitting at 160px (fix 1037)`);
 
   // M9 fix 248: the file tab is an editor. A file with CRLF line ends
   // and a BOM is written into the repo and opened from the rail; typing
@@ -1425,7 +1444,7 @@ try {
   const clipboardBefore = await s.evalJs(`window.emerald.clipboard.read().then(r => r.text)`);
   const menuJs = `document.querySelector('.file-menu')`;
   // The items are read up to the Colour scheme heading (M9 fix 340 puts
-  // the scheme section last, and the list past the shipped six is the
+  // the scheme section last, and the list past the shipped eight is the
   // box's Windows Terminal settings); the section is read on its own.
   const menuRead = () => s.evalJs(`(() => { const m = ${menuJs}; if (!m) return null; const all = [...m.querySelectorAll('.menu-item')].map(b => b.querySelector('.menu-label').textContent + (b.disabled ? '!' : '') + (b.querySelector('.menu-hint') ? ' ' + b.querySelector('.menu-hint').textContent : '')); const at = all.indexOf('Colour scheme'); return { where: m.dataset.where, view: m.dataset.view, items: (at < 0 ? all : all.slice(0, at)).join(','), schemes: at < 0 ? null : all.slice(at).join(','), paneMenu: !!document.querySelector('.pane-menu'), monacoMenu: !!document.querySelector('.monaco-menu') }; })()`);
   const pick = (label) => s.evalJs(`[...${menuJs}.querySelectorAll('.menu-item')].find(b => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
@@ -1442,7 +1461,7 @@ try {
   // emerald's, on the right-click and once emerald's own closes.
   expect(!editorMenu.monacoMenu, "no Monaco context menu under emerald's on the right-click");
   expect(editorMenu.items === 'Copy Ctrl+C,Select all Ctrl+A,Find Ctrl+F,✓Wrap long lines Alt+Z,Paste Ctrl+V,Copy path,Reveal in Explorer,Reveal in Files,Open with Windows', `the editor's items with their hints, Copy enabled, the wrap checked (${editorMenu.items})`);
-  expect(editorMenu.schemes !== null && editorMenu.schemes.startsWith('Colour scheme,emerald,emerald gem,Dracula,One Dark,Solarized Dark,Tokyo Night'), `the scheme section closes the menu with the shipped six, none checked (${editorMenu.schemes})`);
+  expect(editorMenu.schemes !== null && editorMenu.schemes.startsWith('Colour scheme,emerald,emerald gem,emerald light,emerald gem light,Dracula,One Dark,Solarized Dark,Tokyo Night'), `the scheme section closes the menu with the shipped eight, none checked (${editorMenu.schemes})`);
   expect((await s.evalJs(`${menuJs}.querySelector('.menu-sep .menu-label').textContent`)) === 'Copy path', 'the rule sits above Copy path');
   await s.screenshot('m9-270-editor-menu.png');
   await pick('Copy');
@@ -3269,6 +3288,292 @@ try {
   expect(lifted524.every((r) => r.join(',') === want524), `two lifts keep both folders open among the cut rows: ${lifted524.map((r) => r.join(',')).join(' | ')}`);
   step('M9 fix 436 and 524: under a cap of 3 two lifts keep both folders they came from open among the rows, and each note counts the two the cap cut');
 
+  // M9 fix 1038: the rail's Context tab on a stub breakdown. The shell in
+  // the followed folder stands in for a Claude: the sink's SessionStart and
+  // a StatusLine with a 200k window bind it (its claudeSessionId), and a
+  // Context post in the mod's shape (fix 1036) puts the handoff's invented
+  // reading (docs/design/context-tab.md, section 6) on the record, its
+  // first memory file the fixture's own CLAUDE.md. Squares are counted by
+  // data-part, never by colour, since the seven context tokens are
+  // light-tokens' and may not be on the branch.
+  const claudeMd1038 = path.join(followed436, 'CLAUDE.md');
+  fs.writeFileSync(claudeMd1038, '# fixture\n');
+  const shell1038 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.state !== 'exited' && (x.cwd === followed436 || x.groupCwd === followed436));
+  expect(shell1038 !== undefined, 'the shell in the followed folder (fix 1038)');
+  const daemon1038 = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+  const post1038 = async (payload) => {
+    const res = await fetch(`http://127.0.0.1:${daemon1038.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'X-Emerald-Token': daemon1038.hookToken, 'X-Emerald-Session': shell1038.id },
+      body: JSON.stringify({ session_id: 'sim-files-1038', cwd: followed436, ...payload }),
+    });
+    expect(res.status === 204, `the sink answered 204 for ${payload.hook_event_name} (fix 1038)`);
+  };
+  await post1038({ hook_event_name: 'SessionStart', source: 'startup' });
+  await post1038({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' }, workspace: { current_dir: followed436 }, context_window: { used_percentage: 43, context_window_size: 200000 } });
+  const used1038 = (name, tokens) => ({ name, tokens, color: 'x', isDeferred: false, kind: 'used' });
+  const tools1038 = (server, n, total) => Array.from({ length: n }, (_, i) => ({ name: `mcp__${server}__t${i}`, serverName: server, tokens: Math.floor(total / n) + (i < total % n ? 1 : 0), isLoaded: true }));
+  const breakdown1038 = {
+    categories: [
+      used1038('System prompt', 3100),
+      used1038('System tools', 14200),
+      used1038('MCP tools', 9800),
+      used1038('MCP server instructions', 1600),
+      used1038('Custom agents', 1200),
+      used1038('Memory files', 11300),
+      used1038('Skills', 7200),
+      used1038('Messages', 38000),
+      { name: 'Free space', tokens: 80600, color: 'x', isDeferred: false, kind: 'free' },
+      { name: 'Autocompact buffer', tokens: 33000, color: 'x', isDeferred: false, kind: 'buffer' },
+      { name: 'MCP tools (deferred)', tokens: 21400, color: 'x', isDeferred: true, kind: 'deferred' },
+    ],
+    totalTokens: 86400,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    autocompactSource: 'default',
+    percentage: 43,
+    model: 'claude-opus-5-5',
+    memoryFiles: [
+      { path: claudeMd1038, type: 'Project', tokens: 8700 },
+      { path: path.join(liftParent, 'MEMORY.md'), type: 'AutoMem', tokens: 1700 },
+      { path: path.join(liftParent, 'user', 'CLAUDE.md'), type: 'User', tokens: 900 },
+    ],
+    mcpTools: [...tools1038('claude-in-chrome', 14, 6100), ...tools1038('Wispr_Flow', 16, 3700), ...Array.from({ length: 62 }, (_, i) => ({ name: `mcp__deferred__t${i}`, serverName: 'deferred', tokens: 300, isLoaded: false }))],
+    agents: [
+      { agentType: 'emerald-batch-dev', source: 'projectSettings', tokens: 520 },
+      { agentType: 'claude', source: 'userSettings', tokens: 410 },
+      { agentType: 'workflow-guide', source: 'plugin', tokens: 270 },
+    ],
+    skills: { totalSkills: 2, includedSkills: 2, tokens: 7200, skillFrontmatter: [{ name: 'ado', source: 'userSettings', tokens: 300 }, { name: 'batch', source: 'projectSettings', tokens: 400 }] },
+    autoCompactThreshold: 167000,
+    isAutoCompactEnabled: true,
+    apiUsage: null,
+    gridRows: [[{ color: 'x', isFilled: true, categoryName: 'System prompt', tokens: 3100, percentage: 1.55, squareFullness: 1 }]],
+  };
+  await post1038({ hook_event_name: 'Context', detail: 'summary', breakdown: breakdown1038 });
+  let context1038 = null;
+  for (let i = 0; i < 40 && context1038 === null; i++) {
+    context1038 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === shell1038.id)?.context ?? null;
+    if (context1038 === null) await sleep(200);
+  }
+  expect(context1038 !== null && context1038.totalTokens === 86400 && context1038.detail === 'summary' && !('gridRows' in context1038), `the record carries the breakdown less its grid (fix 1036): ${JSON.stringify(context1038)?.slice(0, 200)}`);
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
+  await s.waitFor(`!!document.querySelector('.files-rail .rail-context[data-state="loaded"]')`, 'the Context tab loaded on the stub breakdown', 10000);
+  const partsOrder1038 = ['prompt', 'tools', 'mcp', 'mcp-instructions', 'agents', 'memory', 'skills', 'messages', 'free', 'buffer'];
+  const read1038 = () =>
+    s.evalJs(
+      `(() => { const r = document.querySelector('.files-rail .rail-context'); const sq = [...r.querySelectorAll('.rail-context-square')]; const by = {}; const lit = {}; for (const q of sq) { by[q.dataset.part] = (by[q.dataset.part] ?? 0) + 1; if (q.dataset.dim === undefined) lit[q.dataset.part] = (lit[q.dataset.part] ?? 0) + 1; } return { squares: sq.length, by, lit, hollow: r.querySelectorAll('.rail-context-square[data-fill="hollow"]').length, model: r.querySelector('.rail-context-model')?.textContent ?? null, asOf: r.querySelector('.rail-context-asof')?.textContent ?? null, fill: r.querySelector('.rail-context-fill')?.textContent ?? null, heads: [...r.querySelectorAll('.rail-context-section > .rail-context-head-row .rail-context-head-name')].map((n) => n.textContent), memory: r.querySelector('.rail-context-section[data-part="memory"] > .rail-context-head-row')?.getAttribute('aria-expanded') ?? null, items: r.querySelectorAll('.rail-context-section[data-part="memory"] .rail-context-item').length }; })()`,
+    );
+  const counts1038 = (by) => partsOrder1038.map((p) => `${p} ${by[p] ?? 0}`).join(', ');
+  const ctx1038 = await read1038();
+  expect(
+    ctx1038.squares === 100 && counts1038(ctx1038.by) === 'prompt 2, tools 8, mcp 5, mcp-instructions 1, agents 1, memory 6, skills 4, messages 19, free 37, buffer 17' && ctx1038.hollow === 5,
+    `a hundred squares by part, five hollow (fix 1037): ${ctx1038.squares}, ${counts1038(ctx1038.by)}, hollow ${ctx1038.hollow}`,
+  );
+  expect(ctx1038.model === 'Opus 5.5 · 200k' && ctx1038.asOf === 'estimated' && ctx1038.fill === '43% full, 86.4k of 200k tokens', `the header reads the model, size, estimated and the fill line: ${JSON.stringify([ctx1038.model, ctx1038.asOf, ctx1038.fill])}`);
+  expect(
+    ctx1038.heads.join(',') === 'Messages,System tools,Memory files,MCP tools,Skills,System prompt,MCP instructions,Custom agents',
+    `the sections sort by tokens, largest first: ${ctx1038.heads.join(',')}`,
+  );
+  await s.evalJs(`document.querySelector('.files-rail .rail-context-section[data-part="memory"] > .rail-context-head-row').click()`);
+  await s.waitFor(`document.querySelector('.files-rail .rail-context-section[data-part="memory"] > .rail-context-head-row')?.getAttribute('aria-expanded') === 'true'`, 'the Memory files section open');
+  const open1038 = await read1038();
+  const otherParts1038 = partsOrder1038.filter((p) => p !== 'memory' && p !== 'free' && p !== 'buffer');
+  expect(
+    open1038.lit.memory === 6 && otherParts1038.every((p) => (open1038.lit[p] ?? 0) === 0) && open1038.lit.free === 37 && open1038.lit.buffer === 17 && open1038.items === 3,
+    `the open section lights its six squares, dims every other part's and never free or buffer, and lists three files: lit ${counts1038(open1038.lit)}, items ${open1038.items}`,
+  );
+  await s.evalJs(`document.querySelector('.files-rail .rail-context-section[data-part="memory"] .rail-context-item').click()`);
+  await s.waitFor(`document.querySelector('.tab-file[data-active] .tab-name')?.textContent === 'CLAUDE.md'`, "the first memory file's click opened CLAUDE.md in a file tab", 8000);
+  await s.evalJs(`document.querySelector('.tab[data-active] .tab-close')?.click()`);
+  await s.waitFor(`!document.querySelector('.tab-file[data-active]')`, 'the file tab closed');
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
+  await s.waitFor(`!!document.querySelector('.files-rail .rail-context[data-state="loaded"]')`, 'the Context tab loaded again', 10000);
+  step('M9 fix 1038: the Context tab draws a stub breakdown as a hundred squares by part with five hollow, the header and fill line, the sections sorted by tokens, and Memory files open lights its part and opens its file');
+
+  // The strip at the 330px default with Context active: only its word,
+  // fitting; and the widths the fit rule was measured from, printed.
+  await s.evalJs(`document.querySelector('.files-rail').style.width = '330px'`);
+  await sleep(150);
+  const strip1037 = await s.evalJs(
+    `(() => { const row = document.querySelector('.rail-tabs'); const shown = [...row.querySelectorAll('.rail-tab')].filter((t) => getComputedStyle(t.querySelector('.rail-tab-label')).display !== 'none').map((t) => t.dataset.tab); return { shown, fits: row.scrollWidth <= row.clientWidth, client: row.clientWidth }; })()`,
+  );
+  expect(strip1037.shown.join(',') === 'context' && strip1037.fits, `at a 330px rail only the active Context tab shows its word and the strip fits: ${JSON.stringify(strip1037)}`);
+  const widthsAt = async (w) => {
+    await s.evalJs(`document.querySelector('.files-rail').style.width = '${w}px'`);
+    await sleep(150);
+    return s.evalJs(
+      `(() => { const row = document.querySelector('.rail-tabs'); const gap = parseFloat(getComputedStyle(row).columnGap) || 0; const kids = [...row.children].filter((k) => !k.classList.contains('rail-tabs-spacer')); const tabs = {}; for (const t of row.querySelectorAll('.rail-tab')) tabs[t.dataset.tab] = t.getBoundingClientRect().width; return { tabs, button: row.querySelector('.files-collapse').getBoundingClientRect().width, gaps: gap * (row.children.length - 1) }; })()`,
+    );
+  };
+  const worded1037 = await widthsAt(700);
+  const icons1037 = await widthsAt(160);
+  const sum = (o) => Object.values(o).reduce((n, v) => n + v, 0);
+  const w5Read = sum(worded1037.tabs) + worded1037.button + worded1037.gaps;
+  const w1Read = Math.max(...tabKeys.map((k) => worded1037.tabs[k] + sum(icons1037.tabs) - icons1037.tabs[k] + icons1037.button + icons1037.gaps));
+  step(`M9 fix 1037: the strip at 330px shows the active Context word alone in ${strip1037.client}px; measured W5 ${w5Read.toFixed(2)}px (the Files count as it stands here) and W1 ${w1Read.toFixed(2)}px of content, the rules at ${stripRules1037.join(' and ')}`);
+  await s.evalJs(`document.querySelector('.files-rail').style.width = ''`);
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'files'`, 'the rail back on Files');
+
+  // M9 fix 1040: the Skills section's groups and dates off a seeded
+  // transcript, a listing pick written to the folder's settings.local.json
+  // and taken back by Undo (context-switch's writer end to end), and the
+  // context in a pane. A folder of its own, since the seed's .claude/
+  // settings.json is not JSON and the listing would meet it as a project
+  // scope that does not parse. The transcript sits under the harness's
+  // Claude home, where the reader lists every transcript, and its uses
+  // fall at local noon on whole calendar days back, so no time of day
+  // moves `3 days`.
+  const rail1040 = await s.evalJs(`document.querySelector('.files-rail')?.dataset.tab ?? null`);
+  const short1040 = path.join(os.tmpdir(), 'emerald-verify', `m10-context-${process.pid}`);
+  fs.rmSync(short1040, { recursive: true, force: true });
+  fs.mkdirSync(short1040, { recursive: true });
+  context1040 = fs.realpathSync.native(short1040);
+  transcript1040 = path.join(harnessClaudeHome(emeraldHome), 'projects', 'C--emerald-verify-m10-context', '10400000-0000-4000-8000-000000001040.jsonl');
+  fs.mkdirSync(path.dirname(transcript1040), { recursive: true });
+  const today1040 = new Date();
+  const noon1040 = (daysBack) => new Date(today1040.getFullYear(), today1040.getMonth(), today1040.getDate() - daysBack, 12, 0, 0).getTime();
+  const iso1040 = (at) => new Date(at).toISOString();
+  const usage1040 = (total) => ({ input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: total - 2, output_tokens: 1 });
+  const prompt1040 = (at, content) => ({ type: 'user', timestamp: iso1040(at), message: { role: 'user', content } });
+  const reply1040 = (at, id, total, tools = []) => ({ type: 'assistant', timestamp: iso1040(at), message: { id, role: 'assistant', usage: usage1040(total), content: tools.map((t, i) => ({ type: 'tool_use', id: `toolu_${id}_${i}`, name: t.name, input: t.input ?? {} })) } });
+  const old1040 = noon1040(10);
+  const recent1040 = noon1040(3);
+  const lines1040 = [
+    prompt1040(old1040, 'start'),
+    reply1040(old1040 + 1000, 'msg_1040_1', 5, [{ name: 'Skill', input: { skill: 'batch' } }]),
+    reply1040(old1040 + 2000, 'msg_1040_2', 2000),
+    prompt1040(old1040 + 3000, 'next'),
+    prompt1040(recent1040, '<command-message>batch</command-message>\n<command-name>/batch</command-name>\n<command-args></command-args>'),
+    { type: 'user', isMeta: true, timestamp: iso1040(recent1040 + 1), message: { role: 'user', content: [{ type: 'text', text: 'Base directory for this skill: C:\\x\\batch' }] } },
+    reply1040(recent1040 + 1000, 'msg_1040_3', 1160),
+    reply1040(recent1040 + 2000, 'msg_1040_4', 840, [{ name: 'mcp__claude-in-chrome__tabs_context_mcp' }]),
+    prompt1040(recent1040 + 3000, 'done'),
+  ];
+  fs.writeFileSync(transcript1040, lines1040.map((l) => `${JSON.stringify(l)}\n`).join(''));
+  await startSessionByKey(s, { kind: 'shell', cwd: context1040 });
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.root === ${JSON.stringify(context1040)}`, "the rail follows the new shell's folder (fix 1040)", 10000);
+  const shell1040 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.state !== 'exited' && x.cwd === context1040);
+  expect(shell1040 !== undefined, 'the shell in the context folder (fix 1040)');
+  // Read afresh: the fix 436 relaunch started another daemon.
+  const daemon1040 = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+  const post1040 = async (payload) => {
+    const res = await fetch(`http://127.0.0.1:${daemon1040.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'X-Emerald-Token': daemon1040.hookToken, 'X-Emerald-Session': shell1040.id },
+      body: JSON.stringify({ session_id: 'sim-files-1040', cwd: context1040, ...payload }),
+    });
+    expect(res.status === 204, `the sink answered 204 for ${payload.hook_event_name} (fix 1040)`);
+  };
+  await post1040({ hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcript1040 });
+  await post1040({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' }, workspace: { current_dir: context1040 }, context_window: { used_percentage: 43, context_window_size: 200000 } });
+  const breakdown1040 = {
+    ...breakdown1038,
+    memoryFiles: [],
+    mcpTools: [{ name: 'mcp__claude-in-chrome__tabs_context_mcp', serverName: 'claude-in-chrome', tokens: 400, isLoaded: true }],
+    agents: [{ agentType: 'claude', source: 'userSettings', tokens: 410 }],
+    skills: {
+      totalSkills: 4,
+      includedSkills: 4,
+      tokens: 745,
+      skillFrontmatter: [
+        { name: 'ado', source: 'userSettings', tokens: 250 },
+        { name: 'qa-story-refinement', source: 'userSettings', tokens: 230 },
+        { name: 'batch', source: 'projectSettings', tokens: 250 },
+        { name: 'anthropic-skills:pdf', source: 'syncedSkills', tokens: 15 },
+      ],
+    },
+  };
+  await post1040({ hook_event_name: 'Context', detail: 'summary', breakdown: breakdown1040 });
+  for (let i = 0; i < 40; i++) {
+    const got = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === shell1040.id);
+    if (got?.context !== undefined && got.transcriptPath !== null) break;
+    await sleep(200);
+  }
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
+  await s.waitFor(`!!document.querySelector('.files-rail .rail-context[data-state="loaded"]')`, 'the Context tab loaded on the fix 1040 breakdown', 10000);
+  const head1040 = (part) => `.files-rail .rail-context-section[data-part="${part}"] > .rail-context-head-row`;
+  // MCP tools first: its server row counts this session's call off the
+  // transcript's session part.
+  await s.evalJs(`document.querySelector(${JSON.stringify(head1040('mcp'))}).click()`);
+  await s.waitFor(`(document.querySelector('.files-rail .rail-context-server[data-server="claude-in-chrome"] .rail-context-item-sub')?.textContent ?? '').includes('call')`, "the server row's call count from the history", 20000);
+  const mcp1040 = await s.evalJs(`document.querySelector('.files-rail .rail-context-server[data-server="claude-in-chrome"] .rail-context-item-sub')?.textContent ?? null`);
+  expect(mcp1040 === '1 tool · 1 call', `the server row counts this session's one call: ${mcp1040}`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(head1040('skills'))}).click()`);
+  await s.waitFor(`!!document.querySelector('.files-rail .rail-context-skills [data-group="settings"]')`, 'the Skills section grouped once the history is read', 20000);
+  const rowSel1040 = (name) => `.files-rail .context-skills-row[data-skill=${JSON.stringify(name)}]`;
+  const skills1040 = await s.evalJs(
+    `(() => { const r = document.querySelector('.files-rail .rail-context-skills'); const batch = r.querySelector(${JSON.stringify(rowSel1040('batch').slice('.files-rail '.length))}); return { settings: r.querySelector('[data-group="settings"] .context-skills-group-head')?.textContent ?? null, fold: r.querySelector('[data-group="synced"] .context-skills-fold .rail-context-item-name')?.textContent ?? null, last: batch?.querySelector('.context-skills-last')?.textContent ?? null, title: batch?.getAttribute('title') ?? null, groups: [...r.querySelectorAll('[data-group]')].map((g) => g.dataset.group).join(',') }; })()`,
+  );
+  expect(skills1040.settings === 'from your settings, 2' && skills1040.fold === '1 skill, < 20, pdf' && skills1040.groups === 'settings,synced,used', `the never used grouped by where each is turned off: ${JSON.stringify(skills1040)}`);
+  expect(skills1040.last === '3 days' && skills1040.title === 'From this folder; 2k tokens in the turns it ran, over the last 7 days; 2 uses', `batch dated off the transcript, the ten-day use in its uses and not its tokens: ${JSON.stringify(skills1040)}`);
+  // The listing: Off in this folder on qa-story-refinement.
+  const local1040 = path.join(context1040, '.claude', 'settings.local.json');
+  const user1040 = path.join(emeraldHome, 'claude-config', 'settings.json');
+  await s.evalJs(`document.querySelector(${JSON.stringify(`${rowSel1040('qa-story-refinement')} .listing-switch`)}).click()`);
+  await s.waitFor(`!!document.querySelector('.listing-menu[data-skill="qa-story-refinement"]')`, "qa-story-refinement's listing menu", 5000);
+  const picked1040 = await s.evalJs(
+    `(() => { let heading = null; for (const el of document.querySelectorAll('.listing-menu[data-skill="qa-story-refinement"] .menu-item')) { const label = el.querySelector('.menu-label'); const check = label?.querySelector('.menu-check')?.textContent ?? ''; const word = (label?.textContent ?? '').slice(check.length); if (el.classList.contains('menu-heading')) { heading = word; continue; } if (heading === 'In this folder' && word === 'Off') { el.click(); return true; } } return false; })()`,
+  );
+  expect(picked1040, 'Off under In this folder found in the menu');
+  let wrote1040 = null;
+  for (let i = 0; i < 50 && wrote1040 === null; i++) {
+    try {
+      const j = JSON.parse(fs.readFileSync(local1040, 'utf8'));
+      if (j?.skillOverrides?.['qa-story-refinement'] === 'off') wrote1040 = j;
+    } catch {
+      // Not written yet.
+    }
+    if (wrote1040 === null) await sleep(100);
+  }
+  expect(wrote1040 !== null, `the folder's settings.local.json holds qa-story-refinement off: ${fs.existsSync(local1040) ? fs.readFileSync(local1040, 'utf8') : 'absent'}`);
+  await s.waitFor(`document.querySelector(${JSON.stringify(`${rowSel1040('qa-story-refinement')} .rail-context-item-name`)})?.classList.contains('listing-off-name') === true && document.querySelector(${JSON.stringify(`${rowSel1040('qa-story-refinement')} .context-skills-last`)})?.textContent === 'off'`, 'the row struck through and its last used off', 5000);
+  let userOverride1040 = undefined;
+  try {
+    userOverride1040 = JSON.parse(fs.readFileSync(user1040, 'utf8'))?.skillOverrides?.['qa-story-refinement'];
+  } catch {
+    // No user settings file, or one that holds nothing for it.
+  }
+  expect(userOverride1040 === undefined, `the harness's every-folder settings hold nothing for it: ${userOverride1040}`);
+  await s.evalJs(`document.querySelector('.files-rail .listing-undo').click()`);
+  for (let i = 0; i < 50 && fs.existsSync(local1040); i++) await sleep(100);
+  expect(!fs.existsSync(local1040), `Undo took the new settings.local.json back: ${fs.existsSync(local1040) ? fs.readFileSync(local1040, 'utf8') : 'absent'}`);
+  // The context in a pane.
+  await s.evalJs(`document.querySelector('.files-rail .rail-context-pane').click()`);
+  await s.waitFor(`!!document.querySelector('.pane[data-view="context"] .context-view')`, 'the context opened in a pane', 10000);
+  await s.waitFor(`!!document.querySelector('.pane[data-view="context"] .context-view-summary')`, "the pane's history read", 10000);
+  const pane1040 = await s.evalJs(
+    `(() => { const p = document.querySelector('.pane[data-view="context"]'); const cells = (name) => [...(p.querySelector('tr[data-row=' + JSON.stringify(name) + ']')?.querySelectorAll('td') ?? [])].slice(0, 6).map((c) => c.textContent).join(','); return { name: p.querySelector('.pane-name')?.textContent ?? null, picks: [...p.querySelectorAll('.context-view-pick')].map((b) => b.textContent).join(','), heads: [...p.querySelectorAll('.context-view-table th')].map((c) => c.textContent).join(','), batch: cells('batch'), qa: cells('qa-story-refinement'), notes: [...p.querySelectorAll('.context-view-notes > div')].map((n) => n.textContent) }; })()`,
+  );
+  expect((pane1040.name ?? '').startsWith('Context of '), `the pane's title names the session: ${pane1040.name}`);
+  expect(pane1040.picks === 'Skills 4,MCP servers 1,Custom agents 1,Memory files 0', `the four picks with their counts: ${pane1040.picks}`);
+  expect(pane1040.heads === 'skill,source,context,7d tokens,uses,last used,in the listing', `the skills table's columns: ${pane1040.heads}`);
+  expect(pane1040.batch === 'batch,this folder,~250,2k,2×,3 days' && pane1040.qa === 'qa-story-refinement,your settings,~230,-,0×,never', `the batch and qa-story-refinement rows: ${pane1040.batch} | ${pane1040.qa}`);
+  expect(
+    pane1040.notes.length === 2 &&
+      pane1040.notes[0] === "context: the skill's one-line listing, sent with every request; a dash is a skill not in the listing now, which costs nothing. The whole SKILL.md loads only when it runs." &&
+      pane1040.notes[1] === '7d tokens: the tokens of the turns the skill ran in, over the last 7 days of sessions on this machine.',
+    `the two column notes: ${JSON.stringify(pane1040.notes)}`,
+  );
+  await s.evalJs(`document.querySelector('.pane[data-view="context"] .context-view-pick[data-pick="servers"]').click()`);
+  await s.waitFor(`!!document.querySelector('.pane[data-view="context"] tr[data-row="claude-in-chrome"]')`, 'the MCP servers table', 5000);
+  const server1040 = await s.evalJs(`[...document.querySelectorAll('.pane[data-view="context"] tr[data-row="claude-in-chrome"] td')].map((c) => c.textContent)`);
+  expect(server1040[3] === '1 call' && server1040[4] === '1', `claude-in-chrome: one call this session and one on the machine: ${server1040.join(',')}`);
+  // Close the context pane through its menu and put the rail back.
+  const box1040 = await s.evalJs(`(() => { const r = document.querySelector('.pane[data-view="context"] .context-view').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await s.rightClick(box1040.x, box1040.y);
+  await s.waitFor(`!!document.querySelector('.pane-menu')`, "the context pane's menu", 5000);
+  const closeTitle1040 = await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label')?.textContent === 'Close pane')?.getAttribute('title') ?? null`);
+  expect(closeTitle1040 === 'Close this pane; the Context tab of the files rail still has it', `the context pane's Close pane says the rail keeps it: ${closeTitle1040}`);
+  await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label')?.textContent === 'Close pane').click()`);
+  await s.waitFor(`!document.querySelector('.pane[data-view="context"]')`, 'the context pane closed', 5000);
+  if (rail1040 !== null) {
+    await s.evalJs(`document.querySelector(${JSON.stringify(`.rail-tab[data-tab="${rail1040}"]`)}).click()`);
+    await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === ${JSON.stringify(rail1040)}`, 'the rail back on the tab it was on');
+  }
+  step('M9 fix 1040: the Skills section groups the never used by where each is turned off and dates the used off a seeded transcript, a listing pick of Off writes the folder\'s settings.local.json and Undo takes it back, and the context opens in a pane with every column');
+
   step('PASS');
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -3286,6 +3591,8 @@ try {
     fs.rmSync(seed, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     if (liftParent !== null) fs.rmSync(liftParent, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    if (context1040 !== null) fs.rmSync(context1040, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    if (transcript1040 !== null) fs.rmSync(path.dirname(transcript1040), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     fs.rmSync(rootMenuParent, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     fs.rmSync(openedPaths, { force: true });
   } catch {

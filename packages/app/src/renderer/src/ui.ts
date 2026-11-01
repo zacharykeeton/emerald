@@ -229,10 +229,12 @@ export interface UiState {
   plan: PlanEntry[];
 }
 
-export type RailTab = 'files' | 'timeline' | 'history' | 'stats';
+export type RailTab = 'files' | 'timeline' | 'history' | 'stats' | 'context';
 // A 'changes' saved before fix 70 folded the tab into Files falls back
-// to the tree.
-export const RAIL_TABS: readonly RailTab[] = ['files', 'timeline', 'history', 'stats'];
+// to the tree. Context (M9 fix 1037) is last, so a stored tab of an older
+// build still loads and a stored 'context' read by an older build falls
+// back to Files.
+export const RAIL_TABS: readonly RailTab[] = ['files', 'timeline', 'history', 'stats', 'context'];
 
 export interface NewSessionPreset {
   folder: string;
@@ -298,7 +300,7 @@ const FONT_SIZES_KEY = 'emerald.fontSizes';
 export const SIDEBAR_MIN_WIDTH = 160;
 export const SIDEBAR_MAX_WIDTH = 600;
 const SIDEBAR_DEFAULT_WIDTH = 260;
-// M9 fix 885: the rail's default fits four tabs' words (Files, Activity, Sessions, Stats); the sidebar keeps 260. SIDEBAR_MAX_WIDTH (600) is above it.
+// M9 fix 885: the rail's default fits four tabs' words (Files, Activity, Sessions, Stats); the sidebar keeps 260. SIDEBAR_MAX_WIDTH (600) is above it. Since fix 1037's fifth tab the default shows the active tab's word alone; every word needs 387px (style.css, the rail-tabs queries).
 const RAIL_DEFAULT_WIDTH = 330;
 const STORAGE_KEY = 'emerald.sidebar';
 const FILES_KEY = 'emerald.files';

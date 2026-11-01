@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { COMPACT_BUFFER_TOKENS, compactPercent, contextPercentText, costParts, formatTokens, formatUsd, ratesFor, ratesLookStale, tokensUp, uncachedCost } from '@emerald/shared';
-import type { SessionInfo, UsageMessage } from '@emerald/shared';
+import type { ContextWindow, SessionInfo, UsageMessage } from '@emerald/shared';
 import { askUsageLive, useConversationUsage } from './commit-usage.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
@@ -33,13 +33,43 @@ export function ContextReading({ session, className, children }: ReadingProps) {
   );
 }
 
+// The used, free and buffer bar with its legend and the compaction point,
+// off the status line's window: the card's, and since M9 fix 1038 the
+// rail's Context tab's while it has no breakdown. No element takes the bare
+// class context-bar, which verify:context expects gone from the rail.
+export function ContextBar({ cw }: { cw: ContextWindow }) {
+  const used = Math.min(100, (cw.used / cw.size) * 100);
+  const buffer = 100 - compactPercent(cw);
+  const bufferTokens = Math.min(cw.size, COMPACT_BUFFER_TOKENS);
+  const free = Math.max(0, cw.size - cw.used - bufferTokens);
+  return (
+    <>
+      <div className="context-bar-track">
+        <span className="context-bar-used" style={{ width: `${used.toFixed(1)}%` }} />
+        <span className="context-bar-free" />
+        <span className="context-bar-buffer" style={{ width: `${buffer.toFixed(1)}%` }} />
+      </div>
+      <div className="context-bar-legend">
+        <span className="context-bar-key" data-part="used">
+          used {formatTokens(cw.used)}
+        </span>
+        <span className="context-bar-key" data-part="free">
+          free {formatTokens(free)}
+        </span>
+        <span className="context-bar-key" data-part="buffer">
+          buffer {formatTokens(bufferTokens)}
+        </span>
+      </div>
+      <div className="context-popover-compact">
+        auto-compact at {compactPercent(cw).toFixed(1)}% ({formatTokens(bufferTokens)} buffer)
+      </div>
+    </>
+  );
+}
+
 export function ContextPopover({ session, anchor, onClose, onEnter, onLeave }: CardProps & { session: SessionInfo }) {
   const cw = session.contextWindow !== null && session.contextWindow.size > 0 ? session.contextWindow : null;
   const percent = contextPercentText(session);
-  const used = cw === null ? 0 : Math.min(100, (cw.used / cw.size) * 100);
-  const buffer = cw === null ? 0 : 100 - compactPercent(cw);
-  const bufferTokens = cw === null ? 0 : Math.min(cw.size, COMPACT_BUFFER_TOKENS);
-  const free = cw === null ? 0 : Math.max(0, cw.size - cw.used - bufferTokens);
   const t = session.tokens;
   const rates = ratesFor(session.model);
   // M9 fix 278: the running sum carries no split of which cache write
@@ -83,25 +113,7 @@ export function ContextPopover({ session, anchor, onClose, onEnter, onLeave }: C
       )}
       {cw !== null && (
         <>
-          <div className="context-bar-track">
-            <span className="context-bar-used" style={{ width: `${used.toFixed(1)}%` }} />
-            <span className="context-bar-free" />
-            <span className="context-bar-buffer" style={{ width: `${buffer.toFixed(1)}%` }} />
-          </div>
-          <div className="context-bar-legend">
-            <span className="context-bar-key" data-part="used">
-              used {formatTokens(cw.used)}
-            </span>
-            <span className="context-bar-key" data-part="free">
-              free {formatTokens(free)}
-            </span>
-            <span className="context-bar-key" data-part="buffer">
-              buffer {formatTokens(bufferTokens)}
-            </span>
-          </div>
-          <div className="context-popover-compact">
-            auto-compact at {compactPercent(cw).toFixed(1)}% ({formatTokens(bufferTokens)} buffer)
-          </div>
+          <ContextBar cw={cw} />
           <div className="context-popover-request">
             {[`cache read ${formatTokens(cw.cacheRead)}`, `cache write ${formatTokens(cw.cacheWrite)}`, `fresh ${formatTokens(cw.fresh)}`, `out ${formatTokens(cw.output)}`].join(' · ')}
           </div>

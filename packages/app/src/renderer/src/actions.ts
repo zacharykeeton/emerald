@@ -48,6 +48,7 @@ import { editLayout, editTab, getState, subscribe, whenSynced } from './store.ts
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
 import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, loadClaudeOpensOn, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setDropping, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
+import { fontSizeFor, setChatMode, setFontSize } from './ui.ts';
 import { openFolder } from './folder-open-model.ts';
 import { REMOVE_AFTER_MS, closedSpot, reopenAt } from './close-countdown-model.ts';
 import type { ClosedSpot } from './close-countdown-model.ts';
@@ -134,11 +135,32 @@ export function showSessionAuto(sessionId: string): Promise<unknown> {
 // nothing. One layout edit so a retry on a stale revision re-applies the
 // whole drop. Zoom is cleared first for an edge, since the new pane would
 // be a sibling off the zoom path and so invisible until focus moved, and
-// the new pane takes the target's text size. A picker open on the pane
+// the new pane takes the target's text size, or a moved pane keeps its own (M9 fix 1044). A picker open on the pane
 // was asking what to show there, so a center drop closes it.
 // The drops' last parameter is the edit, this window's unless a drop
 // from another window names the whole layout's (M9 fix 927).
 type LayoutEdit = (fn: (layout: Layout) => Layout) => Promise<Layout>;
+
+// M9 fix 1044: a pane moved by its title keeps its face, the face's mode
+// and its text size on the pane it lands on. Read before the drop's edit,
+// since the edit's own state write re-renders App, whose prune
+// (App.tsx:97) can drop the old pane's entries before the await returns;
+// applied once the landed pane is known. A row drag moves no pane.
+function carryChatFace(fromPaneId: string | null, sessionId: string | null): (landed: string | null) => void {
+  if (fromPaneId === null) return () => {};
+  const ui = getUiState();
+  const face = sessionId !== null && ui.chatPanes.get(fromPaneId) === sessionId ? sessionId : null;
+  const mode = ui.chatModes.get(fromPaneId) ?? 'normal';
+  const size = fontSizeFor(fromPaneId);
+  return (landed) => {
+    if (landed === null || landed === fromPaneId) return;
+    setFontSize(landed, size);
+    if (face !== null) {
+      setChatFace(landed, face, true);
+      setChatMode(landed, mode);
+    }
+  };
+}
 
 export function dropSessionOn(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<void> {
   recordUse('drop-session');
@@ -150,9 +172,13 @@ export function dropSessionOn(sessionId: string, paneId: string, zone: DropZone,
 async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: DropZone, fromPaneId: string | null, edit: LayoutEdit = editLayout): Promise<void> {
   const split = zoneToSplit(zone);
   if (split !== null) clearZoom();
+  const carry = carryChatFace(fromPaneId, sessionId);
+  let moved = false;
   const after = await edit((l) => {
+    moved = false;
     const tab = tabHolding(l, paneId);
     if (tab === null || fromPaneId === paneId) return l;
+    moved = true;
     const dropped = replaceTab(l, dropSession(tab, sessionId, paneId, split));
     if (fromPaneId === null) return dropped;
     // A title dropped on the centre of a pane already showing its session
@@ -161,6 +187,7 @@ async function dropSessionOnUnrecorded(sessionId: string, paneId: string, zone: 
     return from === null ? dropped : replaceTab(dropped, closePane(from, fromPaneId));
   });
   if (split !== null) inheritFontSize(paneId, currentTab(after).focusedPaneId);
+  carry(moved ? (split === null ? paneId : currentTab(after).focusedPaneId) : null);
   if (split === null && getUiState().pickerPaneId === paneId) closePicker();
   await ackIfDone(sessionId);
 }
@@ -206,6 +233,7 @@ export async function dropViewOn(view: PaneView, paneId: string, zone: DropZone,
 export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromPaneId: string | null = null, edit: LayoutEdit = editLayout): Promise<string | null> {
   recordUse('drop-on-layout-tab');
   let landed: string | null = null;
+  const carry = carryChatFace(fromPaneId, content.sessionId);
   await editTabs((l) => {
     landed = null;
     const tab = findTab(l, tabId);
@@ -218,6 +246,7 @@ export async function dropOnLayoutTab(content: PaneContent, tabId: string, fromP
     const from = tabHolding(dropped, fromPaneId);
     return from === null ? dropped : replaceTab(dropped, closePane(from, fromPaneId));
   }, edit);
+  carry(landed);
   return landed;
 }
 
@@ -238,6 +267,7 @@ export async function dropOnNewTab(content: PaneContent, fromPaneId: string | nu
   } else {
     name = viewName(content.view);
   }
+  const carry = carryChatFace(fromPaneId, content.sessionId);
   let oldLayoutTabIds: readonly string[] | null = null;
   let madeId: string | null = null;
   let landed: string | null = null;
@@ -253,6 +283,7 @@ export async function dropOnNewTab(content: PaneContent, fromPaneId: string | nu
     return from === null ? added : replaceTab(added, closePane(from, fromPaneId));
   }, edit);
   if (madeId !== null && oldLayoutTabIds !== null) placeNewTab(layoutTabKey(madeId), oldLayoutTabIds);
+  carry(landed);
   return landed;
 }
 
@@ -684,6 +715,14 @@ export function setSessionScheme(sessionId: string, scheme: string | null): Prom
 export function setKeepWhole(sessionId: string, on: boolean): Promise<void> {
   recordUse('set-keep-whole');
   return window.emerald.request('session.set', { sessionId, keepWhole: on }).then(() => undefined);
+}
+
+// Ask a Claude session's mod for its context breakdown (M9 fix 1036): the
+// Context tab asks a summary when it opens on a session and a full count on
+// Recount. The breakdown arrives later as a session.changed; an older
+// daemon or a closed pipe reads as nobody asked.
+export function askSessionContext(sessionId: string, detail: 'summary' | 'full'): Promise<{ asked: boolean; mod: boolean }> {
+  return window.emerald.request('session.context', { sessionId, detail }).catch(() => ({ asked: false, mod: false }));
 }
 
 // The person's own label on a folder group (M9 fix 194), from the

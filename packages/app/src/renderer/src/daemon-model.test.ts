@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo, ShellOption } from '@emerald/shared';
 import { BROWSER_TOOLBAR_LEVEL, BROWSER_VIEW_LEVEL, CRASHED_TEXT, LEGACY_TAB_ID, TABS_LEVEL, USAGE_FLAG_LEVEL, VIEWS_LEVEL, browserToolbarSupported, browserViewSupported, crashedTitle, daemonLevel, daemonOutdated, layoutForWire, normalizeLayout, normalizeSession, otherHomeText, installedShells, otherShells, outdatedText, tabsSupported, usageFlagSupported, viewsSupported } from './daemon-model.ts';
-import { STATS_LEVEL, statsSupported } from './daemon-model.ts';
+import { CONTEXT_LEVEL, STATS_LEVEL, contextSupported, statsSupported } from './daemon-model.ts';
 import { BROWSER_ZOOM_LEVEL, browserZoomKept } from './daemon-model.ts';
 
 test('a daemon with no feature level is level 1 and counts as outdated against 2', () => {
@@ -138,6 +138,14 @@ test('the Statistics tab is offered from level 70 on (M9 fix 836)', () => {
   assert.equal(statsSupported(older), false);
   assert.equal(statsSupported({ ...older, featureLevel: 70 }), true);
   assert.equal(statsSupported(null), false);
+});
+
+test('the Context tab reads the breakdown from level 79 on (M9 fix 1037)', () => {
+  const older = { pid: 7, version: '0.1.0', featureLevel: 78, otherHome: null };
+  assert.equal(CONTEXT_LEVEL, 79);
+  assert.equal(contextSupported(older), false);
+  assert.equal(contextSupported({ ...older, featureLevel: 79 }), true);
+  assert.equal(contextSupported(null), false);
 });
 
 test('the browser toolbar flag is kept from level 71 on (M9 fix 839)', () => {

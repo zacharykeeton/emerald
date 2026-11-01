@@ -688,7 +688,11 @@ test('validateLayout reads a view, fills null for a pane without one and rejects
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'localhost:3000' }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'file:///C:/x' }))), /url must be an http or https URL/);
   assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 3 }))), /url must be an http or https URL/);
-  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'notes', path: 'C:\a' }))), /kind must be commits, activity, file or browser/);
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'notes', path: 'C:\a' }))), /kind must be commits, activity, file, browser or context/);
+  // M9 fix 1040: a context view keeps its session id and nothing else.
+  const ctx = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'context', sessionId: 's1', chrome: false })));
+  assert.deepEqual((ctx.tabs[0]!.root as { first: { view: unknown } }).first.view, { kind: 'context', sessionId: 's1' });
+  assert.throws(() => validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'context' }))), /sessionId must be a non-empty string/);
   // M9 fix 673: a profile's name is kept, an absent one leaves no key,
   // and anything BROWSER_PROFILE refuses is refused.
   const profiled = validateLayout(mutate((root) => (paneA(root)['view'] = { kind: 'browser', url: 'http://localhost:3000/', profile: 'b' })));

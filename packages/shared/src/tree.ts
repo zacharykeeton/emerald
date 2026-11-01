@@ -537,7 +537,14 @@ function validateView(value: unknown, where: string): PaneView | null {
     if (local && (typeof root !== 'string' || !ABSOLUTE_WINDOWS_PATH.test(root))) throw new LayoutError(`${where}.root must be the absolute folder of its emerald-file page`);
     return { kind: 'browser', url, ...(typeof root === 'string' && local ? { root } : {}), ...(profile === undefined ? {} : { profile }), ...(toolbar === false ? { toolbar: false as const } : {}), ...(typeof openedBy === 'string' && BROWSER_OPENER.test(openedBy) ? { openedBy } : {}), ...(keptZoom ? { zoom } : {}) };
   }
-  if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file or browser`);
+  if (value['kind'] === 'context') {
+    // M9 fix 1040 (level 79): the context of one session in a pane; the
+    // session's id is all that is kept.
+    const sessionId = value['sessionId'];
+    if (typeof sessionId !== 'string' || sessionId.length === 0) throw new LayoutError(`${where}.sessionId must be a non-empty string`);
+    return { kind: 'context', sessionId };
+  }
+  if (value['kind'] !== 'commits') throw new LayoutError(`${where}.kind must be commits, activity, file, browser or context`);
   const folder = value['folder'];
   if (typeof folder !== 'string' || folder.length === 0) throw new LayoutError(`${where}.folder must be a non-empty string`);
   // M9 fix 162: rows is kept only when false, so a view that draws its

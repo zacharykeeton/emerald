@@ -107,8 +107,9 @@ export async function readTurns(file: string, log: HistoryLog): Promise<Transcri
 }
 
 // Every <sessionId>.jsonl one level under projects/. A subfolder named
-// after a session holds that session's subagents and is not listed.
-async function listTranscripts(projects: string, log: HistoryLog): Promise<Map<string, string>> {
+// after a session holds that session's subagents and is not listed. The
+// Context tab's history reads the same set (M9 fix 1039).
+export async function listTranscripts(projects: string, log: HistoryLog): Promise<Map<string, string>> {
   const found = new Map<string, string>();
   let dirs: fs.Dirent[];
   try {

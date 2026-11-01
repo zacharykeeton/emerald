@@ -27,12 +27,15 @@ import { RenameBox } from './RenameBox.tsx';
 import { HistoryPanel } from './HistoryPanel.tsx';
 import { ClaudeStar } from './skin-star.tsx';
 import { CommitsPanel } from './CommitsPanel.tsx';
-import { StatsIcon } from './icons.tsx';
+import { ContextIcon, StatsIcon } from './icons.tsx';
 import { RailStats } from './StatsView.tsx';
+import { RailContext } from './RailContext.tsx';
 import { BranchIcon } from './Sidebar.tsx';
 import { ActivitySection, useRailScope, useRailUnit } from './ActivitySection.tsx';
 import { openLocalPage, openViewBeside, typeInto } from './actions.ts';
-import { fileViewSupported, localPageSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { contextSupported, fileViewSupported, localPageSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
+import { useContextHistory } from './context-history-store.ts';
+import { contextUse } from './skill-history-model.ts';
 import { isHtmlFile, localPageRoot, noteRailRoot } from './local-page-model.ts';
 import { startDrag } from './pane-drag.ts';
 import type { DragPayload } from './pane-drag.ts';
@@ -134,7 +137,7 @@ export function FilesRail() {
   // folder, which the answer would then never leave.
   const shownBefore = lift ?? lastRoot;
   const fileRoot = frontFile === null ? null : shownBefore !== null && isUnder(shownBefore, frontFile) ? lastRoot : (fileRoots.get(frontFolder!) ?? lastRoot);
-  const root = frontFile !== null ? fileRoot : focused?.cwd ?? (focusedView?.kind === 'commits' ? focusedView.folder : focusedView?.kind === 'activity' || focusedView?.kind === 'browser' ? lastRoot : null);
+  const root = frontFile !== null ? fileRoot : focused?.cwd ?? (focusedView?.kind === 'commits' ? focusedView.folder : focusedView?.kind === 'activity' || focusedView?.kind === 'browser' || focusedView?.kind === 'context' ? lastRoot : null);
   if (root !== null) lastRoot = root;
   // What the tree shows: the lift while one is on, else the followed root.
   const shown = lift ?? root;
@@ -158,6 +161,9 @@ export function FilesRail() {
   // look too.
   const { layout: layoutForFocus, daemon, sessions } = useStore('layout', 'daemon', 'sessions');
   const focusedPaneId = layoutForFocus === null ? null : currentTab(layoutForFocus).focusedPaneId;
+  // The Context tab's history (M9 fix 1040), asked while the tab shows a
+  // session and again at each new breakdown.
+  const contextHistory = useContextHistory(railTab === 'context' && focused !== null ? { transcript: focused.transcriptPath, at: focused.context?.at ?? null } : null);
   // The files every session wrote (M9 fix 198), one index for the rows'
   // dots; rebuilt per render, which the store's pushes drive.
   const touched = touchedIndex(sessions.values());
@@ -963,6 +969,15 @@ export function FilesRail() {
       <RailTabs active={railTab} changed={changes.files.length} dragFolder={viewsSupported(daemon) ? root : null} folder={root} />
       {railTab === 'history' && <HistoryPanel />}
       {railTab === 'stats' && <RailStats folder={root} />}
+      {railTab === 'context' && (
+        <RailContext
+          session={focused}
+          used={contextUse(contextHistory.session, focused?.context ?? null)}
+          {...(viewsSupported(daemon) && contextSupported(daemon) && focused !== null
+            ? { onOpenPane: () => void openViewBeside({ kind: 'context', sessionId: focused.id }).catch((err: unknown) => console.warn('[emerald] context in a pane failed', err)) }
+            : {})}
+        />
+      )}
       {railTab === 'timeline' && <ActivitySection folder={root} scope={activityScope} onScope={setActivityScope} unit={activityUnit} onUnit={setActivityUnit} place="rail" />}
       {railTab === 'timeline' && (
         <CommitsPanel
@@ -1269,6 +1284,7 @@ function RailTabs({ active, changed, dragFolder, folder }: { active: RailTab; ch
       {tab('timeline', 'Activity', dragFolder === null ? 'What the sessions did: the day\'s time above, the repository\'s commits below' : 'What the sessions did: the day\'s time above, the repository\'s commits below; drag onto a pane to keep this folder\'s there', <TimelineIcon />, undefined, pressCommits)}
       {tab('history', 'Sessions', 'Sessions of Claude Code on this machine', <ClaudeStar size={14} className="files-icon" />)}
       {tab('stats', 'Stats', folder === null ? 'Statistics' : `Statistics of ${pathLabel(folder)}`, <StatsIcon className="files-icon" />)}
+      {tab('context', 'Context', "What fills the focused session's context", <ContextIcon className="files-icon" />)}
       <span className="rail-tabs-spacer" />
       <button className="files-button files-collapse" title="Hide the rail (Ctrl+Shift+F)" onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
         »

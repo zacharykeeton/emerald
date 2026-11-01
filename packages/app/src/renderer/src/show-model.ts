@@ -18,6 +18,8 @@ export const SHOW_OFFSCREEN: readonly ShowOffscreen[] = ['ask', 'replace', 'besi
 export function viewName(view: PaneView): string {
   if (view.kind === 'commits') return `Commits · ${folderTitle(view.folder)}`;
   if (view.kind === 'file') return tabName(view.path);
+  // M9 fix 1040: a context view, whose session's name its title carries.
+  if (view.kind === 'context') return 'Context';
   // M9 fix 897: a page from the disk is its file's name (pageLabel).
   if (view.kind === 'browser') return view.url === '' ? 'Browser' : `Browser · ${pageLabel(view.url)}`;
   const window = unitBounds(view.window);

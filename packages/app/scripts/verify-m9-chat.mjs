@@ -121,7 +121,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
   { name: 'notes', fixes: ['805'], needs: [] },
-  { name: 'copy', fixes: ['806', '849', '882'], needs: ['notes'] },
+  { name: 'copy', fixes: ['806', '849', '882', '1047'], needs: ['notes'] },
   { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
   { name: 'remote', fixes: ['889', '890', '923'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
@@ -3035,8 +3035,18 @@ try {
     // row's digit (the stub's ReadKey takes it and redraws the pointer on
     // row 4), then the text and the Enter, which end its Read-Host. A
     // stray 4 would read cancel4Pill...
+    // M9 fix 1045: the pointer border is on row 1 until the person works in
+    // the free row, then on that row alone, text typed or not.
+    const pointed1045 = () => s.evalJs(`[...${q(cardSel)}.querySelectorAll('[data-pointer="true"]')].map((e) => e.dataset.key)`);
+    const before1045 = await pointed1045();
+    expect(JSON.stringify(before1045) === '["1"]', `fix 1045: the pointer border is on row 1 before the focus, got ${JSON.stringify(before1045)}`);
     await s.evalJs(`${q(cardSel + ' .chat-ask-free-input')}.focus()`);
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-free[data-pointer="true"]')}`, 'fix 1045: the free row is marked from its focus', 5000);
+    const focused1045 = await pointed1045();
+    expect(JSON.stringify(focused1045) === '["4"]', `fix 1045: the free row alone is marked after the focus, got ${JSON.stringify(focused1045)}`);
     await s.type('Pill shaped please');
+    const typed1045 = await pointed1045();
+    expect(JSON.stringify(typed1045) === '["4"]', `fix 1045: the free row alone is marked with the text typed, got ${JSON.stringify(typed1045)}`);
     await s.key('Enter', 'Enter', 13);
     const freeUntil = Date.now() + 10000;
     let freeIn = false;
@@ -3045,7 +3055,7 @@ try {
       if (!freeIn) await sleep(200);
     }
     expect(freeIn, `fix 803: the free answer reached the session after the row's digit, the rows read ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-4))}`);
-    step('fix 803: the Type something row takes a free answer, sent with the digit, the text and Enter');
+    step('fix 803: the Type something row takes a free answer, sent with the digit, the text and Enter; fix 1045: the row is marked as chosen from its focus, row 1\'s pointer border gone');
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'the Read-Host ended at the prompt', 10000);
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'the card gone and the box back');
@@ -4568,6 +4578,35 @@ try {
     expect(off.clip === 'after-806' && off.note === null, `fix 806: with Copy on select off a selection copies nothing and shows no note, got ${JSON.stringify(off)}`);
     await s.evalJs('window.getSelection().removeAllRanges()');
     step('fix 806: with Copy on select off the same selection copies nothing and shows no note');
+
+    // M9 fix 1047: the pane menu's Copy row. A right-click on the reply
+    // reaches the pane's handler by the conversation's route.
+    await waitNoNote();
+    await setClip('before-1047');
+    expect(await selectReply(), 'fix 1047: the reply selected');
+    const openMenu1047 = async () => {
+      await s.evalJs(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(CP + ' .chat-reply')})].find((e) => e.textContent.trim() === 'Notes answered.'); const r = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); })()`);
+      await s.waitFor(`document.querySelector('.pane-menu')?.dataset.paneId === ${JSON.stringify(notesPane)}`, 'fix 1047: the pane menu on the notes pane', 3000);
+    };
+    const rows1047 = () => s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label').textContent.replace(/^✓/, ''), disabled: b.disabled, sep: b.classList.contains('menu-sep'), hint: b.querySelector('.menu-hint')?.textContent ?? null, title: b.title }))`);
+    await openMenu1047();
+    const menu1047 = await rows1047();
+    const ci1047 = menu1047.findIndex((r) => r.label === 'Copy');
+    expect(ci1047 >= 0 && menu1047[ci1047 + 1]?.label === 'Copy on select', `fix 1047: Copy sits directly above Copy on select, got ${JSON.stringify(menu1047.map((r) => r.label))}`);
+    expect(!menu1047[ci1047].disabled && menu1047[ci1047].hint === 'Ctrl+Shift+C' && menu1047[ci1047].sep && !menu1047[ci1047 + 1].sep, `fix 1047: the Copy row is enabled, hinted and carries the rule, got ${JSON.stringify(menu1047.slice(ci1047, ci1047 + 2))}`);
+    await s.evalJs(`[...document.querySelectorAll('.pane-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Copy').click()`);
+    await s.waitFor(`window.emerald.clipboard.read().then((c) => c.text === 'Notes answered.')`, 'fix 1047: the Copy row copied the reply', 3000);
+    await s.waitFor(`${q(CP + ' .corner-note.in-pane')}?.textContent === 'Copied 15 characters'`, 'fix 1047: the Copied 15 characters note', 3000);
+    await s.waitFor(`!document.querySelector('.pane-menu')`, 'fix 1047: the menu closed', 3000);
+    expect((await s.evalJs('window.getSelection().toString()')) === 'Notes answered.', 'fix 1047: the selection is left in place');
+    await s.evalJs('window.getSelection().removeAllRanges()');
+    await openMenu1047();
+    const none1047 = (await rows1047()).find((r) => r.label === 'Copy');
+    expect(none1047 !== undefined && none1047.disabled && none1047.title === 'Nothing selected', `fix 1047: with nothing selected Copy is disabled as Nothing selected, got ${JSON.stringify(none1047)}`);
+    await s.evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await s.waitFor(`!document.querySelector('.pane-menu')`, 'fix 1047: the menu closed by Escape', 3000);
+    await waitNoNote();
+    step('fix 1047: a reply selected and right-clicked offers Copy above Copy on select; Copy puts it on the clipboard with the Copied 15 characters note and leaves it selected, and with nothing selected the row is disabled as Nothing selected');
 
     // M9 fix 849: Ctrl+C on a selection, the Copy command the Edit menu's
     // item runs, sent over CDP. A document copy listener, which runs after

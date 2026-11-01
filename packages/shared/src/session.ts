@@ -375,6 +375,46 @@ export interface ContextWindow {
   output: number;
 }
 
+// The emerald mod's breakdown of the context window (M9 fix 1036): what
+// $.session.usage({ breakdown }) answers, copied from the mod's d.ts
+// (packages/cli/mod/.claude-plugin/types/claude-code/index.d.ts), which
+// shared cannot import. Each names the d.ts type it copies.
+// d.ts ContextCategory (:2159) and ContextCategoryKind (:2192)
+export interface ContextCategory { name: string; tokens: number; color: string; isDeferred: boolean; kind: 'used' | 'free' | 'buffer' | 'deferred' }
+// d.ts ContextMemoryFile (:2254)
+export interface ContextMemoryFile { path: string; type: string; tokens: number }
+// d.ts ContextMcpTool (:2230)
+export interface ContextMcpTool { name: string; serverName: string; tokens: number; isLoaded: boolean }
+// d.ts ContextAgent (:2131)
+export interface ContextAgent { agentType: string; source: string; tokens: number }
+// d.ts ContextSkill (:2273); source is the SDK's SkillSource (:12846), 'userSettings' | 'projectSettings' | 'policySettings' | 'plugin' | 'built-in' | 'mcp' | 'syncedSkills' or another word
+export interface ContextSkill { name: string; source: string; pluginName?: string; tokens: number }
+// d.ts ContextSkills (:2297)
+export interface ContextSkills { totalSkills: number; includedSkills: number; tokens: number; skillFrontmatter: ContextSkill[] }
+// d.ts ContextSlashCommands (:2319)
+export interface ContextSlashCommands { totalCommands: number; includedCommands: number; tokens: number }
+// d.ts SessionContextBreakdown (:11579) less gridRows, plus when it arrived and how it was counted
+export interface ContextBreakdown {
+  categories: ContextCategory[];
+  totalTokens: number;
+  maxTokens: number;
+  rawMaxTokens: number;
+  autocompactSource: string; // d.ts ContextWindowSource (:2342)
+  percentage: number;
+  model: string;
+  memoryFiles: ContextMemoryFile[];
+  mcpTools: ContextMcpTool[];
+  agents: ContextAgent[];
+  slashCommands?: ContextSlashCommands;
+  skills?: ContextSkills;
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled: boolean;
+  // d.ts ModelUsage (:6635)
+  apiUsage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | null;
+  at: number; // epoch ms, the daemon's receipt of the post
+  detail: 'summary' | 'full';
+}
+
 // What the session has sent and received since its Claude process started
 // (M9 fix 143), summed over its requests from the same status line: the
 // status line's own totals are the last request's, not the session's (its
@@ -615,6 +655,11 @@ export interface SessionInfo {
   // carries them; a payload that lacks a part keeps the last known one.
   // Persisted and cleared with contextPercent.
   contextWindow: ContextWindow | null;
+  // The emerald mod's breakdown of the context window (M9 fix 1036), off
+  // its Context post, the last one to arrive. Not persisted (toPersisted
+  // picks its fields), present only once a post has landed, and never set
+  // to undefined (exactOptionalPropertyTypes).
+  context?: ContextBreakdown;
   // The running sum of those counts over the process's requests (M9 fix
   // 143). Null until a status line carries counts; persisted and cleared
   // with contextPercent.

@@ -432,6 +432,33 @@ try {
   expect((await s.evalJs(`document.querySelectorAll('.layout-tab:not([hidden]) .pane').length`)) === 2, 'still two panes on the tab on show');
   step('fix 651: a title over its own layout tab lights nothing and the drop changes nothing');
 
+  // (b2) M9 fix 1044: the moved session plays Claude (one SessionStart to
+  // the sink, in the record's own folder so the + tab's name below reads as
+  // before), and its pane goes to 16 px, onto the chat face, in Thinking.
+  {
+    const daemon1044 = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8'));
+    const rec1044 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === movedSession);
+    const res1044 = await fetch(`http://127.0.0.1:${daemon1044.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'X-Emerald-Token': daemon1044.hookToken, 'X-Emerald-Session': movedSession },
+      body: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'sim-m12-1044', cwd: rec1044.groupCwd }),
+    });
+    expect(res1044.status === 204, `fix 1044: the sink answered the SessionStart with 204, got ${res1044.status}`);
+    const sel1044 = `[data-pane-id=${JSON.stringify(landed.id)}]`;
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(`${sel1044} .pane-face-toggle`)})`, 'fix 1044: the face button on the moved session\'s pane');
+    for (let i = 0; i < 2; i++) {
+      await s.evalJs(`document.querySelector(${JSON.stringify(`${sel1044} .term-host`)}).dispatchEvent(new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true }))`);
+    }
+    await s.waitFor(`JSON.parse(localStorage.getItem('emerald.fontSizes') ?? '{}')[${JSON.stringify(landed.id)}] === 16`, 'fix 1044: the pane at 16 px');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`${sel1044} .pane-face-toggle`)}).click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(sel1044)})?.dataset.face === 'chat'`, 'fix 1044: the pane on its chat face');
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(`${sel1044} .chat-box`)})`, 'fix 1044: the chat box drawn');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`${sel1044} .chat-box`)}).focus()`);
+    await s.key('o', 'KeyO', 79, CTRL);
+    await s.waitFor(`document.querySelector(${JSON.stringify(`${sel1044} .chat-view`)})?.dataset.chatView === 'thinking'`, 'fix 1044: the chat view in Thinking');
+  }
+  step('fix 1044: the moved session\'s pane at 16 px on the chat face in Thinking');
+
   // (c) A title dropped on the +: a last tab holding that session alone.
   const headingOf = (id) => s.evalJs(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(id)}]').closest('.sidebar-group').querySelector('.sidebar-group-name').textContent`);
   const freeName = (names, name) => {
@@ -500,6 +527,38 @@ try {
   expect(t1after.kind === 'pane' && t1after.id === newPane && t1after.sessionId === null, `the first tab keeps newPane, empty, got ${JSON.stringify(t1after)}`);
   expect(tabs651.tabs.length === 3 && tabs651.currentTabId === tab1, 'three tabs still, the window on the first');
   step('fix 651: a title dropped on a layout tab lands at its far right, full height, and the last pane of its own tab becomes an empty pane');
+
+  // (e2) M9 fix 1044: the + landed the moved session on its chat face; a
+  // drag of that pane's title onto another layout tab keeps all three.
+  {
+    const faceRead = (paneId) => s.evalJs(`(() => { const p = document.querySelector('[data-pane-id=${JSON.stringify(paneId)}]'); return { face: p?.dataset.face ?? null, view: p?.querySelector('.chat-view')?.dataset.chatView ?? null, size: JSON.parse(localStorage.getItem('emerald.fontSizes') ?? '{}')[${JSON.stringify(paneId)}] ?? null }; })()`);
+    const want = JSON.stringify({ face: 'chat', view: 'thinking', size: 16 });
+    await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes(tab3))}).click()`);
+    await s.waitFor(layoutIs(`l.currentTabId === ${JSON.stringify(tab3)}`), 'fix 1044: the third tab shown');
+    const pane3 = tabById(await getTabs(s), tab3).root.id;
+    await s.waitFor(`!!document.querySelector('[data-pane-id=${JSON.stringify(pane3)}] .pane-title')`, 'fix 1044: the third tab painted');
+    const onPlus = await faceRead(pane3);
+    expect(JSON.stringify(onPlus) === want, `fix 1044: the + landed the pane on its chat face in Thinking at 16 px, got ${JSON.stringify(onPlus)}`);
+    from = await titleOf(pane3);
+    over = await centerOf(s, tabPanes(tab2));
+    await s.mouse('mousePressed', from.x, from.y);
+    await move({ x: from.x + 10, y: from.y });
+    await move(over);
+    await s.mouse('mouseReleased', over.x, over.y);
+    await s.waitFor(layoutIs(`(() => { const n = (x) => (x.kind === 'pane' ? 1 : n(x.first) + n(x.second)); return n(l.tabs.find((t) => t.id === ${JSON.stringify(tab2)}).root) === 3; })()`), 'fix 1044: the second tab holds three panes');
+    const t2three = tabById(await getTabs(s), tab2);
+    const dropLanded = t2three.focusedPaneId;
+    await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes(tab2))}).click()`);
+    await s.waitFor(layoutIs(`l.currentTabId === ${JSON.stringify(tab2)}`), 'fix 1044: the second tab shown');
+    await s.waitFor(`!!document.querySelector('[data-pane-id=${JSON.stringify(dropLanded)}] .pane-title')`, 'fix 1044: the second tab painted');
+    const onDrop = await faceRead(dropLanded);
+    expect(JSON.stringify(onDrop) === want, `fix 1044: the drop on a layout tab kept the chat face, Thinking and 16 px, got ${JSON.stringify(onDrop)}`);
+    const mirror = await faceRead(t2split.root.first.id);
+    expect(mirror.face === null, `fix 1044: the row's mirror stays on the terminal, got ${JSON.stringify(mirror)}`);
+    await s.evalJs(`document.querySelector(${JSON.stringify(tabPanes(tab1))}).click()`);
+    await s.waitFor(layoutIs(`l.currentTabId === ${JSON.stringify(tab1)}`), 'fix 1044: the first tab shown again');
+  }
+  step('fix 1044: the + and a drop on another layout tab both land the pane on its chat face, its mode and its size kept; the row\'s mirror stays on the terminal');
 
   // (f) Back to the state fix 341 expects.
   await s.waitFor(`!!document.querySelector('[data-pane-id=${JSON.stringify(newPane)}] .empty-pane')`, 'newPane drawn empty');

@@ -194,6 +194,34 @@ function postMeasure($, e) {
     });
   })();
   void measured.catch(() => undefined);
+  // M9 fix 1036: a measure whose context moved asks for the breakdown too;
+  // a limits-only measure asks nothing.
+  if (Array.isArray(e.changed) && e.changed.includes('context')) void postContext($, 'summary').catch(() => undefined);
+}
+
+// M9 fix 1036: one summary ask out at a time, since measures can come a
+// second apart and a summary in flight already answers the next; a full
+// (the tab's Recount) always runs.
+let contextAsked = false;
+
+// The session's context breakdown, posted as Context: what
+// $.session.usage({ breakdown }) answers, less gridRows, 12 to 25 KB that
+// only repeat the categories (the tab draws its own grid). A summary
+// estimates locally; a full counts each part with the token-count API.
+async function postContext($, detail) {
+  if (detail === 'summary') {
+    if (contextAsked) return;
+    contextAsked = true;
+  }
+  try {
+    const usage = await $.session.usage({ breakdown: detail });
+    const breakdown = usage?.context?.breakdown;
+    if (!breakdown || typeof breakdown !== 'object') return;
+    const { gridRows: _grid, ...rest } = breakdown;
+    await postTurnEvent($, { hook_event_name: 'Context', detail, breakdown: rest });
+  } finally {
+    if (detail === 'summary') contextAsked = false;
+  }
 }
 
 
@@ -277,13 +305,20 @@ async function streamPrompts($, argv) {
       while ((end = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
-        let text;
-        let submitId;
+        let parsed;
         try {
-          ({ text, submitId } = JSON.parse(line));
+          parsed = JSON.parse(line);
         } catch {
           continue;
         }
+        if (parsed === null || typeof parsed !== 'object') continue;
+        // M9 fix 1036: an ask for the context breakdown, never put on the
+        // submit chain.
+        if (parsed.context === 'summary' || parsed.context === 'full') {
+          void postContext($, parsed.context).catch(() => undefined);
+          continue;
+        }
+        const { text, submitId } = parsed;
         if (typeof text !== 'string' || text === '') continue;
         // M9 fix 995: a plugin's prompt runs once the session is idle, so
         // one that arrives mid-turn, or behind another still out, says so

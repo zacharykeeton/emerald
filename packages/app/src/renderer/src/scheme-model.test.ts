@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultScheme, mergeSchemes, orderSchemes, pickScheme, resolveScheme, schemeFromWindowsTerminal, schemesFromWindowsTerminal, selectionColor, storedPick, themeOf } from './scheme-model.ts';
+import { defaultScheme, pageTheme, mergeSchemes, orderSchemes, pickScheme, resolveScheme, schemeFromWindowsTerminal, schemesFromWindowsTerminal, selectionColor, storedPick, themeOf } from './scheme-model.ts';
 
 const teal = {
   name: 'Verify Teal',
@@ -90,54 +90,60 @@ test('a // inside a string value survives the comment strip', () => {
   assert.equal(schemesFromWindowsTerminal(text)[0]?.name, 'http://odd');
 });
 
-test('defaultScheme gives emerald under Classic and emerald gem under Emerald', () => {
-  assert.equal(defaultScheme('classic'), 'emerald');
-  assert.equal(defaultScheme('emerald'), 'emerald gem');
+test('defaultScheme gives each skin and theme its own (fix 572, fix 1034)', () => {
+  assert.equal(defaultScheme('classic', 'dark'), 'emerald');
+  assert.equal(defaultScheme('emerald', 'dark'), 'emerald gem');
+  assert.equal(defaultScheme('classic', 'light'), 'emerald light');
+  assert.equal(defaultScheme('emerald', 'light'), 'emerald gem light');
 });
 
 const shippedOf = () =>
-  ['Dracula', 'emerald gem', 'emerald', 'One Dark'].map((name) => schemeFromWindowsTerminal({ ...teal, name }, 'shipped')).filter((s) => s !== null);
+  ['Dracula', 'emerald gem light', 'emerald gem', 'emerald light', 'emerald', 'One Dark'].map((name) => schemeFromWindowsTerminal({ ...teal, name }, 'shipped')).filter((s) => s !== null);
 const ownOf = () => [schemeFromWindowsTerminal({ ...teal, name: 'dracula' }), schemeFromWindowsTerminal(teal)].filter((s) => s !== null);
 
 test('the merge puts the skin’s default first and the other’s second, then the rest, then the person’s, a shipped name winning', () => {
-  const names = (skin: 'classic' | 'emerald') => mergeSchemes(shippedOf(), ownOf(), skin).map((s) => `${s.name}:${s.source}`);
-  assert.deepEqual(names('classic'), ['emerald:shipped', 'emerald gem:shipped', 'Dracula:shipped', 'One Dark:shipped', 'Verify Teal:windows-terminal']);
-  assert.deepEqual(names('emerald'), ['emerald gem:shipped', 'emerald:shipped', 'Dracula:shipped', 'One Dark:shipped', 'Verify Teal:windows-terminal']);
+  const names = (skin: 'classic' | 'emerald', theme: 'light' | 'dark') => mergeSchemes(shippedOf(), ownOf(), skin, theme).map((s) => `${s.name}:${s.source}`);
+  const tail = ['Dracula:shipped', 'One Dark:shipped', 'Verify Teal:windows-terminal'];
+  assert.deepEqual(names('classic', 'dark'), ['emerald:shipped', 'emerald gem:shipped', 'emerald light:shipped', 'emerald gem light:shipped', ...tail]);
+  assert.deepEqual(names('emerald', 'dark'), ['emerald gem:shipped', 'emerald:shipped', 'emerald gem light:shipped', 'emerald light:shipped', ...tail]);
+  assert.deepEqual(names('emerald', 'light'), ['emerald gem light:shipped', 'emerald light:shipped', 'emerald gem:shipped', 'emerald:shipped', ...tail]);
+  assert.deepEqual(names('classic', 'light'), ['emerald light:shipped', 'emerald gem light:shipped', 'emerald:shipped', 'emerald gem:shipped', ...tail]);
 });
 
 test('orderSchemes keeps the order of the rest', () => {
-  assert.deepEqual(orderSchemes(shippedOf(), 'emerald').map((s) => s.name), ['emerald gem', 'emerald', 'Dracula', 'One Dark']);
+  assert.deepEqual(orderSchemes(shippedOf(), 'emerald', 'dark').map((s) => s.name), ['emerald gem', 'emerald', 'emerald gem light', 'emerald light', 'Dracula', 'One Dark']);
+  assert.deepEqual(orderSchemes(shippedOf(), 'emerald', 'light').map((s) => s.name), ['emerald gem light', 'emerald light', 'emerald gem', 'emerald', 'Dracula', 'One Dark']);
 });
 
 test('the pick names a scheme, falls back to the skin’s default, then to the first, and is null on an empty list', () => {
   const list = [schemeFromWindowsTerminal({ ...teal, name: 'emerald' }, 'shipped'), schemeFromWindowsTerminal({ ...teal, name: 'emerald gem' }, 'shipped'), schemeFromWindowsTerminal(teal)].filter((s) => s !== null);
-  assert.equal(pickScheme(list, 'Verify Teal', 'classic')?.name, 'Verify Teal');
-  assert.equal(pickScheme(list, 'Nope', 'classic')?.name, 'emerald');
-  assert.equal(pickScheme(list, null, 'classic')?.name, 'emerald');
-  assert.equal(pickScheme(list, 'Nope', 'emerald')?.name, 'emerald gem');
-  assert.equal(pickScheme(list, null, 'emerald')?.name, 'emerald gem');
-  assert.equal(pickScheme(list, 'emerald', 'emerald')?.name, 'emerald', 'Classic’s palette picked by hand holds under Emerald');
+  assert.equal(pickScheme(list, 'Verify Teal', 'classic', 'dark')?.name, 'Verify Teal');
+  assert.equal(pickScheme(list, 'Nope', 'classic', 'dark')?.name, 'emerald');
+  assert.equal(pickScheme(list, null, 'classic', 'dark')?.name, 'emerald');
+  assert.equal(pickScheme(list, 'Nope', 'emerald', 'dark')?.name, 'emerald gem');
+  assert.equal(pickScheme(list, null, 'emerald', 'dark')?.name, 'emerald gem');
+  assert.equal(pickScheme(list, 'emerald', 'emerald', 'dark')?.name, 'emerald', 'Classic’s palette picked by hand holds under Emerald');
   const noDefault = [schemeFromWindowsTerminal(teal)].filter((s) => s !== null);
-  assert.equal(pickScheme(noDefault, null, 'classic')?.name, 'Verify Teal');
-  assert.equal(pickScheme(noDefault, null, 'emerald')?.name, 'Verify Teal');
-  assert.equal(pickScheme([], 'anything', 'classic'), null);
-  assert.equal(pickScheme([], 'anything', 'emerald'), null);
+  assert.equal(pickScheme(noDefault, null, 'classic', 'dark')?.name, 'Verify Teal');
+  assert.equal(pickScheme(noDefault, null, 'emerald', 'dark')?.name, 'Verify Teal');
+  assert.equal(pickScheme([], 'anything', 'classic', 'dark'), null);
+  assert.equal(pickScheme([], 'anything', 'emerald', 'dark'), null);
 });
 
 test('a pick of the skin’s own default stores nothing, any other pick is stored', () => {
-  assert.equal(storedPick('emerald', 'classic'), null);
-  assert.equal(storedPick('emerald gem', 'emerald'), null);
-  assert.equal(storedPick('emerald', 'emerald'), 'emerald');
-  assert.equal(storedPick('emerald gem', 'classic'), 'emerald gem');
-  assert.equal(storedPick('Dracula', 'classic'), 'Dracula');
-  assert.equal(storedPick('Dracula', 'emerald'), 'Dracula');
+  assert.equal(storedPick('emerald', 'classic', 'dark'), null);
+  assert.equal(storedPick('emerald gem', 'emerald', 'dark'), null);
+  assert.equal(storedPick('emerald', 'emerald', 'dark'), 'emerald');
+  assert.equal(storedPick('emerald gem', 'classic', 'dark'), 'emerald gem');
+  assert.equal(storedPick('Dracula', 'classic', 'dark'), 'Dracula');
+  assert.equal(storedPick('Dracula', 'emerald', 'dark'), 'Dracula');
 });
 
 test('an explicit pick survives a flip, no pick follows the skin', () => {
   const list = [schemeFromWindowsTerminal({ ...teal, name: 'emerald' }, 'shipped'), schemeFromWindowsTerminal({ ...teal, name: 'emerald gem' }, 'shipped'), schemeFromWindowsTerminal(teal)].filter((s) => s !== null);
-  for (const s of ['classic', 'emerald'] as const) assert.equal(pickScheme(list, 'Verify Teal', s)?.name, 'Verify Teal');
-  assert.equal(pickScheme(list, null, 'classic')?.name, 'emerald');
-  assert.equal(pickScheme(list, null, 'emerald')?.name, 'emerald gem');
+  for (const s of ['classic', 'emerald'] as const) assert.equal(pickScheme(list, 'Verify Teal', s, 'dark')?.name, 'Verify Teal');
+  assert.equal(pickScheme(list, null, 'classic', 'dark')?.name, 'emerald');
+  assert.equal(pickScheme(list, null, 'emerald', 'dark')?.name, 'emerald gem');
 });
 
 test('the xterm theme carries every colour, the ground under the cursor and the selection at the terminal’s alpha', () => {
@@ -166,4 +172,40 @@ test("resolveScheme (M9 fix 244): the session's own scheme when on the list, els
   assert.deepEqual(resolveScheme([], 'Verify Teal', null, 'classic'), { scheme: null, own: false }, 'an empty list resolves to nothing, as pickScheme does');
   assert.deepEqual(resolveScheme(list, undefined, null, 'emerald'), { scheme: gem, own: false }, 'no pick under Emerald: emerald gem');
   assert.deepEqual(resolveScheme(list, 'Verify Teal', null, 'emerald'), { scheme: own, own: true }, 'a session’s own scheme wins under Emerald too');
+  const gemLight = schemeFromWindowsTerminal({ ...teal, name: 'emerald gem light' }, 'shipped')!;
+  assert.deepEqual(resolveScheme([...list, gemLight], undefined, null, 'emerald', 'light'), { scheme: gemLight, own: false }, 'no pick under Emerald light: emerald gem light');
+});
+
+test("resolveScheme's default theme is the page's data-theme, dark with no page (fix 1034)", () => {
+  const gem = schemeFromWindowsTerminal({ ...teal, name: 'emerald gem' }, 'shipped')!;
+  const gemLight = schemeFromWindowsTerminal({ ...teal, name: 'emerald gem light' }, 'shipped')!;
+  const list = [gem, gemLight];
+  assert.equal(pageTheme(), 'dark');
+  const g = globalThis as Record<string, unknown>;
+  try {
+    g['document'] = { documentElement: { dataset: { theme: 'light' } } };
+    assert.equal(pageTheme(), 'light');
+    assert.deepEqual(resolveScheme(list, undefined, null, 'emerald'), { scheme: gemLight, own: false });
+  } finally {
+    delete g['document'];
+  }
+});
+
+test('storedPick per theme (fix 1034): the skin and theme’s own default stores nothing, every other name is stored', () => {
+  assert.equal(storedPick('emerald gem light', 'emerald', 'light'), null);
+  assert.equal(storedPick('emerald light', 'classic', 'light'), null);
+  assert.equal(storedPick('emerald gem', 'emerald', 'light'), 'emerald gem');
+  assert.equal(storedPick('emerald', 'classic', 'light'), 'emerald');
+  assert.equal(storedPick('emerald gem light', 'emerald', 'dark'), 'emerald gem light');
+  assert.equal(storedPick('Dracula', 'emerald', 'light'), 'Dracula');
+});
+
+test('a pick stored on dark holds under light, and no pick follows the theme (fix 1034)', () => {
+  const mk = (name: string) => schemeFromWindowsTerminal({ ...teal, name }, 'shipped')!;
+  const list = ['emerald', 'emerald gem', 'emerald light', 'emerald gem light', 'One Dark', 'Verify Teal'].map(mk);
+  assert.equal(pickScheme(list, storedPick('One Dark', 'emerald', 'dark'), 'emerald', 'light')?.name, 'One Dark');
+  assert.equal(pickScheme(list, storedPick('emerald', 'emerald', 'dark'), 'emerald', 'light')?.name, 'emerald');
+  assert.equal(storedPick('emerald gem', 'emerald', 'dark'), null);
+  assert.equal(pickScheme(list, null, 'emerald', 'light')?.name, 'emerald gem light');
+  assert.equal(pickScheme(list, null, 'classic', 'light')?.name, 'emerald light');
 });

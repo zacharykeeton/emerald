@@ -331,6 +331,75 @@ test('a measure posts one Measure with the context, the limits and the cost unde
   expect(measured[0]!.model).toBe(undefined);
 });
 
+// M9 fix 1036: the context breakdown, asked on a measure whose context
+// moved and on a channel line, and posted as Context less its grid.
+const BREAKDOWN = {
+  categories: [{ name: 'System prompt', tokens: 3100, color: 'promptBorder', isDeferred: false, kind: 'used' }],
+  totalTokens: 86400,
+  maxTokens: 200000,
+  rawMaxTokens: 200000,
+  autocompactSource: 'default',
+  percentage: 43,
+  model: 'claude-opus-5-5',
+  memoryFiles: [],
+  mcpTools: [],
+  agents: [],
+  isAutoCompactEnabled: true,
+  apiUsage: null,
+};
+
+function answerUsage(on: On): string[] {
+  const asked: string[] = [];
+  on('session.usage', (_$, e) => {
+    asked.push(String((e as { breakdown?: unknown }).breakdown));
+    return { value: { startedAt: 0, context: { window: 200000, breakdown: { ...BREAKDOWN, gridRows: [[{ color: 'promptBorder', isFilled: true, categoryName: 'System prompt', tokens: 3100, percentage: 1.55 }]] } }, rateLimits: [] } } as never;
+  });
+  return asked;
+}
+
+test('a measure whose context moved posts one Measure and one summary Context with no grid (M9 fix 1036)', async ($, on) => {
+  mock.env(on, VARS);
+  const posted = recordFetches(on);
+  const asked = answerUsage(on);
+  await $.session.measure({ context: { tokens: 86400, window: 200000, percent: 43 }, rateLimits: [], cost: { usd: 0.5 }, changed: ['context', 'cost'] });
+  await settle();
+  expect(bodiesOf(posted, 'Measure').length).toBe(1);
+  const context = bodiesOf(posted, 'Context');
+  expect(context.length).toBe(1);
+  expect(asked).toEqual(['summary']);
+  expect(context[0]!.detail).toBe('summary');
+  expect(context[0]!.session_id).toBe('conv-738');
+  expect(context[0]!.breakdown).toEqual(BREAKDOWN);
+});
+
+test('a limits-only measure posts no Context (M9 fix 1036)', async ($, on) => {
+  mock.env(on, VARS);
+  const posted = recordFetches(on);
+  const asked = answerUsage(on);
+  await $.session.measure({ context: { tokens: 86400, window: 200000, percent: 43 }, rateLimits: [], changed: ['rateLimits'] });
+  await settle();
+  expect(bodiesOf(posted, 'Measure').length).toBe(1);
+  expect(bodiesOf(posted, 'Context').length).toBe(0);
+  expect(asked).toEqual([]);
+});
+
+test('a channel line asking a full count posts one full Context and submits nothing (M9 fix 1036)', async ($, on) => {
+  mock.env(on, CHANNEL);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on);
+  const asked = answerUsage(on);
+  const submitted = answeringChannel(on, ['{"context":"full"}'], (text) => ({ text }));
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  await settle();
+  expect(submitted).toEqual([]);
+  expect(asked).toEqual(['full']);
+  const context = bodiesOf(posted, 'Context');
+  expect(context.length).toBe(1);
+  expect(context[0]!.detail).toBe('full');
+  expect(context[0]!.breakdown).toEqual(BREAKDOWN);
+});
+
 // M9 fix 769: each kept row of the conversation, posted as an Append.
 const MODEL_ORIGIN = { kind: 'model' as const, model: 'claude-opus-5-5' };
 

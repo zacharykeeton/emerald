@@ -35,6 +35,7 @@ import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
 import { PopoverAnchor } from './Popover.tsx';
 import { RosterCard } from './roster.tsx';
 import { askQuestion, askReview, cardOptions, cardPress, ghostSuggestion, optionTitle, promptExcerpt } from './screen-prompt-model.ts';
+import { askChosenKey } from './screen-prompt-model.ts';
 import { dialogKey, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import type { AskPress } from './screen-prompt-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
@@ -1844,6 +1845,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   const freeOpt = ask === null ? null : freeOption(ask);
   const shownKey = shown === null ? null : dialogKey(shown.rows, shown.cursor);
   const [free, setFree] = useState('');
+  const [freeFocused, setFreeFocused] = useState(false);
   const freeRef = useRef<HTMLInputElement>(null);
   const seededKey = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -1851,6 +1853,9 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
     seededKey.current = shownKey;
     setFree(freeOpt === null ? '' : freeText(freeOpt));
   }, [shownKey, freeOpt]);
+  // M9 fix 1045: the row marked as chosen, the free row while the person
+  // answers there (a review's options are its own).
+  const chosen = ask === null || review !== null ? undefined : askChosenKey(ask, free, freeFocused, seededKey.current === shownKey);
   // The free answer is a press: nothing ends it while its keys go in (the
   // field's own label changes under them), and a read sent after they are
   // in ends it as any press; a row the pointer never reached frees the
@@ -1997,6 +2002,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                 key={o.key}
                 className="chat-ask-option chat-ask-free"
                 data-key={o.key}
+                data-pointer={chosen === o.key ? 'true' : undefined}
                 data-sent={sentMark}
                 onClick={(ev) => {
                   if (ev.target !== freeRef.current) freeRef.current?.focus();
@@ -2010,6 +2016,8 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                   title="Sends this answer to the session"
                   value={free}
                   onChange={(ev) => setFree(ev.target.value)}
+                  onFocus={() => setFreeFocused(true)}
+                  onBlur={() => setFreeFocused(false)}
                   onKeyDown={(ev) => {
                     if (ev.key === 'Escape') {
                       ev.preventDefault();
@@ -2028,7 +2036,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
                 />
               </div>
             ) : (
-              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={'pointer' in o && o.pointer ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
+              <button key={o.key} type="button" className="chat-ask-option" data-key={o.key} data-pointer={(chosen === undefined ? 'pointer' in o && o.pointer : chosen === o.key) ? 'true' : undefined} data-sent={sentMark} title={optionTitle(card, o.key)} onClick={() => pressOption(o.key)}>
                 <span className="chat-ask-key">{o.key}</span>
                 <span className="chat-ask-text">
                   <span className="chat-ask-label">{o.label}</span>
@@ -2038,7 +2046,7 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
             ),
           )}
           {submitShown && ask.submit !== null && (
-            <button type="button" className="chat-ask-option chat-ask-submit" data-key="submit" data-pointer={ask.submit.pointer ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
+            <button type="button" className="chat-ask-option chat-ask-submit" data-key="submit" data-pointer={(chosen === undefined ? ask.submit.pointer : chosen === 'submit') ? 'true' : undefined} data-sent={sentMark} title="Submits the ticked answers" onClick={pressSubmit}>
               <span className="chat-ask-key">Enter</span>
               <span className="chat-ask-label">{ask.submit.label}</span>
             </button>

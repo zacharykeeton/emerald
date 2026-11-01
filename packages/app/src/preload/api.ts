@@ -10,6 +10,16 @@ import type { UpdateState } from '../renderer/src/update-model.ts';
 // M9 fix 628).
 export type Skin = 'classic' | 'emerald';
 
+// The window's theme (M9 fix 1032): the pick is what the person chose on
+// the app menu's Theme item (fix 1033), the theme what it resolves to now,
+// Follow Windows (system) reading the OS's own answer in main.
+export type ThemePick = 'system' | 'light' | 'dark';
+export type Theme = 'light' | 'dark';
+export interface ThemeState {
+  pick: ThemePick;
+  theme: Theme;
+}
+
 // pty.output arrives in the renderer already decoded from base64.
 export type RendererPush =
   | Exclude<ServerMessage, { type: 'reply' } | { type: 'pty.output' }>
@@ -100,6 +110,18 @@ export interface HooksTestResult {
   result: HookTestOutcome;
 }
 
+// Claude Code's own theme as main read it (M9 fix 1035): `dark` and
+// `light` name the ground it draws for, `none` a theme that follows the
+// terminal (`auto`, the -ansi ones, a custom theme with no file here) and
+// `unknown` a file that was there and could not be read.
+export type ClaudeThemeKind = 'dark' | 'light' | 'none' | 'unknown';
+
+export interface ClaudeThemeRead {
+  theme: string;
+  source: 'settings' | 'global' | 'default';
+  kind: ClaudeThemeKind;
+}
+
 // One entry of a folder listing, or one hit of a names search, where
 // `name` is the path relative to the searched root.
 export interface FileEntry {
@@ -114,6 +136,43 @@ export interface SkillEntry {
   description: string;
   // Where the skill was found (M9 fix 755): a `.claude/skills` from the session's folder up to its repository root or the main checkout's, the user's Claude home, or an enabled plugin, named `<plugin>:<skill>`.
   scope: 'project' | 'user' | 'plugin';
+}
+
+// Claude Code's `skillOverrides` setting (M9 fixes 1041 and 1042, the
+// Context tab's listing switch): what Claude sees of a skill. Absent is on.
+export type SkillListing = 'on' | 'name-only' | 'user-invocable-only' | 'off';
+export type SkillScope = 'managed' | 'local' | 'project' | 'user';
+// One scope's file as read: its path (managed names the main file), the
+// entries that hold one of the four values, and why it could not be read.
+export interface SkillScopeRead {
+  scope: SkillScope;
+  path: string;
+  values: Record<string, SkillListing>;
+  error?: string;
+}
+// The four scopes in Claude Code's order, managed, local, project, user.
+export interface SkillOverridesRead {
+  folder: string;
+  scopes: SkillScopeRead[];
+}
+// null removes the skill's entry.
+export interface SkillOverrideEdit {
+  name: string;
+  value: SkillListing | null;
+}
+export interface SkillOverridesChange {
+  id: number;
+  folder: string;
+  scope: 'local' | 'user';
+  edits: SkillOverrideEdit[];
+  read: SkillOverridesRead;
+}
+export type SkillOverridesWriteResult = { ok: true; change: SkillOverridesChange } | { ok: false; error: string };
+export type SkillOverridesUndoResult = { ok: true; read: SkillOverridesRead } | { ok: false; error: string };
+export interface SkillOverridesApi {
+  read(folder: string): Promise<SkillOverridesRead>;
+  write(folder: string, scope: 'local' | 'user', edits: SkillOverrideEdit[]): Promise<SkillOverridesWriteResult>;
+  undo(id: number): Promise<SkillOverridesUndoResult>;
 }
 
 // A folder read for the files rail: folders first, then names in case
@@ -649,6 +708,35 @@ export interface HistoryScan {
   transcripts: HistoryTranscript[];
 }
 
+// The Context tab's history (M9 fix 1039), read off every top-level
+// transcript on the machine. The skills are keyed by the name the Skill
+// call or the typed command gave (`batch`, `frontend-design:frontend-design`),
+// the servers by the wire prefix of their tools' names (`mcp__<prefix>__`),
+// and the session part is the one transcript's own calls, never added to
+// the machine's figures. tokens7d is the tokens of the requests after each
+// use's call to the next prompt, over the uses of the last 7 days.
+export interface SkillHistory {
+  uses: number;
+  lastUsedAt: number;
+  tokens7d: number;
+}
+
+export interface ServerHistory {
+  calls: number;
+  lastUsedAt: number;
+}
+
+export interface SessionUse {
+  mcpTools: Record<string, number>;
+  agents: Record<string, number>;
+}
+
+export interface ContextHistory {
+  skills: Record<string, SkillHistory>;
+  servers: Record<string, ServerHistory>;
+  session: SessionUse | null;
+}
+
 // A conversation read whole for the transcript view (M53): the row's
 // facts off the head and the tail, and every turn in order (the shape is
 // shared's Turn). An error for a file that is gone or over READ_CAP.
@@ -725,6 +813,8 @@ export interface HistoryApi {
   agentsRunning(conversation: string): Promise<AgentsRunning | null>;
   // The root of the repository the folder is in, or null outside one.
   project(dir: string): Promise<string | null>;
+  // The skills' and MCP servers' use over every transcript on the machine, and the given transcript's own calls (M9 fix 1039).
+  context(transcript: string | null): Promise<ContextHistory>;
   // Whether the main process watches history.jsonl and pushes changes.
   watch(on: boolean): Promise<void>;
   onChanged(handler: () => void): () => void;
@@ -931,6 +1021,14 @@ export interface EmeraldApi {
   // The skin main holds (M9 fix 628), which the renderer takes when
   // localStorage holds none, so the page and the first frame agree.
   mainSkin(): Skin;
+  // Tells main the theme pick (M9 fix 1032), which keeps it in theme.json,
+  // repaints every window's chrome and answers through onThemeChanged.
+  setThemePick(pick: ThemePick): void;
+  // The pick main holds and what it resolves to now (M9 fix 1032), read
+  // synchronously so the page shows it before React renders.
+  mainTheme(): ThemeState;
+  // Main's word on every pick and every flip it follows (M9 fix 1032).
+  onThemeChanged(handler: (state: ThemeState) => void): () => void;
   // Native folder chooser. Resolves null when the user cancels.
   pickFolder(defaultPath: string | null): Promise<string | null>;
   // Native file chooser (M9 fix 341), the same way; EMERALD_PICK_FILE
@@ -939,6 +1037,8 @@ export interface EmeraldApi {
   // The skills Claude Code would take in a session started in `folder`
   // (M9 fix 719): the folder's own first, then the user's.
   skills(folder: string | null): Promise<SkillEntry[]>;
+  // skillOverrides over the four scopes for a folder, and the two emerald writes (M9 fixes 1041 and 1042).
+  skillOverrides: SkillOverridesApi;
   // Both run the shipped CLI; either rejects when it cannot be run.
   hooksStatus(): Promise<HooksStatus>;
   hooksInstall(): Promise<HooksInstallResult>;
@@ -948,6 +1048,9 @@ export interface EmeraldApi {
   pathLink(): Promise<string | null>;
   // Keeps the PATH banner down in every window until the next launch.
   dismissPathLink(): void;
+  // Claude Code's theme from its user settings, else its global config,
+  // else its default (M9 fix 1035); read on every call, never written.
+  claudeTheme(): Promise<ClaudeThemeRead>;
   // One Test event through the installed hook to the daemon (M9 fix 606).
   hooksTest(): Promise<HooksTestResult>;
   // The main process pushes a status whenever Claude Code's settings file

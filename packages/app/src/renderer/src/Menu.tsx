@@ -28,6 +28,8 @@ export interface MenuItem {
   // A second line under the label, in the hint's colour (M9 fix 743, the
   // chat footer's mode and model menus).
   line?: string | undefined;
+  // The row's React key when two rows share a label (M9 fix 1042, the listing menu's two sections).
+  id?: string | undefined;
 }
 
 // How long the pointer rests on a row before its list opens, or before
@@ -193,7 +195,7 @@ export function Menu({ x, y, items, onClose, className, data, anchor, above }: P
           <Swatches key={item.label} item={item} />
         ) : (
           <button
-            key={item.label}
+            key={item.id ?? item.label}
             className={`menu-item${item.separator ? ' menu-sep' : ''}${item.line !== undefined ? ' menu-item-lined' : ''}`}
             onClick={
               item.submenu === undefined

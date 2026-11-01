@@ -1,7 +1,7 @@
 import { decodeRequestError } from '../main/request-error.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, WindowDragTarget } from './api.ts';
+import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget } from './api.ts';
 
 const api: EmeraldApi = {
   // M9 fix 900: the window's zoom, VS Code's Ctrl+= and Ctrl+-.
@@ -123,6 +123,7 @@ const api: EmeraldApi = {
     cost: (path) => ipcRenderer.invoke('emerald:history-cost', path),
     agentsRunning: (conversation) => ipcRenderer.invoke('emerald:history-agents', conversation),
     project: (dir) => ipcRenderer.invoke('emerald:history-project', dir),
+    context: (transcript) => ipcRenderer.invoke('emerald:history-context', transcript),
     watch: (on) => ipcRenderer.invoke('emerald:history-watch', on),
     onChanged: (handler) => {
       const listener = () => handler();
@@ -159,13 +160,27 @@ const api: EmeraldApi = {
   platform: process.platform,
   setSkin: (skin) => ipcRenderer.send('emerald:skin-set', skin),
   mainSkin: () => ipcRenderer.sendSync('emerald:skin-get'),
+  // M9 fix 1032: the theme pick, main's answer and its word on each change.
+  setThemePick: (pick) => ipcRenderer.send('emerald:theme-set', pick),
+  mainTheme: () => ipcRenderer.sendSync('emerald:theme-get'),
+  onThemeChanged: (handler) => {
+    const listener = (_event: IpcRendererEvent, state: ThemeState) => handler(state);
+    ipcRenderer.on('emerald:theme-changed', listener);
+    return () => ipcRenderer.off('emerald:theme-changed', listener);
+  },
   pickFolder: (defaultPath) => ipcRenderer.invoke('emerald:pick-folder', defaultPath),
   pickFile: (defaultPath) => ipcRenderer.invoke('emerald:pick-file', defaultPath),
   skills: (folder) => ipcRenderer.invoke('emerald:skills-list', folder),
+  skillOverrides: {
+    read: (folder) => ipcRenderer.invoke('emerald:skill-overrides-read', folder),
+    write: (folder, scope, edits) => ipcRenderer.invoke('emerald:skill-overrides-write', folder, scope, edits),
+    undo: (id) => ipcRenderer.invoke('emerald:skill-overrides-undo', id),
+  },
   hooksStatus: () => ipcRenderer.invoke('emerald:hooks-status'),
   hooksInstall: () => ipcRenderer.invoke('emerald:hooks-install'),
   pathLink: () => ipcRenderer.invoke('emerald:path-link'),
   dismissPathLink: () => ipcRenderer.send('emerald:path-link-dismiss'),
+  claudeTheme: () => ipcRenderer.invoke('emerald:claude-theme'),
   hooksTest: () => ipcRenderer.invoke('emerald:hooks-test'),
   onHooksChanged: (handler) => {
     const listener = (_e: IpcRendererEvent, s: HooksStatus) => handler(s);

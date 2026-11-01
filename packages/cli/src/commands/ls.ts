@@ -25,7 +25,11 @@ export function listRows(sessions: SessionInfo[], now: number, order: SidebarOrd
   const rows: Array<SessionInfo & { label: string; inStateMs: number; group: string; groupLabel: string | null }> = [];
   for (const group of groupSessions(sessions, order, labels)) {
     for (const s of group.sessions) {
-      rows.push({ ...s, tasks: s.tasks ?? [], label: describeState(s, now).text, inStateMs: Math.max(0, now - s.stateSince), group: group.key, groupLabel: labels?.get(group.key) ?? null });
+      // The context breakdown (M9 fix 1036) is about 12 KB a row, and a
+      // Claude that runs `emmer ls --json` reads the whole output into its
+      // own context, so it is left out.
+      const { context: _context, ...row } = s;
+      rows.push({ ...row, tasks: s.tasks ?? [], label: describeState(s, now).text, inStateMs: Math.max(0, now - s.stateSince), group: group.key, groupLabel: labels?.get(group.key) ?? null });
     }
   }
   return rows;
