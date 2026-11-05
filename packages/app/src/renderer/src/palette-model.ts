@@ -1,7 +1,7 @@
 import { formatDuration } from '@emerald/shared';
 import type { SessionInfo, ShellId } from '@emerald/shared';
 import { waitingOrder } from './attention-model.ts';
-import { BINDINGS, formatChord } from './keys-model.ts';
+import { BINDINGS, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
 import type { Action, Binding } from './keys-model.ts';
 import { paneOnlyItems } from './pane-menu-model.ts';
 import type { PaneMenuItem, PaneMenuRun } from './pane-menu-model.ts';
@@ -140,8 +140,8 @@ export interface PaneForActions {
 // prefix and its key.
 export function chordsText(b: Binding, prefix: string): string {
   const parts: string[] = [];
-  if (b.plain !== null) parts.push(formatChord(b.plain));
-  if (b.prefixed !== null) parts.push(`${prefix} ${formatChord(b.prefixed)}`);
+  if (b.plain !== null) parts.push(plainKeyFor(b.action));
+  if (b.prefixed !== null) parts.push(prefixedKeyFor(b.action, prefix));
   return parts.join(' · ');
 }
 

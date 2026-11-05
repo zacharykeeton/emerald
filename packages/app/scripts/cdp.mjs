@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { killTree as killPidTree, processIdentity } from '@emerald/shared/process-identity';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const emeraldHome = process.env['EMERALD_HOME'] ?? path.join(os.homedir(), '.emerald');
@@ -260,7 +261,7 @@ export async function launch(port, opts = {}) {
     // theme.json (M9 fix 1032): one left by a verify:skin run that died
     // mid-block would open every later script on its pick and beat the
     // dark pin, a wrong colour read rather than an error. skin.json stays.
-    for (const f of ['state.json', 'sessions.json', 'daemon.json', 'theme.json']) fs.rmSync(path.join(home, f), { force: true });
+    for (const f of ['state.json', 'sessions.json', 'daemon.json', 'theme.json', 'context-history.json']) fs.rmSync(path.join(home, f), { force: true });
     // M9 fix 621: a window that has not quite let go of its profile (a
     // relaunch in verify:files, a rerun right after a failed run) failed
     // the whole run with EPERM here. It is tried again every 200 ms for
@@ -795,13 +796,45 @@ export function step(msg) {
 }
 
 // Kills Electron and its children. The daemon is detached and survives this
-// on purpose; stopDaemon() handles it.
+// on purpose; stopDaemon() handles it. A child that has already exited is
+// left alone (M9 fix 1048): its pid may be someone else's number by now.
 export function killTree(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
   spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
 }
 
 export function daemonPid(home = emeraldHome) {
   return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')).pid;
+}
+
+// The daemon as daemon.json names it, its pid and the start time it wrote
+// (M9 fix 1048), or null when the file is missing or not JSON. A crashed
+// daemon leaves the file behind, so the pid alone can name whatever took
+// the number since; killDaemonIfSame checks the start time before a kill.
+export function daemonRecord(home = emeraldHome) {
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
+    return { pid: info.pid, startedAt: info.startedAt };
+  } catch {
+    return null;
+  }
+}
+
+// Kills the daemon a daemonRecord read named, and only while its pid is
+// still that process (M9 fix 1048): on 'same' a tree kill, or /f on the pid
+// alone with tree false (the step kills' flags), and on 'gone' or 'other'
+// nothing. Returns the identity. Synchronous, so a finally that exits half
+// a second later has finished its kill.
+export function killDaemonIfSame(record, { tree = true } = {}) {
+  if (record === null || record === undefined) return 'gone';
+  const identity = processIdentity(record.pid, record.startedAt);
+  if (identity === 'same') {
+    if (tree) killPidTree(record.pid);
+    else spawnSync('taskkill', ['/pid', String(record.pid), '/f'], { stdio: 'ignore', windowsHide: true });
+  } else if (identity === 'other') {
+    console.log(`[verify] note: pid ${record.pid} is another process now, not the daemon daemon.json named; left alone`);
+  }
+  return identity;
 }
 
 // The conversation ids the verify scripts and the daemon suite resume a
@@ -825,12 +858,14 @@ export const harnessResumeIds = ['stale-claude-id', 'd7d7d7d7-'];
 // a folder it could not take is wiped by the next fresh launch on the
 // home. Node, not PowerShell: a child libuv does not detach dies with
 // this process (it sits in a kill-on-close job), and PowerShell started
-// detached, so with no console, exits 0 having run nothing.
+// detached, so with no console, exits 0 having run nothing. The hard kill
+// happens only while the pid is still the daemon daemon.json's startedAt
+// names (M9 fix 1048), and each fallback is a line in logs/stop-daemon.log.
 export function stopDaemon(home = emeraldHome) {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
     const worker = path.join(path.dirname(fileURLToPath(import.meta.url)), 'stop-daemon-worker.mjs');
-    spawn(process.execPath, [worker, String(info.pid), String(info.pipe), String(info.pipeToken ?? '')], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    spawn(process.execPath, [worker, String(info.pid), String(info.pipe), String(info.pipeToken ?? ''), String(info.startedAt ?? ''), path.join(home, 'logs', 'stop-daemon.log')], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } catch {
     // No daemon.json, nothing to stop.
   }
@@ -1016,6 +1051,9 @@ export async function processGone(pid, image, ms = 5000) {
 // and the run prints a note when another block carries the name too.
 // `partial` is true when --only narrowed the run, so a script can arm
 // a watchdog for the prelude and a few blocks rather than the whole run.
+// `flags` is the Set of every other argument that starts with -- (M9 fix
+// 1051, verify:graph's --frames-to-docs), so a script reads a flag of its
+// own without parsing argv again.
 export function blockRunner(blocks, argv = process.argv.slice(2)) {
   const byName = new Map(blocks.map((b) => [b.name, b]));
   if (argv.includes('--list')) {
@@ -1073,5 +1111,6 @@ export function blockRunner(blocks, argv = process.argv.slice(2)) {
     if (only === null && ran.length !== blocks.length) throw new Error(`expected every block to run, missing ${blocks.filter((b) => !ran.includes(b.name)).map((b) => b.name).join(', ')}`);
     return `blocks run: ${ran.join(', ')}${skipped.length ? `; skipped (--only): ${skipped.join(', ')}` : ''}`;
   };
-  return { block, blocksRun, partial: only !== null };
+  const flags = new Set(argv.filter((a) => a.startsWith('--') && a !== '--only' && !a.startsWith('--only=')));
+  return { block, blocksRun, partial: only !== null, flags };
 }

@@ -386,10 +386,19 @@ export function freeOption(ask: AskQuestion): AskOption | null {
 
 // The field's text as the screen draws it: nothing under the placeholder,
 // else the label, with the rows a long text wraps onto (read as the
-// option's description) joined back on.
+// option's description) joined back on, and Claude Code's tick left off.
 export function freeText(o: AskOption): string {
+  if (unboxed(o.label).startsWith('Type something')) return '';
+  return freeJoined(o).replace(TRAILING_TICK, '');
+}
+
+// M9 fix 1057: the tick Claude Code draws after the chosen answer on a
+// revisited answered tab (`Blue ✔`, and `<text> ✔` on a free answer); the
+// click-through of fixes 1030 to 1047 read ✔ and the first shot ✓.
+const TRAILING_TICK = / [✓✔]$/;
+
+function freeJoined(o: AskOption): string {
   const label = unboxed(o.label);
-  if (label.startsWith('Type something')) return '';
   return o.description === '' ? label : `${label} ${o.description}`;
 }
 
@@ -415,13 +424,16 @@ export function freeAnswerKeys(ask: AskQuestion, text: string): { move: string |
 // M9 fix 1045: the row a question card draws as chosen (its data-pointer).
 // The Type something row while the person is answering there, its input
 // focused or holding text not yet sent; else the row Claude Code's own
-// pointer is on, the Submit row as 'submit'; else none. No key is sent
+// pointer is on, the Submit row as 'submit'; else none. Else, on a
+// single-select, the row Claude Code ticked on a revisited tab (fix 1057). No key is sent
 // for it: Claude Code's pointer moves when the answer goes.
 // `seeded` says the input has been seeded for the dialog on show; until
 // then its text is the last dialog's.
 export function askChosenKey(ask: AskQuestion, free: string, focused: boolean, seeded: boolean): string | null {
   const o = freeOption(ask);
   if (o !== null && (focused || (seeded && free !== freeText(o)))) return o.key;
+  const tick = ask.multi ? undefined : ask.options.find((x) => TRAILING_TICK.test(x === o ? freeJoined(x) : unboxed(x.label)));
+  if (tick !== undefined) return tick.key;
   const at = ask.options.find((x) => x.pointer);
   if (at !== undefined) return at.key;
   return ask.submit?.pointer === true ? 'submit' : null;
@@ -482,6 +494,58 @@ export interface BtwPanel {
   question: string;
   // Null while the panel answers (its spinner row, or a retry).
   answer: string | null;
+  // M9 fix 1058: the index in the rows given of the panel's `/btw ` question row.
+  at: number;
+}
+
+// M9 fix 1058: the panel's answer back into the lines Claude Code wrapped
+// at the pane's width, so the 340 px strip wraps them once. A row joins the
+// one before it with a space unless it starts a list item, a heading or a
+// fence, sits inside a fence, or is indented past the answer's base (a code
+// row); a list item's rows hung under its text join it; a blank row stays
+// a paragraph break. A word the terminal broke mid-word (a long path) gains
+// a space at the join.
+const BTW_FENCE = /^(?:`{3}|~{3})/;
+const BTW_ITEM = /^(?:[-*•+]|\d+[.)])\s+/;
+const BTW_HEADING = /^#{1,6}\s/;
+
+function btwJoin(text: readonly string[]): string {
+  const out: string[] = [];
+  let kind: 'blank' | 'fence' | 'heading' | 'code' | 'text' = 'blank';
+  let fence = false;
+  // The column a list item's text starts at, while the last line is that item.
+  let hang = -1;
+  for (const row of text) {
+    const lead = row.length - row.trimStart().length;
+    const item = BTW_ITEM.exec(row.trimStart());
+    if (BTW_FENCE.test(row.trimStart())) {
+      fence = !fence;
+      out.push(row);
+      kind = 'fence';
+      hang = -1;
+    } else if (fence) {
+      out.push(row);
+    } else if (row === '') {
+      out.push(row);
+      kind = 'blank';
+      hang = -1;
+    } else if (item !== null) {
+      out.push(row);
+      kind = 'text';
+      hang = lead + item[0].length;
+    } else if (lead === 0 && BTW_HEADING.test(row)) {
+      out.push(row);
+      kind = 'heading';
+      hang = -1;
+    } else if (kind === 'text' && (lead === 0 || lead === hang)) {
+      out[out.length - 1] = `${out[out.length - 1]} ${row.trimStart()}`;
+    } else {
+      out.push(row);
+      kind = lead === 0 ? 'text' : 'code';
+      if (lead > 0) hang = -1;
+    }
+  }
+  return out.join('\n');
 }
 
 const BTW_FOOTER = /(^|·\s*)esc(ape)?\s+to\s+close\b/i;
@@ -516,7 +580,13 @@ export function btwPanel(rows: readonly string[]): BtwPanel | null {
   const indent = Math.min(...lines.filter((l) => l.trim() !== '').map((l) => l.length - l.trimStart().length));
   const text = lines.map((l) => l.slice(Math.min(indent, l.length - l.trimStart().length)));
   const pending = text.length === 0 || text[text.length - 1]!.endsWith('Answering…') || text.some((l) => /retrying in \d+s/.test(l));
-  return { question, answer: pending ? null : text.join('\n') };
+  return { question, answer: pending ? null : btwJoin(text), at };
+}
+
+// M9 fix 1058: the rows above the /btw panel when one is drawn, else all.
+export function aboveBtwPanel(rows: readonly string[]): readonly string[] {
+  const panel = btwPanel(rows);
+  return panel === null ? rows : rows.slice(0, panel.at);
 }
 
 // How long the pointer has to reach the Type something row after its digit.

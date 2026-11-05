@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { SkillListing, SkillOverridesRead, SkillScope } from '../../preload/api.ts';
 import {
   changeNote,
+  CLAUDE_AI_SKILLS_URL,
   effectiveListing,
   LISTING_NOTE_TAIL_OFF,
   listingButton,
@@ -168,10 +169,26 @@ test("a section whose file does not parse is disabled with the error as its titl
   assert.ok(rows.slice(7).every((r) => r.kind === 'row' && r.disabled === undefined && r.title === undefined));
 });
 
-test('the synced rule reads the bare name too and keeps the more restrictive (fix 1041)', () => {
+test('the synced rule reads the full name first, in every scope, then the bare name (fixes 1041 and 1076)', () => {
   const read = readOf({ local: { 'anthropic-skills:docs': 'name-only', docs: 'off' }, user: { pdf: 'user-invocable-only', 'anthropic-skills:pdf': 'on' } });
-  assert.deepEqual(scopeValues(read, 'anthropic-skills:docs'), { local: 'off' });
-  assert.deepEqual(scopeValues(read, 'anthropic-skills:pdf'), { user: 'user-invocable-only' });
+  assert.deepEqual(scopeValues(read, 'anthropic-skills:docs'), { local: 'name-only' });
+  assert.deepEqual(scopeValues(read, 'anthropic-skills:pdf'), { user: 'on' });
+  const syn = 'anthropic-skills:docs';
+  const across = readOf({ local: { docs: 'on' }, user: { [syn]: 'off' } });
+  assert.deepEqual(scopeValues(across, syn), { local: 'on', user: 'off', bareIn: ['local'] });
+  assert.deepEqual(effectiveListing(scopeValues(across, syn)), { value: 'off', scope: 'user' });
+  assert.equal(listingButton(syn, scopeValues(across, syn)).from, ' · all');
+  const bareOnly = readOf({ project: { docs: 'name-only' }, user: { docs: 'off' } });
+  assert.deepEqual(scopeValues(bareOnly, syn), { project: 'name-only', user: 'off', bareIn: ['project', 'user'] });
+  assert.deepEqual(effectiveListing(scopeValues(bareOnly, syn)), { value: 'name-only', scope: 'project' });
+  const looser = readOf({ managed: { docs: 'name-only' }, user: { [syn]: 'off' } });
+  assert.deepEqual(effectiveListing(scopeValues(looser, syn)), { value: 'off', scope: 'user' });
+  const stricter = readOf({ managed: { docs: 'user-invocable-only' }, local: { [syn]: 'name-only' } });
+  assert.deepEqual(scopeValues(stricter, syn), { managed: 'user-invocable-only', local: 'name-only', bareIn: ['managed'] });
+  assert.deepEqual(effectiveListing(scopeValues(stricter, syn)), { value: 'user-invocable-only', scope: 'managed' });
+  const fullManaged = readOf({ managed: { [syn]: 'on', docs: 'off' } });
+  assert.deepEqual(scopeValues(fullManaged, syn), { managed: 'on' });
+  assert.deepEqual(effectiveListing(scopeValues(fullManaged, syn)), { value: 'on', scope: 'managed' });
   // A skill that is not synced reads its own name only.
   assert.deepEqual(scopeValues(read, 'docs'), { local: 'off' });
   assert.deepEqual(scopeValues(read, 'pdf'), { user: 'user-invocable-only' });
@@ -203,4 +220,8 @@ test("the group's button and the note after a change (fix 1042)", () => {
   assert.equal(changeNote(two(null), 'user'), 'ado, docs on in every folder; new sessions list them again');
   assert.equal(listingNameClass('off'), 'listing-off-name');
   assert.equal(listingNameClass('name-only'), '');
+});
+
+test('the claude.ai button opens the skills you have (fix 1078)', () => {
+  assert.equal(CLAUDE_AI_SKILLS_URL, 'https://claude.ai/customize/skills/yours');
 });

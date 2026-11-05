@@ -121,7 +121,18 @@ export const PROMPT_WRAPPER = [
 // the shell itself (prompt expansion runs there; only $(...) forks). PS0 is
 // not shown for an empty or blank line. It needs bash 4.4 or later (Git for
 // Windows ships 5.x); an older bash writes no C and reads like cmd.
-export const BASH_RC = [
+//
+// Off Windows (M9 fix 1068) a plain bash row reads the same rc, written to
+// the same file, with the folder taken from $PWD as it is, since there is
+// no cygpath and no Windows spelling to make. A Mac's own /bin/bash is 3.2,
+// with no PS0: it writes D (always bare, since the ran flag never sets), A
+// and the folder, and no C, so its row reads like cmd's, folder and prompt
+// but never running. zsh is the Mac's default and a Homebrew bash is 5.x.
+export function bashRc(folder: 'cygpath' | 'pwd'): string {
+  const folderLine = folder === 'cygpath'
+    ? "  if [ \"$PWD\" != \"$__emerald_pwd\" ]; then __emerald_pwd=$PWD; __emerald_win=$(cygpath -w \"$PWD\"); fi"
+    : "  if [ \"$PWD\" != \"$__emerald_pwd\" ]; then __emerald_pwd=$PWD; __emerald_win=$PWD; fi";
+  return [
   "if [ -r /etc/profile ]; then . /etc/profile; fi",
   "for __emerald_f in ~/.bash_profile ~/.bash_login ~/.profile; do",
   "  if [ -r \"$__emerald_f\" ]; then . \"$__emerald_f\"; break; fi",
@@ -138,14 +149,102 @@ export const BASH_RC = [
   "  else printf '\\033]133;D\\007'; fi",
   "  __emerald_ran=0",
   "  printf '\\033]133;A\\007'",
-  "  if [ \"$PWD\" != \"$__emerald_pwd\" ]; then __emerald_pwd=$PWD; __emerald_win=$(cygpath -w \"$PWD\"); fi",
+  folderLine,
   "  printf '\\033]9;9;\"%s\"\\033\\\\' \"$__emerald_win\"",
   "  return \"$code\"",
   "}",
   "PROMPT_COMMAND=\"__emerald_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
   "PS0='\\e]133;C\\a${__emerald_ran:0:$((__emerald_ran=1,0))}'\"$PS0\"",
   "",
-].join('\n');
+  ].join('\n');
+}
+
+export const BASH_RC = bashRc('cygpath');
+
+// M9 fix 1068: a zsh row's startup files, written to a folder of their own
+// under the home (zshDirFor, beside emerald.bashrc) before every zsh launch
+// with no args, and handed to zsh through ZDOTDIR. zsh reads .zshenv,
+// .zprofile, .zshrc and .zlogin from $ZDOTDIR, so ours run in their place,
+// each sourcing the user's own file of that name first with ZDOTDIR naming
+// the user's folder, so a compinit dump or a plugin manager finds its own
+// files. The user's folder comes in EMERALD_USER_ZDOTDIR, unset at once, or
+// is $HOME when they had none. The user's .zshenv may move ZDOTDIR on (the
+// common ~/.config/zsh setup), so .zshenv keeps the folder it left.
+// The hooks are the bash rc's, through precmd and preexec: D with the code
+// after a command, a bare D after an empty Enter, none at the first prompt;
+// A; the folder as OSC 9;9; and C as a command starts. They go in front of
+// the user's own (prepended), and the precmd returns the code, so a theme's
+// precmd after it still reads $?. .zlogin is last for a login shell and
+// gives the user's ZDOTDIR back ($HOME when they had none, which zsh reads
+// the same); .zshrc gives it back for a non-login one. The HISTFILE line is
+// for a Mac, whose /etc/zshrc sets HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
+// while ZDOTDIR is still ours. With these four present, zsh's new-user
+// wizard never runs in a row, since it looks for startup files in $ZDOTDIR.
+export const ZSH_FILES: Readonly<Record<'.zshenv' | '.zprofile' | '.zshrc' | '.zlogin', string>> = {
+  '.zshenv': [
+    '# .zshenv, written by emerald (M9 fix 1068)',
+    '__emerald_zdotdir=$ZDOTDIR',
+    '__emerald_user_zdotdir=${EMERALD_USER_ZDOTDIR:-$HOME}',
+    'unset EMERALD_USER_ZDOTDIR',
+    'if [[ $__emerald_user_zdotdir != $__emerald_zdotdir && -r $__emerald_user_zdotdir/.zshenv ]]; then',
+    '  ZDOTDIR=$__emerald_user_zdotdir',
+    '  . $__emerald_user_zdotdir/.zshenv',
+    '  __emerald_user_zdotdir=$ZDOTDIR',
+    '  ZDOTDIR=$__emerald_zdotdir',
+    'fi',
+    '',
+  ].join('\n'),
+  '.zprofile': [
+    '# .zprofile, written by emerald (M9 fix 1068)',
+    'if [[ $__emerald_user_zdotdir != $__emerald_zdotdir && -r $__emerald_user_zdotdir/.zprofile ]]; then',
+    '  ZDOTDIR=$__emerald_user_zdotdir',
+    '  . $__emerald_user_zdotdir/.zprofile',
+    '  ZDOTDIR=$__emerald_zdotdir',
+    'fi',
+    '',
+  ].join('\n'),
+  '.zshrc': [
+    '# .zshrc, written by emerald (M9 fix 1068)',
+    'if [[ $__emerald_user_zdotdir != $__emerald_zdotdir && -r $__emerald_user_zdotdir/.zshrc ]]; then',
+    '  ZDOTDIR=$__emerald_user_zdotdir',
+    '  . $__emerald_user_zdotdir/.zshrc',
+    '  ZDOTDIR=$__emerald_zdotdir',
+    'fi',
+    'if [[ $HISTFILE == $__emerald_zdotdir/.zsh_history ]]; then HISTFILE=$__emerald_user_zdotdir/.zsh_history; fi',
+    '__emerald_ran=0',
+    '__emerald_first=1',
+    '__emerald_precmd() {',
+    '  local code=$?',
+    '  if [[ -n $__emerald_first ]]; then __emerald_first=',
+    "  elif [[ $__emerald_ran = 1 ]]; then printf '\\033]133;D;%s\\007' \"$code\"",
+    "  else printf '\\033]133;D\\007'; fi",
+    '  __emerald_ran=0',
+    "  printf '\\033]133;A\\007'",
+    "  printf '\\033]9;9;\"%s\"\\033\\\\' \"$PWD\"",
+    '  return $code',
+    '}',
+    "__emerald_preexec() { __emerald_ran=1; printf '\\033]133;C\\007'; }",
+    'precmd_functions=(__emerald_precmd $precmd_functions)',
+    'preexec_functions=(__emerald_preexec $preexec_functions)',
+    'if [[ ! -o login ]]; then ZDOTDIR=$__emerald_user_zdotdir; fi',
+    '',
+  ].join('\n'),
+  '.zlogin': [
+    '# .zlogin, written by emerald (M9 fix 1068)',
+    'if [[ $__emerald_user_zdotdir != $__emerald_zdotdir && -r $__emerald_user_zdotdir/.zlogin ]]; then',
+    '  ZDOTDIR=$__emerald_user_zdotdir',
+    '  . $__emerald_user_zdotdir/.zlogin',
+    'fi',
+    'ZDOTDIR=$__emerald_user_zdotdir',
+    '',
+  ].join('\n'),
+};
+
+// The folder a zsh row's ZDOTDIR names (M9 fix 1068): beside the bash rc,
+// so <home>/emerald-zsh for the daemon and a test's temp folder in a test.
+export function zshDirFor(bashrcPath: string): string {
+  return path.join(path.dirname(bashrcPath), 'emerald-zsh');
+}
 
 // M9 fix 624: cmd's prompt, Windows Terminal's documented folder snippet
 // plus the two marks: D (always bare, since PROMPT cannot carry the exit
@@ -218,19 +317,24 @@ export function pluginDirs(
 // emerald mod first in CLAUDE_CODE_PLUGIN_DIRS (M9 fix 833), so a claude
 // typed into it loads the mod however it was typed.
 //
-// zsh and bash with no args of their own run as a login shell (M9 fix
-// 1018), so the dev's PATH and prompt come up; it is interactive because
-// its stdin is the pty. sh runs bare. With args each runs them alone. No
-// prompt, rc or mark is injected on Unix yet: a Unix row gets no OSC 133
-// marks and no OSC 9;9 folder.
+// zsh and bash with no args of their own come up with the dev's PATH and
+// prompt (M9 fix 1018) and report their commands and folder (M9 fix 1068):
+// bash reads the rc above with --rcfile, which does the login reads itself,
+// so no -l (and no CHERE_INVOKING, which is MSYS's); zsh runs as a login
+// shell with ZDOTDIR naming the folder of ZSH_FILES, the user's own folder
+// handed on in EMERALD_USER_ZDOTDIR. Both are interactive because stdin is
+// the pty. sh runs bare and reports nothing, since dash has no hook before
+// a command. With args each runs them alone, with no rc and no ZDOTDIR.
 export class ShellLauncher implements SessionLauncher {
   private readonly bashrcPath: string;
+  private readonly zshDir: string;
   private readonly modDir: string | null;
   private readonly env: NodeJS.ProcessEnv;
   private readonly platform: NodeJS.Platform;
 
   constructor(opts: { bashrcPath: string; modDir?: string | null; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }) {
     this.bashrcPath = opts.bashrcPath;
+    this.zshDir = zshDirFor(opts.bashrcPath);
     this.modDir = opts.modDir ?? null;
     this.env = opts.env ?? process.env;
     this.platform = opts.platform ?? process.platform;
@@ -252,9 +356,18 @@ export class ShellLauncher implements SessionLauncher {
         return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'], env: { CHERE_INVOKING: '1' } }, env);
       case 'cmd':
         return this.withMod({ file: shell.file, args: extraArgs, env: { PROMPT: cmdPrompt(env['PROMPT']) } }, env);
-      case 'zsh':
+      case 'zsh': {
+        if (extraArgs.length > 0) return this.withMod({ file: shell.file, args: extraArgs }, env);
+        // The user's own ZDOTDIR, unless it is ours: a daemon started inside
+        // an Emerald zsh row before its .zlogin gave the user's back.
+        const user = env['ZDOTDIR'];
+        const zshEnv: Record<string, string> = { ZDOTDIR: this.zshDir };
+        if (user !== undefined && user !== '' && user !== this.zshDir) zshEnv['EMERALD_USER_ZDOTDIR'] = user;
+        return this.withMod({ file: shell.file, args: ['-l'], env: zshEnv }, env);
+      }
       case 'bash':
-        return this.withMod({ file: shell.file, args: extraArgs.length > 0 ? extraArgs : ['-l'] }, env);
+        if (extraArgs.length > 0) return this.withMod({ file: shell.file, args: extraArgs }, env);
+        return this.withMod({ file: shell.file, args: ['--rcfile', this.bashrcPath, '-i'] }, env);
       case 'sh':
         return this.withMod({ file: shell.file, args: extraArgs }, env);
       default: {

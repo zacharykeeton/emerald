@@ -16,6 +16,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { killTree, processIdentity } from '@emerald/shared/process-identity';
 
 const cliDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(cliDir, '..', '..');
@@ -108,6 +109,15 @@ function blockRunner(blocks, argv = process.argv.slice(2)) {
   return { block, blocksRun };
 }
 
+// M9 fix 1052: the home is removed whole below and may come from the
+// environment, so only a folder under the temp folder is taken, never
+// ~/.emerald. A home spelled in 8.3 form is refused too, loudly.
+const tmpRoots = [os.tmpdir(), fs.realpathSync.native(os.tmpdir())].map((t) => path.resolve(t).toLowerCase() + path.sep);
+const homeKey = path.resolve(home).toLowerCase();
+if (homeKey === path.resolve(os.homedir(), '.emerald').toLowerCase() || !tmpRoots.some((t) => homeKey.startsWith(t))) {
+  console.error(`[verify] refused: EMERALD_HOME ${home} is not a folder under ${os.tmpdir()}; this script removes its home whole, so it runs only on a private one`);
+  process.exit(2);
+}
 fs.rmSync(home, { recursive: true, force: true });
 fs.mkdirSync(home, { recursive: true });
 fs.mkdirSync(path.dirname(logFile), { recursive: true });
@@ -200,13 +210,18 @@ async function until(what, fn, timeoutMs = 8000) {
   expect(false, `${what} within ${timeoutMs} ms`);
 }
 
+// M9 fix 1048: only while the pid is still the daemon daemon.json names,
+// by the start time it wrote there; a crashed daemon leaves the file.
 function stopDaemonHard() {
+  let info;
   try {
-    const { pid } = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
-    spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore' });
+    info = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
   } catch {
-    // No daemon.json, nothing to stop.
+    return; // No daemon.json, nothing to stop.
   }
+  const identity = processIdentity(info.pid, info.startedAt);
+  if (identity === 'same') killTree(info.pid);
+  else if (identity === 'other') log(`note: daemon.json's pid ${info.pid} is another process now; left alone`);
 }
 
 try {

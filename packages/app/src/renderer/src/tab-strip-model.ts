@@ -6,43 +6,50 @@ import { listPanes, markKind, rollup, teamCounts, workingMotion } from '@emerald
 // M9 fix 42: the tab pulses with the rows of its panes' sessions that
 // want someone, so with several layout tabs the one on show says when a
 // question waits on another. The most urgent state among them, through
-// the folder heading's rollup, is the value, for the colour. The current
-// tab never pulses (M9 fix 69): its pane title already does, and a pulse
-// on the tab a person is looking at points nowhere, so a tab pulses only
-// for a wanting session whose pane is on another tab, and the current
-// tab's mark keeps its working or idle tone. File tabs are not sessions
-// and stay out, but one in front hides the current layout tab's panes
-// as well, so that tab pulses then too (M9 fix 269), as the sidebar's
-// rows read it: on show means current and the panes in front. Moved here
+// the folder heading's rollup, is the value, for the colour. M9 fix 1064:
+// the tab pulses for any wanting session in its panes, on show or not,
+// alongside the pane's own title: fix 69 had kept the current tab still,
+// and the person wants the flash on the tab they are looking at too,
+// which also made fix 269's case (a file tab in front of the current
+// layout tab) moot. File tabs are not sessions and stay out. Moved here
 // from TabStrip.tsx by fix 702 so a test can read it.
-// M9 fix 702: a zoom hides every pane but one, so on the tab on show a
-// wanting session in a pane the zoom hides pulses the tab as if it were
-// on another tab; one the zoomed pane shows does not.
 export function tabWanting(
   tab: LayoutTab,
-  onShow: boolean,
-  zoomedPaneId: string | null,
   sessions: ReadonlyMap<string, SessionInfo>,
   wanting: ReadonlySet<string>,
 ): AttentionState | undefined {
-  const panes = listPanes(tab);
-  const zoomed = onShow ? panes.find((p) => p.id === zoomedPaneId) : undefined;
-  // A zoom that names no pane of this tab hides nothing.
-  if (onShow && zoomed === undefined) return undefined;
-  // Under a zoom the zoomed pane's session is on screen, mirrored or not.
-  const onScreen = zoomed?.sessionId ?? null;
   const waiting: SessionInfo[] = [];
-  for (const pane of panes) {
-    if (onShow && pane.id === zoomedPaneId) continue;
+  for (const pane of listPanes(tab)) {
     const session = pane.sessionId === null ? undefined : sessions.get(pane.sessionId);
-    if (session !== undefined && session.id !== onScreen && wanting.has(session.id) && !waiting.includes(session)) waiting.push(session);
+    if (session !== undefined && wanting.has(session.id) && !waiting.includes(session)) waiting.push(session);
   }
-  if (onShow && waiting.length === 0) return undefined;
+  if (waiting.length === 0) return undefined;
   // A stalled session (M9 fix 232) is not a state the rollup ranks: the
   // tab takes its tone when nothing ranked wants someone.
   const state = rollup({ key: tab.id, title: tab.name, sessions: waiting })?.state;
   if (state !== undefined && ATTENTION_STATES.has(state)) return state;
   return waiting.some((s) => attentionState(s) === 'quiet') ? 'quiet' : state;
+}
+
+// M9 fix 702: a zoom hides every pane but one, so on the tab on show a
+// click on the tab undoes the zoom when a wanting session sits in a pane
+// the zoom hides; one the zoomed pane shows, mirrored or not, does not
+// count. A zoom that names no pane of this tab hides nothing.
+export function zoomHidesWanting(
+  tab: LayoutTab,
+  zoomedPaneId: string,
+  sessions: ReadonlyMap<string, SessionInfo>,
+  wanting: ReadonlySet<string>,
+): boolean {
+  const panes = listPanes(tab);
+  const zoomed = panes.find((p) => p.id === zoomedPaneId);
+  if (zoomed === undefined) return false;
+  const onScreen = zoomed.sessionId;
+  return panes.some((pane) => {
+    if (pane.id === zoomedPaneId || pane.sessionId === null || pane.sessionId === onScreen) return false;
+    const session = sessions.get(pane.sessionId);
+    return session !== undefined && wanting.has(session.id);
+  });
 }
 
 // The pure half of the tab strip: what mark a layout tab wears. Moved out

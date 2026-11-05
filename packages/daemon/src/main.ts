@@ -284,7 +284,9 @@ async function main(): Promise<void> {
 
   const feedSettings = feedHostSettings();
   if (feedSettings.dir !== null) feed = await startFeedHost({ dir: feedSettings.dir, port: feedSettings.port, log });
-  else log.info('feed: off (EMERALD_FEED_DIR=off)');
+  // Off Windows there is no default folder (M9 fix 1069), so the line says
+  // which of the two reasons left the feed off.
+  else log.info(process.env['EMERALD_FEED_DIR'] === 'off' ? 'feed: off (EMERALD_FEED_DIR=off)' : 'feed: off (not Windows)');
   const stopLoopDelay = startLoopDelayLog(log);
   setGitRunnerLog((msg) => log.warn(msg));
   conflicts.start();

@@ -13,6 +13,9 @@ import {
   skillGroups,
   skillHistoryOf,
   skillRowTitle,
+  skillSectionHead,
+  skillSections,
+  type SkillSection,
   skillSourceLabel,
   syncedFoldText,
   tokens7dText,
@@ -98,6 +101,38 @@ test('skillGroups: the paste\'s never used by where each is turned off, the used
     '6 come from your settings: turn them off in /skills, or remove them from .claude/skills.',
     '11 are synced from claude.ai: turn them off on claude.ai; a deleted synced copy comes back on the next sync.',
   ]);
+});
+
+test('skillSections: this folder, yours with the synced, then plugins and built-in (fix 1055)', () => {
+  const sections = skillSections(skillsOf(RAW), historyOf(RAW));
+  assert.deepEqual(sections.map((s) => s.key), ['folder', 'yours', 'built-in']);
+  const [folder, yours, builtIn] = sections as [SkillSection, SkillSection, SkillSection];
+  const names = (l: ContextSkill[]): string[] => l.map((s) => s.name);
+  assert.deepEqual(names(folder.never), ['suggest-from-usage']);
+  assert.deepEqual(names(folder.used), ['batch']);
+  assert.deepEqual(names(yours.never), ['ado', 'adopt-batch-routine', 'qa-story-refinement', 'qa-test-case-creation', 'setup-otel']);
+  assert.equal(yours.synced.length, 11);
+  assert.equal(yours.used.length, 14);
+  assert.deepEqual(names(yours.used.slice(0, 4)), ['backlog-inbox', 'local-backlog', 'session-retro', 'backoffice-sql-query-generator']);
+  assert.equal(yours.used[yours.used.length - 1]!.name, 'anthropic-skills:skill-creator');
+  assert.deepEqual(builtIn.never, []);
+  assert.deepEqual(names(builtIn.used), ['frontend-design']);
+  assert.deepEqual(sections.map(skillSectionHead), ['this folder, 2, never used ~140 in every request', 'yours, 30, never used ~2.8k in every request', 'plugins and built-in, 1']);
+  assert.equal(moreUsedText(yours.used.slice(USED_SHOWN), historyOf(RAW), NOW), '6 more, last used 7 to 41 days ago');
+});
+
+test('skillSections: every other source is one built-in section, and no skills make none (fix 1055)', () => {
+  const rows: Row[] = [
+    ['x', 'built-in', 10, 0, 0, null],
+    ['y', 'policySettings', 5, 0, 0, null],
+    ['z', 'mcp', 1, 0, 0, null],
+    ['w', 'somethingNew', 1, 0, 0, null],
+  ];
+  const sections = skillSections(skillsOf(rows), historyOf(rows));
+  assert.deepEqual(sections.map((s) => s.key), ['built-in']);
+  assert.deepEqual(sections[0]!.never.map((s) => s.name), ['w', 'x', 'y', 'z']);
+  assert.equal(skillSectionHead(sections[0]!), 'plugins and built-in, 4, never used < 20 in every request');
+  assert.deepEqual(skillSections([], { skills: {} }), []);
 });
 
 test('the figures and words of a skill row', () => {

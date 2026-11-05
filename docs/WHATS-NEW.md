@@ -2,9 +2,35 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1048 to 1078, 2026-11-05
+
+Thirty-one fixes, most of them the follow-through on the light theme, the Context tab and the Mac build: a layout tab that pulses on show, the Context tab's skills grouped by where they live, the question card's tick on a revisited tab, Cmd chords and a zsh row that reports on a Mac, and a run of small ones. The daemon stays at level 79, so nothing asks for a restart.
+
+### Highlights
+
+**A layout tab pulses while you are on it.** A session wanting you now pulses its layout tab whether that tab is on show or not, with its pane title and its row, so the flash is where your eye already is. Before, the tab on show kept still and only the pane title moved.
+
+**The Context tab's skills by where they live.** The Skills section groups your skills as this folder's, yours (your own settings' and the claude.ai synced ones, the synced folded inside), then plugins and the built-in. A `/clear` drops the old breakdown with the dial, and the tab asks the new conversation for its own. The skill history is kept on disk, so after a launch only the transcripts that grew are read again.
+
+**The question card on a revisited tab.** Go back to a tab of a multi-question card and the answer Claude Code ticked there is the one marked, its ✔ left out of the Type something box, and that box lets go of the keyboard when you change tabs.
+
+**On a Mac: Cmd chords and a zsh row that reports.** Every Ctrl chord also answers to Cmd (Cmd+Shift+E splits a pane), and the hints print Cmd. A zsh or bash row now shows a running command and follows a `cd`, with your own prompt and history kept. The first launch shows the hooks strip first and the PATH strip after it.
+
+### Details
+
+**Chat view.** The `/btw` strip joins Claude's wrapped answer back into paragraphs, its × is a quiet one, and the turn's live word no longer shows on the panel's Answering row. A pick from the model or effort chip made while auto mode's "Teach auto mode" notice is up is refused on the hint line in the notice's own words. Text being moved into the chat box as the face flips now reaches the box.
+
+**Keys.** The tab strip's prefixed chords print in upper case from the prefix you set (`Ctrl+B C` for a new layout tab), and the files rail's tooltips name their chords, the collapsed Files label included.
+
+**Panes and rail.** Claude's theme band under a pane title keeps to one line and shows its whole words on hover. A drag held over a folder among the files rail's search hits or in the Changed list no longer opens it in the hidden tree.
+
+**Skills and sessions.** A synced skill's listing switch reads its full name first, as Claude Code does. The Open claude.ai skills button goes to the skills you have rather than the marketplace. `emmer prompt` waits up to 2.5 s for the transcript to hold the whole reply. A session no longer inherits `CLAUDE_EFFORT`, `AI_AGENT` or `TRACEPARENT` from a Claude that started Emerald.
+
+**Under the hood.** An uncaught error in the main process is logged and the window carries on, with a note in the corner naming the log. Off Windows there is no local update feed folder, and a home folder is compared without case only where the disk ignores case.
+
 ## Fixes 1030 to 1047, 2026-10-31
 
-Eighteen fixes: a light theme for the whole app, the shells included, that follows Windows; a Context tab on the rail that shows what fills a Claude session's context window and lets you turn skills off; and five small ones in the chat view and the panes. The daemon goes from level 78 to 79, so the app asks for a daemon restart once, as its banner offers; the sessions come back as exited and are resumed in place.
+Eighteen fixes: a light theme for the whole app, the shells included, that follows Windows; a Context tab on the rail that shows what fills a Claude session's context window and lets you turn skills off; and five small ones in the chat view and the panes. The daemon goes from level 78 to 79; the update stops the old daemon, so nothing asks for a restart, and the sessions come back through Resume.
 
 ### Highlights
 

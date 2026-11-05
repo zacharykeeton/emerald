@@ -27,16 +27,17 @@ export type FeedSpec = { provider: 'generic'; url: string } | { provider: 'githu
 // The feed a build checks, in four steps (fix 608): EMERALD_NO_UPDATE=1
 // turns the check off; a non-empty EMERALD_UPDATE_URL is the feed, packaged
 // or not (the verify scripts' stub feeds, and M9 fix 242's dev-build hint);
-// a dev build checks nothing otherwise; a packaged build on a box that has
-// a local feed folder takes the local feed, since that box is the
-// developer's and takes batches from it; every other install reads the
-// GitHub releases.
-export function updateFeedSpec(env: NodeJS.ProcessEnv, packaged: boolean, exists: (p: string) => boolean): FeedSpec | null {
+// a dev build checks nothing otherwise; a packaged build on Windows on a box
+// that has a local feed folder takes the local feed, since that box is the
+// developer's and takes batches from it; every other install, a Mac or
+// Linux one always (M9 fix 1069), reads the GitHub releases.
+export function updateFeedSpec(env: NodeJS.ProcessEnv, packaged: boolean, exists: (p: string) => boolean, platform: NodeJS.Platform = process.platform): FeedSpec | null {
   if (env['EMERALD_NO_UPDATE'] === '1') return null;
   const override = env['EMERALD_UPDATE_URL'];
   if (override !== undefined && override !== '') return { provider: 'generic', url: override };
   if (!packaged) return null;
-  if (exists(defaultFeedDir(env))) return { provider: 'generic', url: feedUrl() };
+  const local = defaultFeedDir(env, platform);
+  if (local !== null && exists(local)) return { provider: 'generic', url: feedUrl() };
   return { provider: 'github', ...GITHUB_RELEASES };
 }
 

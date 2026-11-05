@@ -806,6 +806,41 @@ test('carryRead with no expect, the CLI face carry: text, the 2.1.301 placeholde
   assert.deepEqual(carryRead(cliAt('❯ line one', '  line two')), { kind: 'blocked' });
 });
 
+import { noticeOf, noticeRefusal, promptRowAt } from './chat-model.ts';
+
+test('promptRowAt: the prompt row under auto mode\'s notice is the ❯ under a rule (M9 fix 1059)', () => {
+  const rule = '─'.repeat(81);
+  const noticeRows = (prompt: string) => [
+    '✻ Baked for 10s · done 7:11 AM',
+    rule,
+    prompt,
+    rule,
+    '  ⏵⏵ auto mode on (shift+tab to cycle)',
+    rule,
+    '  Teach auto mode about your environment?',
+    '  Auto mode works better when it knows your environment. Takes about a minute.',
+    '  ❯ 1. Yes',
+    '    2. Not now',
+    "    3. Don't show again",
+    '  Enter to confirm · Esc to cancel',
+  ];
+  const at = (prompt: string, ghost?: null) => ({ rows: noticeRows(prompt), cursor: { x: 2, y: 2 }, ...(ghost === undefined ? {} : { ghost }) });
+  const bare = at('❯');
+  assert.equal(promptRowAt(bare.rows), 2);
+  assert.equal(promptRow(bare.rows), '❯');
+  assert.equal(promptRowText(bare.rows), '');
+  assert.deepEqual(carryRead(bare), { kind: 'none' });
+  assert.equal(pickRoute(carryRead(bare)), 'type');
+  assert.deepEqual(carryRead(at('❯ fix the login')), { kind: 'text', text: 'fix the login' });
+  assert.deepEqual(carryRead(at('❯ Try "fix lint errors"', null)), { kind: 'none' });
+  assert.equal(promptRowAt(['❯ old', 'out', '❯ new']), 2);
+  assert.equal(promptRowAt(['  ❯ 1. Yes', '    2. No']), -1);
+  assert.equal(noticeOf(bare.rows), 'Teach auto mode about your environment?');
+  assert.equal(noticeRefusal('Teach auto mode about your environment?'), "Claude Code is asking 'Teach auto mode about your environment?'; answer it in the terminal first");
+  assert.equal(noticeOf(['● done', rule, '❯', rule, '  ⏵⏵ auto mode on (shift+tab to cycle)']), null);
+  assert.equal(noticeOf(['❯ hello from the cli']), null);
+});
+
 // M9 fix 778: Stop's carry on both routes. A typed prompt comes back to
 // the input and is carried out of it; a prompt the mod submitted never sat
 // in the input, so an empty input after a turn that drew nothing takes the

@@ -896,6 +896,42 @@ try {
   await noteIs953('Moved a983.txt into inner983', 'the note says a983.txt moved into inner983');
   step('fix 983: a folder held under a drag opens after 600 ms, not before, not once the drag moves off it, stays open after the drag leaves, and takes a drop into its child');
 
+  // M9 fix 1066: the spring opens a folder only while the tree is on
+  // show. A folder held under a drag in the name search's hits stays
+  // closed in the tree behind them, its hit still lit as the drop's
+  // target. hold1066 is empty, so the search for it gives one hit.
+  const hold1066 = path.join(seed, 'hold1066');
+  fs.mkdirSync(hold1066, { recursive: true });
+  const b1066 = path.join(src953, 'b1066.txt');
+  fs.writeFileSync(b1066, 'b1066');
+  await s.waitFor(`document.querySelector(${JSON.stringify(rowSel953(hold1066))})?.dataset.kind === 'dir'`, 'the row for hold1066', 5000);
+  await s.evalJs(`document.querySelector('.files-mode[data-mode="names"]').click()`);
+  await s.evalJs(`document.querySelector('.files-filter-input').focus()`);
+  await s.type('hold1066');
+  const hitFind1066 = `[...document.querySelectorAll('.files-list .files-hit[data-kind="dir"]')].filter((e) => e.querySelector('.files-name')?.textContent === 'hold1066')`;
+  await s.waitFor(`${hitFind1066}.length === 1`, 'one folder hit for hold1066', 5000);
+  const spot1066 = await s.evalJs(`(() => { const r = ${hitFind1066}[0].getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await setDropFiles(s, [b1066]);
+  await hover(s, spot1066);
+  const t1066 = Date.now();
+  while (Date.now() - t1066 < 900) {
+    await drag(s, 'dragover', spot1066);
+    await sleep(150);
+  }
+  const lit1066 = await lit953();
+  expect(lit1066.length === 1, `fix 1066: the folder hit is still lit as the drop's target, got ${JSON.stringify(lit1066)}`);
+  await drag(s, 'dragleave', spot1066);
+  await s.evalJs(`document.querySelector('.files-filter-input').focus()`);
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(
+    `document.querySelectorAll('.files-hit').length === 0 && document.querySelector(${JSON.stringify(rowSel953(hold1066))})?.dataset.kind === 'dir'`,
+    'the hits gone and the tree row for hold1066 back',
+    5000,
+  );
+  const open1066 = await s.evalJs(`document.querySelector(${JSON.stringify(rowSel953(hold1066))})?.dataset.expanded ?? null`);
+  expect(open1066 === null, `fix 1066: a drag held over a folder hit leaves the folder closed in the tree, got expanded ${open1066}`);
+  step('fix 1066: a folder held under a drag in the name search hits stays closed in the tree behind them, its hit lit as the target');
+
   // M9 fix 1008: a copy of 400 files dropped with Ctrl on into953 shows
   // its progress in the window's corner note, updating, until the final
   // note lands, and the note then goes after its usual moment. Every note

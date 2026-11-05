@@ -4,7 +4,7 @@ import { answerOptions, askQuestion, askReview, ghostSuggestion, isQuestionDialo
 import { askChosenKey } from './screen-prompt-model.ts';
 import { ASK_PRESS_RETRY_MS, dialogKey, freeAnswerKeys, freeOption, freeText, pressOver } from './screen-prompt-model.ts';
 import { optionKeys, submitMoves } from './screen-prompt-model.ts';
-import { ARROW_KEYS_TITLE, btwPanel, cardOptions, cardPress, optionTitle } from './screen-prompt-model.ts';
+import { ARROW_KEYS_TITLE, aboveBtwPanel, btwPanel, cardOptions, cardPress, optionTitle } from './screen-prompt-model.ts';
 import { spinnerOf } from './chat-model.ts';
 import { tabKeyStep, tabMoves, tabStepTo, visitAfter, visitAnswered, visitedTabs } from './screen-prompt-model.ts';
 import type { AskTab } from './screen-prompt-model.ts';
@@ -281,6 +281,39 @@ const FREE_TYPED = [
   '',
   'Enter to select · ↑/↓ to navigate · ctrl+g to edit in Notepad · Esc to cancel',
 ];
+
+// M9 fix 1057: Colour revisited after an answer to it, as the click-through
+// of fixes 1030 to 1047 drew it (ct-1030-frames/question-revisit.png and
+// the label "2Blue ✔Blue" in its log): Claude Code's tick after Blue, its
+// pointer left on Red so the tick has something to beat.
+const ASK_REVISIT_TICKED = [
+  RULE,
+  '←  ☒ Colour  ☐ Size  →',
+  '',
+  'Which colour?',
+  '',
+  '❯ 1. Red',
+  '     Red',
+  '  2. Blue ✔',
+  '     Blue',
+  '  3. Type something.',
+  RULE,
+  '  4. Chat about this',
+  '',
+  'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+];
+const FREE_TICKED = ASK_REVISIT_TICKED.map((r) => (r === '  2. Blue ✔' ? '  2. Blue' : r === '  3. Type something.' ? '  3. Medium blue please ✔' : r));
+
+test('freeText leaves Claude Code\'s tick off; askChosenKey prefers the ticked row (fix 1057)', () => {
+  assert.equal(freeText(freeOption(askQuestion(FREE_TICKED)!)!), 'Medium blue please');
+  const wrapped = FREE_TICKED.flatMap((r) => (r === '  3. Medium blue please ✔' ? ['  3. Medium blue, a bit lighter than', '     the sky, please ✓'] : [r]));
+  assert.equal(freeText(freeOption(askQuestion(wrapped)!)!), 'Medium blue, a bit lighter than the sky, please');
+  const revisit = askQuestion(ASK_REVISIT_TICKED)!;
+  assert.equal(askChosenKey(revisit, '', false, true), '2');
+  const free = askQuestion(FREE_TICKED)!;
+  assert.equal(askChosenKey(free, freeText(freeOption(free)!), false, true), '3');
+  assert.equal(askChosenKey(revisit, '', true, true), '3', 'the focus still wins');
+});
 
 test('freeOption: the Type something row, or the one before Chat about this once typed into (fix 803)', () => {
   for (const [name, rows] of [['ASK_ONE', ASK_ONE], ['ASK_TABS', ASK_TABS], ['FREE_MOVED', FREE_MOVED], ['FREE_TYPED', FREE_TYPED]] as const) {
@@ -734,18 +767,68 @@ test('btwPanel: the question and the answer off the panel, pending while it answ
   // panel, the pending footer Esc alone, the answered one every key.
   const footer = '  ↑/↓ to scroll · c to copy · f to fork · Esc to close';
   const answered = ['● an earlier reply', '', '❯ /btw what folder am I in', '', '  /btw what folder am I in', '', '    You are in the fixture folder.', '    It holds one file.', '', footer];
-  assert.deepEqual(btwPanel(answered), { question: 'what folder am I in', answer: 'You are in the fixture folder.\nIt holds one file.' });
+  assert.deepEqual(btwPanel(answered), { question: 'what folder am I in', answer: 'You are in the fixture folder. It holds one file.', at: 4 });
   const pending = ['❯ /btw what folder am I in', '', '  /btw what folder am I in', '', '    ✽ Answering…', '', '  Esc to close'];
-  assert.deepEqual(btwPanel(pending), { question: 'what folder am I in', answer: null });
+  assert.deepEqual(btwPanel(pending), { question: 'what folder am I in', answer: null, at: 2 });
   const paragraphs = ['  /btw what folder am I in', '', '    You are here.', '', '    I read it off the status.', '', footer];
   assert.equal(btwPanel(paragraphs)?.answer, 'You are here.\n\nI read it off the status.', 'a blank row inside the answer kept');
   const retrying = ['', '  /btw what folder am I in', '', '    ✻ Answering… · retrying in 3s · attempt 1/5', '', footer];
   assert.equal(btwPanel(retrying)?.answer, null);
   const earlier = ['  (+1 earlier /btw)', '  /btw first?', '  /btw what folder am I in', '', '    You are in the fixture folder.', '', footer];
-  assert.deepEqual(btwPanel(earlier), { question: 'what folder am I in', answer: 'You are in the fixture folder.' });
+  assert.deepEqual(btwPanel(earlier), { question: 'what folder am I in', answer: 'You are in the fixture folder.', at: 2 });
   assert.equal(btwPanel([...answered, '', '❯ ']), null, 'a prompt box under the footer');
   assert.equal(btwPanel(['● Try /btw x', '  to ask aside', '', '❯ ']), null, 'a reply that quotes /btw, no footer');
   assert.equal(btwPanel(['', '  /btw what fol…', '', '    ✻ Answering…', '', footer])?.question, 'what fol…');
-  // Log only: what the live line's spinner read makes of a pending panel.
-  console.log(`[fix 1005] spinnerOf on the pending panel: ${JSON.stringify(spinnerOf(pending))}`);
+});
+
+test('btwPanel: the answer\'s wrapped rows joined back, its lists, fences and indented rows kept (M9 fix 1058)', () => {
+  const footer = '  ↑/↓ to scroll · c to copy · f to fork · Esc to close';
+  // The capture's read at t=5802 (fix 1005's seat), verbatim.
+  const real = [
+    '  /btw what folder am I in',
+    '',
+    "    You're in C:\\Users\\someone\\code\\emerald-wt\\m9-chat-cards.",
+    "    That's a git worktree of the emerald repo, and it has the",
+    '    m9-chat-cards branch checked out. The main checkout is next to it at',
+    '    C:\\Users\\someone\\code\\emerald.',
+    '',
+    "    I worked that out from where this session's CLAUDE.md was loaded and",
+    "    from the branch in the git status. I haven't checked it with a",
+    '    command.',
+    '',
+    footer,
+  ];
+  assert.equal(
+    btwPanel(real)?.answer,
+    "You're in C:\\Users\\someone\\code\\emerald-wt\\m9-chat-cards. That's a git worktree of the emerald repo, and it has the m9-chat-cards branch checked out. The main checkout is next to it at C:\\Users\\someone\\code\\emerald.\n\nI worked that out from where this session's CLAUDE.md was loaded and from the branch in the git status. I haven't checked it with a command.",
+  );
+  const fence = '```';
+  const shaped = [
+    '  /btw how',
+    '',
+    '    Two things:',
+    '    - the build, which runs on',
+    '      past the edge',
+    '    - the tests',
+    '',
+    `    ${fence}`,
+    '    npm run build',
+    '    npm test',
+    `    ${fence}`,
+    '',
+    '        an indented row',
+    '        and another',
+    footer,
+  ];
+  assert.equal(
+    btwPanel(shaped)?.answer,
+    `Two things:\n- the build, which runs on past the edge\n- the tests\n\n${fence}\nnpm run build\nnpm test\n${fence}\n\n    an indented row\n    and another`,
+  );
+});
+
+test('spinnerOf: the turn\'s word above a /btw panel, never its Answering row (M9 fix 1058)', () => {
+  const rows = [' ✻ Churning…', '', '  /btw what folder am I in', '', '    ✽ Answering…', '', '  Esc to close'];
+  assert.equal(spinnerOf(rows)?.word, 'Churning');
+  assert.equal(aboveBtwPanel(rows).length, 2);
+  assert.equal(spinnerOf(['✻ Churning…', '❯ '])?.word, 'Churning');
 });

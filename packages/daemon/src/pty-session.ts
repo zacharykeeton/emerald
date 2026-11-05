@@ -45,6 +45,8 @@ export interface EnvStamp {
 // every PTY and make Claude believe it is a child session ("Transcript saving
 // is off", found in M2). Only these named markers go; the rest of CLAUDE_CODE_*
 // is deliberate user configuration (Bedrock, limits) that must survive.
+// CLAUDE_EFFORT, AI_AGENT and TRACEPARENT (M9 fix 1067) are what Claude Code's Bash tool stamps beside CLAUDECODE,
+// and its own strip list for its subprocesses drops them too.
 const PARENT_CLAUDE_MARKERS = new Set([
   'CLAUDECODE',
   'CLAUDE_PID',
@@ -56,6 +58,9 @@ const PARENT_CLAUDE_MARKERS = new Set([
   'CLAUDE_CODE_MESSAGING_SOCKET',
   'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_BRIDGE_SESSION_ID',
+  'CLAUDE_EFFORT',
+  'AI_AGENT',
+  'TRACEPARENT',
 ]);
 
 // What describes the terminal the daemon happened to be started from. The

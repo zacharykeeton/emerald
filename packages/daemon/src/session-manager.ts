@@ -20,7 +20,7 @@ import { PtySession, stampEnv } from './pty-session.ts';
 import { withRegistry } from './spawn-path.ts';
 import { TranscriptTail } from './transcript-tail.ts';
 import { ClaudeLauncher } from './launchers/claude.ts';
-import { BASH_RC, ShellLauncher } from './launchers/shell.ts';
+import { BASH_RC, ShellLauncher, ZSH_FILES, bashRc, zshDirFor } from './launchers/shell.ts';
 import { findShells } from './shells.ts';
 import type { SessionLauncher } from './launchers/types.ts';
 import type { Logger } from './log.ts';
@@ -164,9 +164,10 @@ export interface SessionManagerOptions {
   // itself, which is every test that does not hand in a list.
   shells?: ShellOption[];
   // Where Git Bash's rc is written before each Git Bash launch (M9 fix
-  // 624, paths.ts bashrcPath); absent means a folder of its own under the
-  // temp folder, made at the first such launch, so no test writes under a
-  // home.
+  // 624, paths.ts bashrcPath), and a bash's off Windows; a zsh row's four
+  // files go in the emerald-zsh folder beside it (M9 fix 1068, zshDirFor).
+  // Absent means a folder of its own under the temp folder, made at the
+  // first such launch, so no test writes under a home.
   bashrcPath?: string;
 }
 
@@ -1309,8 +1310,17 @@ export class SessionManager extends EventEmitter {
 
   private launch(id: string, kind: SessionKind, args: string[], cwd: string, cols: number, rows: number, shell: ShellOption | null, registry: Record<string, string> | null): PtySession {
     // Git Bash reads its rc from the file (M9 fix 624), written fresh at
-    // every launch so a new build's rc reaches the next shell.
+    // every launch so a new build's rc reaches the next shell. A bash off
+    // Windows reads the same file with $PWD for the folder, and a zsh reads
+    // the four files in the emerald-zsh folder beside it (M9 fix 1068); the
+    // two bash ids never meet on one daemon, since bash is listed off
+    // Windows alone.
     if (shell?.id === 'gitbash' && args.length === 0) writeFileAtomic(this.bashrcPath, BASH_RC, this.log);
+    if (shell?.id === 'bash' && args.length === 0) writeFileAtomic(this.bashrcPath, bashRc('pwd'), this.log);
+    if (shell?.id === 'zsh' && args.length === 0) {
+      const dir = zshDirFor(this.bashrcPath);
+      for (const [name, text] of Object.entries(ZSH_FILES)) writeFileAtomic(path.join(dir, name), text, this.log);
+    }
     const hook = this.opts.hook;
     const env = stampEnv(process.env, {
       sessionId: id,

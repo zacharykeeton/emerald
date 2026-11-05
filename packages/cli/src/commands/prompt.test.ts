@@ -194,16 +194,16 @@ test('a done row with no transcript gives the first line (M9 fix 1000)', async (
   assert.equal(out.kind === 'done' && out.reply, 'Fixed.');
 });
 
-test('a transcript whose last reply is not the row\'s is read five times, then the first line (M9 fix 1000)', async () => {
+test('a transcript whose last reply is not the row\'s is read until the deadline, then the first line (M9 fixes 1000 and 1077)', async () => {
   let reads = 0;
   const stale = transcriptOf('Something else entirely.\n\nFrom a turn before.');
   const reply = await wholeReply(session({ state: 'done', lastReply: 'Fixed.', transcriptPath: 'C:\\sim\\turns.jsonl' }), () => {
     reads += 1;
     return stale;
-  });
+  }, 1);
   assert.equal(reply, 'Fixed.');
   assert.equal(reads, REPLY_READ_TRIES);
-  assert.equal(reads, 5);
+  assert.equal(reads, 26);
 });
 
 test('a done session takes a new prompt, and a reply that lands as needs-input is reported as such', async () => {

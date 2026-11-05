@@ -23,7 +23,10 @@ function tempDir(): string {
 test.after(removeTemps);
 
 // A shell that prints a marker and exits, so the frame has something in it.
-const markerArgs = (marker: string) => ['-NoProfile', '-Command', `Write-Host ${marker}; exit 0`];
+// M9 fix 1075: off Windows the shell kind runs $SHELL or /bin/sh, which takes -c.
+const win = process.platform === 'win32';
+const markerArgs = (marker: string) => (win ? ['-NoProfile', '-Command', `Write-Host ${marker}; exit 0`] : ['-c', `echo ${marker}; exit 0`]);
+const sleeperArgs = (marker: string) => (win ? ['-NoProfile', '-Command', `Write-Host ${marker}; Start-Sleep 30`] : ['-c', `echo ${marker}; sleep 30`]);
 
 async function until(check: () => boolean, ms: number, what: string): Promise<void> {
   const deadline = Date.now() + ms;
@@ -64,7 +67,7 @@ test('the frame at a PTY exit lands on the record and in sessions.json, restores
   const restarted = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   restarted.restore();
   const layouts = new LayoutStore(path.join(dir, 'state.json'), silentLogger);
-  const pipe = `\\\\.\\pipe\\emmerd-test-kept-${process.pid}`;
+  const pipe = win ? `\\\\.\\pipe\\emmerd-test-kept-${process.pid}` : path.join(dir, 'emmerd.sock');
   const server = new PipeServer(restarted, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
   await server.listen();
   const client = await PipeClient.connect(pipe);
@@ -103,15 +106,15 @@ test('keepScreens reads every live frame under the timeout, saves once, and daem
   const store = new SessionStore(path.join(dir, 'sessions.json'), silentLogger);
   const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, store });
   const layouts = new LayoutStore(path.join(dir, 'state.json'), silentLogger);
-  const pipe = `\\\\.\\pipe\\emmerd-test-keep-${process.pid}`;
+  const pipe = win ? `\\\\.\\pipe\\emmerd-test-keep-${process.pid}` : path.join(dir, 'emmerd.sock');
   let stops = 0;
   const server = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, onStop: () => stops++ });
   await server.listen();
   const client = await PipeClient.connect(pipe);
   try {
     // Two shells that stay up on their prompts, and one that has exited.
-    const a = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Write-Host keep-a; Start-Sleep 30'], cols: 80, rows: 24 }).id;
-    const b = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Write-Host keep-b; Start-Sleep 30'], cols: 80, rows: 24 }).id;
+    const a = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: sleeperArgs('keep-a'), cols: 80, rows: 24 }).id;
+    const b = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: sleeperArgs('keep-b'), cols: 80, rows: 24 }).id;
     const exit = once(manager, 'exit');
     const c = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: markerArgs('keep-c'), cols: 80, rows: 24 }).id;
     await exit;

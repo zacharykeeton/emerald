@@ -30,13 +30,17 @@ const BUSY = new Set<string>(['working', 'waiting']);
 // Where the second wait ends.
 const SETTLED = new Set<string>(['done', 'needs-input', 'errored', 'exited']);
 
-// M9 fix 1000: the whole reply is read off the transcript, which Claude
-// Code writes a median 59 ms before the Stop (at most 2.3 s on the record
-// of 315 Stops); a read that does not yet hold the reply the Stop named is
-// tried again this often, this many reads in all, before the first line
+// M9 fix 1000: the whole reply is read off the transcript. The Stop trails
+// its text line's timestamp by a median 59 ms and at most 2.3 s on the
+// record of 315 Stops; how far the file write trails the Stop is not
+// measured, so a read that does not yet hold the reply the Stop named is
+// tried again every REPLY_READ_PAUSE_MS for up to REPLY_READ_DEADLINE_MS
+// (fix 1077, a cap chosen to cover that record), and then the first line
 // the row carries is printed instead.
 export const REPLY_READ_PAUSE_MS = 100;
-export const REPLY_READ_TRIES = 5;
+export const REPLY_READ_DEADLINE_MS = 2500;
+// The most reads the deadline allows at that pause: the first, then one after each pause.
+export const REPLY_READ_TRIES = 1 + REPLY_READ_DEADLINE_MS / REPLY_READ_PAUSE_MS;
 
 export interface PromptOptions {
   ref: string;
@@ -140,12 +144,20 @@ export function heldPrompt(rows: readonly string[], lastPrompt: string | null): 
 // its first line is lastReply, and a read that is behind (the line not yet
 // written, or an earlier turn's) is tried again. No transcript (a daemon
 // on another box, a fake Claude, a row with no hook yet) is the first line.
-export async function wholeReply(session: SessionInfo, read: (file: string) => string = (f) => fs.readFileSync(f, 'utf8')): Promise<string | null> {
+export async function wholeReply(
+  session: SessionInfo,
+  read: (file: string) => string = (f) => fs.readFileSync(f, 'utf8'),
+  pauseMs: number = REPLY_READ_PAUSE_MS,
+): Promise<string | null> {
   const line = session.lastReply;
   const file = session.transcriptPath;
   if (line === null || typeof file !== 'string') return line;
+  const start = Date.now();
   for (let i = 0; i < REPLY_READ_TRIES; i++) {
-    if (i > 0) await sleep(REPLY_READ_PAUSE_MS);
+    if (i > 0) {
+      if (Date.now() - start >= REPLY_READ_DEADLINE_MS) break;
+      await sleep(pauseMs);
+    }
     try {
       const reply = parseTurns(read(file)).at(-1)?.reply ?? null;
       if (reply !== null && summarize(reply) === line) return reply;

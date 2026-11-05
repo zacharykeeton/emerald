@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { CTRL, SHIFT, clickNewShell, daemonPid, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
+import { CTRL, SHIFT, clickNewShell, daemonPid, daemonRecord, expect, freshPort, getLayout, killDaemonIfSame, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
 
 setTimeout(() => {
   console.error('[verify] WATCHDOG: run exceeded 150 s');
@@ -47,8 +47,8 @@ try {
   expect(p1.sessionId && p2.sessionId && p1.sessionId !== p2.sessionId, 'two different sessions');
   const read = async (id) => Buffer.from((await zreq(s, 'session.read', { sessionId: id })).data, 'base64').toString();
   expect((await read(p2.sessionId)).includes('OUT:' + marker), 'marker in pane 2');
-  firstDaemon = daemonPid();
-  step(`two panes on different sessions, ratio ${before.root.ratio.toFixed(3)}, revision ${before.revision}, daemon pid ${firstDaemon}`);
+  firstDaemon = daemonRecord();
+  step(`two panes on different sessions, ratio ${before.root.ratio.toFixed(3)}, revision ${before.revision}, daemon pid ${firstDaemon.pid}`);
   const onDisk = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'state.json'), 'utf8'));
   expect(shape(treeOnDisk(onDisk.layout)) === shape(before) && onDisk.layout.revision === before.revision, 'state.json matches the live layout');
   step('state.json on disk matches the daemon layout');
@@ -78,11 +78,11 @@ try {
   if (child.exitCode !== null) console.log(`[verify] note: electron exited ${Date.now() - closedAt} ms after window.close()`);
   expect(child.exitCode !== null, 'electron exited on window close');
   await sleep(500);
-  const alive = spawn('tasklist', ['/FI', `PID eq ${firstDaemon}`]);
+  const alive = spawn('tasklist', ['/FI', `PID eq ${firstDaemon.pid}`]);
   let tl = '';
   alive.stdout.on('data', (d) => (tl += d));
   await new Promise((r) => alive.on('exit', r));
-  expect(tl.includes(String(firstDaemon)), 'daemon survived the app quitting');
+  expect(tl.includes(String(firstDaemon.pid)), 'daemon survived the app quitting');
   step('app quit, daemon still running');
 
   s = await launch(s.port + 1);
@@ -100,7 +100,7 @@ try {
   // 3. Daemon restart. The app autostarts a fresh daemon, which loads
   // state.json. Sessions died with the old daemon (M5 brings them back as
   // exited), so the panes report that; the tree, ratio and focus survive.
-  spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(firstDaemon, { tree: false });
   await s.waitFor(`!!document.querySelector('.banner')`, 'disconnected banner');
   step('daemon killed, app shows the disconnected banner');
   await s.waitFor(`!document.querySelector('.banner')`, 'reconnect after daemon autostart', 20000);
@@ -110,7 +110,7 @@ try {
   expect(afterDaemon.revision === before.revision, 'revision persisted through daemon restart');
   expect((await s.evalJs(`document.querySelectorAll('.term-host').length`)) === 2, 'both panes still mounted');
   const newPid = daemonPid();
-  expect(newPid !== firstDaemon, 'a new daemon was started');
+  expect(newPid !== firstDaemon.pid, 'a new daemon was started');
   await s.screenshot('m2-persist-after-daemon-restart.png');
   step(`daemon restart: app autostarted pid ${newPid}, reconnected, layout restored from state.json`);
   step('PASS');
@@ -123,6 +123,6 @@ try {
   s.close();
   killTree(s.child);
   stopDaemon();
-  if (firstDaemon !== null) spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(firstDaemon, { tree: false });
   setTimeout(() => process.exit(process.exitCode ?? 0), 500);
 }

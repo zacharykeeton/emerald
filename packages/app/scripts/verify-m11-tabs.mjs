@@ -580,7 +580,12 @@ try {
   await s.evalJs(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(secondTabId)}]').click()`);
   await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(secondTabId)}`, 'a click on a layout tab');
   await s.screenshot('m36-two-tabs.png');
-  step('a shell in the second tab is off screen in the first; n and p switch and wrap');
+  // M9 fix 1062: the prefixed chords in the strip's titles come from
+  // BINDINGS and the live prefix, in the upper case the cheat sheet prints.
+  const stripTitles = await s.evalJs(`({ add: document.querySelector('.tab-add')?.title ?? null, second: document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(secondTabId)}]')?.title ?? null })`);
+  expect(stripTitles.add === 'New layout tab (Ctrl+B C)', `the + says New layout tab (Ctrl+B C), got ${JSON.stringify(stripTitles.add)}`);
+  expect(typeof stripTitles.second === 'string' && stripTitles.second.endsWith(' (Ctrl+B N and P switch)'), `the second layout tab's title ends (Ctrl+B N and P switch), got ${JSON.stringify(stripTitles.second)}`);
+  step('a shell in the second tab is off screen in the first; n and p switch and wrap; M9 fix 1062: the + and the layout tabs name their prefixed chords in upper case');
 
   // M9 fix 40, the other half: from the first tab with a file tab in
   // front, a click on the row of the shell in the second tab puts the

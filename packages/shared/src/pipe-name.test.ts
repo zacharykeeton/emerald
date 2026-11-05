@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { isNoDaemon, pipePathOf, pipeUser, readPipeToken, sameHome, emeraldHomeOf } from './pipe-name.ts';
+import { foldsCase, isNoDaemon, pipePathOf, pipeUser, readPipeToken, sameHome, emeraldHomeOf } from './pipe-name.ts';
 import { mkTemp, removeTemps } from './test-temp.ts';
 
 after(async () => {
@@ -33,6 +33,24 @@ test('a user name keeps its letters and digits, or is hashed when none are left'
   assert.match(pipeUser('ユーザー'), /^[0-9a-f]{8}$/);
   assert.notEqual(pipeUser('ユーザー'), pipeUser('用户'));
   if (process.platform === 'win32') assert.equal(sameHome('C:\\a\\b', 'c:\\A\\B\\'), true);
+});
+
+// M9 fix 1070: a home is compared case-blind only where the disk is. On
+// Windows path.resolve makes these C:\tmp\A and C:\tmp\a, which still
+// differ only by case, so the reads hold on both.
+test('a home compares case-blind on Windows and a Mac, exactly on Linux', () => {
+  assert.equal(sameHome('/tmp/A', '/tmp/a', 'linux'), false);
+  assert.equal(sameHome('/tmp/A', '/tmp/a', 'darwin'), true);
+  assert.equal(sameHome('/tmp/A', '/tmp/a', 'win32'), true);
+  assert.equal(sameHome('/tmp/A', '/tmp/A', 'linux'), true);
+  assert.equal(foldsCase('win32'), true);
+  assert.equal(foldsCase('darwin'), true);
+  assert.equal(foldsCase('linux'), false);
+  // The pipe name's hash, pinned off the build before the change, so no
+  // running daemon's pipe moves.
+  if (process.platform === 'win32') {
+    assert.equal(pipePathOf({ EMERALD_HOME: 'C:\\Users\\x\\AppData\\Local\\Temp\\emerald-verify-a' }, 'Zachary.Keeton', 'win32'), '\\\\.\\pipe\\emmerd-zacharykeeton-7594883d');
+  }
 });
 
 // M9 fix 544: an empty or blank EMERALD_HOME counts as unset on every side.

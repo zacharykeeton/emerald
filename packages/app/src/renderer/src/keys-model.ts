@@ -200,12 +200,58 @@ export function chordMatches(c: Chord, ev: KeyLike): boolean {
   return c.code === ev.code && c.ctrl === ev.ctrlKey && c.shift === ev.shiftKey && c.alt === ev.altKey && c.meta === ev.metaKey;
 }
 
-export function matchPlain(ev: KeyLike): Action | null {
+// M9 fix 1063: the platform the window runs on, from the preload's
+// `window.emerald.platform`. The preload runs before any renderer module, so
+// a text computed at module load gets the right form; under node:test there
+// is no `emerald` global and every test reads win32 on any machine.
+export function hostPlatform(): string {
+  return (globalThis as { emerald?: { platform?: string } }).emerald?.platform ?? 'win32';
+}
+
+// On a Mac every plain Ctrl chord has a Cmd twin beside it, the same chord
+// with Cmd in Ctrl's place, but not these three: Cmd+Tab and Cmd+Shift+Tab
+// are macOS's app switcher and never reach the window, and Cmd+Shift+Z is
+// redo in every text field, which the window's capture-phase keydown would
+// take from the chat input and the editor.
+const NO_CMD_TWIN: ReadonlySet<Action> = new Set(['focus-next', 'focus-prev', 'toggle-focus']);
+
+function cmdTwin(c: Chord): Chord | null {
+  return c.ctrl && !c.meta ? { ...c, ctrl: false, meta: true } : null;
+}
+
+// The Cmd twins of a binding's plain chord and its alias, plain first.
+function twinsOf(b: Binding): Chord[] {
+  if (NO_CMD_TWIN.has(b.action)) return [];
+  const out: Chord[] = [];
+  for (const c of [b.plain, b.alias]) {
+    const t = c === null || c === undefined ? null : cmdTwin(c);
+    if (t !== null) out.push(t);
+  }
+  return out;
+}
+
+export function matchPlain(ev: KeyLike, platform: string = hostPlatform()): Action | null {
   for (const b of BINDINGS) {
     if (b.plain !== null && chordMatches(b.plain, ev)) return b.action;
     if (b.alias !== undefined && chordMatches(b.alias, ev)) return b.action;
+    if (platform === 'darwin' && twinsOf(b).some((t) => chordMatches(t, ev))) return b.action;
   }
   return null;
+}
+
+// The chords a browser guest forwards to the window (keys.ts sends them to
+// main): every plain chord and alias, then on a Mac their Cmd twins.
+export function guestChords(platform: string = hostPlatform()): Chord[] {
+  const chords = BINDINGS.flatMap((b) => [...(b.plain === null ? [] : [b.plain]), ...(b.alias === undefined ? [] : [b.alias])]);
+  return platform === 'darwin' ? [...chords, ...BINDINGS.flatMap(twinsOf)] : chords;
+}
+
+// Ctrl and the key with no Shift or Alt, or on a Mac Cmd in Ctrl's place:
+// the file tab's close, the save and the find in a file's view.
+export function isCtrlOrCmdKey(ev: KeyLike, code: string, platform: string = hostPlatform()): boolean {
+  if (ev.code !== code || ev.shiftKey || ev.altKey) return false;
+  if (ev.ctrlKey && !ev.metaKey) return true;
+  return platform === 'darwin' && ev.metaKey && !ev.ctrlKey;
 }
 
 // The key after the prefix.
@@ -244,11 +290,14 @@ export function parseKeySpec(spec: string): Chord | null {
         mods.shift = true;
         break;
       case 'alt':
+      case 'option':
         mods.alt = true;
         break;
       case 'meta':
       case 'win':
       case 'super':
+      case 'cmd':
+      case 'command':
         mods.meta = true;
         break;
       default:
@@ -271,13 +320,22 @@ function keyToCode(key: string): string | null {
   return /^[A-Za-z][A-Za-z0-9]*$/.test(key) ? key : null;
 }
 
-// The display form used by the cheat sheet and the prefix indicator.
-export function formatChord(c: Chord): string {
+// The display form used by the cheat sheet and the prefix indicator. On a
+// Mac (M9 fix 1063) in Apple's menu order and words, Cmd, Ctrl, Option,
+// Shift, so a hint reads as the keyboard is labelled; never the glyphs.
+export function formatChord(c: Chord, platform: string = hostPlatform()): string {
   const parts: string[] = [];
-  if (c.ctrl) parts.push('Ctrl');
-  if (c.alt) parts.push('Alt');
-  if (c.shift) parts.push('Shift');
-  if (c.meta) parts.push('Win');
+  if (platform === 'darwin') {
+    if (c.meta) parts.push('Cmd');
+    if (c.ctrl) parts.push('Ctrl');
+    if (c.alt) parts.push('Option');
+    if (c.shift) parts.push('Shift');
+  } else {
+    if (c.ctrl) parts.push('Ctrl');
+    if (c.alt) parts.push('Alt');
+    if (c.shift) parts.push('Shift');
+    if (c.meta) parts.push('Win');
+  }
   parts.push(codeToName(c.code, c.shift));
   return parts.join('+');
 }
@@ -307,9 +365,26 @@ function codeToName(code: string, shift: boolean): string {
 }
 
 // The plain chord for an action as the menus show it, or '' if it has none.
-export function plainKeyFor(action: Action): string {
+// On a Mac its Cmd twin when it has one (M9 fix 1063).
+export function plainKeyFor(action: Action, platform: string = hostPlatform()): string {
   const b = BINDINGS.find((x) => x.action === action);
-  return b === undefined || b.plain === null ? '' : formatChord(b.plain);
+  if (b === undefined || b.plain === null) return '';
+  const twin = platform === 'darwin' && !NO_CMD_TWIN.has(action) ? cmdTwin(b.plain) : null;
+  return formatChord(twin ?? b.plain, platform);
+}
+
+// The prefixed chord for an action, the prefix the user set and then the
+// key after it (`Ctrl+B C`), or '' if it has none (M9 fix 1062). The prefix
+// is passed in as its printed form, since the live one lives in keys.ts.
+export function prefixedKeyFor(action: Action, prefix: string): string {
+  const b = BINDINGS.find((x) => x.action === action);
+  return b === undefined || b.prefixed === null ? '' : `${prefix} ${formatChord(b.prefixed)}`;
+}
+
+// The layout tab's title tail: `Ctrl+B N and P switch`.
+export function layoutSwitchKeys(prefix: string): string {
+  const prev = BINDINGS.find((x) => x.action === 'prev-layout-tab')?.prefixed;
+  return `${prefixedKeyFor('next-layout-tab', prefix)} and ${prev ? formatChord(prev) : ''} switch`;
 }
 
 // Shift+Enter in a Claude pane (M28). Claude Code takes a newline in its
@@ -342,6 +417,14 @@ export function isPasteKey(ev: KeyLike & { key?: string; keyCode?: number }): bo
   if (!ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return false;
   if (ev.code === 'KeyV') return true;
   return ev.code === '' && (ev.key === 'v' || ev.key === 'V' || ev.keyCode === 86);
+}
+
+// Whether a terminal pane takes the key as its own paste (M9 fix 1063). On a
+// Mac it does not: Ctrl+V there is Claude Code's own image paste, so it goes
+// to the program as ^V, and Cmd+V is the edit menu's Paste, which xterm
+// takes as a paste event.
+export function panePastes(ev: KeyLike & { key?: string; keyCode?: number }, platform: string = hostPlatform()): boolean {
+  return platform !== 'darwin' && isPasteKey(ev);
 }
 
 // The byte a terminal sends for Ctrl+V when nothing intercepts it.

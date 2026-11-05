@@ -361,6 +361,10 @@ async function main() {
   const s6 = 'the app launches';
   if (gated('launch', s6, ['bundle'])) {
     const exe = path.join(appPath, 'Contents', 'MacOS', 'Emerald');
+    // The smoke reads the PATH strip (step 10) and never the hooks one, and
+    // since fix 1072 the PATH strip waits while the hooks strip is up; the
+    // private Claude settings have no hooks, so the hooks prompt is off.
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ promptHooks: false }));
     child = spawn(exe, [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(home, 'profile')}`], {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -506,9 +510,31 @@ async function main() {
     }
   }
 
-  // 13. The window quits by CDP's Browser.close.
-  const s13 = 'the window quits';
-  if (gated('quit', s13, ['launch'])) {
+  // 13. Cmd+Shift+E splits a pane and the hints say Cmd (M9 fix 1063). A
+  // CDP key goes straight to the page, never past the macOS menu, so this
+  // proves the matcher and the hints, not whether a menu item takes the key
+  // first (the install's eye reads that).
+  const s13 = 'Cmd+Shift+E splits a pane and the hints say Cmd';
+  if (gated('cmd', s13, ['window'])) {
+    try {
+      await page.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      const n = await evalJs(page, "document.querySelectorAll('.pane').length");
+      const title = await evalJs(page, "document.querySelector('.sidebar-collapse')?.title ?? null");
+      const keyArgs = { key: 'E', code: 'KeyE', windowsVirtualKeyCode: 69, nativeVirtualKeyCode: 69, modifiers: 12 };
+      await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...keyArgs });
+      await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...keyArgs });
+      const split = await until(5000, async () => ((await evalJs(page, "document.querySelectorAll('.pane').length")) === n + 1 ? true : null));
+      const after = await evalJs(page, "document.querySelectorAll('.pane').length");
+      if (title === 'Hide sidebar (Cmd+Shift+B)' && split === true) pass('cmd', s13);
+      else fail('cmd', s13, `the sidebar's hide button reads ${JSON.stringify(title)} (want "Hide sidebar (Cmd+Shift+B)"), and the panes went ${n} to ${after} in 5 s after Cmd+Shift+E (want ${n + 1})`);
+    } catch (err) {
+      fail('cmd', s13, err.message);
+    }
+  }
+
+  // 14. The window quits by CDP's Browser.close.
+  const s14 = 'the window quits';
+  if (gated('quit', s14, ['launch'])) {
     try {
       page?.close();
       page = null;
@@ -521,29 +547,29 @@ async function main() {
         browser.close();
       }
       const gone = await until(20_000, () => (childExited ? true : null));
-      if (gone === true) pass('quit', s13);
-      else fail('quit', s13, 'the app was still running 20 s after Browser.close');
+      if (gone === true) pass('quit', s14);
+      else fail('quit', s14, 'the app was still running 20 s after Browser.close');
     } catch (err) {
-      fail('quit', s13, err.message);
+      fail('quit', s14, err.message);
     }
   }
 
-  // 14. The daemon stops through the CLI; its record and socket go.
-  const s14 = 'the daemon stops';
-  if (gated('stop', s14, ['daemon'])) {
+  // 15. The daemon stops through the CLI; its record and socket go.
+  const s15 = 'the daemon stops';
+  if (gated('stop', s15, ['daemon'])) {
     const r = runSync('sh', [emmer, 'daemon', 'stop'], { env, timeout: 30_000 });
     if (r.status !== 0) {
-      fail('stop', s14, `emmer daemon stop exited ${r.status}: ${(r.stdout + r.stderr).trim()}`);
+      fail('stop', s15, `emmer daemon stop exited ${r.status}: ${(r.stdout + r.stderr).trim()}`);
     } else {
       const gone = await until(10_000, () => (!fs.existsSync(path.join(home, 'daemon.json')) && !fs.existsSync(sock) ? true : null));
-      if (gone === true) pass('stop', s14);
-      else fail('stop', s14, `still there 10 s after the stop: ${[path.join(home, 'daemon.json'), sock].filter((f) => fs.existsSync(f)).join(', ')}`);
+      if (gone === true) pass('stop', s15);
+      else fail('stop', s15, `still there 10 s after the stop: ${[path.join(home, 'daemon.json'), sock].filter((f) => fs.existsSync(f)).join(', ')}`);
     }
   }
 
-  // 15. Nothing of the bundle or the home left running.
-  const s15 = 'nothing is left running';
-  NAMES.set('left', s15);
+  // 16. Nothing of the bundle or the home left running.
+  const s16 = 'nothing is left running';
+  NAMES.set('left', s16);
   {
     let lines = [];
     const clear = await until(10_000, () => {
@@ -558,8 +584,23 @@ async function main() {
         });
       return lines.length === 0 ? true : null;
     }, 500);
-    if (clear === true) pass('left', s15);
-    else fail('left', s15, `still running: ${lines.join(' | ')}`);
+    if (clear === true) pass('left', s16);
+    else fail('left', s16, `still running: ${lines.join(' | ')}`);
+  }
+
+  // 17. main.log holds no uncaught exception (fix 1071).
+  const s17 = 'main.log holds no uncaught exception';
+  if (gated('mainlog', s17, ['launch'])) {
+    const mainLog = path.join(home, 'logs', 'main.log');
+    if (!fs.existsSync(mainLog)) {
+      fail('mainlog', s17, 'no main.log');
+    } else {
+      // Only an uncaught exception fails; an unhandled rejection line stays
+      // in home-logs for a person to read.
+      const hit = fs.readFileSync(mainLog, 'utf8').split('\n').find((l) => l.includes('uncaught exception in main'));
+      if (hit === undefined) pass('mainlog', s17);
+      else fail('mainlog', s17, hit.slice(0, 300));
+    }
   }
 
   say(`smoke-mac: ${steps} steps, ${failed} failed, in ${Math.round((Date.now() - t0) / 1000)} s`);

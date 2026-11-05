@@ -3,7 +3,8 @@ import type { LayoutTab, SessionInfo } from '@emerald/shared';
 import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
 import { closeLayoutTab, moveTabToNewWindow, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
 import { shadeablePanes } from './shade-model.ts';
-import { plainKeyFor } from './keys-model.ts';
+import { layoutSwitchKeys, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
+import { usePrefixText } from './keys.ts';
 import { Menu } from './Menu.tsx';
 import { RenameBox } from './RenameBox.tsx';
 import { colorStyle } from './session-color.ts';
@@ -22,7 +23,7 @@ import { useEditStates } from './file-edits.ts';
 import { useRunningShells } from './rates-store.ts';
 import { clearZoom, closeAllTabs, closeFileTab, closeOtherTabs, liftPanes, moveTabKey, pinFileTab, revealInFiles, shadePanes, showTab, tabOrderFor, useUi } from './ui.ts';
 import { layoutTabKey, layoutTabOf } from './tab-order.ts';
-import { ARROW_REPEAT_DELAY_MS, ARROW_REPEAT_MS, pageTarget, stripCut, tabMark, tabWanting, wheelStep } from './tab-strip-model.ts';
+import { ARROW_REPEAT_DELAY_MS, ARROW_REPEAT_MS, pageTarget, stripCut, tabMark, tabWanting, wheelStep, zoomHidesWanting } from './tab-strip-model.ts';
 import type { StripCut } from './tab-strip-model.ts';
 import { startTabDrag } from './tab-drag.ts';
 
@@ -46,6 +47,7 @@ export function TabStrip() {
   const edits = useEditStates();
   const dirty = new Set([...edits].filter(([, e]) => e.dirty).map(([k]) => k));
   const { layout, daemon, sessions } = useStore('layout', 'daemon', 'sessions');
+  const prefixText = usePrefixText();
   // M9 fix 627: the shells running output now, for a tab's shell mark.
   const runningShells = useRunningShells(sessions);
   // M9 fix 180: whether a file tab drags onto a pane, and the tab a
@@ -187,7 +189,7 @@ export function TabStrip() {
   const show = (tab: LayoutTab) => {
     showTab(PANES);
     if (tab.id !== currentTabId) void showLayoutTab(tab.id).catch(warn('switch tab'));
-    else if (zoomedPaneId !== null && tabWanting(tab, true, zoomedPaneId, sessions, attention.wanting) !== undefined) clearZoom();
+    else if (zoomedPaneId !== null && zoomHidesWanting(tab, zoomedPaneId, sessions, attention.wanting)) clearZoom();
   };
   const rename = (tab: LayoutTab, name: string | null) => {
     setRenaming(null);
@@ -197,7 +199,7 @@ export function TabStrip() {
   const layoutTab = (tab: LayoutTab) => {
     const current = tab.id === currentTabId;
     const focusedSession = focusedSessionOf(tab, sessions);
-    const wanting = tabWanting(tab, current && tabs.active === PANES, current ? zoomedPaneId : null, sessions, attention.wanting);
+    const wanting = tabWanting(tab, sessions, attention.wanting);
     const mark = tabMark(tab, sessions, wanting, runningShells);
     return (
       <div
@@ -212,7 +214,7 @@ export function TabStrip() {
         data-attention={wanting}
         data-color={focusedSession?.color ?? undefined}
         style={focusedSession === undefined ? undefined : colorStyle(focusedSession)}
-        title={layoutTabs.length > 1 ? `${tab.name} (Ctrl+B n and p switch)` : 'The panes'}
+        title={layoutTabs.length > 1 ? `${tab.name} (${layoutSwitchKeys(prefixText)})` : 'The panes'}
         onClick={() => show(tab)}
         onDoubleClick={() => setRenaming(tab.id)}
         onAuxClick={(ev) => {
@@ -355,7 +357,7 @@ export function TabStrip() {
           <button
             className="tab-add"
             data-pane-drop={(sessionDrag?.tabTarget != null && 'newTab' in sessionDrag.tabTarget) || undefined}
-            title="New layout tab (Ctrl+B c)"
+            title={`New layout tab (${prefixedKeyFor('new-layout-tab', prefixText)})`}
             // M9 fix 1011: a file tab in front goes back to the panes, as prefix c does.
             onClick={() => {
               showTab(PANES);

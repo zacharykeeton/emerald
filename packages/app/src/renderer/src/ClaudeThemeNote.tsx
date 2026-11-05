@@ -22,7 +22,9 @@ export function ClaudeThemeNote({ session }: { session: SessionInfo }) {
   if (note === null) return null;
   return (
     <div className="claude-theme-note" data-pairing={note.pairing}>
-      <span className="claude-theme-note-text">{note.words}</span>
+      <span className="claude-theme-note-text" title={note.words}>
+        {note.words}
+      </span>
       <button className="claude-theme-note-dismiss" title={note.dismissTitle} onClick={() => dismissClaudeThemeNote(note.pairing)}>
         Dismiss
       </button>

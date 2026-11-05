@@ -3,7 +3,7 @@ import type { SessionInfo } from '@emerald/shared';
 import { unwrapPasted } from '@emerald/shared';
 import { switchDialog } from '@emerald/shared';
 import { normalizePath, relativePath } from './files-model.ts';
-import { isQuestionDialog } from './screen-prompt-model.ts';
+import { aboveBtwPanel, isQuestionDialog } from './screen-prompt-model.ts';
 // M9 fix 973: Claude Code's command table lives in claude-commands.ts.
 import { ARGUMENT_COMMANDS, SENT_COMMANDS, TERMINAL_ALIASES, TERMINAL_COMMANDS } from './claude-commands.ts';
 export { ARGUMENT_COMMANDS, SENT_COMMANDS, TERMINAL_ALIASES, TERMINAL_COMMANDS } from './claude-commands.ts';
@@ -84,7 +84,9 @@ export function faceOf(chatPanes: ReadonlyMap<string, string>, paneId: string, s
 const SPINNER_ROW = /^\s*[·✢*✶✻✽✳⋆]\s+([A-Za-z][\w'-]*)…(?:\s+\((.*)\))?\s*$/;
 const DOWN = /↓\s*([\d.,]+[kKmM]?)\s*tokens/;
 
-export function spinnerOf(rows: readonly string[]): { word: string; down: string | null } | null {
+export function spinnerOf(allRows: readonly string[]): { word: string; down: string | null } | null {
+  // M9 fix 1058: the /btw panel's own Answering row sits below the turn's spinner; only the rows above the panel are the turn's
+  const rows = aboveBtwPanel(allRows);
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const m = SPINNER_ROW.exec(rows[i]!);
     if (m === null) continue;
@@ -805,11 +807,46 @@ export function foldTone(tools: readonly ToolStep[]): FoldTone {
   return tools[tools.length - 1]?.result?.error ? 'error' : 'done';
 }
 
-// Claude Code's prompt row: the last screen row starting with its glyph
-// (M9 fix 748).
+// M9 fix 1059: the index of Claude Code's prompt row. The last row starting
+// with ❯ (after its indent) whose row above starts with a rule (─), which is
+// the prompt box's top rule; a dialog's or a notice's pointer row has text
+// or a │ frame above it (auto mode's "Teach auto mode" notice draws its
+// `  ❯ 1. Yes` under its body text). With no such row, the last row whose
+// first character is ❯, since the notice's pointer is indented two and a
+// stub shell's prompt has no box; else -1.
+export function promptRowAt(rows: readonly string[]): number {
+  for (let i = rows.length - 1; i >= 1; i--) if (rows[i]!.trimStart().startsWith('❯') && rows[i - 1]!.trimStart().startsWith('─')) return i;
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.startsWith('❯')) return i;
+  return -1;
+}
+
+// M9 fix 748, 1059: Claude Code's prompt row (promptRowAt's).
 export function promptRow(rows: readonly string[]): string | null {
-  for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.trimStart().startsWith('❯')) return rows[i]!;
+  const y = promptRowAt(rows);
+  return y < 0 ? null : rows[y]!;
+}
+
+// M9 fix 1059: the title of a notice Claude Code draws under its prompt
+// box with numbered choices, such as auto mode's "Teach auto mode about
+// your environment?", which holds the keys while it is drawn: the first
+// non-blank row after the last rule below the prompt row, when a `❯ n.`
+// pointer row follows that rule; else null.
+export function noticeOf(rows: readonly string[]): string | null {
+  const y = promptRowAt(rows);
+  if (y < 0) return null;
+  let rule = -1;
+  for (let i = y + 1; i < rows.length; i++) {
+    const t = rows[i]!.trim();
+    if (t.startsWith('─')) rule = i;
+    else if (rule >= 0 && /^❯ \d+\. /.test(t)) {
+      for (let j = rule + 1; j < i; j++) if (rows[j]!.trim() !== '') return rows[j]!.trim();
+      return null;
+    }
+  }
   return null;
+}
+export function noticeRefusal(title: string): string {
+  return `Claude Code is asking '${title}'; answer it in the terminal first`;
 }
 
 // The image numbers on the prompt row alone, so a sent prompt's marker in
@@ -869,18 +906,23 @@ export function carryRead(
   expect: string | null = null,
 ): CarryRead {
   const { rows, ghost } = screen;
-  let y = -1;
+  const y = promptRowAt(rows);
+  if (y < 0) return { kind: 'none' };
+  // M9 fix 1059: the daemon computes the reply's ghost on its own row, the
+  // last one starting with ❯ (pty-session.ts:335); a ghost taken off
+  // another row is read as a reply without the field.
+  let daemonRow = -1;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (rows[i]!.trimStart().startsWith('❯')) {
-      y = i;
+      daemonRow = i;
       break;
     }
   }
-  if (y < 0) return { kind: 'none' };
+  const g = daemonRow === y ? ghost : undefined;
   let row = rows[y]!;
-  if (ghost !== undefined && ghost !== null && ghost.y === y) row = row.slice(0, ghost.x);
+  if (g !== undefined && g !== null && g.y === y) row = row.slice(0, g.x);
   let text = row.trimStart().slice(1).trim();
-  if (ghost === undefined) {
+  if (g === undefined) {
     for (const p of PLACEHOLDERS) {
       const m = p.exec(text);
       if (m !== null) {

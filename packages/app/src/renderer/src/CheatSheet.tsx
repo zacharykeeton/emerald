@@ -1,5 +1,5 @@
 import { currentPrefix } from './keys.ts';
-import { BINDINGS, formatChord, plainKeyFor } from './keys-model.ts';
+import { BINDINGS, formatChord, hostPlatform, plainKeyFor } from './keys-model.ts';
 import { useSkin } from './skin.ts';
 import { closeCheatSheet, useUi } from './ui.ts';
 import { noteIn } from './copy-note.ts';
@@ -37,12 +37,14 @@ export function CheatSheet() {
               <tr key={b.action} data-action={b.action}>
                 <td>{b.label}</td>
                 <td>{b.prefixed === null ? '' : formatChord(b.prefixed)}</td>
-                <td>{b.plain === null ? '' : formatChord(b.plain)}</td>
+                <td>{plainKeyFor(b.action)}</td>
               </tr>
             ))}
           </tbody>
         </table>
         <div className="muted">Change the prefix with {'{"prefixKey": "Ctrl+Space"}'} in ~/.emerald/config.json.</div>
+        {/* M9 fix 1063: the sheet prints the Cmd twins on a Mac; the Ctrl forms still work. */}
+        {hostPlatform() === 'darwin' && <div className="muted cheat-cmd">Each Cmd chord works with Ctrl in its place too.</div>}
       </div>
     </div>
   );

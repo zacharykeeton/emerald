@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
-import { publishFeed, serveFeed, sha512Base64 } from './feed.ts';
+import { CliError } from './cli-error.ts';
+import { defaultFeedDir, publishFeed, resolveFeedDir, serveFeed, sha512Base64 } from './feed.ts';
 
 // M9 fix 406: this file used to kill its own process at exit. About one
 // run in three (twelve in twenty measured here) it died on libuv's
@@ -54,6 +55,17 @@ function release(version: string, withBlockmap = true): string {
 test.after(removeTemps);
 
 const feedDir = () => path.join(mkTemp('emerald-feed-'), 'feed');
+
+test('the default feed folder is a Windows one, and off Windows --dir is needed (M9 fix 1069)', () => {
+  assert.equal(defaultFeedDir({ LOCALAPPDATA: 'C:\\L' }, 'win32'), path.join('C:\\L', 'emerald-feed'));
+  assert.equal(defaultFeedDir({ LOCALAPPDATA: 'C:\\L' }, 'darwin'), null);
+  assert.equal(defaultFeedDir({ LOCALAPPDATA: 'C:\\L' }, 'linux'), null);
+  assert.equal(resolveFeedDir('/x', {}, 'darwin'), '/x');
+  assert.throws(
+    () => resolveFeedDir(undefined, {}, 'darwin'),
+    (err: unknown) => err instanceof CliError && err.exitCode === 64 && /--dir <feed dir>/.test(err.message),
+  );
+});
 
 test('publish copies the three files into a feed folder it creates', () => {
   const feed = feedDir();

@@ -19,8 +19,12 @@ import { FEED_DIR_NAME, FEED_MANIFEST } from './feed.ts';
 const SERVED = /^[^/\\]+\.exe(\.blockmap)?$/i;
 
 // %LOCALAPPDATA%\emerald-feed on Windows: beside the installed app, and not
-// under ~/.emerald, whose files the verify scripts wipe by the folder.
-export function defaultFeedDir(env: NodeJS.ProcessEnv = process.env): string {
+// under ~/.emerald, whose files the verify scripts wipe by the folder. A Mac
+// and Linux have no local feed (M9 fix 1069): the server serves only .exe
+// names (SERVED above), so a folder there would answer nothing an update
+// could use, and the fallback below would land under the working directory.
+export function defaultFeedDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32') return null;
   const base = env['LOCALAPPDATA'] ?? path.join(env['USERPROFILE'] ?? process.cwd(), 'AppData', 'Local');
   return path.join(base, FEED_DIR_NAME);
 }

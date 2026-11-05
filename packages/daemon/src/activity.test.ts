@@ -938,6 +938,8 @@ test('a full-payload generation is slimmed in place at the start, its overlap an
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+const windowsLock = { skip: process.platform !== 'win32' && 'needs a Windows file lock' };
+
 // Opens a file for read, sharing read and write but not delete, and holds
 // it for two seconds in another process; resolves once the handle is
 // open, to the holder's exit (wrapped, since an async function that
@@ -958,7 +960,7 @@ async function holdWithoutDelete(file: string): Promise<{ exited: Promise<void> 
 // that matters fail; the rotation used to have shifted and dropped the
 // generations by then, and each hourly retry dropped one more (M9 fix
 // 465, the ledger's H4).
-test('a rotation that cannot rename the current file leaves every generation as it was (M9 fix 465)', async () => {
+test('a rotation that cannot rename the current file leaves every generation as it was (M9 fix 465)', windowsLock, async () => {
   const dir = fs.realpathSync.native(mkTemp('emerald-activity-held-'));
   const file = path.join(dir, 'hooks.jsonl');
   const body = (n: number | 'current') => `{"generation":"${n}"}\n`;
@@ -987,7 +989,7 @@ test('a rotation that cannot rename the current file leaves every generation as 
 // removed before the held rename was met), and with generation 2 held the
 // temporary was renamed over generation 1 while the call said it rotated
 // (M9 fix 555): now every step is a rename that is undone.
-test('a rotation over a held generation 1 leaves every generation as it was (M9 fix 555)', async () => {
+test('a rotation over a held generation 1 leaves every generation as it was (M9 fix 555)', windowsLock, async () => {
   const dir = fs.realpathSync.native(mkTemp('emerald-activity-heldgen-'));
   const file = path.join(dir, 'hooks.jsonl');
   const body = (n: number | 'current') => `{"generation":"${n}"}\n`;
@@ -1009,7 +1011,7 @@ test('a rotation over a held generation 1 leaves every generation as it was (M9 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('a rotation over a held generation 2 leaves every generation as it was (M9 fix 555)', async () => {
+test('a rotation over a held generation 2 leaves every generation as it was (M9 fix 555)', windowsLock, async () => {
   const dir = fs.realpathSync.native(mkTemp('emerald-activity-heldgen-'));
   const file = path.join(dir, 'hooks.jsonl');
   const body = (n: number | 'current') => `{"generation":"${n}"}\n`;

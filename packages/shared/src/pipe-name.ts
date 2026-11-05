@@ -38,12 +38,23 @@ export function pipeUser(name: string): string {
 // pipe before the daemon makes the folder) must hash the same as it will
 // once it exists, where realpath would turn %TEMP%'s 8.3 form into the
 // long one only after.
-export function homeKey(home: string): string {
-  return path.resolve(home).toLowerCase();
+//
+// Lower-cased only where the disk folds case (M9 fix 1070): on Linux
+// /tmp/A and /tmp/a are two homes, and the other-home warning must say so.
+export function homeKey(home: string, platform: NodeJS.Platform = process.platform): string {
+  const resolved = path.resolve(home);
+  return foldsCase(platform) ? resolved.toLowerCase() : resolved;
 }
 
-export function sameHome(a: string, b: string): boolean {
-  return homeKey(a) === homeKey(b);
+export function sameHome(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  return homeKey(a, platform) === homeKey(b, platform);
+}
+
+// Whether a platform's disk compares names case-blind (M9 fix 1070):
+// Windows and a stock Mac disk (APFS, case-insensitive by default) do,
+// ext4 and the other Linux file systems do not.
+export function foldsCase(platform: NodeJS.Platform): boolean {
+  return platform === 'win32' || platform === 'darwin';
 }
 
 // EMERALD_HOME trimmed, or undefined when it is unset or empty, so an empty
@@ -80,7 +91,9 @@ export function pipePathOf(env: NodeJS.ProcessEnv = process.env, user: string = 
   }
   const base = `\\\\.\\pipe\\emmerd-${pipeUser(user)}`;
   const home = namedHome(env);
-  return home === undefined ? base : `${base}-${sha1Hex8(homeKey(home))}`;
+  // Folded as on win32 always, so the hash stays byte for byte and no
+  // running daemon's pipe moves (M9 fix 1070); this line is win32's alone.
+  return home === undefined ? base : `${base}-${sha1Hex8(homeKey(home, 'win32'))}`;
 }
 
 // Whether a connect's error means no daemon is there (M9 fix 1015): a

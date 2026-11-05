@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MARK_STEPPING } from './mark-step.mjs';
+import { processIdentity } from '@emerald/shared/process-identity';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm9-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m9';
@@ -34,18 +35,20 @@ process.env['EMERALD_DAEMON_FEATURE_LEVEL'] = '1';
 process.env['NO_COLOR'] = '1';
 // M9 fix 204: a URL Ctrl+clicked in a pane goes to the main process, whose
 // bridge is sealed against a page-level stub, so the harness names a file
-// the main process writes the URL to instead of opening the browser.
-const openedLinks = path.join(os.tmpdir(), 'emerald-verify', 'm9-opened-links.log');
+// the main process writes the URL to instead of opening the browser, under
+// the run's own home (M9 fix 1050), so two runs on one box never read each
+// other's lines.
+const openedLinks = path.join(process.env['EMERALD_HOME'], 'm9-opened-links.log');
 fs.rmSync(openedLinks, { force: true });
 process.env['EMERALD_OPEN_LOG'] = openedLinks;
 // M9 fix 547: Another folder… answers this folder under the harness, the
 // chooser being a native dialog no script can drive.
-const pickedDir = path.join(os.tmpdir(), 'emerald-verify', 'm9-picked');
+const pickedDir = path.join(process.env['EMERALD_HOME'], 'm9-picked');
 process.env['EMERALD_PICK_FOLDER'] = pickedDir;
 // M9 fix 1035: the light scheme the fix 1035 block writes, and until then
 // no Windows Terminal schemes, so the run no longer lists the person's own.
 process.env['EMERALD_WT_SETTINGS'] = path.join(process.env['EMERALD_HOME'], 'wt-settings-1035.json');
-const { blockRunner, CTRL, SHIFT, daemonPid, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
+const { blockRunner, CTRL, SHIFT, daemonPid, daemonRecord, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
 // M9 fix 605: the steps after the prelude are blocks, each a closure a
@@ -846,7 +849,8 @@ try {
   // returns for the new pid because the override is still in the app's
   // environment (a real upgrade would start the shipped daemon and the
   // banner would go).
-  const oldPid = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'daemon.json'), 'utf8')).pid;
+  const oldDaemon = daemonRecord();
+  const oldPid = oldDaemon.pid;
   const bannerText = () => s.evalJs(`document.querySelector('.daemon-banner-text')?.textContent ?? null`);
   expect((await bannerText())?.includes(`pid ${oldPid}`) && (await bannerText()).includes('level 1'), `the banner names the daemon and its level, got ${await bannerText()}`);
   expect((await s.evalJs(`document.querySelector('.daemon-banner')?.dataset.daemonPid`)) === String(oldPid), 'banner for the current daemon');
@@ -874,7 +878,9 @@ try {
   // The old one is gone within a moment of the stop (M9 fix 164): a
   // daemon that released the pipe must not stay alive holding nothing.
   const goneBy = Date.now() + 5000;
-  const oldAlive = () => { try { process.kill(oldPid, 0); return true; } catch { return false; } };
+  // M9 fix 1048: by identity, since a bare process.kill(pid, 0) reads a
+  // number Windows has handed on as the old daemon still alive.
+  const oldAlive = () => processIdentity(oldPid, oldDaemon.startedAt) === 'same';
   while (Date.now() < goneBy && oldAlive()) await sleep(200);
   expect(!oldAlive(), `the old daemon ${oldPid} exited after the stop`);
   await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(lastShell)}]')?.dataset.state === 'exited'`, 'the shell is listed as exited');
@@ -4374,10 +4380,11 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       const words1035 = await s.evalJs(`document.querySelector(${JSON.stringify(band1035 + ' .claude-theme-note-text')}).textContent`);
       expect(words1035 === 'Claude Code is drawing in its dark theme on this light scheme. Type /theme in the session and pick Light.', `fix 1035: the dark-on-light words, got ${JSON.stringify(words1035)}`);
       const place1035 = await s.evalJs(
-        `(() => { const n = document.querySelector(${JSON.stringify(band1035)}); const r = n.getBoundingClientRect(); const text = n.querySelector('.claude-theme-note-text'); return { after: n.previousElementSibling?.classList.contains('pane-title') ?? false, height: r.height, width: r.width, lineHeight: parseFloat(getComputedStyle(text).lineHeight) || null, textHeight: text.getBoundingClientRect().height }; })()`,
+        `(() => { const n = document.querySelector(${JSON.stringify(band1035)}); const r = n.getBoundingClientRect(); const text = n.querySelector('.claude-theme-note-text'); return { after: n.previousElementSibling?.classList.contains('pane-title') ?? false, height: r.height, width: r.width, lineHeight: parseFloat(getComputedStyle(text).lineHeight) || null, textHeight: text.getBoundingClientRect().height, title: text.title }; })()`,
       );
       expect(place1035.after, `fix 1035: the band sits right under the pane title, got ${JSON.stringify(place1035)}`);
-      step(`fix 1035: the band takes ${place1035.height} px from the pane's terminal in a pane ${place1035.width} px wide (text ${place1035.textHeight} px at a ${place1035.lineHeight} px line)`);
+      expect(place1035.height <= 32 && place1035.textHeight < 24 && place1035.title === words1035, `fix 1065: the band keeps to one line (at most 32 px, the text under 24 px) with its whole words in the span's title, got ${JSON.stringify(place1035)}`);
+      step(`fix 1035: the band takes ${place1035.height} px on one line from the pane's terminal in a pane ${place1035.width} px wide (text ${place1035.textHeight} px at a ${place1035.lineHeight} px line)`);
 
       // Dismiss keeps it down.
       await s.evalJs(`document.querySelector(${JSON.stringify(band1035 + ' .claude-theme-note-dismiss')}).click()`);

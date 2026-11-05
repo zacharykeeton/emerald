@@ -15692,3 +15692,27 @@ div.rail-context-head-row:hover {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* M9 fix 1055: the Skills table's heading row per place a skill lives. */
+.context-view-section td { padding: 8px 12px 2px 0; font-size: 11px; color: var(--muted); }
+
+/* M9 fix 1058: the /btw strip's close as the usage band's quiet dismiss,
+   no ground and muted, the text colour under the pointer, rather than the
+   global button's amber fill. */
+.chat-side-close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chat-side-close:hover {
+  background: none;
+  color: var(--fg);
+}
+/* M9 fix 1065: the Claude theme band keeps to one line, its whole words in the span's title. */
+.claude-theme-note-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, LOOK_FIRST_ACTIONS, enterSequence, formatChord, isCopyKey, isModifierKey, isPasteKey, matchPlain, matchPrefixed, parseKeySpec, plainKeyFor } from './keys-model.ts';
+import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, LOOK_FIRST_ACTIONS, enterSequence, formatChord, guestChords, hostPlatform, isCopyKey, isCtrlOrCmdKey, isModifierKey, isPasteKey, layoutSwitchKeys, matchPlain, matchPrefixed, panePastes, parseKeySpec, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
 import type { KeyLike } from './keys-model.ts';
 
 const key = (code: string, mods: Partial<Omit<KeyLike, 'code'>> = {}): KeyLike => ({
@@ -209,4 +209,48 @@ test('the chords the tooltips name, unchanged by the move to plainKeyFor (fix 10
   assert.equal(plainKeyFor('history-forward'), 'Ctrl+Alt+Right');
   assert.equal(plainKeyFor('toggle-focus'), 'Ctrl+Shift+Z');
   assert.equal(plainKeyFor('new-layout-tab'), '');
+});
+
+test('the prefixed chords the tab strip names come from BINDINGS and the prefix given (M9 fix 1062)', () => {
+  assert.equal(prefixedKeyFor('new-layout-tab', 'Ctrl+B'), 'Ctrl+B C');
+  assert.equal(prefixedKeyFor('new-layout-tab', 'Ctrl+Space'), 'Ctrl+Space C');
+  assert.equal(prefixedKeyFor('whats-new', 'Ctrl+B'), '');
+  assert.equal(prefixedKeyFor('open-actions', 'Ctrl+B'), 'Ctrl+B Shift+:');
+  assert.equal(layoutSwitchKeys('Ctrl+B'), 'Ctrl+B N and P switch');
+});
+
+test('on darwin the Cmd chords work beside the Ctrl ones and the hints say Cmd (M9 fix 1063)', () => {
+  assert.equal(matchPlain(key('KeyE', { metaKey: true, shiftKey: true }), 'darwin'), 'split-vertical');
+  assert.equal(matchPlain(key('KeyE', { ctrlKey: true, shiftKey: true }), 'darwin'), 'split-vertical');
+  assert.equal(matchPlain(key('KeyE', { metaKey: true, shiftKey: true }), 'win32'), null);
+  assert.equal(matchPlain(key('Tab', { metaKey: true }), 'darwin'), null);
+  assert.equal(matchPlain(key('KeyZ', { metaKey: true, shiftKey: true }), 'darwin'), null);
+  assert.equal(matchPlain(key('Equal', { metaKey: true, shiftKey: true }), 'darwin'), 'window-zoom-in');
+  assert.equal(matchPlain(key('ArrowLeft', { metaKey: true, altKey: true }), 'darwin'), 'history-back');
+  assert.equal(plainKeyFor('split-vertical', 'darwin'), 'Cmd+Shift+E');
+  assert.equal(plainKeyFor('history-back', 'darwin'), 'Cmd+Option+Left');
+  assert.equal(plainKeyFor('focus-left', 'darwin'), 'Option+Left');
+  assert.equal(plainKeyFor('focus-next', 'darwin'), 'Ctrl+Tab');
+  assert.equal(plainKeyFor('toggle-focus', 'darwin'), 'Ctrl+Shift+Z');
+  assert.equal(plainKeyFor('cheat-sheet', 'darwin'), 'Cmd+Shift+?');
+  assert.equal(plainKeyFor('split-vertical', 'win32'), 'Ctrl+Shift+E');
+  assert.equal(formatChord(parseKeySpec('Cmd+B')!, 'darwin'), 'Cmd+B');
+  assert.equal(formatChord(parseKeySpec('Option+Backquote')!, 'darwin'), 'Option+`');
+  assert.equal(formatChord(parseKeySpec('Ctrl+B')!, 'darwin'), 'Ctrl+B');
+  assert.equal(formatChord(parseKeySpec('Win+B')!, 'win32'), 'Win+B');
+  const today = BINDINGS.flatMap((b) => [...(b.plain === null ? [] : [b.plain]), ...(b.alias === undefined ? [] : [b.alias])]);
+  assert.deepEqual(guestChords('win32'), today);
+  const mac = guestChords('darwin');
+  assert.deepEqual(mac.slice(0, today.length), today);
+  assert.ok(mac.some((c) => c.code === 'KeyE' && !c.ctrl && c.shift && !c.alt && c.meta));
+  assert.ok(!mac.some((c) => c.code === 'Tab' && c.meta));
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { ctrlKey: true }), 'KeyS', 'win32'), true);
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { ctrlKey: true }), 'KeyS', 'darwin'), true);
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { metaKey: true }), 'KeyS', 'darwin'), true);
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { metaKey: true }), 'KeyS', 'win32'), false);
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { ctrlKey: true, metaKey: true }), 'KeyS', 'darwin'), false);
+  assert.equal(isCtrlOrCmdKey(key('KeyS', { ctrlKey: true, shiftKey: true }), 'KeyS', 'win32'), false);
+  assert.equal(panePastes(key('KeyV', { ctrlKey: true }), 'darwin'), false);
+  assert.equal(panePastes(key('KeyV', { ctrlKey: true }), 'win32'), true);
+  assert.equal(hostPlatform(), 'win32');
 });

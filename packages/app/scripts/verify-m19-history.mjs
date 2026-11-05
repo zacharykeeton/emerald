@@ -307,8 +307,15 @@ try {
   expect(inside, `the × sits inside the search box, got ${JSON.stringify(rects.clear)} against ${JSON.stringify(rects.box)}`);
   const clearOfCollapse = rects.clear.right <= rects.collapse.left || rects.clear.left >= rects.collapse.right || rects.clear.bottom <= rects.collapse.top || rects.clear.top >= rects.collapse.bottom;
   expect(clearOfCollapse, `the × does not overlap the collapse button, got ${JSON.stringify(rects.clear)} against ${JSON.stringify(rects.collapse)}`);
+  // M9 fix 1061: the rail's tooltips name the chord through plainKeyFor,
+  // and the collapsed label carries the expand button's title.
+  const hideTitle = await s.evalJs(`document.querySelector('.files-collapse').title`);
+  expect(hideTitle === 'Hide the rail (Ctrl+Shift+F)', `the collapse button's title names the chord, got ${JSON.stringify(hideTitle)}`);
   await s.evalJs(`document.querySelector('.files-collapse').click()`);
   await s.waitFor(`!!document.querySelector('.files-rail-collapsed')`, 'the collapse button still hides the rail');
+  const showTitles = await s.evalJs(`({ expand: document.querySelector('.files-expand')?.title ?? null, label: document.querySelector('.files-rail-label')?.title ?? null })`);
+  expect(showTitles.expand === 'Show files (Ctrl+Shift+F)' && showTitles.label === 'Show files (Ctrl+Shift+F)', `the expand button and the collapsed label both read Show files (Ctrl+Shift+F), got ${JSON.stringify(showTitles)}`);
+  step("M9 fix 1061: the rail's hide button says Hide the rail (Ctrl+Shift+F), and the collapsed rail's « and its Files label both say Show files (Ctrl+Shift+F)");
   await s.evalJs(`document.querySelector('.files-rail-label').click()`);
   // M9 fix 367: collapsing still unmounts FilesRail whole (the early `if
   // (filesCollapsed) return ...` in FilesRail.tsx), but the search text

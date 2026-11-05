@@ -284,10 +284,15 @@ test('the feed spec: off, the override, a dev build, the local feed, then GitHub
   r = recorder(true);
   assert.equal(updateFeedSpec({ EMERALD_UPDATE_URL: '' }, false, r.exists), null);
   r = recorder(true);
-  assert.deepEqual(updateFeedSpec({ LOCALAPPDATA: 'C:\\L' }, true, r.exists), { provider: 'generic', url: 'http://127.0.0.1:7420/' });
+  assert.deepEqual(updateFeedSpec({ LOCALAPPDATA: 'C:\\L' }, true, r.exists, 'win32'), { provider: 'generic', url: 'http://127.0.0.1:7420/' });
   assert.deepEqual(r.asked, [path.join('C:\\L', 'emerald-feed')]);
   r = recorder(false);
-  assert.deepEqual(updateFeedSpec({ LOCALAPPDATA: 'C:\\L' }, true, r.exists), { provider: 'github', owner: 'zacharykeeton', repo: 'emerald' });
+  assert.deepEqual(updateFeedSpec({ LOCALAPPDATA: 'C:\\L' }, true, r.exists, 'win32'), { provider: 'github', owner: 'zacharykeeton', repo: 'emerald' });
+  // M9 fix 1069: off Windows there is no local feed, so a folder that would
+  // exist is never asked about and a packaged build reads the releases.
+  r = recorder(true);
+  assert.deepEqual(updateFeedSpec({ LOCALAPPDATA: 'C:\\L' }, true, r.exists, 'darwin'), { provider: 'github', owner: 'zacharykeeton', repo: 'emerald' });
+  assert.deepEqual(r.asked, []);
 });
 
 const GITHUB: FeedSpec = { provider: 'github', owner: 'zacharykeeton', repo: 'emerald' };

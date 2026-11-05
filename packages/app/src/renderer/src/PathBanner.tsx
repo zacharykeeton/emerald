@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react';
-import { PATH_COPIED_NOTE, PATH_NOTE_LEAD } from './path-banner-model.ts';
-import { flashCornerNote } from './ui.ts';
+import { PATH_COPIED_NOTE, PATH_NOTE_LEAD, pathBannerShows } from './path-banner-model.ts';
+import { flashCornerNote, useUi } from './ui.ts';
 
 // Offers the line that puts emmer on a Mac's PATH (M9 fix 1026), asked of
 // the main process once at mount; main asks the login shell once per
 // launch and answers null on Windows, in a dev tree, when emmer is already
 // there, or after a Copy or Not now in any window of this launch. Its own
 // class, not .banner, since the scripts wait for .banner to clear.
+//
+// One strip at a time (M9 fix 1072): it waits while the hooks strip is up
+// or still checking, so a Mac's first launch shows hooks, then PATH.
 export function PathBanner() {
   const [command, setCommand] = useState<string | null>(null);
+  const hooksBanner = useUi().hooksBanner;
 
   useEffect(() => {
     let live = true;
@@ -23,7 +27,7 @@ export function PathBanner() {
     };
   }, []);
 
-  if (command === null) return null;
+  if (command === null || !pathBannerShows(command, hooksBanner)) return null;
   const close = () => {
     window.emerald.dismissPathLink();
     setCommand(null);

@@ -94,7 +94,10 @@ test('repoKey (M9 fix 133): a repository, its subfolders and its linked worktree
   assert.equal(key, path.join(fs.realpathSync.native(main), '.git').replace(/\\/g, '/').toLowerCase(), 'the real spelling, not the 8.3 one os.tmpdir() gives');
   assert.equal(repoKey(path.join(main, 'src', 'deep')), key, 'a subfolder');
   assert.equal(repoKey(worktree), key, 'a linked worktree');
-  assert.equal(repoKey(main.toUpperCase()), key, 'either case');
+  // NTFS is case-blind; ext4 and APFS's default are not (M9 fix 1075).
+  if (process.platform === 'win32') {
+    assert.equal(repoKey(main.toUpperCase()), key, 'either case');
+  }
   assert.equal(repoKey(main.replace(/\\/g, '/')), key, 'either slash');
   const plain = tempDir();
   assert.equal(repoKey(plain), fs.realpathSync.native(plain).replace(/\\/g, '/').toLowerCase(), 'outside any repository the folder is the key');

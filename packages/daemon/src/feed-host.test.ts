@@ -90,9 +90,15 @@ test('a host waiting on a taken port stops trying once closed', async () => {
 });
 
 test('the environment names the folder and the port, and off serves none', () => {
-  const settings = feedHostSettings({});
+  const settings = feedHostSettings({}, 'win32');
   assert.match(settings.dir ?? '', /emerald-feed$/);
   assert.equal(settings.port, 7420);
   assert.deepEqual(feedHostSettings({ EMERALD_FEED_DIR: 'D:\\feed', EMERALD_FEED_PORT: '0' }), { dir: 'D:\\feed', port: 0 });
   assert.deepEqual(feedHostSettings({ EMERALD_FEED_DIR: 'off', EMERALD_FEED_PORT: 'many' }), { dir: null, port: 7420 });
+});
+
+test('off Windows there is no default feed folder, and EMERALD_FEED_DIR still names one (M9 fix 1069)', () => {
+  assert.deepEqual(feedHostSettings({}, 'darwin'), { dir: null, port: 7420 });
+  assert.deepEqual(feedHostSettings({}, 'linux'), { dir: null, port: 7420 });
+  assert.deepEqual(feedHostSettings({ EMERALD_FEED_DIR: '/tmp/feed' }, 'darwin'), { dir: '/tmp/feed', port: 7420 });
 });

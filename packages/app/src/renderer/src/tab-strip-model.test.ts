@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LayoutNode, LayoutTab, SessionInfo, SessionState, TeamMember } from '@emerald/shared';
-import { pageTarget, stripCut, tabMark, tabWanting, wheelStep } from './tab-strip-model.ts';
+import { pageTarget, stripCut, tabMark, tabWanting, wheelStep, zoomHidesWanting } from './tab-strip-model.ts';
 import { aSession } from './test-support.ts';
 
 function session(id: string, state: SessionState, stale = false, team: TeamMember[] = []): SessionInfo {
@@ -130,19 +130,26 @@ test('wheelStep: vertical, Shift with deltaX inside and outside the scroller, no
   assert.equal(wheelStep(0, 0, false, false), 0);
 });
 
-// M9 fix 702: on the tab on show, a zoom hides every pane but one, and a
-// wanting session in a hidden pane pulses the tab.
-test('tabWanting: a hidden tab reads every pane, the tab on show only what its zoom hides', () => {
-  const asking = new Map<string, SessionInfo>([
-    ['a', session('a', 'needs-input')],
-    ['b', session('b', 'needs-input')],
-  ]);
-  const wanting = new Set(['a', 'b']);
-  assert.equal(tabWanting(tab('a', 'idle'), false, null, asking, wanting), 'needs-input', 'not on show, p0 wanting');
-  assert.equal(tabWanting(tab('idle', 'b'), false, 'p0', asking, wanting), 'needs-input', 'not on show, the zoom is ignored');
-  assert.equal(tabWanting(tab('a', 'b'), true, null, asking, wanting), undefined, 'on show with no zoom never pulses (fix 69)');
-  assert.equal(tabWanting(tab('idle', 'b'), true, 'p0', asking, wanting), 'needs-input', 'zoomed on p0, p1 wanting and hidden');
-  assert.equal(tabWanting(tab('idle', 'b'), true, 'p1', asking, wanting), undefined, 'zoomed on the wanting pane itself');
-  assert.equal(tabWanting(tab('b', 'b'), true, 'p0', asking, wanting), undefined, 'the zoomed pane shows the same session');
-  assert.equal(tabWanting(tab('idle', 'b'), true, 'elsewhere', asking, wanting), undefined, 'a zoom naming no pane of the tab hides nothing');
+const asking = new Map<string, SessionInfo>([
+  ['a', session('a', 'needs-input')],
+  ['b', session('b', 'needs-input')],
+]);
+const askingIds = new Set(['a', 'b']);
+
+// M9 fix 1064: the tab pulses for every wanting session in its panes, on
+// show or not (fix 69's on-show rule undone).
+test('tabWanting: every pane of the tab is read, each wanting session once', () => {
+  assert.equal(tabWanting(tab('a', 'idle'), asking, askingIds), 'needs-input', 'p0 wanting');
+  assert.equal(tabWanting(tab('a', 'b'), asking, askingIds), 'needs-input', 'both wanting (the tab on show pulses too)');
+  assert.equal(tabWanting(tab('b', 'b'), asking, askingIds), 'needs-input', 'one session in two panes, counted once');
+  assert.equal(tabWanting(tab('idle', 'idle'), asking, askingIds), undefined, 'nothing wants');
+});
+
+// M9 fix 702: on the tab on show, a click on the tab undoes a zoom that
+// hides a pane whose session wants someone.
+test('zoomHidesWanting: only a wanting session the zoom hides counts', () => {
+  assert.equal(zoomHidesWanting(tab('idle', 'b'), 'p0', asking, askingIds), true, 'zoomed on p0, p1 wanting and hidden');
+  assert.equal(zoomHidesWanting(tab('idle', 'b'), 'p1', asking, askingIds), false, 'zoomed on the wanting pane itself');
+  assert.equal(zoomHidesWanting(tab('b', 'b'), 'p0', asking, askingIds), false, 'the zoomed pane shows the same session');
+  assert.equal(zoomHidesWanting(tab('idle', 'b'), 'elsewhere', asking, askingIds), false, 'a zoom naming no pane of the tab hides nothing');
 });

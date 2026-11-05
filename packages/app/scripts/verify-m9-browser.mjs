@@ -25,7 +25,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'browser-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-browser';
-const { CTRL, SHIFT, connect, daemonPid, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, daemonRecord, expect, freshPort, getLayout, getTabs, killDaemonIfSame, killTree, launch, leaves, repoRoot, sleep, step, stopDaemon } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
@@ -981,7 +981,7 @@ try {
   expect((await homeRecord())?.view.zoom === zStepped, `the pane's record holds the page's zoom (${JSON.stringify((await homeRecord())?.view)})`);
   // Quit and relaunch on the same home: the window closed and the daemon
   // killed, as verify-m52-view.mjs does, so the layout comes back off disk.
-  const oldDaemon = daemonPid();
+  const oldDaemon = daemonRecord();
   const oldChild = s.child;
   guest?.close();
   guest = null;
@@ -995,7 +995,7 @@ try {
     oldChild.kill();
     await Promise.race([new Promise((res) => oldChild.once('exit', res)), sleep(5000)]);
   }
-  execFileSync('taskkill', ['/pid', String(oldDaemon), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(oldDaemon, { tree: false });
   await sleep(1000);
   s = await launch(s.port + 1);
   app = s;

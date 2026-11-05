@@ -14,7 +14,7 @@ import { btwQuestion } from './prompt-model.ts';
 import { SideStrip } from './SideStrip.tsx';
 import type { ReactNode } from 'react';
 import type { ChatMode, FoldItem, PendingItem, SlashRow } from './chat-model.ts';
-import { CARRY_MS, CARRY_POLL_MS, carryRead, pickRoute, stopCarry } from './chat-model.ts';
+import { CARRY_MS, CARRY_POLL_MS, carryRead, noticeOf, noticeRefusal, pickRoute, stopCarry } from './chat-model.ts';
 import type { CarryOutcome, PickRoute } from './chat-model.ts';
 import { routeAfterCarry } from './chat-model.ts';
 import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
@@ -611,12 +611,31 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     chatDrafts.delete(key);
     setBox(draft ?? '');
     if (draft !== undefined) pendingCaret.current = draft.length;
+    // M9 fix 1060: a carry still running from the view this one replaced
+    // (a flip to the terminal and back inside its few hundred ms) parks
+    // its text in chatDrafts when it ends, after the take above, so the
+    // draft is taken again then, while this view still shows the session.
+    const running = carriesInFlight.get(key);
+    if (running !== undefined)
+      void running.then(() => {
+        if (!alive.current || sessionRef.current !== id) return;
+        const parked = chatDrafts.get(key);
+        if (parked === undefined || parked === '') return;
+        chatDrafts.delete(key);
+        const was = boxRef.current?.value ?? boxNow.current;
+        const next = was === '' ? parked : `${was}\n${parked}`;
+        setBox(next);
+        pendingCaret.current = next.length;
+      });
     const at = getState().sessions.get(id) ?? session;
     if (markKind(at) === 'claude' && CARRY_STATES.has(at.state) && !askingRef.current) {
       void window.emerald
         .request('pty.screen', { sessionId: id })
         .then((sc) => {
           if (!alive.current || sessionRef.current !== id || askingRef.current) return;
+          // M9 fix 1059: a notice holding the keys is the person's to
+          // answer; nothing was asked, so nothing is carried or said.
+          if (noticeOf(sc.rows) !== null) return;
           const read = carryRead(sc);
           if (read.kind === 'blocked') setRefusal(CARRY_BLOCKED);
           else if (read.kind === 'text') void carryInput();
@@ -905,7 +924,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     const running = carriesInFlight.get(key);
     if (running !== undefined) return afterCarry(running);
     try {
-      const route = pickRoute(carryRead(await window.emerald.request('pty.screen', { sessionId: session.id })));
+      const sc = await window.emerald.request('pty.screen', { sessionId: session.id });
+      const notice = noticeOf(sc.rows);
+      if (notice !== null) {
+        setRefusal(noticeRefusal(notice));
+        return false;
+      }
+      const route = pickRoute(carryRead(sc));
       // A mount carry that started while the read was out is waited for
       // too, rather than refusing this command's own carry as busy.
       const started = carriesInFlight.get(key);
@@ -928,7 +953,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     }
     if (!alive.current || sessionRef.current !== id) return false;
     try {
-      const route = routeAfterCarry(carryRead(await window.emerald.request('pty.screen', { sessionId: id })), outcome);
+      const sc = await window.emerald.request('pty.screen', { sessionId: id });
+      const notice = noticeOf(sc.rows);
+      if (notice !== null) {
+        setRefusal(noticeRefusal(notice));
+        return false;
+      }
+      const route = routeAfterCarry(carryRead(sc), outcome);
       return route === 'left' ? false : routeInput(route);
     } catch (err) {
       console.warn('[emerald] pick input read failed', err);
@@ -1852,7 +1883,13 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
     if (seededKey.current === shownKey) return;
     seededKey.current = shownKey;
     setFree(freeOpt === null ? '' : freeText(freeOpt));
-  }, [shownKey, freeOpt]);
+    // M9 fix 1057: another dialog (a tab change, the next question) takes
+    // the keyboard out of the Type something box and back to the card, so
+    // the row marked is the one the screen says; not while Claude Code's
+    // pointer is on the new dialog's free row, where a multi-select's
+    // typed answer waits for its second Enter (fix 845).
+    if (document.activeElement === freeRef.current && freeOpt?.pointer !== true) rootRef.current?.focus();
+  }, [shownKey, freeOpt, rootRef]);
   // M9 fix 1045: the row marked as chosen, the free row while the person
   // answers there (a review's options are its own).
   const chosen = ask === null || review !== null ? undefined : askChosenKey(ask, free, freeFocused, seededKey.current === shownKey);

@@ -44,7 +44,8 @@
 // posts and pulses.
 // M9 fix 702: zoomed on pane 1, a question in hidden pane 2 pulses the tab
 // on show, and a click on the tab undoes the zoom with the focus kept;
-// zoomed on pane 2 itself, the tab does not pulse and a click leaves it.
+// zoomed on pane 2 itself, the tab pulses too (fix 1064, the tab on show
+// pulses for its own) and a click leaves the zoom.
 // M9 fix 870: the taskbar's progress bar and tooltip, held to the log
 // under the private home, fill to the share working, clear at done with the
 // tooltip naming the one wanting, and read Nothing running once acked.
@@ -760,8 +761,8 @@ try {
   expect((await tabAttention(firstTabId)) === null, 'the tab on show does not, its sessions are quiet');
   expect((await tabAnimation(firstTabId)) === 'none', 'and has no animation');
   // M9 fix 189: a real click on the pulsing tab (a mousedown, unlike the
-  // scripted clicks around it) switches to it and acks nothing: the tab's
-  // own pulse drops because the tab on show never pulses (fix 69), the
+  // scripted clicks around it) switches to it and acks nothing: the tab
+  // keeps pulsing on show since fix 1064 (fix 69 had stopped it), the
   // row keeps pulsing so the eye can find the pane, and the chime is
   // hushed. A click on that pane is what acks it.
   const otherRow = `.sidebar-row[data-session-id=${JSON.stringify(other)}]`;
@@ -772,7 +773,7 @@ try {
   await s.click(secondTab.x, secondTab.y);
   await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(secondTabId)}`, 'the click switched to the second tab');
   await sleep(300);
-  expect((await tabAttention(secondTabId)) === null, 'the tab on show does not pulse for its own session');
+  expect((await tabAttention(secondTabId)) === 'needs-input', 'the tab on show pulses for its own session, hushed as its row is (fix 1064)');
   expect((await otherAttention()) === 'needs-input', `the row still pulses after the tab click, got ${await otherAttention()}`);
   expect((await otherHushed()) === 'true', 'with its chime hushed');
   await sleep(4500);
@@ -803,28 +804,32 @@ try {
   await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(firstTabId)}`, 'back on the first tab again');
   await s.click(c1.x, c1.y);
   await s.waitFor(focusedPaneIs(p1), 'pane 1 focused');
-  // M9 fix 69: one pulse per place. The front session goes needs-input
-  // with its pane on the tab on show: the pane title pulses and the tab
-  // does not (its mark keeps the idle tone); switch away and the tab
-  // pulses for it; switch back and it stops. Past the ten seconds of the
-  // click on pane 1 first, or fix 701 settles the question as answered.
+  // M9 fix 1064, undoing fix 69's rule: the front session goes
+  // needs-input with its pane on the tab on show, and both the pane title
+  // and the tab pulse (the tab's mark in the attention tone); switch away
+  // and the tab still pulses; switch back and it keeps pulsing. Past the
+  // ten seconds of the click on pane 1 first, or fix 701 settles the
+  // question as answered.
   await s.pastRecentInput();
   await postFront({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
   await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === 'needs-input'`, 'the front row pulses', 5000);
   await s.waitFor(`document.querySelector('[data-pane-id=${JSON.stringify(p1)}] .pane-title')?.dataset.attention === 'needs-input'`, 'the pane title on show pulses', 5000);
-  await sleep(200);
-  expect((await tabAttention(firstTabId)) === null, 'the tab on show does not pulse for its own session, its pane title does (fix 69)');
-  expect((await tabAnimation(firstTabId)) === 'none', 'and has no animation');
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]')?.dataset.attention === 'needs-input'`, 'the tab on show pulses for its own session with its pane title (fix 1064)', 5000);
+  expect((await tabAnimation(firstTabId)) === 'attention-pulse', 'with the pulse as its animation');
   const tabTone = (tabId) => s.evalJs(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(tabId)}] .tab-mark')?.dataset.tone ?? null`);
-  expect((await tabTone(firstTabId)) === 'idle', `the tab on show keeps its idle tone, got ${await tabTone(firstTabId)}`);
+  expect((await tabTone(firstTabId)) === 'needs-input', `the tab on show takes the attention tone, got ${await tabTone(firstTabId)}`);
   await s.evalJs(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(secondTabId)}]').click()`);
-  await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]')?.dataset.attention === 'needs-input'`, 'the first tab pulses once its pane is off show', 5000);
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]')?.dataset.attention === 'needs-input'`, 'the first tab still pulses with its pane off show', 5000);
   expect((await tabAnimation(firstTabId)) === 'attention-pulse', 'with the pulse as its animation');
   expect((await tabTone(firstTabId)) === 'needs-input', 'and its mark in the attention tone');
   await s.evalJs(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]').click()`);
-  await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]')?.dataset.attention === undefined`, 'back on show, the tab stops', 5000);
+  // The attention read below holds on either tab since fix 1064, so the
+  // switch back is waited for on its own; the ack's click on pane 2 needs
+  // the first tab on show.
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-current]')?.dataset.tabId === ${JSON.stringify(firstTabId)}`, 'back on the first tab', 5000);
+  await s.waitFor(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]')?.dataset.attention === 'needs-input'`, 'back on show, the tab keeps pulsing', 5000);
   expect((await frontAttention()) === 'needs-input', 'the row still pulses');
-  step('fix 42, 69 and 189: a hidden layout tab pulses for a session in it, a click on the tab keeps the row pulsing and hushes it, a click on the pane or the row acks it, the tab on show never pulses for its own');
+  step('fix 42, 69 and 189, with fix 1064: a hidden layout tab pulses for a session in it, a click on the tab keeps the row pulsing and hushes it, a click on the pane or the row acks it, and the tab on show pulses for its own as well');
 
   // M9 fix 69 on the sidebar side: with the front row's group open the
   // heading has no pulse while the row has; fold the group and the
@@ -1458,7 +1463,8 @@ try {
   // M9 fix 702: zoomed on pane 1, a question in pane 2 (hidden by the
   // zoom) pulses the tab on show, and a real click on that tab undoes the
   // zoom with the focus kept on pane 1; zoomed on pane 2 itself, the tab
-  // does not pulse and a click leaves the zoom.
+  // pulses too (fix 1064) and a click leaves the zoom, since the zoom
+  // hides nothing that wants someone.
   const zoomedOn = (paneId) => `document.querySelector('.splitview.zoomed')?.dataset.zoomedPane === ${JSON.stringify(paneId)}`;
   const paneShown = (paneId) => s.evalJs(`(document.querySelector('[data-pane-id=${JSON.stringify(paneId)}]')?.getClientRects().length ?? 0) > 0`);
   const firstTabSel = `.tab.tab-panes[data-tab-id=${JSON.stringify(firstTabId)}]`;
@@ -1480,7 +1486,7 @@ try {
   await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: a click on the pulsing tab undid the zoom', 3000);
   const uncovered728 = await rowPlace728();
   expect(uncovered728.shown === 'shown' && uncovered728.place === 'shown' && uncovered728.word === 'on screen', `fix 728: with the zoom undone the target's row reads on screen, got ${JSON.stringify(uncovered728)}`);
-  await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === undefined`, 'fix 702: the tab stops once pane 2 is on screen', 3000);
+  await s.waitFor(`document.querySelector(${JSON.stringify(firstTabSel)})?.dataset.attention === 'needs-input'`, 'fix 702: with pane 2 on screen the tab keeps pulsing with its ring (fix 1064)', 3000);
   const unzoomedRead = { focused: await s.evalJs(focusedPaneIs(p1)), pane1: await paneShown(p1), pane2: await paneShown(p2), row: await rowAttention(), title: await titleAttention(), hushed: await rowHushed() };
   expect(
     unzoomedRead.focused && unzoomedRead.pane1 && unzoomedRead.pane2 && unzoomedRead.row === 'needs-input' && unzoomedRead.title === 'needs-input' && unzoomedRead.hushed === 'true',
@@ -1493,7 +1499,7 @@ try {
   await sleep(300);
   const focused728 = await rowPlace728();
   expect(focused728.shown === 'focused' && focused728.place === 'focused' && focused728.word === 'focused', `fix 728: zoomed on its own pane the target's row reads focused, got ${JSON.stringify(focused728)}`);
-  expect((await tabAttention(firstTabId)) === null && (await rowAttention()) === 'needs-input', `fix 702: zoomed on the wanting pane the tab does not pulse, got ${JSON.stringify({ tab: await tabAttention(firstTabId), row: await rowAttention() })}`);
+  expect((await tabAttention(firstTabId)) === 'needs-input' && (await rowAttention()) === 'needs-input', `fix 702 and 1064: zoomed on the wanting pane the tab pulses with the row, got ${JSON.stringify({ tab: await tabAttention(firstTabId), row: await rowAttention() })}`);
   await s.click(firstTabCentre.x, firstTabCentre.y);
   await sleep(300);
   expect(await s.evalJs(zoomedOn(p2)), 'fix 702: a click on the tab with nothing hidden wanting leaves the zoom');
@@ -1501,7 +1507,7 @@ try {
   await s.waitFor(`!document.querySelector('.splitview.zoomed')`, 'fix 702: unzoomed', 3000);
   await ackSix();
   await waitClear('fix 702: acked, nothing pulsing');
-  step('M9 fix 702 and 728: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show and the target\'s row read behind the Focus while hidden; a click on the tab undid the zoom with the focus kept on pane 1 and pane 2\'s ring still pulsing; zoomed on pane 2 itself, the tab did not pulse and a click left the zoom');
+  step('M9 fix 702, 728 and 1064: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show and the target\'s row read behind the Focus while hidden; a click on the tab undid the zoom with the focus kept on pane 1, pane 2\'s ring and the tab still pulsing; zoomed on pane 2 itself, the tab pulsed too and a click left the zoom');
 
   step('PASS');
 } catch (err) {

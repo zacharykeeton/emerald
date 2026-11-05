@@ -78,7 +78,8 @@ export const RailContext = memo(function RailContext({ session, used, onOpenPane
       </div>
     );
   }
-  return <ContextBody key={session.id} session={session} used={used} onOpenPane={onOpenPane} />;
+  // A /clear is a new conversation, asked afresh (M9 fix 1053).
+  return <ContextBody key={`${session.id}:${session.claudeSessionId ?? ''}`} session={session} used={used} onOpenPane={onOpenPane} />;
 });
 
 function ContextBody({ session, used, onOpenPane }: { session: SessionInfo; used: ContextUse | null; onOpenPane: (() => void) | undefined }) {

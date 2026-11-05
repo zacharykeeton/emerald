@@ -7,8 +7,8 @@
 //
 // The daemon strips EMERALD_* from every session's environment but its own
 // home and pipe (M9 fix 351), so the CLI inside the second session
-// connects to the pipe this script's daemon is on. The script keeps a
-// private EMERALD_HOME (its own sessions.json, state.json, daemon.json and
+// connects to the pipe this script's daemon is on. The script runs on the
+// EMERALD_HOME the environment names, else a private one of its own (its own sessions.json, state.json, daemon.json and
 // hooks.jsonl); since M9 fix 495 the pipe is named per user and per home,
 // so the home's own pipe is a private one and the run needs no Emerald app
 // closed (EMERALD_PIPE still names another, M9 fix 360). Since M9 fix 997
@@ -20,19 +20,23 @@
 // `claude -p` with this checkout's hook script named by a --settings
 // file, whose hooks reach the private daemon off daemon.json under
 // EMERALD_HOME, costing a second short turn.
-// Logs to %TEMP%\emerald-verify\cli-claude.log. Build first (npm run build).
+// Logs to %TEMP%\emerald-verify\<home name>-cli-claude.log. The home is EMERALD_HOME when set (refused unless under %TEMP%) and %TEMP%\emerald-verify\cli-claude-home otherwise.
+// Build first (npm run build).
 // Run: npm run verify:cli-claude -w @emerald/cli
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { killTree, processIdentity } from '@emerald/shared/process-identity';
 
 const cliDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(cliDir, '..', '..');
 const main = path.join(cliDir, 'dist', 'main.js');
-const home = path.join(os.tmpdir(), 'emerald-verify', 'cli-claude-home');
-const logFile = path.join(os.tmpdir(), 'emerald-verify', 'cli-claude.log');
+// M9 fix 1052: the pair's home when the environment names one, so two
+// runs on one box (two seats) no longer share a home and a log.
+const home = process.env['EMERALD_HOME'] ?? path.join(os.tmpdir(), 'emerald-verify', 'cli-claude-home');
+const logFile = path.join(os.tmpdir(), 'emerald-verify', `${path.basename(home)}-cli-claude.log`);
 // M9 fix 997: the private Claude config, the same rule as cdp.mjs's
 // harnessClaudeConfig, written out here since importing cdp.mjs reads
 // EMERALD_HOME and the shots folder at import.
@@ -48,8 +52,18 @@ const env = {
 const pipeWord = env.EMERALD_PIPE ? `the private pipe ${env.EMERALD_PIPE}` : "the home's own pipe";
 const t0 = Date.now();
 
+// M9 fix 1052: the home is removed whole below and may come from the
+// environment, so only a folder under the temp folder is taken, never
+// ~/.emerald. A home spelled in 8.3 form is refused too, loudly.
+const tmpRoots = [os.tmpdir(), fs.realpathSync.native(os.tmpdir())].map((t) => path.resolve(t).toLowerCase() + path.sep);
+const homeKey = path.resolve(home).toLowerCase();
+if (homeKey === path.resolve(os.homedir(), '.emerald').toLowerCase() || !tmpRoots.some((t) => homeKey.startsWith(t))) {
+  console.error(`[verify] refused: EMERALD_HOME ${home} is not a folder under ${os.tmpdir()}; this script removes its home whole, so it runs only on a private one`);
+  process.exit(2);
+}
 fs.rmSync(home, { recursive: true, force: true });
 fs.mkdirSync(home, { recursive: true });
+fs.mkdirSync(path.dirname(logFile), { recursive: true });
 fs.writeFileSync(logFile, '');
 // The global config copied whole, since the trust of the folders the
 // turns run in lives in its projects; a copy taken mid-write by the
@@ -118,13 +132,18 @@ function emeraldJson(...args) {
   return { ...r, json };
 }
 
+// M9 fix 1048: only while the pid is still the daemon daemon.json names,
+// by the start time it wrote there; a crashed daemon leaves the file.
 function stopDaemonHard() {
+  let info;
   try {
-    const { pid } = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
-    spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore' });
+    info = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
   } catch {
-    // No daemon.json, nothing to stop.
+    return; // No daemon.json, nothing to stop.
   }
+  const identity = processIdentity(info.pid, info.startedAt);
+  if (identity === 'same') killTree(info.pid);
+  else if (identity === 'other') log(`note: daemon.json's pid ${info.pid} is another process now; left alone`);
 }
 
 function hookEvents(sessionId) {
@@ -364,6 +383,7 @@ try {
   fs.writeFileSync(settings233, JSON.stringify({ hooks: { SessionStart: [hookEntry], UserPromptSubmit: [hookEntry], Stop: [hookEntry], SessionEnd: [hookEntry] } }));
   const plainEnv = { ...env };
   for (const k of ['EMERALD_SESSION_ID', 'EMERALD_HOOK_PORT', 'EMERALD_HOOK_TOKEN']) delete plainEnv[k];
+  for (const k of ['CLAUDE_EFFORT', 'AI_AGENT', 'TRACEPARENT']) delete plainEnv[k]; // M9 fix 1067: what a parent Claude's Bash tool stamps, as the daemon's stampEnv drops it
   const before233 = Date.now();
   // One command string under the shell: claude is a .cmd or a .exe on
   // the PATH, and Node warns on an args list with shell set (DEP0190).

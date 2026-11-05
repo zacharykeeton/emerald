@@ -91,7 +91,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connect, freshPort, sleep } from './cdp.mjs';
+import { connect, daemonRecord, freshPort, killDaemonIfSame, sleep } from './cdp.mjs';
 import { readIco } from './make-icon.mjs';
 import { publishFeed, serveFeed } from '../../cli/dist/feed.js';
 import { HOOK_EVENTS } from '../../cli/dist/hooks-install.js';
@@ -296,9 +296,10 @@ function cleanupHard() {
   // some other run's and stays.
   if (only === 'entries') return;
   if (holder !== null) holder.kill();
-  if (child !== null) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
-  const info = readDaemonInfo();
-  if (info !== null) spawnSync('taskkill', ['/pid', String(info.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+  // M9 fix 1048: an exited child's pid and a crashed daemon's are numbers
+  // Windows may have handed on, so neither is killed blind.
+  if (child !== null && child.exitCode === null && child.signalCode === null) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+  killDaemonIfSame(daemonRecord(home));
   if (feed !== null) void feed.close();
   cleanCache();
 }

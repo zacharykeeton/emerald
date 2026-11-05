@@ -8,11 +8,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FEED_MANIFEST, parseLatestYml } from '@emerald/shared';
 import type { LatestManifest } from '@emerald/shared';
+import { defaultFeedDir } from '@emerald/shared/feed-server';
+import { usageError } from './cli-error.ts';
 
 // The folder and the server moved into shared for M9 fix 240 (the daemon
 // hosts the server); re-exported so the command and its test read as before.
 export { defaultFeedDir, serveFeed } from '@emerald/shared/feed-server';
 export type { FeedServer } from '@emerald/shared/feed-server';
+
+// The feed folder a command works on (M9 fix 1069): --dir when given, else
+// the local default, which exists on Windows only; off Windows with no
+// --dir it is a usage error rather than a path under the working directory.
+export function resolveFeedDir(flag: string | undefined, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (flag !== undefined) return flag;
+  const dir = defaultFeedDir(env, platform);
+  if (dir === null) throw usageError('no default feed folder off Windows; name one with --dir <feed dir>');
+  return dir;
+}
 
 export interface Published {
   manifest: LatestManifest;

@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { CTRL, SHIFT, daemonPid, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, startSession, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
+import { CTRL, SHIFT, daemonPid, daemonRecord, expect, freshPort, getLayout, killDaemonIfSame, killTree, launch, leaves, repoRoot, sleep, startSession, step, stopDaemon, emeraldHome, zreq } from './cdp.mjs';
 
 // M9 fix 796: 90 s, since cdp.mjs's connect now waits up to 40 s after the
 // page-target poll's 20 s and the watchdog would fire before its message.
@@ -91,8 +91,8 @@ try {
   const marker1 = 'EMERALD_BEFORE_' + Date.now();
   await typeLine(s, `Write-Output ('OUT:' + '${marker1}')`);
   await s.waitFor(`(async () => { const r = await window.emerald.request('session.read', { sessionId: ${JSON.stringify(B)} }); return atob(r.data).includes('OUT:${marker1}'); })()`, 'marker in B');
-  firstDaemon = daemonPid();
-  step(`A=${A.slice(0, 8)} in pane 1, B=${B.slice(0, 8)} in pane 2, daemon pid ${firstDaemon}`);
+  firstDaemon = daemonRecord();
+  step(`A=${A.slice(0, 8)} in pane 1, B=${B.slice(0, 8)} in pane 2, daemon pid ${firstDaemon.pid}`);
   expect(await fileAgrees((f) => f.map((x) => x.id).sort().join() === [A, B].sort().join()), 'sessions.json lists both');
 
   // M24: a colour each, from the palette, apart from each other, on the
@@ -128,11 +128,11 @@ try {
   step('kill shows as "killed" in the row, the title and the terminal');
 
   // Daemon restart: both sessions come back as exited with their names.
-  spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(firstDaemon, { tree: false });
   await s.waitFor(`!!document.querySelector('.banner')`, 'disconnected banner');
   await s.waitFor(`!document.querySelector('.banner')`, 'reconnect after daemon autostart', 20000);
   const secondDaemon = daemonPid();
-  expect(secondDaemon !== firstDaemon, 'a new daemon');
+  expect(secondDaemon !== firstDaemon.pid, 'a new daemon');
   await s.waitFor(`${row(A)}?.dataset.state === 'exited' && ${row(B)}?.dataset.state === 'exited'`, 'both rows exited after restart');
   await sleep(500);
   expect((await rowBadge(s, A)) === 'exited', `A was live, so no exit code: got ${await rowBadge(s, A)}`);
@@ -263,7 +263,7 @@ try {
   s.close();
   killTree(s.child);
   stopDaemon();
-  if (firstDaemon !== null) spawn('taskkill', ['/pid', String(firstDaemon), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(firstDaemon, { tree: false });
   setTimeout(() => process.exit(process.exitCode ?? 0), 500);
 }
 

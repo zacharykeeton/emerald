@@ -578,7 +578,11 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     // running token sum stays; the cost is Claude Code's own and its next
     // line says 0.
     if ((payload.source ?? payload.session_start_type) === 'clear') {
-      next = { ...next, contextPercent: 0, contextWindow: next.contextWindow === null ? null : { ...next.contextWindow, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 } };
+      // M9 fix 1053: the breakdown was the old conversation's, so it goes
+      // with the dial; a destructure, since a key set to undefined is
+      // refused. The mod posts the new one with the first reply's Measure.
+      const { context: _context, ...rest } = next;
+      next = { ...rest, contextPercent: 0, contextWindow: next.contextWindow === null ? null : { ...next.contextWindow, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 } };
     }
     if (typeof payload.cwd === 'string' && payload.cwd !== '' && payload.cwd !== next.groupCwd) next = { ...next, groupCwd: payload.cwd };
     // The conversation a resume would pick up (M48): this one, in this

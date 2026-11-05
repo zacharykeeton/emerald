@@ -18,13 +18,15 @@
 // recorded spans, paused, scrubbed and played on from its strip and
 // Space (fix 905) (fix 869); and one batch's whole life on a repository
 // of its own, a lead and three seats from the plan commit to the sweep,
-// framed at twelve stages into docs/design/graph-through-a-batch/built
-// and read against the design pass's proposed boards (fixes 944 to 946).
+// framed at twelve stages into %TEMP%\emerald-verify\m51-frames, or into
+// docs/design/graph-through-a-batch/built under -- --frames-to-docs (fix
+// 1051), and read against the design pass's proposed boards (fixes 944 to 946).
 // Uses a private home and pipe unless the environment already
 // names them.
 // Run: npm run verify:graph -w @emerald/app
 // One block and what it needs: npm run verify:graph -w @emerald/app -- --only fix-252
 // The block names: npm run verify:graph -w @emerald/app -- --list
+// The frames into the docs: npm run verify:graph -w @emerald/app -- --only fix-944 --frames-to-docs
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,7 +35,7 @@ import { COLOR_FLOOR, SESSION_COLORS, clockTime, dayKey, formatUsd, hueOf, oklab
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm51-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m51';
-const { blockRunner, busyProfile, expect, freshPort, getLayout, hoverForCard, imageOf, killTree, launch, leaves, processGone, removeWorktree, repoRoot, settled: settledIn, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { blockRunner, busyProfile, expect, freshPort, getLayout, hoverForCard, imageOf, killTree, launch, leaves, processGone, removeWorktree, repoRoot, settled: settledIn, shotsDir, sleep, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 // M9 fix 426: the script's steps after the first repository's are
 // blocks, each a closure a run can skip. Everything before the first
@@ -66,7 +68,7 @@ const BLOCKS = [
   { name: 'fix-869', fixes: ['fix-869', 'fix-868', 'fix-905', 'fix-906', 'fix-907'], needs: [] },
   { name: 'fix-944', fixes: ['fix-944', 'fix-945', 'fix-946'], needs: [] },
 ];
-const { block, blocksRun, partial } = blockRunner(BLOCKS);
+const { block, blocksRun, partial, flags } = blockRunner(BLOCKS);
 
 let app = null;
 // When the run started, for the busy-share step's load caveat at the end.
@@ -4690,8 +4692,10 @@ try {
     // Code reports a `cd` that sticks (claim 1); a by-hand commit on main;
     // three merges, the docs commit, the sweep and one more by-hand commit.
     // Twelve frames under the draw chip's `active` (the user's rail draws
-    // no grey trunk), written to docs/design/graph-through-a-batch/built/
-    // beside today/, each read against the proposed board's rows.
+    // no grey trunk), written to %TEMP%\emerald-verify\m51-frames, or to
+    // docs/design/graph-through-a-batch/built/ beside today/ under
+    // --frames-to-docs (fix 1051, since frames.json's fresh hashes left the
+    // tree dirty on every run), each read against the proposed board's rows.
     const btShort = path.join(os.tmpdir(), 'emerald-verify', `m51-batch-${process.pid}`);
     fs.rmSync(btShort, { recursive: true, force: true });
     fs.mkdirSync(btShort, { recursive: true });
@@ -4766,8 +4770,9 @@ try {
     // The frames, as ct-918 took them, and one read of the rows per frame:
     // a commit row by its name with its node's lane, a session row as
     // `lead`, a member row by its member id with its mark's lane.
-    const builtDir = path.join(repoRoot, 'docs', 'design', 'graph-through-a-batch', 'built');
+    const builtDir = flags.has('--frames-to-docs') ? path.join(repoRoot, 'docs', 'design', 'graph-through-a-batch', 'built') : path.join(shotsDir, 'm51-frames');
     fs.mkdirSync(builtDir, { recursive: true });
+    step(`M9 fix 1051: the fix 944 frames go to ${builtDir}`);
     const reads = [];
     const readRail = () =>
       s.evalJs(`(() => {
@@ -5056,7 +5061,7 @@ try {
     step("M9 fix 945: a commit made outside the session on its line is a square in the session's colour, the head bar is gone, the start bar stands alone on the start commit, and under active nothing draws below it");
     step('M9 fix 946: the seats rest once they report, a merged seat that still exists has its star on a side lane beside its line so no line runs through a star, the lanes after it moved over and every tint kept, and the seats gone with their worktrees have no rows');
     fs.writeFileSync(path.join(builtDir, 'frames.json'), JSON.stringify({ hashes: Object.fromEntries(Object.entries(names).map(([h, n]) => [n, h])), reads }, null, 1));
-    step("M9 fix 944: a session's line is its folder's branch: the lead's star stays over main's head while its folder is in a seat's worktree, the seats' stars sit over their branches' heads, the lead's fix-up draws on seat-b's line, and a commit on main from elsewhere leaves seat-b's work on seat-b's line (twelve frames in docs/design/graph-through-a-batch/built)");
+    step(`M9 fix 944: a session's line is its folder's branch: the lead's star stays over main's head while its folder is in a seat's worktree, the seats' stars sit over their branches' heads, the lead's fix-up draws on seat-b's line, and a commit on main from elsewhere leaves seat-b's work on seat-b's line (thirteen frames and frames.json in ${builtDir})`);
     await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]')?.click()`);
     await s.evalJs(`localStorage.removeItem('emerald.files')`);
     await removeSession(lead.id);

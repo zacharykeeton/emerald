@@ -31,7 +31,7 @@ process.env['EMERALD_WT_SETTINGS'] = wtSettings;
 const openedPaths = path.join(os.tmpdir(), 'emerald-verify', `m52-opened-${process.pid}.log`);
 fs.rmSync(openedPaths, { force: true });
 process.env['EMERALD_OPEN_LOG'] = openedPaths;
-const { clickNewShell, daemonPid, expect, focusedPaneIs, freshPort, getLayout, killTree, launch, leaves, railAtOldWidth, sleep, startSessionByKey, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { clickNewShell, daemonRecord, expect, focusedPaneIs, freshPort, getLayout, killDaemonIfSame, killTree, launch, leaves, railAtOldWidth, sleep, startSessionByKey, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 71 s quiet at the close-out of fixes 494 to 541, and the load of a
@@ -1316,7 +1316,7 @@ try {
   // daemon told to report level 21 (before views): the leaves survive,
   // since the daemon's build is this one, but the tab does not drag and
   // the heading offers no view.
-  const oldPid = daemonPid();
+  const oldDaemon = daemonRecord();
   const child = s.child;
   s.send('Runtime.evaluate', { expression: 'window.close()' }).catch(() => {});
   s.close();
@@ -1327,7 +1327,7 @@ try {
     child.kill();
     await Promise.race([new Promise((r) => child.once('exit', r)), sleep(5000)]);
   }
-  execFileSync('taskkill', ['/pid', String(oldPid), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(oldDaemon, { tree: false });
   await sleep(1000);
   process.env['EMERALD_DAEMON_FEATURE_LEVEL'] = '21';
   s = await launch(s.port + 1);
@@ -1410,7 +1410,7 @@ try {
   // Claude session, each landing beside the focused pane, so the view
   // stays where it is. The window closed and the daemon killed as above,
   // the level pin dropped so the rail offers the view in a pane.
-  const pidBefore172 = daemonPid();
+  const daemonBefore172 = daemonRecord();
   const child172 = s.child;
   s.send('Runtime.evaluate', { expression: 'window.close()' }).catch(() => {});
   s.close();
@@ -1420,7 +1420,7 @@ try {
     child172.kill();
     await Promise.race([new Promise((r) => child172.once('exit', r)), sleep(5000)]);
   }
-  execFileSync('taskkill', ['/pid', String(pidBefore172), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(daemonBefore172, { tree: false });
   await sleep(1000);
   delete process.env['EMERALD_DAEMON_FEATURE_LEVEL'];
   s = await launch(s.port + 1, { freshState: true });

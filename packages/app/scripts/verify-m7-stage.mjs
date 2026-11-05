@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { stage } from './stage.mjs';
+import { daemonRecord, killDaemonIfSame } from './cdp.mjs';
 
 const verifyDir = path.join(os.tmpdir(), 'emerald-verify');
 const stageCopy = path.join(verifyDir, 'stage');
@@ -96,9 +97,9 @@ function readDaemonInfo() {
   }
 }
 
+// M9 fix 1048: only while the pid is still the daemon daemon.json names.
 function stopDaemonHard() {
-  const info = readDaemonInfo();
-  if (info !== null) spawnSync('taskkill', ['/pid', String(info.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+  killDaemonIfSame(daemonRecord(home));
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

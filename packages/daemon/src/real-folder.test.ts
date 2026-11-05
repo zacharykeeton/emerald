@@ -11,7 +11,10 @@ test('realFolder: the short and the long spelling of a folder meet, and a folder
     const real = fs.realpathSync.native(dir);
     assert.equal(realFolder(dir), real);
     assert.equal(realFolder(real), real);
-    assert.equal(realFolder(dir.toLowerCase()), real, 'case is the file system\'s');
+    // NTFS is case-blind; ext4 and APFS's default are not (M9 fix 1075).
+    if (process.platform === 'win32') {
+      assert.equal(realFolder(dir.toLowerCase()), real, 'case is the file system\'s');
+    }
     assert.equal(realFolder(path.join(dir, 'missing')), path.join(dir, 'missing'));
     assert.equal(realFolder('/c/Users/nobody/wt'), '/c/Users/nobody/wt');
   } finally {

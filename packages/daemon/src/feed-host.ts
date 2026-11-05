@@ -24,7 +24,7 @@ export interface FeedHost {
 }
 
 export interface FeedHostOptions {
-  dir?: string;
+  dir: string;
   port?: number;
   log: Logger;
   // How long a host that found the port taken waits between tries.
@@ -46,9 +46,11 @@ function isFolder(dir: string): boolean {
 // What the environment asks for, read once at start. `off` is how a
 // harness says "serve nothing", since the real folder is on this box
 // and every harness daemon would otherwise try the real port.
-export function feedHostSettings(env: NodeJS.ProcessEnv = process.env): { dir: string | null; port: number } {
+// Off Windows there is no default folder (M9 fix 1069), so with no
+// EMERALD_FEED_DIR the dir is null and the daemon serves nothing.
+export function feedHostSettings(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): { dir: string | null; port: number } {
   const dirVar = env['EMERALD_FEED_DIR'];
-  const dir = dirVar === undefined || dirVar === '' ? defaultFeedDir() : dirVar === 'off' ? null : dirVar;
+  const dir = dirVar === undefined || dirVar === '' ? defaultFeedDir(env, platform) : dirVar === 'off' ? null : dirVar;
   const portVar = Number(env['EMERALD_FEED_PORT']);
   const port = Number.isInteger(portVar) && portVar >= 0 && env['EMERALD_FEED_PORT'] !== undefined && env['EMERALD_FEED_PORT'] !== '' ? portVar : FEED_PORT;
   return { dir, port };
@@ -61,7 +63,7 @@ export function feedHostSettings(env: NodeJS.ProcessEnv = process.env): { dir: s
 // once when it binds (M9 fix 486). Never throws.
 export async function startFeedHost(opts: FeedHostOptions): Promise<FeedHost | null> {
   const { log } = opts;
-  const dir = opts.dir ?? defaultFeedDir();
+  const dir = opts.dir;
   const port = opts.port ?? FEED_PORT;
   const retryMs = opts.retryMs ?? FEED_RETRY_MS;
   if (!isFolder(dir)) {

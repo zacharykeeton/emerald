@@ -1804,6 +1804,22 @@ test("a shell's SessionEnd drops the breakdown and a late Context from the Claud
   assert.equal(reduce(left, late), left);
 });
 
+test("a Claude session's /clear drops the breakdown with the dial; a compact or a resume keeps it (M9 fix 1053)", () => {
+  const withContext = reduce(session(), hook('Context', { detail: 'summary', breakdown: BREAKDOWN }));
+  assert.equal(withContext.context?.totalTokens, 86400);
+  for (const start of [{ source: 'clear' }, { session_start_type: 'clear' }] as Partial<HookPayload>[]) {
+    const ended = reduce(withContext, hook('SessionEnd', { reason: 'clear' }));
+    const cleared = reduce(ended, hook('SessionStart', { ...start, session_id: 'claude-session-2' }));
+    assert.equal('context' in cleared, false, `the clear (${JSON.stringify(start)}) left the old breakdown`);
+    assert.equal(cleared.claudeSessionId, 'claude-session-2');
+    assert.equal(cleared.contextPercent, 0);
+  }
+  for (const source of ['compact', 'resume']) {
+    const r = reduce(withContext, hook('SessionStart', { source }));
+    assert.deepEqual(r.context, withContext.context, `a ${source} keeps the breakdown`);
+  }
+});
+
 test('TurnStart moves nothing but the clock (M9 fix 738)', () => {
   const after = reduce(session({ state: 'idle' }), hook('TurnStart', { turn_id: 't-1' }));
   assert.equal(after.state, 'idle');

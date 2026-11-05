@@ -26,8 +26,9 @@ export function loadScriptPath(): string {
   return path.join(emeraldHome(), 'load-sweep.ps1');
 }
 
-// Git Bash's rc (M9 fix 624), written before each Git Bash launch and read
-// with --rcfile.
+// Git Bash's rc (M9 fix 624), and a bash's off Windows (M9 fix 1068),
+// written before each such launch and read with --rcfile. A zsh row's
+// startup files go in the emerald-zsh folder beside it.
 export function bashrcPath(): string {
   return path.join(emeraldHome(), 'emerald.bashrc');
 }

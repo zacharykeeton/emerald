@@ -172,6 +172,28 @@ if (!(st.code === 0 && st.json?.running === true && st.json.pipe === sock)) fail
 daemonPid = st.json.pid;
 pass('daemon status names the socket');
 
+// M9 fix 1069: off Windows there is no local feed folder, so a daemon of
+// our own logs why the feed is off rather than a folder under its cwd.
+if (mode === 'own') {
+  const daemonLog = path.join(home, 'logs', 'emmerd.log');
+  const readLog = () => {
+    try {
+      return fs.readFileSync(daemonLog, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  const ok = await until(5000, () => readLog().includes('feed: off (not Windows)'));
+  if (!ok || readLog().includes('feed: no folder at')) fail('the daemon serves no feed off Windows', `the log ${ok ? 'also names a feed folder' : 'has no "feed: off (not Windows)" line'}: ${JSON.stringify(readLog().split('\n').filter((l) => l.includes('feed:')))}`);
+  pass('the daemon serves no feed off Windows');
+}
+
+{
+  const r = emmer('feed', 'serve');
+  if (!(r.code === 64 && /--dir <feed dir>/.test(r.err))) fail('feed serve with no --dir: a usage error', `exit ${r.code} ${JSON.stringify(r.out + r.err)}`);
+  pass('feed serve with no --dir: a usage error');
+}
+
 let lst = null;
 try {
   lst = fs.lstatSync(sock);
@@ -214,6 +236,55 @@ pass('shell exits');
 const rm = emmer('rm', 'smoke');
 if (!(rm.code === 0 && rowNamed('smoke') === null)) fail('rm', `exit ${rm.code} ${JSON.stringify(rm.out + rm.err)}`);
 pass('rm');
+
+// M9 fix 1068: a bash and a zsh row report their folder, a running command
+// and a cd. Each row is sent exit and rm'ed, so the stop's leftover read and
+// smoke:mac's next step see none of them. A Mac's own bash is 3.2, with no
+// PS0, so its row reads like cmd's: the folder, never running.
+const workReal = fs.realpathSync(work);
+const tmpReal = fs.realpathSync('/tmp');
+const marksIds = ['bash'];
+if (spawnSync('sh', ['-c', 'command -v zsh'], { encoding: 'utf8' }).status === 0) marksIds.push('zsh');
+else console.log('[verify] note: no zsh on the PATH, the zsh row skipped');
+for (const id of marksIds) {
+  const name = `marks-${id}`;
+  const row = () => rowNamed(name);
+  const started = emmerJson('shell', work, '--shell', id, '--name', name, '--json');
+  if (!(started.code === 0 && started.json?.session?.kind === 'shell')) fail(`${id} row starts`, `exit ${started.code} ${JSON.stringify(started.out + started.err)}`);
+  if ((await until(10_000, () => row()?.shellCwd === workReal)) === null) fail(`${id} row reports its folder`, `the row reads shellCwd ${JSON.stringify(row()?.shellCwd)} after 10 s, wanted ${workReal}`);
+  pass(`${id} row reports its folder`);
+  let version = 9999;
+  if (id === 'bash') {
+    emmer('send', name, 'echo BV=$((BASH_VERSINFO[0]*100+BASH_VERSINFO[1]))', '--enter');
+    const bv = await until(10_000, () => {
+      const line = emmer('read', name, '--lines', '5').out.split(/\r?\n/).map((l) => l.trim()).find((l) => /^BV=(\d+)$/.test(l));
+      return line === undefined ? null : Number(line.slice(3));
+    });
+    if (bv === null) fail('bash version', `no BV= line in ${JSON.stringify(emmer('read', name, '--lines', '5').out)}`);
+    version = bv;
+  }
+  emmer('send', name, 'sleep 3', '--enter');
+  if (version >= 404) {
+    const step = `${id} row reads running while sleep 3 runs, then ok`;
+    if ((await until(3000, () => row()?.command?.state === 'running')) === null) fail(step, `the row reads command ${JSON.stringify(row()?.command)} 3 s after sleep 3 was sent`);
+    if ((await until(10_000, () => row()?.command?.state === 'ok' && row()?.command?.exitCode === 0)) === null) fail(step, `the row reads command ${JSON.stringify(row()?.command)} 10 s after sleep 3 ran`);
+    pass(step);
+  } else {
+    const step = 'bash row below 4.4 reads no command, as cmd';
+    await new Promise((r) => setTimeout(r, 1000));
+    if (row()?.command != null) fail(step, `the row reads command ${JSON.stringify(row()?.command)} at 1 s, bash ${version}`);
+    await new Promise((r) => setTimeout(r, 3000));
+    if (row()?.command != null) fail(step, `the row reads command ${JSON.stringify(row()?.command)} after the prompt is back, bash ${version}`);
+    pass(step);
+  }
+  emmer('send', name, 'cd /tmp', '--enter');
+  if ((await until(10_000, () => row()?.shellCwd === tmpReal)) === null) fail(`${id} row follows cd /tmp`, `the row reads shellCwd ${JSON.stringify(row()?.shellCwd)} after 10 s, wanted ${tmpReal}`);
+  pass(`${id} row follows cd /tmp`);
+  emmer('send', name, 'exit', '--enter');
+  if ((await until(10_000, () => row()?.state === 'exited')) === null) fail(`${id} row exits`, `the row reads ${JSON.stringify(row()?.state)} after 10 s`);
+  const gone = emmer('rm', name);
+  if (!(gone.code === 0 && row() === null)) fail(`${id} row rm`, `exit ${gone.code} ${JSON.stringify(gone.out + gone.err)}`);
+}
 
 if (mode === 'own') {
   recordTree(daemonPid);

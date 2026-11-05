@@ -35,8 +35,9 @@ export async function statStamp(file: string): Promise<FileStamp> {
 }
 
 // Where a reader stopped: the stamp it read against and the byte just past
-// the last whole line it handed on. Never serialized: it lives in the
-// readers' in-memory caches, so the bigint needs no string form.
+// the last whole line it handed on. Held in the readers' in-memory caches;
+// the Context tab's history also writes its marks to disk (M9 fix 1054,
+// context-history.ts), the id as a decimal string, since JSON has no bigint.
 export interface ReadMark {
   ino: bigint;
   size: number;

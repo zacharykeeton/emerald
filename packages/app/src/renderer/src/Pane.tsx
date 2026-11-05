@@ -30,7 +30,7 @@ import { FindBar } from './FindBar.tsx';
 import { ChatView } from './ChatView.tsx';
 import { faceOf } from './chat-model.ts';
 import { terminalMayHandle } from './keys.ts';
-import { CTRL_V, enterSequence, isCopyKey, isModifierKey, isPasteKey, plainKeyFor } from './keys-model.ts';
+import { CTRL_V, enterSequence, isCopyKey, isModifierKey, panePastes, plainKeyFor } from './keys-model.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSwatches } from './Menu.tsx';
 import { closeTitle, hideTitle, menuHint, sessionPaneMenu, zoomTitle, copyRow } from './pane-menu-model.ts';
@@ -1674,7 +1674,7 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
       if (!blockedRef.current()) window.emerald.send({ type: 'pty.input', sessionId, data: seq });
       return false;
     }
-    if (isPasteKey(ev)) {
+    if (panePastes(ev)) {
       ev.preventDefault();
       if (ev.type === 'keydown') pasteClipboard();
       return false;

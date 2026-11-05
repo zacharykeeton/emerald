@@ -15,7 +15,7 @@
 // gone; a click on either reading opens the context card with the bar,
 // the legend, the compaction point and the last request's counts.
 // The private daemon runs at the current feature level, so no banner.
-// M9 fix 1043: a /clear's three hooks put the dial back at 0%.
+// M9 fix 1043: a /clear's three hooks put the dial back at 0%, and (fix 1053) drop the mod's breakdown.
 // Uses a private home and pipe unless the environment already names them.
 // Run: npm run verify:context -w @emerald/app
 import fs from 'node:fs';
@@ -954,6 +954,18 @@ try {
     const titlePercent = `[data-pane-id=${JSON.stringify(p1)}] .pane-context-percent`;
     const rowPercent = `${liveRow} .sidebar-row-context-percent`;
     await s.waitFor(`document.querySelector(${JSON.stringify(titlePercent)})?.textContent === '25%'`, 'fix 1043: the title reads 25% before the clear', 5000);
+    // M9 fix 1053: a breakdown on the record first, which the clear must drop.
+    await postLive({
+      hook_event_name: 'Context',
+      detail: 'summary',
+      breakdown: { categories: [{ name: 'Messages', tokens: 250000, color: 'x', isDeferred: false, kind: 'used' }], totalTokens: 250000, maxTokens: 1000000, rawMaxTokens: 1000000, autocompactSource: 'default', percentage: 25, model: 'claude-opus-5', memoryFiles: [], mcpTools: [], agents: [], isAutoCompactEnabled: true, apiUsage: null },
+    });
+    let rec1053 = null;
+    for (const end = Date.now() + 8000; Date.now() < end; await sleep(200)) {
+      rec1053 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === live.id);
+      if (rec1053?.context?.totalTokens === 250000) break;
+    }
+    expect(rec1053?.context?.totalTokens === 250000, `fix 1053: the record carries the breakdown before the clear, got ${JSON.stringify(rec1053?.context)?.slice(0, 120)}`);
     await postLive({ hook_event_name: 'SessionEnd', reason: 'clear' });
     await postLive({ hook_event_name: 'SessionStart', source: 'clear', session_id: 'sim-m16-1043' });
     await postLive({
@@ -968,8 +980,9 @@ try {
     const rec1043 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === live.id);
     expect(rec1043?.claudeSessionId === 'sim-m16-1043' && rec1043.contextPercent === 0, `fix 1043: the record is on the new id at 0, got ${rec1043?.claudeSessionId} ${rec1043?.contextPercent}`);
     expect(JSON.stringify(rec1043.contextWindow) === JSON.stringify({ size: 1000000, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 }), `fix 1043: the window's counts are at 0 with its size kept, got ${JSON.stringify(rec1043.contextWindow)}`);
+    expect(!('context' in rec1043), `fix 1053: the clear dropped the breakdown, got ${JSON.stringify(rec1043.context)?.slice(0, 120)}`);
   }
-  step("M9 fix 1043: a /clear's SessionEnd, SessionStart and null status line read 0% on the title and the row, the window's counts at 0 with its 1M size kept");
+  step("M9 fix 1043: a /clear's SessionEnd, SessionStart and null status line read 0% on the title and the row, the window's counts at 0 with its 1M size kept, and the mod's breakdown gone (fix 1053)");
 
   await zreq(s, 'session.kill', { sessionId: live.id, remove: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(liveRow)})`, 'the live claude row is gone', 8000);

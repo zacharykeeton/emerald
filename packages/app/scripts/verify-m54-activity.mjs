@@ -21,7 +21,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm54-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m54';
-const { daemonPid, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, pickSplitDefault, repoRoot, setInput, shotsDir, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { daemonRecord, expect, freshPort, getLayout, getTabs, killDaemonIfSame, killTree, launch, leaves, pickSplitDefault, repoRoot, setInput, shotsDir, sleep, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 300 s since the batch of fixes 329 to 351 (180 before): the run is about
@@ -2468,7 +2468,7 @@ try {
   // same home with the daemon reporting level 31 (before activity views):
   // the pane comes back from the layout, since the daemon's build is this
   // one, but the card offers no pane button until a restart.
-  const oldPid = daemonPid();
+  const oldDaemon = daemonRecord();
   const child = s.child;
   s.send('Runtime.evaluate', { expression: 'window.close()' }).catch(() => {});
   s.close();
@@ -2479,7 +2479,7 @@ try {
     child.kill();
     await Promise.race([new Promise((r) => child.once('exit', r)), sleep(5000)]);
   }
-  execFileSync('taskkill', ['/pid', String(oldPid), '/f'], { stdio: 'ignore' });
+  killDaemonIfSame(oldDaemon, { tree: false });
   await sleep(1000);
   process.env['EMERALD_DAEMON_FEATURE_LEVEL'] = '31';
   s = await launch(s.port + 1);

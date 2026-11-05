@@ -20,6 +20,7 @@ import { ViewFindBar } from './ViewFindBar.tsx';
 import { askBeforeClose, clearReveal, closeFileTab, FONT_SIZE_DEFAULT, getUiState, revealInFiles, setFileTabView, toggleWrapLines, useUi } from './ui.ts';
 import { fileTextKey, paneScaled, paneTextVars } from './pane-text.ts';
 import { usePaneWheel } from './pane-wheel.ts';
+import { isCtrlOrCmdKey } from './keys-model.ts';
 import { focusPane } from '@emerald/shared';
 import { holdKeysInTree, treeKeepsKeys } from './focus.ts';
 import { editTab, useStore } from './store.ts';
@@ -612,7 +613,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
       }
     }
     if (findView === null) return;
-    if (ev.code !== 'KeyF' || !ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return;
+    if (!isCtrlOrCmdKey(ev, 'KeyF')) return;
     ev.preventDefault();
     ev.stopPropagation();
     openFind();

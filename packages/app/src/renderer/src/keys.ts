@@ -1,10 +1,11 @@
+import { useSyncExternalStore } from 'react';
 import { closePane, cycleFocus, findPane, focusPane, neighborPane, splitPane } from '@emerald/shared';
 import type { Direction, SplitDirection, UseFrom } from '@emerald/shared';
 import { cycleLayoutTab, cycleStripTabs, newTab, openFileByDialog, rememberSplitSource, showSession, shownTab, startShellHere } from './actions.ts';
 import { waitingOrder } from './attention-model.ts';
 import { toggleDesignMode } from './design.ts';
 import { stepHistory } from './focus-history.ts';
-import { BINDINGS, DEFAULT_PREFIX, LOOK_FIRST_ACTIONS, chordMatches, formatChord, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
+import { BINDINGS, DEFAULT_PREFIX, LOOK_FIRST_ACTIONS, chordMatches, formatChord, guestChords, isCtrlOrCmdKey, isModifierKey, matchPlain, matchPrefixed, parseKeySpec } from './keys-model.ts';
 import type { Action, Chord, KeyLike } from './keys-model.ts';
 import { hasModel, saveFile } from './monaco.ts';
 import { editTab, getState } from './store.ts';
@@ -90,7 +91,22 @@ export function configurePrefix(spec: string | undefined): void {
   }
   prefix = parsed;
   console.log(`[emerald] prefix key ${formatChord(prefix)}`);
+  for (const l of prefixListeners) l();
   sendGuestChords();
+}
+
+// M9 fix 1062: the tab strip prints the prefix in its titles, and the
+// config that sets it can answer after the strip has drawn, so the strip
+// subscribes. The snapshot is the printed string, compared by value.
+const prefixListeners = new Set<() => void>();
+
+function subscribePrefix(l: () => void): () => void {
+  prefixListeners.add(l);
+  return () => prefixListeners.delete(l);
+}
+
+export function usePrefixText(): string {
+  return useSyncExternalStore(subscribePrefix, () => formatChord(prefix));
 }
 
 // What xterm asks before handling a key: our chords and the prefix are
@@ -380,14 +396,14 @@ export function installKeybindings(): () => void {
     // Ctrl+W closes the file tab that is showing. On the panes tab it is
     // not ours: PowerShell uses it to delete a word.
     const tab = getUiState().tabs.active;
-    if (tab !== PANES && ev.code === 'KeyW' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+    if (tab !== PANES && isCtrlOrCmdKey(ev, 'KeyW')) {
       consume();
       closeFileTab(tab);
       return;
     }
     // M9 fix 489: Ctrl+S saves the file in view wherever the keyboard is
     // on the page, not only while the editor has it.
-    if (ev.code === 'KeyS' && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+    if (isCtrlOrCmdKey(ev, 'KeyS')) {
       const path = saveTarget(target);
       if (path !== null) {
         consume();
@@ -438,7 +454,7 @@ export function installKeybindings(): () => void {
 
 function sendGuestChords(): void {
   // An alias is forwarded beside its plain chord (M9 fix 900), so Ctrl+=,
-  // Ctrl+- and Ctrl+Shift+= in a browser page zoom the window.
-  const chords = BINDINGS.flatMap((b) => [...(b.plain === null ? [] : [b.plain]), ...(b.alias === undefined ? [] : [b.alias])]);
-  window.emerald.keys.configure(chords, prefix);
+  // Ctrl+- and Ctrl+Shift+= in a browser page zoom the window; on a Mac the
+  // Cmd twins too (M9 fix 1063).
+  window.emerald.keys.configure(guestChords(), prefix);
 }

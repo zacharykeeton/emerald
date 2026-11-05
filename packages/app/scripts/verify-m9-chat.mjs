@@ -110,13 +110,13 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
   { name: 'mod-feed', fixes: ['769'], needs: [] },
   { name: 'tail', fixes: ['770'], needs: [] },
-  { name: 'question', fixes: ['777', '801', '802', '803', '845', '879'], needs: ['stub'] },
+  { name: 'question', fixes: ['777', '801', '802', '803', '845', '879', '1057'], needs: ['stub'] },
   { name: 'ask-once', fixes: ['801', '880'], needs: ['stub'] },
   { name: 'ask-tabs', fixes: ['922', '959'], needs: ['stub'] },
   { name: 'switch', fixes: ['976', '1004'], needs: ['stub'] },
-  { name: 'btw', fixes: ['1005'], needs: ['stub'] },
+  { name: 'btw', fixes: ['1005', '1058'], needs: ['stub'] },
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957'], needs: [] },
-  { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003'], needs: [] },
+  { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003', '1059', '1060'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
@@ -3113,6 +3113,42 @@ try {
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 845: the Read-Host ended at the prompt', 10000);
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 845: the card gone and the box back');
+    // M9 fix 1057: a two-question ask revisited. The person types in the
+    // Type something box on Size and presses the answered Colour tab; the
+    // box gives the keyboard back to the card and the row marked is the one
+    // Claude Code ticked there (Blue), not the free row.
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask me two things' });
+    await post({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await waitRecord(stubId, (r) => r.state === 'working', 'fix 1057: the stub working', 5000);
+    const tabRowV = `('' + ${c('2190')} + ' ' + ${c('2612')} + ' Colour ' + ${c('2610')} + ' Size ' + ${c('2192')})`;
+    const rowsV1 = ['', 'Which size?', '', '> 1. Small', '     Small', '  2. Large', '     Large', '  3. Type something.', '', '  4. Chat about this', ''];
+    const rowsV2 = ['', 'Which colour?', '', '> 1. Red', '     Red', `  2. Blue ' + ${c('2714')} + '`, '     Blue', '  3. Type something.', '', '  4. Chat about this', ''];
+    const drawV = (rows) => `cls; Write-Host ${tabRowV}; ${rows.map((r) => `Write-Host ('${r}')`).join('; ')}; Write-Host -NoNewline ${footer}`;
+    await typeRaw(stubId, `${drawV(rowsV1)}; $a = [Console]::ReadKey($true); ${drawV(rowsV2)}; $b = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('got ' + $a.Key + ' ' + $b.KeyChar); Read-Host | Out-Null\r`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 1057: the ask drawn, the cursor on its footer');
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    await post({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use AskUserQuestion' });
+    await s.waitFor(`${q(cardSel + ' .chat-ask-question')}?.textContent === 'Which size?'`, 'fix 1057: the card on Size', 10000);
+    await s.evalJs(`${q(cardSel + ' .chat-ask-free-input')}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(cardSel + ' .chat-ask-free-input')}`, 'fix 1057: the box focused');
+    await s.type('Medium please');
+    await s.waitFor(`!!${q(cardSel + ' .chat-ask-free[data-pointer="true"]')}`, 'fix 1057: the free row marked while typing');
+    await s.evalJs(`${q(cardSel + ' button.chat-ask-tab[data-state="answered"]')}.click()`);
+    await s.waitFor(`${q(cardSel + ' .chat-ask-question')}?.textContent === 'Which colour?' && !${q(cardSel + ' [data-sent]')}`, 'fix 1057: the card on Colour', 10000);
+    const read1057 = () => s.evalJs(`(() => { const c = ${q(cardSel)}; return { keys: [...c.querySelectorAll('[data-pointer="true"]')].map((b) => b.dataset.key), card: document.activeElement === c, input: c.querySelector('.chat-ask-free-input')?.value ?? null }; })()`);
+    let r1057 = await read1057();
+    for (let t = Date.now(); Date.now() - t < 3000 && !(r1057.keys.join(',') === '2' && r1057.card); ) {
+      await sleep(100);
+      r1057 = await read1057();
+    }
+    expect(r1057.keys.join(',') === '2' && r1057.card && r1057.input === '', `fix 1057: the ticked row marked and the card holding the keyboard, got ${JSON.stringify(r1057)}`);
+    step('fix 1057: a revisited tab marks the answer Claude Code ticked there, the Type something box\'s focus handed back to the card');
+    await s.key('2', 'Digit2', 50);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('got LeftArrow 2'), 'fix 1057: the card kept the keyboard, its digit sent');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1057: the Read-Host ended at the prompt', 10000);
+    await post({ hook_event_name: 'Stop', stop_hook_active: false });
+    await s.waitFor(`!${q(cardSel)} && ${q(paneSel(stubPane) + ' .chat-box')}?.disabled === false`, 'fix 1057: the card gone and the box back');
   });
 
   await block('ask-once', async () => {
@@ -3381,7 +3417,7 @@ try {
     const answeredFooter = `('  ' + ${c('2191')} + '/' + ${c('2193')} + ' to scroll ' + ${c('B7')} + ' c to copy ' + ${c('B7')} + ' f to fork ' + ${c('B7')} + ' Esc to close')`;
     const panel = (body, footer) => `cls; Write-Host ''; Write-Host ('  /btw ' + $q.Substring(5)); Write-Host ''; ${body}; Write-Host ''; Write-Host ${footer}`;
     const pendingRows = `Write-Host ('    ' + ${c('273B')} + ' Answering' + ${c('2026')})`;
-    const answerRows = `Write-Host '    You are in the fixture folder.'; Write-Host '    It holds one file.'`;
+    const answerRows = `Write-Host '    You are in the fixture folder, a scratch folder the'; Write-Host '    harness made for this run.'; Write-Host ''; Write-Host '    It holds one file.'`;
     await typeRaw(stubId, `$q = Read-Host; ${panel(pendingRows, "'  Esc to close'")}; Start-Sleep -Milliseconds 3000; ${panel(answerRows, answeredFooter)}; $k = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('gotbtw ' + $k.Key); Read-Host | Out-Null\r`);
     await waitRecord(stubId, (r) => r.command?.state === 'running', 'fix 1005: the stub\'s Read-Host running', 10000);
     await s.evalJs(`${q(boxSel)}.focus()`);
@@ -3399,10 +3435,13 @@ try {
       throw new Error(`${err.message}: strip ${JSON.stringify(await s.evalJs(`${q(sideSel)}?.outerHTML ?? null`))}, rows ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-8))}`);
     });
     const answer = await s.evalJs(`${q(sideSel + ' .chat-side-answer')}?.textContent ?? null`);
-    expect(answer === 'You are in the fixture folder.\nIt holds one file.', `fix 1005 (b): the strip's answer, got ${JSON.stringify(answer)}`);
+    expect(answer === 'You are in the fixture folder, a scratch folder the harness made for this run.\n\nIt holds one file.', `fix 1005 (b): the strip's answer, got ${JSON.stringify(answer)}; fix 1058 (a): its wrapped rows joined back into a paragraph`);
     expect((await s.evalJs(`!!${q(paneSel(stubPane) + ' .chat-fallback')}`)) === false, 'fix 1005 (b): still no fallback bar');
     await s.screenshot('m9-chat-btw.png');
-    step('fix 1005 (b): /btw from the box opens the side strip, Answering… and then the answer read off the panel');
+    step('fix 1005 (b): /btw from the box opens the side strip, Answering… and then the answer read off the panel; fix 1058 (a): its wrapped rows joined back into a paragraph');
+    const close1058 = await s.evalJs(`(() => { const a = ${q(sideSel)}; return { bg: getComputedStyle(a.querySelector('.chat-side-close')).backgroundColor, color: getComputedStyle(a.querySelector('.chat-side-close')).color, muted: getComputedStyle(a.querySelector('.chat-side-question')).color }; })()`);
+    expect(close1058.bg === 'rgba(0, 0, 0, 0)' && close1058.color === close1058.muted, `fix 1058 (b): the close has no ground and the muted colour, got ${JSON.stringify(close1058)}`);
+    step('fix 1058 (b): the strip\'s close is a quiet dismiss, no ground and muted');
     // (c) Escape with the box focused closes the strip and sends the
     // panel's close key, one Escape and no stop.
     await s.evalJs(`${q(boxSel)}.focus()`);
@@ -3414,6 +3453,22 @@ try {
     await typeRaw(stubId, '\r');
     await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1005: the Read-Host ended at the prompt', 10000);
     step('fix 1005 (c): Escape closes the strip and the panel, and the stub took one Escape');
+    // M9 fix 1058 (c): the panel answering under a working turn. The turn's
+    // row is indented one column so the daemon's scanner (glyph at column
+    // one) leaves it to the screen read; the record carries no liveVerb.
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'ask aside while working' });
+    await waitRecord(stubId, (r) => r.state === 'working', 'fix 1058: the stub working', 5000);
+    await typeRaw(stubId, `cls; Write-Host (' ' + ${c('273B')} + ' Churning' + ${c('2026')}); Write-Host ''; Write-Host '  /btw what folder am I in'; Write-Host ''; Write-Host ('    ' + ${c('273D')} + ' Answering' + ${c('2026')}); Write-Host ''; Write-Host -NoNewline '  Esc to close'; Read-Host | Out-Null\r`);
+    const liveWord = () => s.evalJs(`${q(paneSel(stubPane) + ' .chat-live-word')}?.textContent ?? null`);
+    let word1058 = await liveWord();
+    for (let t = Date.now(); Date.now() - t < 3000 && word1058 !== 'Churning'; ) {
+      await sleep(100);
+      word1058 = await liveWord();
+    }
+    expect(word1058 === 'Churning', `fix 1058 (c): the live line keeps the turn's word, got ${JSON.stringify(word1058)}`);
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1058: the Read-Host ended at the prompt', 10000);
+    step('fix 1058 (c): with the /btw panel answering under a working turn, the live line keeps the turn\'s word');
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await waitRecord(stubId, (r) => r.state === 'done' || r.state === 'idle', 'fix 1005: the stub at rest at the block\'s end', 5000);
     await s.waitFor(`${q(boxSel)}?.disabled === false`, 'fix 1005: the box back at the block\'s end');
@@ -4016,6 +4071,51 @@ try {
     expect(carryLines(markBack1002, 'start').length === 0, `no carry on the flip back over an empty input, got ${JSON.stringify(s.consoleLog.slice(markBack1002).filter((l) => l.includes('[emerald] chat carry')))}`);
     step('fix 1002 (b): the flip back to chat over an empty input starts no carry');
 
+    // Fix 1002 (c), fix 1060: a flip to chat, to the terminal and back to
+    // chat inside the carry's few hundred ms; the first view's carry ends
+    // after the second mounted, and its parked text must reach the second.
+    await flip(null);
+    await typeRaw(sendId, 'carry1060 words');
+    const in1060 = Date.now() + 5000;
+    while (Date.now() < in1060 && (await promptText()) !== 'carry1060 words') await sleep(200);
+    expect((await promptText()) === 'carry1060 words', `the stub input holds the text, got ${JSON.stringify(await lastRows())}`);
+    const mark1060 = s.consoleLog.length;
+    const run1060 = await s.evalJs(`(async () => {
+      const seen = [];
+      const was = console.log;
+      console.log = (...a) => { const l = a.join(' '); if (l.includes('[emerald] chat carry')) seen.push({ l, t: performance.now() }); return was.apply(console, a); };
+      const pane = ${q(SP)};
+      const toggle = () => pane.querySelector('.pane-face-toggle').click();
+      const until = async (f) => { const by = performance.now() + 3000; while (performance.now() < by && !f()) await new Promise((r) => setTimeout(r, 5)); return f(); };
+      try {
+        toggle();
+        await until(() => pane.dataset.face === 'chat');
+        await until(() => seen.some((x) => x.l.includes('chat carry start')));
+        toggle();
+        await until(() => (pane.dataset.face ?? null) === null);
+        toggle();
+        await until(() => pane.dataset.face === 'chat');
+        return { seen, second: performance.now() };
+      } finally {
+        console.log = was;
+      }
+    })()`);
+    const started1060 = run1060?.seen?.find((x) => x.l.includes('chat carry start'));
+    const moved1060 = run1060?.seen?.find((x) => x.l.includes('chat carry moved'));
+    if (started1060 === undefined) throw new Error(`fix 1002 (c): no carry start line, got ${JSON.stringify(run1060)}`);
+    if (moved1060 !== undefined && moved1060.t < run1060.second) throw new Error(`fix 1002 (c): the carry ended before the flip back (start to second chat ${Math.round(run1060.second - started1060.t)} ms); the fixture missed its window, not a regression`);
+    try {
+      await s.waitFor(`${q(boxSel)}.value === 'carry1060 words'`, 'the parked text in the second view\'s box', 4000);
+    } catch (err) {
+      throw new Error(`${err.message}: box ${JSON.stringify(await s.evalJs(`${q(boxSel)}.value`))}, hint ${JSON.stringify(await s.evalJs(`${q(SP + ' .chat-hint')}?.textContent ?? null`))}, rows ${JSON.stringify(await lastRows())}`);
+    }
+    expect(carryLines(mark1060, 'start').length === 1 && carryLines(mark1060, 'moved').length === 1, `one carry started and moved, got ${JSON.stringify(s.consoleLog.slice(mark1060).filter((l) => l.includes('[emerald] chat carry')))}`);
+    const empty1060 = Date.now() + 3000;
+    while (Date.now() < empty1060 && (await promptText()) !== '') await sleep(200);
+    expect((await promptText()) === '', `the stub's input emptied, got ${JSON.stringify(await lastRows())}`);
+    await s.evalJs(`(() => { const b = ${q(boxSel)}; const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(b, ''); b.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    step('fix 1002 (c): a flip to the terminal and back while the carry runs still lands the text in the box');
+
     // Fix 972: a pick, or a `/` command sent from the box, reads Claude's
     // input first. A draft there moves into the box before the command
     // types, and an input past one row refuses with nothing typed.
@@ -4103,6 +4203,31 @@ try {
     await waitPrompt((t) => t === '', 3000);
     await emptyBox();
     step('fix 972: an effort pick moves Claude\'s input into the box before it types, a /effort sent from the box does the same, and an input past one row refuses the pick and types nothing');
+
+    // Fix 1059: auto mode's "Teach auto mode" notice, drawn under the
+    // prompt box, holds the keys; a pick is refused in its own words and
+    // types nothing. The rows are the notice's shape in the stub.
+    {
+      const notice = 'Teach auto mode about your environment?';
+      const words = `Claude Code is asking '${notice}'; answer it in the terminal first`;
+      await typeRaw(sendId, `$r = [string][char]0x2500 * 40; $p = [string][char]0x276F; Clear-Host; Write-Host 'done'; Write-Host $r; Write-Host $p; Write-Host $r; Write-Host '  auto mode on (shift+tab to cycle)'; Write-Host $r; Write-Host '  ${notice}'; Write-Host '  Auto mode works better when it knows your environment. Takes about a minute.'; Write-Host "  $p 1. Yes"; Write-Host '    2. Not now'; Write-Host "    3. Don't show again"; Write-Host '  Enter to confirm'; function prompt { ' ' }\r`);
+      const by = Date.now() + 5000;
+      while (Date.now() < by && !((await rowsNow()).includes(notice) && (await rowsNow()).includes('❯ 1. Yes'))) await sleep(200);
+      expect((await rowsNow()).includes(notice), `the notice drawn, got ${JSON.stringify(await lastRows())}`);
+      await pick972('low');
+      try {
+        await s.waitFor(`${q(SP + ' .chat-hint')}?.textContent === ${JSON.stringify(words)}`, 'the pick refused in the notice\'s words', 4000);
+      } catch (err) {
+        throw new Error(`${err.message}: ${await why972()}`);
+      }
+      await sleep(1500);
+      expect(!(await rowsNow()).some((r) => r.includes('/effort low')), `no /effort low typed, got ${JSON.stringify(await lastRows())}`);
+      await typeRaw(sendId, "Clear-Host; function prompt { [string][char]0x276F + ' ' }\r");
+      const back = Date.now() + 5000;
+      while (Date.now() < back && (await lastRows()).at(-1) !== '❯') await sleep(200);
+      await emptyBox();
+    }
+    step('fix 1059: a pick under auto mode\'s Teach auto mode notice is refused in the notice\'s words and types nothing');
 
     // Fix 1003: a pick made at once after the flip to chat finds the
     // mount's carry running, waits for it to move the draft into the box,

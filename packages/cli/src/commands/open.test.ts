@@ -12,6 +12,12 @@ import { runOpen } from './open.ts';
 // it was asked, so the command is driven without a window.
 const PIPE = `\\\\.\\pipe\\emmerd-test-open-${process.pid}`;
 
+// M9 fix 1075: an absolute path on either platform, since open.ts resolves the argument and C:\a is relative off Windows.
+const abs = (...parts: string[]) => path.join(process.platform === 'win32' ? 'C:\\' : '/', ...parts);
+const B_JSON = abs('a', 'b.json');
+const B_MD = abs('a', 'b.md');
+const INDEX_HTM = abs('x', 'Index.HTM');
+
 let level = 53;
 let apps = 1;
 // What the fake window answered about the scheme (M9 fix 375); undefined
@@ -94,10 +100,10 @@ test('emmer open sends the absolute path and the pane flag, and exits 0 with a w
   apps = 2;
   asked.length = 0;
   assert.equal(await runOpen(['notes.md']), EXIT.ok);
-  assert.equal(await runOpen(['C:\\a\\b.json', '--pane']), EXIT.ok);
+  assert.equal(await runOpen([B_JSON, '--pane']), EXIT.ok);
   assert.deepEqual(asked, [
     { path: path.resolve('notes.md'), pane: false },
-    { path: 'C:\\a\\b.json', pane: true },
+    { path: B_JSON, pane: true },
   ]);
 });
 
@@ -185,27 +191,27 @@ test('--scheme and --clear-scheme ride file.open, and an unknown name is said (M
   known = true;
   const lines = captureStdout();
   try {
-    assert.equal(await runOpen(['C:\\a\\b.md', '--scheme', ' Dracula ']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\a\\b.md', '--pane', '--clear-scheme']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--scheme', ' Dracula ']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--pane', '--clear-scheme']), EXIT.ok);
     known = false;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--scheme', 'nosuch']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--scheme', 'nosuch']), EXIT.ok);
     known = undefined;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--scheme', 'quiet']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--scheme', 'quiet']), EXIT.ok);
   } finally {
     lines.restore();
   }
   assert.deepEqual(asked, [
-    { path: 'C:\\a\\b.md', pane: false, scheme: 'Dracula' },
-    { path: 'C:\\a\\b.md', pane: true, scheme: null },
-    { path: 'C:\\a\\b.md', pane: false, scheme: 'nosuch' },
-    { path: 'C:\\a\\b.md', pane: false, scheme: 'quiet' },
+    { path: B_MD, pane: false, scheme: 'Dracula' },
+    { path: B_MD, pane: true, scheme: null },
+    { path: B_MD, pane: false, scheme: 'nosuch' },
+    { path: B_MD, pane: false, scheme: 'quiet' },
   ]);
   assert.deepEqual(lines.out, [
-    'opened C:\\a\\b.md in Dracula',
-    'opened C:\\a\\b.md in a pane, its own scheme cleared',
-    'opened C:\\a\\b.md in nosuch',
+    `opened ${B_MD} in Dracula`,
+    `opened ${B_MD} in a pane, its own scheme cleared`,
+    `opened ${B_MD} in nosuch`,
     "nosuch is not among the window's schemes (see the file menu); the pick is kept and shows no colour",
-    'opened C:\\a\\b.md in quiet',
+    `opened ${B_MD} in quiet`,
   ]);
 });
 
@@ -249,18 +255,18 @@ test('--beside rides file.open as the session id with pane implied, and a sessio
   const lines = captureStdout();
   const own = process.env['EMERALD_SESSION_ID'];
   try {
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'beta']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', '1111', '--scheme', 'Dracula']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', 'beta']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', '1111', '--scheme', 'Dracula']), EXIT.ok);
     process.env['EMERALD_SESSION_ID'] = listed[1]!.id;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', '--json']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', '--json']), EXIT.ok);
     delete process.env['EMERALD_SESSION_ID'];
     besideFound = false;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'alpha']), EXIT.ok);
-    const outside = await failure(runOpen(['C:\\a\\b.md', '--beside']));
+    assert.equal(await runOpen([B_MD, '--beside', 'alpha']), EXIT.ok);
+    const outside = await failure(runOpen([B_MD, '--beside']));
     assert.equal(outside.exitCode, EXIT.usage);
     assert.match(outside.message, /not inside emerald/);
-    const none = await failure(runOpen(['C:\\a\\b.md', '--beside', 'gamma']));
+    const none = await failure(runOpen([B_MD, '--beside', 'gamma']));
     assert.match(none.message, /no session matches "gamma"/);
   } finally {
     lines.restore();
@@ -268,23 +274,23 @@ test('--beside rides file.open as the session id with pane implied, and a sessio
     else process.env['EMERALD_SESSION_ID'] = own;
   }
   assert.deepEqual(asked, [
-    { path: 'C:\\a\\b.md', pane: true, beside: listed[1]!.id },
-    { path: 'C:\\a\\b.md', pane: true, scheme: 'Dracula', beside: listed[0]!.id },
-    { path: 'C:\\a\\b.md', pane: true, beside: listed[1]!.id },
-    { path: 'C:\\a\\b.md', pane: true, beside: listed[1]!.id },
-    { path: 'C:\\a\\b.md', pane: true, beside: listed[0]!.id },
+    { path: B_MD, pane: true, beside: listed[1]!.id },
+    { path: B_MD, pane: true, scheme: 'Dracula', beside: listed[0]!.id },
+    { path: B_MD, pane: true, beside: listed[1]!.id },
+    { path: B_MD, pane: true, beside: listed[1]!.id },
+    { path: B_MD, pane: true, beside: listed[0]!.id },
   ]);
   const json = JSON.parse(lines.out[3]!) as { pane: boolean; beside: string; besideFound: boolean };
   assert.deepEqual([json.pane, json.beside, json.besideFound], [true, listed[1]!.id, true]);
   assert.deepEqual([lines.out[0], lines.out[1], lines.out[2], lines.out[4], lines.out[5]], [
-    'opened C:\\a\\b.md beside beta (22222222)',
-    'opened C:\\a\\b.md beside alpha (11111111) in Dracula',
-    'opened C:\\a\\b.md beside beta (22222222)',
-    'opened C:\\a\\b.md in a pane',
+    `opened ${B_MD} beside beta (22222222)`,
+    `opened ${B_MD} beside alpha (11111111) in Dracula`,
+    `opened ${B_MD} beside beta (22222222)`,
+    `opened ${B_MD} in a pane`,
     'alpha (11111111) is on no pane; opened beside the focused pane',
   ]);
   level = 54;
-  const old = await failure(runOpen(['C:\\a\\b.md', '--beside', 'beta']));
+  const old = await failure(runOpen([B_MD, '--beside', 'beta']));
   assert.match(old.message, /older than emmer open --beside \(level 54, needs 55\)/);
 });
 
@@ -301,15 +307,15 @@ test('--beside names the pane and the tab the window picked (M9 fix 404)', async
   besideTab = 'Two';
   const lines = captureStdout();
   try {
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'beta']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'beta', '--json']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', 'beta']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', 'beta', '--json']), EXIT.ok);
     besideTab = undefined;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'beta']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', 'beta']), EXIT.ok);
     // On no pane the file went beside the focused one, so there is no
     // pick to name however much the window sent.
     besideTab = 'Two';
     besideFound = false;
-    assert.equal(await runOpen(['C:\\a\\b.md', '--beside', 'alpha']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--beside', 'alpha']), EXIT.ok);
   } finally {
     lines.restore();
     besidePane = undefined;
@@ -318,9 +324,9 @@ test('--beside names the pane and the tab the window picked (M9 fix 404)', async
   const json = JSON.parse(lines.out[1]!) as { besidePane: string; besideTab: string; besideFound: boolean };
   assert.deepEqual([json.besidePane, json.besideTab, json.besideFound], ['pane-7', 'Two', true]);
   assert.deepEqual([lines.out[0], lines.out[2], lines.out[3], lines.out[4]], [
-    'opened C:\\a\\b.md beside beta (22222222) in pane pane-7 on tab Two',
-    'opened C:\\a\\b.md beside beta (22222222) in pane pane-7',
-    'opened C:\\a\\b.md in a pane',
+    `opened ${B_MD} beside beta (22222222) in pane pane-7 on tab Two`,
+    `opened ${B_MD} beside beta (22222222) in pane pane-7`,
+    `opened ${B_MD} in a pane`,
     'alpha (11111111) is on no pane; opened beside the focused pane',
   ]);
 });
@@ -391,13 +397,13 @@ test('--browser rides file.open as an .html path in a pane with browser set (M9 
   const lines = captureStdout();
   try {
     assert.equal(await runOpen(['site/page.html', '--browser']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\x\\Index.HTM', '--browser', '--beside', 'beta']), EXIT.ok);
+    assert.equal(await runOpen([INDEX_HTM, '--browser', '--beside', 'beta']), EXIT.ok);
   } finally {
     lines.restore();
   }
   assert.deepEqual(asked, [
     { path: path.resolve('site/page.html'), pane: true, browser: true },
-    { path: 'C:\\x\\Index.HTM', pane: true, beside: listed[1]!.id, browser: true },
+    { path: INDEX_HTM, pane: true, beside: listed[1]!.id, browser: true },
   ]);
   assert.equal(lines.out[0], `opened ${path.resolve('site/page.html')} in a pane`);
 });
@@ -438,7 +444,7 @@ test('a URL and a --browser page ride file.open with this session as opener at l
     process.env['EMERALD_SESSION_ID'] = listed[0]!.id;
     assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
     assert.equal(await runOpen(['site/page.html', '--browser']), EXIT.ok);
-    assert.equal(await runOpen(['C:\\a\\b.md', '--pane']), EXIT.ok);
+    assert.equal(await runOpen([B_MD, '--pane']), EXIT.ok);
     level = 76;
     assert.equal(await runOpen(['localhost:3000']), EXIT.ok);
     level = 77;
@@ -454,7 +460,7 @@ test('a URL and a --browser page ride file.open with this session as opener at l
   assert.deepEqual(asked, [
     { path: 'http://localhost:3000/', pane: true, url: true, opener: listed[0]!.id },
     { path: path.resolve('site/page.html'), pane: true, browser: true, opener: listed[0]!.id },
-    { path: 'C:\\a\\b.md', pane: true },
+    { path: B_MD, pane: true },
     { path: 'http://localhost:3000/', pane: true, url: true },
     { path: 'http://localhost:3000/', pane: true, url: true },
     { path: 'http://localhost:3000/', pane: true, url: true },

@@ -61,6 +61,7 @@ import { fetchUsage } from './usage.ts';
 import { cappedEdges, cappedNow, usageByKey } from './usage-edges.ts';
 import { autoUpdater } from 'electron-updater';
 import { createUpdater, releasePageUrl, updateFeedSpec } from './updater.ts';
+import { installLastResort } from './last-resort.ts';
 import { postGapPoster, postInstallPoster } from './install-poster.ts';
 import { gapNotice, gapState, readMarker, writeMarker } from './install-gap.ts';
 import { wireUpdateRelay } from './update-relay.ts';
@@ -160,6 +161,10 @@ const log = (msg: string) => {
   }
 };
 if (mainLogRotated !== null) log(`main.log rotated, ${mainLogRotated} bytes moved to main.1.log`);
+// An uncaught throw from here on is logged and the window carries on, with
+// a corner note naming the log (M9 fix 1071). The channel is the corner's
+// line, Design Mode's first; sendAll is a function declaration, in scope.
+installLastResort(process, log, (text) => sendAll('emerald:design-note', text));
 const runner: Runner = app.isPackaged ? 'self' : 'node';
 startLoopDelayLog(log);
 setGitRunnerLog(log);
@@ -1708,12 +1713,19 @@ app.whenReady().then(() => {
   const native = stub === undefined || stub === '' ? nativeTheme : fileNativeTheme(stub);
   const themeAtStart = attachNativeTheme(native);
   log(`theme pick ${themeAtStart.pick}: ${themeAtStart.theme} now${stub === undefined || stub === '' ? '' : ` (stubbed by ${stub})`}`);
-  const followTheme = () => {
+  // M9 fix 1073: main's log says which path did the work, so a live flip
+  // can be read back. Only a call that moved the theme logs, since focus
+  // fires constantly and every pick fires updated; the first path to see a
+  // flip logs it and the second finds nothing moved. The words say Windows
+  // on a Mac too, as the menu's Follow Windows does.
+  const followTheme = (by: 'updated' | 'focus') => {
     const next = themeUpdated();
-    if (next !== null) themeChanged(next);
+    if (next === null) return;
+    log(`theme followed Windows to ${next.theme} on ${by}`);
+    themeChanged(next);
   };
-  native.on('updated', followTheme);
-  app.on('browser-window-focus', followTheme);
+  native.on('updated', () => followTheme('updated'));
+  app.on('browser-window-focus', () => followTheme('focus'));
   createWindow(null, 0);
   // A layout that arrived before the window (it never does, the connect
   // being async) is applied now.

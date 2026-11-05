@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import type { ContextBreakdown, ContextSkill, SessionInfo } from '@emerald/shared';
 import { askSessionContext } from './actions.ts';
 import { useContextHistory } from './context-history-store.ts';
@@ -7,7 +7,7 @@ import { agentRows, asOfText, callsText, fillLine, serverRows } from './context-
 import type { ContextAsk } from './context-model.ts';
 import { LISTING_COLUMN_TITLE, listingNameClass } from './listing-model.ts';
 import { ListingSwitch, useListing } from './ListingSwitch.tsx';
-import { contextUse, lastUsedWords, listingTokensText, mcpServerKey, neverSummary, skillGroups, skillHistoryOf, skillSourceLabel, tokens7dText } from './skill-history-model.ts';
+import { contextUse, lastUsedWords, listingTokensText, mcpServerKey, neverSummary, skillGroups, skillHistoryOf, skillSectionHead, skillSections, tokens7dText } from './skill-history-model.ts';
 import { useStore } from './store.ts';
 import { openFileTab } from './ui.ts';
 
@@ -87,7 +87,7 @@ export function ContextView({ sessionId }: { sessionId: string }) {
     return () => {
       live = false;
     };
-  }, [sessionId]);
+  }, [sessionId, session?.claudeSessionId]);
   if (session === null) return <div className="files-empty">This session is gone</div>;
   if (isShell(session)) return <div className="files-empty">This pane's session runs a shell, not Claude</div>;
   const b = session.context ?? null;
@@ -119,7 +119,7 @@ function Loaded({ session, b }: { session: SessionInfo; b: ContextBreakdown }) {
           </button>
         ))}
         <span className="context-view-spacer" />
-        <span className="context-view-sort">{pick === 'skills' ? 'sorted by last used, never first' : 'sorted by tokens'}</span>
+        <span className="context-view-sort">{pick === 'skills' ? 'grouped by where each lives, the never used first in each' :'sorted by tokens'}</span>
       </div>
       {pick === 'skills' && <SkillsTable skills={skills} folder={session.groupCwd} history={history} />}
       {pick === 'servers' && (
@@ -207,10 +207,31 @@ function SkillsTable({ skills, folder, history }: { skills: readonly ContextSkil
   const { effective } = useListing(folder);
   const now = Date.now();
   const groups = skillGroups(skills, history);
-  // The never used first (the settings group then the synced, each by
-  // name), then the used from the longest ago to the most recent, as A10
-  // draws it.
-  const rows = history.reading ? [...skills].sort((a, z) => z.tokens - a.tokens) : [...groups.never.settings, ...groups.never.synced, ...[...groups.used].reverse()];
+  // Once the history is read, a heading row per place a skill lives (fix
+  // 1055); inside it the never used first (the settings ones then the
+  // synced, each by name), then the used from the longest ago to the most
+  // recent, as A10 draws it. While reading the rows stand flat by tokens.
+  const flat = history.reading ? [...skills].sort((a, z) => z.tokens - a.tokens) : [];
+  const sections = history.reading ? [] : skillSections(skills, history);
+  const renderRow = (s: ContextSkill) => {
+    const h = skillHistoryOf(history, s);
+    const value = effective(s.name);
+    const reading = history.reading;
+    return (
+      <tr key={s.name} data-row={s.name}>
+        <td className={listingNameClass(value) || undefined}>{s.name}</td>
+        <td className="context-view-figure">{listingTokensText(s.tokens)}</td>
+        <td className="context-view-figure" title={reading ? 'Reading every transcript on this machine' : undefined}>
+          {reading ? '…' : tokens7dText(h?.tokens7d ?? 0)}
+        </td>
+        <td className="context-view-figure">{reading ? '…' : `${h?.uses ?? 0}×`}</td>
+        <td data-never={!reading && h === undefined && value !== 'off' ? '' : undefined}>{value === 'off' ? 'off' : reading ? '…' : lastUsedWords(h?.lastUsedAt, now)}</td>
+        <td>
+          <ListingSwitch name={s.name} folder={folder} source={s.source} {...(s.pluginName === undefined ? {} : { pluginName: s.pluginName })} />
+        </td>
+      </tr>
+    );
+  };
   return (
     <>
       {!history.reading && (
@@ -226,7 +247,6 @@ function SkillsTable({ skills, folder, history }: { skills: readonly ContextSkil
         <thead>
           <tr>
             <th>skill</th>
-            <th>source</th>
             <th title="The skill's line in the listing, sent with every request">context</th>
             <th title="Tokens in the turns the skill ran, over the last 7 days of sessions on this machine">7d tokens</th>
             <th>uses</th>
@@ -235,26 +255,16 @@ function SkillsTable({ skills, folder, history }: { skills: readonly ContextSkil
           </tr>
         </thead>
         <tbody>
-          {rows.map((s) => {
-            const h = skillHistoryOf(history, s);
-            const value = effective(s.name);
-            const reading = history.reading;
-            return (
-              <tr key={s.name} data-row={s.name}>
-                <td className={listingNameClass(value) || undefined}>{s.name}</td>
-                <td>{skillSourceLabel(s)}</td>
-                <td className="context-view-figure">{listingTokensText(s.tokens)}</td>
-                <td className="context-view-figure" title={reading ? 'Reading every transcript on this machine' : undefined}>
-                  {reading ? '…' : tokens7dText(h?.tokens7d ?? 0)}
-                </td>
-                <td className="context-view-figure">{reading ? '…' : `${h?.uses ?? 0}×`}</td>
-                <td data-never={!reading && h === undefined && value !== 'off' ? '' : undefined}>{value === 'off' ? 'off' : reading ? '…' : lastUsedWords(h?.lastUsedAt, now)}</td>
-                <td>
-                  <ListingSwitch name={s.name} folder={folder} source={s.source} {...(s.pluginName === undefined ? {} : { pluginName: s.pluginName })} />
-                </td>
-              </tr>
-            );
-          })}
+          {history.reading
+            ? flat.map(renderRow)
+            : sections.map((section) => (
+                <Fragment key={section.key}>
+                  <tr className="context-view-section" data-section={section.key}>
+                    <td colSpan={6}>{skillSectionHead(section)}</td>
+                  </tr>
+                  {[...section.never, ...section.synced, ...[...section.used].reverse()].map(renderRow)}
+                </Fragment>
+              ))}
         </tbody>
       </table>
       <div className="context-view-notes">

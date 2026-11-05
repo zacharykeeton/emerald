@@ -23,9 +23,10 @@ export const LISTING_NOTE_TAIL_OFF = 'new sessions start without';
 // The board's `listing` column head.
 export const LISTING_COLUMN_TITLE = 'What Claude sees of the skill: on, name only, / only (you can type it, Claude does not see it), or off';
 
-// Claude.ai's skills settings, guessed from the bundle's
-// `claude.ai/customize/connectors`; the bundle names no skills page.
-export const CLAUDE_AI_SKILLS_URL = 'https://claude.ai/customize/skills';
+// Claude.ai's page of the skills you have; the user picked it at the
+// install of fixes 1030 to 1047, since the bare /customize/skills is the
+// marketplace.
+export const CLAUDE_AI_SKILLS_URL = 'https://claude.ai/customize/skills/yours';
 
 // Whether skillOverrides reaches a skill synced from claude.ai. Claude
 // Code 2.1.316 looks a synced skill up by its full name and its bare one,
@@ -39,7 +40,7 @@ export function isSyncedName(name: string): boolean {
   return name.startsWith(SYNCED_PREFIX);
 }
 
-// How restrictive a value is, for the synced rule's "more restrictive of the two".
+// How restrictive a value is, for the managed bare-name entry that tightens the result.
 const STRICTNESS: Record<SkillListing, number> = { on: 0, 'name-only': 1, 'user-invocable-only': 2, off: 3 };
 
 export interface ScopeValues {
@@ -47,35 +48,51 @@ export interface ScopeValues {
   local?: SkillListing;
   project?: SkillListing;
   user?: SkillListing;
+  bareIn?: SkillScope[];
 }
 
 // The skill's value in each scope that has one. A synced skill's entry may
-// be under its full name or its bare one; within one scope the more
-// restrictive wins, as Claude Code's own lookup does.
+// be under its full name or its bare one; a scope's full-name entry is its
+// value, else its bare-name entry, and bareIn names the scopes that gave the
+// bare one, since Claude Code (2.1.318, Mzt) looks the full name up in every
+// scope before the bare name in any.
 export function scopeValues(read: SkillOverridesRead | null, name: string): ScopeValues {
   const out: ScopeValues = {};
   if (read === null) return out;
   const bare = isSyncedName(name) ? name.slice(SYNCED_PREFIX.length) : null;
+  const bareIn: SkillScope[] = [];
   for (const s of read.scopes) {
     let v: SkillListing | undefined = Object.prototype.hasOwnProperty.call(s.values, name) ? s.values[name] : undefined;
-    if (bare !== null && bare !== '' && Object.prototype.hasOwnProperty.call(s.values, bare)) {
-      const b = s.values[bare];
-      if (b !== undefined && (v === undefined || STRICTNESS[b] > STRICTNESS[v])) v = b;
+    if (v === undefined && bare !== null && bare !== '' && Object.prototype.hasOwnProperty.call(s.values, bare)) {
+      v = s.values[bare];
+      if (v !== undefined) bareIn.push(s.scope);
     }
     if (v !== undefined) out[s.scope] = v;
   }
+  if (bareIn.length > 0) out.bareIn = bareIn;
   return out;
 }
 
 const ORDER: readonly SkillScope[] = ['managed', 'local', 'project', 'user'];
 
-// The first of managed, local, project and user that has a value; none is on.
+// The first scope whose value is the full name's, else the first with the bare name's, else on; then a managed bare-name value stricter than that wins (Claude Code's policySettings pass).
 export function effectiveListing(v: ScopeValues): { value: SkillListing; scope: SkillScope | null } {
+  const bareIn = v.bareIn ?? [];
+  let result: { value: SkillListing; scope: SkillScope | null } | null = null;
   for (const s of ORDER) {
     const value = v[s];
-    if (value !== undefined) return { value, scope: s };
+    if (value !== undefined && !bareIn.includes(s)) { result = { value, scope: s }; break; }
   }
-  return { value: 'on', scope: null };
+  if (result === null) {
+    for (const s of ORDER) {
+      const value = v[s];
+      if (value !== undefined) { result = { value, scope: s }; break; }
+    }
+  }
+  if (result === null) return { value: 'on', scope: null };
+  const m = v.managed;
+  if (m !== undefined && bareIn.includes('managed') && STRICTNESS[m] > STRICTNESS[result.value]) return { value: m, scope: 'managed' };
+  return result;
 }
 
 export type ListingKind = 'switch' | 'plugin' | 'synced-locked';

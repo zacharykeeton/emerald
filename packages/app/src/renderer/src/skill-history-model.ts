@@ -104,6 +104,45 @@ export function skillGroups(skills: readonly ContextSkill[], history: Skills): S
   return { never: { settings, synced, tokens }, used: used.map((u) => u.skill) };
 }
 
+// M9 fix 1055: the Skills section by where each skill lives, in a fixed
+// order, the empty ones left out. Inside a group the rows keep fix 1040's
+// order: the never used by name (synced ones apart, for the fold), then
+// the used most recent first.
+export type SkillSectionKey = 'folder' | 'yours' | 'built-in';
+export const SKILL_SECTION_HEADS: Record<SkillSectionKey, string> = { folder: 'this folder', yours: 'yours', 'built-in': 'plugins and built-in' };
+export interface SkillSection {
+  key: SkillSectionKey;
+  never: ContextSkill[];
+  synced: ContextSkill[];
+  used: ContextSkill[];
+  tokens: number;
+  count: number;
+}
+
+export function skillSectionKey(skill: ContextSkill): SkillSectionKey {
+  if (skill.source === 'projectSettings') return 'folder';
+  if (skill.source === 'userSettings' || skill.source === 'syncedSkills') return 'yours';
+  return 'built-in';
+}
+
+export function skillSections(skills: readonly ContextSkill[], history: Skills): SkillSection[] {
+  const order: SkillSectionKey[] = ['folder', 'yours', 'built-in'];
+  const out: SkillSection[] = [];
+  for (const key of order) {
+    const part = skills.filter((s) => skillSectionKey(s) === key);
+    if (part.length === 0) continue;
+    const g = skillGroups(part, history);
+    out.push({ key, never: g.never.settings, synced: g.never.synced, used: g.used, tokens: g.never.tokens, count: part.length });
+  }
+  return out;
+}
+
+export function skillSectionHead(section: SkillSection): string {
+  const base = `${SKILL_SECTION_HEADS[section.key]}, ${section.count}`;
+  if (section.never.length + section.synced.length === 0) return base;
+  return `${base}, never used ${listingTokensText(section.tokens)} in every request`;
+}
+
 function syncedName(name: string): string {
   return name.startsWith(SYNCED_PREFIX) ? name.slice(SYNCED_PREFIX.length) : name;
 }

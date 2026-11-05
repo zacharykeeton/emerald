@@ -4,7 +4,7 @@ import { integerOption, parse, positionals } from '../args.ts';
 import { CliError, usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
-import { defaultFeedDir, publishFeed, serveFeed } from '../feed.ts';
+import { publishFeed, resolveFeedDir, serveFeed } from '../feed.ts';
 
 // The update feed (M9 fix 239). `publish` copies a release's latest.yml,
 // installer and .blockmap into the feed folder; `serve` serves that folder
@@ -24,10 +24,13 @@ const command: Command = {
   async run(argv) {
     const parsed = parse(argv, options);
     const action = parsed.positionals[0];
-    const dir = parsed.values.dir ?? defaultFeedDir();
     const json = parsed.values.json;
+    // The folder is worked out inside each action, after that action's own
+    // argument checks (M9 fix 1069), so a missing release or a bad --port
+    // reads its own line off Windows too, before the no-default-folder one.
     if (action === 'publish') {
       const { release } = positionals(parsed, ['action', 'release']);
+      const dir = resolveFeedDir(parsed.values.dir);
       const releaseDir = path.resolve(release);
       let published;
       try {
@@ -45,6 +48,7 @@ const command: Command = {
     if (action === 'serve') {
       positionals(parsed, ['action']);
       const port = integerOption(parsed.values.port, 'port', FEED_PORT);
+      const dir = resolveFeedDir(parsed.values.dir);
       let server;
       try {
         server = await serveFeed(dir, port, (line) => {

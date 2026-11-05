@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { emeraldHomeOf } from '@emerald/shared/pipe-name';
 import { claudeHome, claudeHomeExists } from './claude-home.ts';
 import { appendedBytesRead, markKind, markOf, readWholeLines, statStamp } from './appended-read.ts';
 import type { ReadMark } from './appended-read.ts';
@@ -15,7 +16,10 @@ import { mcpServerKey } from '../renderer/src/skill-history-model.ts';
 // ran in cost over the last 7 days. Each transcript's fold is kept beside
 // the mark of where its read stopped (appended-read.ts), so the first ask
 // reads the whole set (13 s for 1.79 GB on the probe of 2026-10-31) and
-// every later one reads only what grew.
+// every later one reads only what grew. The folds are saved to
+// context-history.json in the home after any read that changed them and
+// loaded on a launch's first ask, so that ask reads only what grew (M9 fix
+// 1054).
 //
 // A use is a Skill tool call, or a typed slash command that Claude Code
 // followed with the skill's `Base directory for this skill` meta line (a
@@ -26,6 +30,8 @@ import { mcpServerKey } from '../renderer/src/skill-history-model.ts';
 // settled against /skill-doctor's own figures).
 
 export const CONTEXT_HISTORY_DAYS = 7;
+// The folds' shape on disk (M9 fix 1054): bump it whenever useFold counts differently, so a build reads every transcript again rather than trusting folds an older one made.
+export const CONTEXT_HISTORY_FOLD_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface SkillUse {
@@ -150,6 +156,17 @@ interface Cached {
 
 const cache = new Map<string, Cached>();
 let running: { transcript: string | null; read: Promise<ContextHistory> } | null = null;
+// The saved folds are loaded once per launch, on the first ask; `dirty`
+// says the cache moved since the last save (M9 fix 1054).
+let loaded = false;
+let dirty = false;
+
+// For the tests: a fresh launch's empty cache, the file left where it is.
+export function forgetContextHistory(): void {
+  cache.clear();
+  loaded = false;
+  dirty = false;
+}
 
 export async function readContextHistory(transcript: string | null, log: HistoryLog, now = Date.now()): Promise<ContextHistory> {
   // Concurrent asks share one read; an ask for another transcript waits
@@ -172,6 +189,10 @@ export async function readContextHistory(transcript: string | null, log: History
 }
 
 async function readAll(transcript: string | null, log: HistoryLog, now: number): Promise<ContextHistory> {
+  if (!loaded) {
+    loaded = true;
+    await loadFolds(log);
+  }
   const started = Date.now();
   const before = appendedBytesRead();
   let readFiles = 0;
@@ -201,9 +222,18 @@ async function readAll(transcript: string | null, log: HistoryLog, now: number):
     }
   }
   // Files gone from the listing leave the cache.
-  for (const key of cache.keys()) if (!keep.has(key)) cache.delete(key);
+  for (const key of cache.keys()) {
+    if (keep.has(key)) continue;
+    cache.delete(key);
+    dirty = true;
+  }
   const bytes = appendedBytesRead() - before;
   if (bytes > 0) log(`context history: read ${readFiles} transcripts (${(bytes / 1024 / 1024).toFixed(1)} MB) in ${Date.now() - started} ms`);
+  // Awaited inside the read, so `running` keeps two saves from overlapping.
+  if (dirty) {
+    dirty = false;
+    await saveFolds(log);
+  }
   return { skills: Object.fromEntries(skills), servers: Object.fromEntries(servers), session };
 }
 
@@ -238,7 +268,7 @@ async function foldFile(file: string, log: HistoryLog): Promise<{ state: UseFold
     stat = await statStamp(file);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`could not stat ${file}: ${String(err)}`);
-    cache.delete(file);
+    if (cache.delete(file)) dirty = true;
     return null;
   }
   const have = cache.get(file);
@@ -249,7 +279,7 @@ async function foldFile(file: string, log: HistoryLog): Promise<{ state: UseFold
     handle = await fs.promises.open(file, 'r');
   } catch (err) {
     log(`could not open ${file}: ${String(err)}`);
-    cache.delete(file);
+    if (cache.delete(file)) dirty = true;
     return null;
   }
   try {
@@ -257,13 +287,140 @@ async function foldFile(file: string, log: HistoryLog): Promise<{ state: UseFold
     const state = grown ? have.state : useFoldState();
     const offset = await readWholeLines(handle, grown ? have.mark.offset : 0, stat.size, (text) => useFold(state, text));
     cache.set(file, { mark: markOf(stat, offset), state });
+    dirty = true;
     return { state, read: true };
   } catch (err) {
     log(`could not read ${file}: ${String(err)}`);
-    cache.delete(file);
+    if (cache.delete(file)) dirty = true;
     return null;
   } finally {
     await handle.close();
+  }
+}
+
+// The folds on disk (M9 fix 1054). The path is read at each load and save,
+// so a test that sets EMERALD_HOME after the import holds.
+function foldsFile(): string {
+  return path.join(emeraldHomeOf(process.env), 'context-history.json');
+}
+
+interface SavedFold {
+  file: string;
+  mark: { ino: string; size: number; mtimeMs: number; offset: number };
+  state: {
+    uses: SkillUse[];
+    open: Array<{ name: string; at: number; tokens: number; callMessage: string | null; requests: Array<[string, number]> }>;
+    pending: { name: string; at: number } | null;
+    mcpTools: Array<[string, { calls: number; lastUsedAt: number }]>;
+    agents: Array<[string, number]>;
+  };
+}
+
+async function loadFolds(log: HistoryLog): Promise<void> {
+  const file = foldsFile();
+  const started = Date.now();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`context history: could not load ${file}: ${String(err)}`);
+    return;
+  }
+  if (!isObject(parsed)) {
+    log(`context history: could not load ${file}: not an object`);
+    return;
+  }
+  if (parsed['version'] !== CONTEXT_HISTORY_FOLD_VERSION) {
+    log(`context history: ${file} holds fold version ${String(parsed['version'])}, not ${CONTEXT_HISTORY_FOLD_VERSION}; reading every transcript again`);
+    return;
+  }
+  const files = Array.isArray(parsed['files']) ? parsed['files'] : [];
+  let n = 0;
+  for (const entry of files) {
+    const got = cachedOf(entry);
+    // Memory wins: a read that ran before the load holds the newer fold.
+    if (got === null || cache.has(got.file)) continue;
+    cache.set(got.file, got.cached);
+    n += 1;
+  }
+  log(`context history: loaded ${n} transcripts from ${file} in ${Date.now() - started} ms`);
+}
+
+// One saved entry back into the cache's shape; null for a bad one, which
+// is skipped without a line.
+function cachedOf(entry: unknown): { file: string; cached: Cached } | null {
+  if (!isObject(entry) || typeof entry['file'] !== 'string' || !isObject(entry['mark']) || !isObject(entry['state'])) return null;
+  const m = entry['mark'];
+  const s = entry['state'];
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (typeof m['ino'] !== 'string' || !/^\d+$/.test(m['ino']) || !finite(m['size']) || !finite(m['mtimeMs']) || !finite(m['offset'])) return null;
+  if (!Array.isArray(s['uses']) || !Array.isArray(s['open']) || !Array.isArray(s['mcpTools']) || !Array.isArray(s['agents'])) return null;
+  const pending = s['pending'];
+  if (pending !== null && !(isObject(pending) && typeof pending['name'] === 'string' && finite(pending['at']))) return null;
+  const pair = (v: unknown): v is [string, unknown] => Array.isArray(v) && v.length === 2 && typeof v[0] === 'string';
+  const uses: SkillUse[] = [];
+  for (const u of s['uses']) {
+    if (!isObject(u) || typeof u['name'] !== 'string' || !finite(u['at']) || !finite(u['tokens'])) return null;
+    uses.push({ name: u['name'], at: u['at'], tokens: u['tokens'] });
+  }
+  const open: OpenUse[] = [];
+  for (const u of s['open']) {
+    if (!isObject(u) || typeof u['name'] !== 'string' || !finite(u['at']) || !finite(u['tokens']) || !Array.isArray(u['requests'])) return null;
+    const callMessage = u['callMessage'];
+    if (callMessage !== null && typeof callMessage !== 'string') return null;
+    const requests = new Map<string, number>();
+    for (const r of u['requests']) {
+      if (!pair(r) || !finite(r[1])) return null;
+      requests.set(r[0], r[1]);
+    }
+    open.push({ name: u['name'], at: u['at'], tokens: u['tokens'], callMessage, requests });
+  }
+  const mcpTools = new Map<string, { calls: number; lastUsedAt: number }>();
+  for (const t of s['mcpTools']) {
+    if (!pair(t) || !isObject(t[1]) || !finite(t[1]['calls']) || !finite(t[1]['lastUsedAt'])) return null;
+    mcpTools.set(t[0], { calls: t[1]['calls'], lastUsedAt: t[1]['lastUsedAt'] });
+  }
+  const agents = new Map<string, number>();
+  for (const a of s['agents']) {
+    if (!pair(a) || !finite(a[1])) return null;
+    agents.set(a[0], a[1]);
+  }
+  return {
+    file: entry['file'],
+    cached: {
+      mark: { ino: BigInt(m['ino']), size: m['size'], mtimeMs: m['mtimeMs'], offset: m['offset'] },
+      state: { uses, open, pending: pending === null ? null : { name: pending['name'] as string, at: pending['at'] as number }, mcpTools, agents },
+    },
+  };
+}
+
+// The whole cache to a tmp file renamed over the last, as skill-overrides
+// does, async since main's thread carries the window. A failure costs only
+// the next launch's warm start, so it is logged and never thrown.
+async function saveFolds(log: HistoryLog): Promise<void> {
+  const file = foldsFile();
+  const files: SavedFold[] = [];
+  for (const [key, { mark, state }] of cache) {
+    files.push({
+      file: key,
+      // JSON has no bigint, and an NTFS id runs past 2^53 (fix 633).
+      mark: { ino: mark.ino.toString(), size: mark.size, mtimeMs: mark.mtimeMs, offset: mark.offset },
+      state: {
+        uses: state.uses,
+        open: state.open.map((u) => ({ name: u.name, at: u.at, tokens: u.tokens, callMessage: u.callMessage, requests: [...u.requests] })),
+        pending: state.pending,
+        mcpTools: [...state.mcpTools],
+        agents: [...state.agents],
+      },
+    });
+  }
+  const tmp = `${file}.tmp`;
+  try {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(tmp, JSON.stringify({ version: CONTEXT_HISTORY_FOLD_VERSION, files }));
+    await fs.promises.rename(tmp, file);
+  } catch (err) {
+    log(`context history: could not save ${file}: ${String(err)}`);
   }
 }
 

@@ -271,7 +271,7 @@ try {
   const workingColour = await tokenColour(s, '--working');
   const mutedColour = await tokenColour(s, '--muted');
   const first = await segments(s);
-  expect(first.join(',') === 'five_hour=5h resets 41m,seven_day=7d resets 6d 16h,seven_day_fable=Fable resets 6d 16h', `three segments, each led by its window (fix 61), the percent gone to the bar (fix 308): ${first.join(',')}`);
+  expect(/^five_hour=5h resets (41|40)m,seven_day=7d resets 6d 16h,seven_day_fable=Fable resets 6d 16h$/.test(first.join(',')), `three segments, each led by its window (fix 61), the percent gone to the bar (fix 308): ${first.join(',')}`);
   expect(requests.length >= 1, 'the stub was asked');
   expect(requests[0].authorization === `Bearer ${TOKEN}`, `the token went out as a Bearer: ${requests[0].authorization}`);
   expect(requests[0].beta === 'oauth-2025-04-20', `the oauth beta header: ${requests[0].beta}`);
@@ -297,16 +297,17 @@ try {
   const stackedPlace = await cardPlacement(s, 'five_hour', 'stacked');
   expect(stackedPlace.own === 0, `fix 307: the stacked anchor's own rect is empty, so the union is what placed it (${stackedPlace.own})`);
   const card = await readUsageCard(s);
+  const readAt = Date.now();
   expect(card.current === 'five_hour' && card.rows.length === 3 && card.rows[0].current && !card.rows[1].current, `the card marks the hovered window among the three, got ${JSON.stringify(card.rows.map((r) => [r.key, r.current]))}`);
-  expect(card.rows[0].name === '5 hour window' && card.rows[0].percent === '17% used' && card.rows[0].dial === null && card.rows[0].fill === '17%' && /^resets \w+ \d+:\d\d [AP]M, in 41m$/.test(card.rows[0].when), `the five hour row names the window with its percent, its bar's fill and the reset, clock time first (fix 308), got ${JSON.stringify(card.rows[0])}`);
+  expect(card.rows[0].name === '5 hour window' && card.rows[0].percent === '17% used' && card.rows[0].dial === null && card.rows[0].fill === '17%' && /^resets \w+ \d+:\d\d [AP]M, in (41|40)m$/.test(card.rows[0].when), `the five hour row names the window with its percent, its bar's fill and the reset, clock time first (fix 308), got ${JSON.stringify(card.rows[0])}`);
   expect(card.rows[0].now === 'now' && card.rows[1].now === null && card.rows[2].now === null, `fix 308: only the hovered row labels its mark now, got ${JSON.stringify(card.rows.map((r) => r.now))}`);
   expect(card.rows[2].name === 'Fable 7 day window' && card.rows[2].percent === '8% used', `the model row: ${JSON.stringify(card.rows[2])}`);
-  // The mark: 41 minutes left of five hours is 86.3% of the window gone; 6d 16h 20m left of seven days is 4.6%.
-  // The five hour mark moves a tenth every 18 seconds, so a read some
-  // seconds after the stub's timestamp is allowed a tenth either way (it
-  // read 86.4% once under the batch 145 close-out).
+  // The five hour mark is the elapsed share at the strip's clock, which is no earlier than this module's load (41 minutes left, 86.33) and no later than the read, so it is read between the two on the clock (M9 fix 1074); 0.05 either side covers the toFixed(2) and a clock a few milliseconds apart. 6d 16h 20m left of seven days is 4.6%, a tenth every ten minutes, and keeps barNear.
   const barNear = (text, want) => Math.abs(parseFloat(text) - want) <= 0.15;
-  expect(barNear(card.rows[0].mark, 86.3) && barNear(card.rows[2].mark, 4.6), `the marks show how far through each window the reset is, got ${JSON.stringify(card.rows.map((r) => r.mark))}`);
+  const fiveLow = 100 * (1 - (41 * MIN) / (5 * HOUR));
+  const fiveHigh = 100 * (1 - (Date.parse(reply.body.five_hour.resets_at) - readAt) / (5 * HOUR));
+  expect(parseFloat(card.rows[0].mark) >= fiveLow - 0.05 && parseFloat(card.rows[0].mark) <= fiveHigh + 0.05, `fix 1074: the five hour mark lies between the load and the read on the clock, ${fiveLow.toFixed(2)} to ${fiveHigh.toFixed(2)}, got ${card.rows[0].mark}`);
+  expect(barNear(card.rows[2].mark, 4.6), `the weekly mark shows how far through the window the reset is, got ${card.rows[2].mark}`);
   // M9 fix 295: the five-hour row says where its average pace lands (17
   // over 86% of the window is about 20 at the reset), the seven-day row
   // in its first tenth says nothing, and no bar is in the error tone.

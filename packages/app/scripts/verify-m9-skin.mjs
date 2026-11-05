@@ -958,9 +958,27 @@ try {
   // skin. Monaco's --vscode-* variables sit on .monaco-editor at 0,1,0;
   // style.css overrides them under :root[data-skin="emerald"]. Classic is
   // Monaco's own look and is not read here (verify:m13-markdown holds it).
-  // The window is whatever find left (Classic, its shell removed), or the
-  // fresh one under --only, so it starts as find does.
+  // It starts on a fresh window and daemon (fix 1049), the one the prelude
+  // opens, so the kill loop below finds nothing unless
+  // EMERALD_SKIN_ONE_DAEMON=1 kept find's.
   await block('monaco', async () => {
+    // M9 fix 1049: a fresh window and daemon, as the prelude launches
+    // them, so no block from here on runs on the daemon that met find's
+    // kill (the heap entry's crash took every whole run at this seam).
+    // EMERALD_SKIN_ONE_DAEMON=1 keeps the one daemon for the heap dump loop.
+    if (process.env['EMERALD_SKIN_ONE_DAEMON'] === '1') {
+      step('monaco block: EMERALD_SKIN_ONE_DAEMON=1, so it carries on in the window and daemon find left (the heap dump loop)');
+    } else {
+      s.close();
+      killTree(s.child);
+      stopDaemon();
+      fs.rmSync(skinFile, { force: true });
+      fs.rmSync(systemThemeFile, { force: true });
+      s = await launch(freshPort(), { freshState: true, env: { EMERALD_SYSTEM_THEME_FILE: systemThemeFile } });
+      await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'the empty pane after the monaco relaunch', 20000);
+      await until(() => mainLog().includes(CLASSIC_LINE), "main heard the renderer's start after the monaco relaunch");
+      step('monaco block: a fresh window and daemon, so no block after find runs on the daemon that met its kill (M9 fix 1049)');
+    }
     for (const x of (await zreq(s, 'session.list', {})).sessions) {
       await zreq(s, x.state === 'exited' ? 'session.remove' : 'session.kill', x.state === 'exited' ? { sessionId: x.id } : { sessionId: x.id, remove: true }).catch(() => {});
     }
@@ -1248,6 +1266,9 @@ try {
     await s.waitFor(`document.documentElement.dataset.theme === 'light'`, 'the window followed the stub to light', 5000);
     expect((await token(s, '--bg')) === '#f7f9f8', `the Emerald light --bg on the follow, got ${await token(s, '--bg')}`);
     await until(() => mainLog().includes('theme light (pick system), skin emerald: ground #f7f9f8, title bar overlay #f1f4f2, symbols #3d4542'), "main's line for the follow to light");
+    // M9 fix 1073: main says which path followed the flip, once; the dark
+    // stub write while already dark and the Follow Windows pick log none.
+    expect(countIn(mainLog(), 'theme followed Windows to light on updated') === 1, `one follow line for the flip to light on updated, got ${countIn(mainLog(), 'theme followed Windows to light on updated')}`);
     await openThemeSub(s);
     const rows5b = await subRows(s);
     expect(rows5b[0]?.hint === 'light now', `the Follow Windows hint reads light now, got ${JSON.stringify(rows5b)}`);
@@ -1255,6 +1276,7 @@ try {
     await s.waitFor(`!document.querySelector('.app-menu')`, 'Escape closed the menu');
     fs.writeFileSync(systemThemeFile, 'dark');
     await s.waitFor(`document.documentElement.dataset.theme === undefined`, 'the window followed the stub back to dark', 5000);
+    await until(() => countIn(mainLog(), 'theme followed Windows to dark on updated') === 1, "main's follow line for the flip back to dark");
     expect((await token(s, '--bg')) === '#1a1f1d', `the Emerald dark --bg on the follow back, got ${await token(s, '--bg')}`);
     step('fix 1032: under Follow Windows the window follows a stubbed Windows answer both ways with no restart, the hint reading dark now and light now, main\'s line naming pick system');
 

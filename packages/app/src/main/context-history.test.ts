@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp } from '@emerald/shared/test-temp';
 import { appendedBytesRead } from './appended-read.ts';
-import { readContextHistory, useFold, useFoldState } from './context-history.ts';
+import { CONTEXT_HISTORY_FOLD_VERSION, forgetContextHistory, readContextHistory, useFold, useFoldState } from './context-history.ts';
 
 // M9 fix 1039: the Context tab's skill and MCP history, over a Claude home
 // of the test's own (claudeHome() is read at each ask, so setting it after
 // the import holds, as history.test.ts does).
 const home = mkTemp('emerald-context-history-test-');
 process.env['EMERALD_CLAUDE_HOME'] = home;
+// The folds' file (fix 1054) lands in a home of the test's own, never the
+// person's ~/.emerald.
+process.env['EMERALD_HOME'] = mkTemp('emerald-context-history-home-');
 const projects = path.join(home, 'projects', 'C--x-repo');
 fs.mkdirSync(projects, { recursive: true });
 const log = () => {};
@@ -152,4 +155,44 @@ test('readContextHistory: the session part is the given transcript\'s own calls,
   const [x, y] = await Promise.all([readContextHistory(file, log, now), readContextHistory(null, log, now)]);
   assert.ok(x.session !== null);
   assert.equal(y.session, null);
+});
+
+const foldsFile = () => path.join(process.env['EMERALD_HOME']!, 'context-history.json');
+const listedBytes = () => fs.readdirSync(projects).filter((f) => f.endsWith('.jsonl')).reduce((n, f) => n + fs.statSync(path.join(projects, f)).size, 0);
+
+test('readContextHistory: the folds are saved after a read and a fresh launch loads them, reading no bytes until a file grows (fix 1054)', async () => {
+  const now = Date.parse('2026-10-31T12:00:00.000Z');
+  const c = path.join(projects, 'aaaaaaaa-0000-0000-0000-000000000003.jsonl');
+  const d = path.join(projects, 'aaaaaaaa-0000-0000-0000-000000000004.jsonl');
+  fs.writeFileSync(c, [prompt(now - 2 * DAY, 'go'), assistant(now - 2 * DAY + 1, 'c1', 5, [{ name: 'Skill', input: { skill: 'review' } }]), assistant(now - 2 * DAY + 2, 'c2', 300)].join(''));
+  fs.writeFileSync(d, [prompt(now - DAY, 'go'), assistant(now - DAY + 1, 'd1', 40, [{ name: 'mcp__github__get_issue' }, { name: 'Agent', input: { subagent_type: 'Explore' } }])].join(''));
+  const first = await readContextHistory(null, log, now);
+  const saved = JSON.parse(fs.readFileSync(foldsFile(), 'utf8'));
+  assert.equal(saved.version, CONTEXT_HISTORY_FOLD_VERSION);
+  const entry = saved.files.find((f: { file: string }) => f.file === path.resolve(c));
+  assert.ok(entry !== undefined, 'the new transcript is saved');
+  assert.match(entry.mark.ino, /^\d+$/);
+  assert.equal(entry.state.open.length, 1, "c's review use is still open and saved so");
+  forgetContextHistory();
+  const before = appendedBytesRead();
+  const warm = await readContextHistory(null, log, now);
+  assert.equal(appendedBytesRead(), before, 'a launch on saved folds reads no bytes');
+  assert.deepEqual(warm, first);
+  const appended = [assistant(now - 2 * DAY + 3, 'c3', 700), prompt(now - 2 * DAY + 4, 'next')].join('');
+  fs.appendFileSync(c, appended);
+  const grown = await readContextHistory(null, log, now);
+  assert.equal(appendedBytesRead() - before, Buffer.byteLength(appended), 'only the appended bytes are read');
+  assert.deepEqual(grown.skills['review'], { uses: 1, lastUsedAt: now - 2 * DAY + 1, tokens7d: 1000 }, "the open use's saved requests carried on");
+});
+
+test('readContextHistory: a saved file of another fold version, or one that is not JSON, is read past: every transcript read again and the file rewritten (fix 1054)', async () => {
+  const now = Date.parse('2026-10-31T12:00:00.000Z');
+  for (const text of ['{"version":0,"files":[]}', 'not json']) {
+    fs.writeFileSync(foldsFile(), text);
+    forgetContextHistory();
+    const before = appendedBytesRead();
+    await readContextHistory(null, log, now);
+    assert.equal(appendedBytesRead() - before, listedBytes(), `every listed transcript read again after ${JSON.stringify(text)}`);
+    assert.equal(JSON.parse(fs.readFileSync(foldsFile(), 'utf8')).version, CONTEXT_HISTORY_FOLD_VERSION, 'the file is rewritten');
+  }
 });

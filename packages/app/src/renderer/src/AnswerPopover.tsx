@@ -147,6 +147,9 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
     if (seededKey.current === shownKey) return;
     seededKey.current = shownKey;
     setFree(freeOpt === null ? '' : freeText(freeOpt));
+    // M9 fix 1057: another dialog lets go of the keyboard (see ChatView's
+    // AskCard); the card keeps the terminal's focus, so a blur is enough.
+    if (document.activeElement === freeRef.current && freeOpt?.pointer !== true) freeRef.current?.blur();
   }, [shownKey, freeOpt]);
   // M9 fix 1045: the row marked as chosen, as the chat view's card does.
   const chosen = ask === null || review !== null ? undefined : askChosenKey(ask, free, freeFocused, seededKey.current === shownKey);

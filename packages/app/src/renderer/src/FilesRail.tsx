@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { currentTab, findPane, formatDuration } from '@emerald/shared';
+import { plainKeyFor } from './keys-model.ts';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
 import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collapseAll, emptyModel, expandFolder, filePaneFolders, folderName, joinPath, normalizePath, parentPath, pathLabel, refusalWords, relativePath, relistLanded, renameInModel, renamedPath, REVEAL_IN_FILES_MS, revealStep, rootIsEmpty, select, sessionInFolder, setRoot, stemEnd, toggleFolder, touchedAt, touchedIndex, touchedUnder, liftKeep, moveSelection, rowAfterRemoval, typeAhead, TYPE_AHEAD_PAUSE_MS, walk, watchOrder, withPending } from './files-model.ts';
@@ -492,7 +493,8 @@ export function FilesRail() {
     railDrop.current = {
       over: (x, y, keys) => {
         const a = aim(x, y);
-        const want = a === null ? null : springDirFor(a.row, model.expanded);
+        // M9 fix 1066: spring only while the tree is on show, the list's own condition (search hits and the Changed list are rows too).
+        const want = a === null || search !== null || filesChanged ? null : springDirFor(a.row, model.expanded);
         if (spring.current?.dir !== want) {
           clearSpring();
           if (want !== null) {
@@ -580,12 +582,13 @@ export function FilesRail() {
   }, [filesCollapsed]);
 
   if (filesCollapsed) {
+    const showTitle = `Show files (${plainKeyFor('toggle-files')})`;
     return (
       <div className="files-rail-collapsed">
-        <button className="files-expand" title="Show files (Ctrl+Shift+F)" onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
+        <button className="files-expand" title={showTitle} onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
           «
         </button>
-        <span className="files-rail-label" onClick={toggleFiles}>
+        <span className="files-rail-label" title={showTitle} onClick={toggleFiles}>
           Files
         </span>
       </div>
@@ -1286,7 +1289,7 @@ function RailTabs({ active, changed, dragFolder, folder }: { active: RailTab; ch
       {tab('stats', 'Stats', folder === null ? 'Statistics' : `Statistics of ${pathLabel(folder)}`, <StatsIcon className="files-icon" />)}
       {tab('context', 'Context', "What fills the focused session's context", <ContextIcon className="files-icon" />)}
       <span className="rail-tabs-spacer" />
-      <button className="files-button files-collapse" title="Hide the rail (Ctrl+Shift+F)" onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
+      <button className="files-button files-collapse" title={`Hide the rail (${plainKeyFor('toggle-files')})`} onClick={toggleFiles} onMouseDown={(ev) => ev.preventDefault()}>
         »
       </button>
     </div>
@@ -2086,7 +2089,7 @@ function ChangedList({ changes, needle, selected, onOpen, onContextMenu, session
       {changes.root !== null && changes.files.length > 0 && (
         <button
           className="files-review-line"
-          title={session === null ? 'Review the changes in this folder as a diff; no session here to send comments to' : `Review ${session.name}'s changes as a diff and send the comments back as one prompt (Ctrl+Shift+R)`}
+          title={session === null ? 'Review the changes in this folder as a diff; no session here to send comments to' : `Review ${session.name}'s changes as a diff and send the comments back as one prompt (${plainKeyFor('review')})`}
           onClick={() => (session === null ? openFolderReviewTab(changes.root!) : openReviewTab(session.id))}
         >
           Review ›

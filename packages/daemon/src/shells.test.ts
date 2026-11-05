@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { ShellOption } from '@emerald/shared';
-import { CMD_MARKS, PROMPT_WRAPPER, ShellLauncher, cmdPrompt, isEmeraldMod, pluginDirs } from './launchers/shell.ts';
+import { BASH_RC, CMD_MARKS, PROMPT_WRAPPER, ShellLauncher, ZSH_FILES, bashRc, cmdPrompt, isEmeraldMod, pluginDirs, zshDirFor } from './launchers/shell.ts';
 import { silentLogger } from './log.ts';
 import { SessionManager } from './session-manager.ts';
 import { findShells, loginShell } from './shells.ts';
@@ -231,18 +231,98 @@ test('the login shell is SHELL when absolute, else the passwd entry, else /bin/s
   assert.equal(loginShell({}, () => null), '/bin/sh');
 });
 
-test('zsh and bash run as login shells, sh bare, each with its own args alone, and a mod reaches them all (M9 fix 1018)', () => {
+test('zsh runs as a login shell with ZDOTDIR on our folder, bash with the rc, sh bare, each with its own args alone, and a mod reaches them all (M9 fixes 1018 and 1068)', () => {
   const launcher = new ShellLauncher({ bashrcPath: '/h/emerald.bashrc', env: {}, platform: 'linux' });
   const zsh: ShellOption = { id: 'zsh', label: 'zsh', file: '/bin/zsh' };
   const bash: ShellOption = { id: 'bash', label: 'bash', file: '/bin/bash' };
   const sh: ShellOption = { id: 'sh', label: 'sh', file: '/bin/sh' };
-  assert.deepEqual(launcher.command([], zsh), { file: '/bin/zsh', args: ['-l'] });
-  assert.deepEqual(launcher.command([], bash), { file: '/bin/bash', args: ['-l'] });
+  const ours = path.join('/h', 'emerald-zsh');
+  assert.deepEqual(launcher.command([], zsh), { file: '/bin/zsh', args: ['-l'], env: { ZDOTDIR: ours } });
+  assert.deepEqual(launcher.command([], zsh, { ZDOTDIR: '/u/z' }), { file: '/bin/zsh', args: ['-l'], env: { ZDOTDIR: ours, EMERALD_USER_ZDOTDIR: '/u/z' } }, 'the user\'s folder is handed on');
+  assert.deepEqual(launcher.command([], zsh, { ZDOTDIR: ours }), { file: '/bin/zsh', args: ['-l'], env: { ZDOTDIR: ours } }, 'our own folder is not the user\'s');
+  assert.deepEqual(launcher.command(['-c', 'exit 4'], zsh, { ZDOTDIR: '/u/z' }), { file: '/bin/zsh', args: ['-c', 'exit 4'] }, 'args alone, no ZDOTDIR');
+  assert.deepEqual(launcher.command([], bash), { file: '/bin/bash', args: ['--rcfile', '/h/emerald.bashrc', '-i'] });
   assert.deepEqual(launcher.command([], sh), { file: '/bin/sh', args: [] });
   assert.deepEqual(launcher.command(['-c', 'exit 4'], bash), { file: '/bin/bash', args: ['-c', 'exit 4'] });
   assert.deepEqual(launcher.command([], null), { file: '/bin/sh', args: [] }, 'the null fallback off Windows');
   const modded = new ShellLauncher({ bashrcPath: '/h/emerald.bashrc', modDir: '/e/cli/mod', env: {}, platform: 'darwin' });
   for (const s of [zsh, bash, sh]) assert.equal(modded.command([], s).env?.['CLAUDE_CODE_PLUGIN_DIRS'], '/e/cli/mod', s.id);
+});
+
+test('the bash rc off Windows differs from Git Bash\'s in its folder line alone (M9 fix 1068)', () => {
+  assert.equal(bashRc('cygpath'), BASH_RC);
+  const pwd = bashRc('pwd');
+  assert.ok(!pwd.includes('cygpath'));
+  const a = BASH_RC.split('\n');
+  const b = pwd.split('\n');
+  assert.equal(a.length, b.length);
+  assert.equal(a.filter((line, i) => line !== b[i]).length, 1);
+});
+
+test('the zsh files source the user\'s own of each name and put the hooks in front (M9 fix 1068)', () => {
+  for (const [name, text] of Object.entries(ZSH_FILES)) {
+    assert.ok(text.includes(`$__emerald_user_zdotdir/${name}`), name);
+    assert.ok(text.endsWith('\n'), `${name} ends with a newline`);
+  }
+  const rc = ZSH_FILES['.zshrc'];
+  assert.ok(rc.includes('precmd_functions=(__emerald_precmd $precmd_functions)'));
+  assert.ok(rc.includes('preexec_functions=(__emerald_preexec $preexec_functions)'));
+  assert.ok(rc.includes('9;9'));
+  const login = ZSH_FILES['.zlogin'].split('\n').filter((line) => line.trim() !== '');
+  assert.equal(login[login.length - 1], 'ZDOTDIR=$__emerald_user_zdotdir');
+  assert.equal(zshDirFor(path.join('/h', 'emerald.bashrc')), path.join('/h', 'emerald-zsh'));
+});
+
+for (const id of ['bash', 'zsh'] as const) {
+  const skip = process.platform === 'win32' || !findShells().some((s) => s.id === id);
+  test(`a real ${id} row reports its folder, a running command, its exit codes and a cd (M9 fix 1068)`, { skip }, async () => {
+    const bashrcPath = path.join(mkTemp('emerald-bashrc-'), 'emerald.bashrc');
+    const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, bashrcPath });
+    try {
+      const dir = fs.realpathSync(mkTemp(`emerald-${id}-`));
+      const s = manager.spawn({ kind: 'shell', shell: id, cwd: dir, cols: 80, rows: 24 });
+      const info = () => manager.get(s.id).info;
+      const write = (line: string) => manager.get(s.id).pty!.write(`${line}\r`);
+      await until(`${id} to report its folder`, 15_000, () => info().shellCwd === dir);
+      write('sleep 2');
+      await until('sleep to read running', 5_000, () => info().command?.state === 'running');
+      await until('sleep to end ok', 10_000, () => info().command?.state === 'ok' && info().command?.exitCode === 0);
+      write('false');
+      await until('false to read failed with 1', 10_000, () => info().command?.state === 'failed' && info().command?.exitCode === 1);
+      write('cd /tmp');
+      await until('the folder to follow cd /tmp', 10_000, () => info().shellCwd === fs.realpathSync('/tmp'));
+      if (id === 'zsh') {
+        for (const name of Object.keys(ZSH_FILES)) assert.ok(fs.existsSync(path.join(zshDirFor(bashrcPath), name)), name);
+      }
+    } finally {
+      manager.killAll();
+      manager.close();
+    }
+  });
+}
+
+test('a resumed zsh row that hosted a conversation gets claude --resume typed at its first prompt (M9 fix 1068)', { skip: process.platform === 'win32' || !findShells().some((s) => s.id === 'zsh') }, async () => {
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, bashrcPath: path.join(mkTemp('emerald-bashrc-'), 'emerald.bashrc') });
+  try {
+    const dir = fs.realpathSync(mkTemp('emerald-zsh-resume-'));
+    const s = manager.spawn({ kind: 'shell', shell: 'zsh', cwd: dir, cols: 120, rows: 30 });
+    manager.applyHook(s.id, { hook_event_name: 'SessionStart', session_id: 'conv-typed', cwd: dir, source: 'startup' }, Date.now());
+    manager.applyHook(s.id, { hook_event_name: 'SessionEnd', session_id: 'conv-typed', cwd: dir }, Date.now());
+    const exited = new Promise<void>((resolve) => manager.once('exit', () => resolve()));
+    manager.kill(s.id);
+    await exited;
+    manager.resume(s.id, 120, 30);
+    assert.ok(manager.get(s.id).typeAtPrompt, 'the line waits for the prompt');
+    await until('the line to be typed', 15_000, () => manager.get(s.id).typeAtPrompt === null);
+    let rows: string[] = [];
+    await until('the typed line on the screen', 5_000, () => {
+      void manager.get(s.id).pty!.screen().then((f) => { rows = f.rows; });
+      return rows.some((row) => row.includes('claude --resume conv-typed'));
+    });
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
 });
 
 test("off Windows pluginDirs joins on ':', case-blind on darwin and exact on linux (M9 fix 1018)", () => {

@@ -7,6 +7,7 @@ import { acknowledge, emptyAttention, hushAll, isAttentionSound, markUnread, nex
 import type { AttentionModel, AttentionSound } from './attention-model.ts';
 import type { DropZone, TabDropTarget } from './drop-zone-model.ts';
 import type { CornerNote } from './copy-note.ts';
+import type { HooksBannerState } from './path-banner-model.ts';
 import { emptyFocusHistory, recordFocus, stepFocus } from './focus-history-model.ts';
 import type { FocusEntry, FocusHistory } from './focus-history-model.ts';
 import type { ChimeMode } from '../../preload/api.ts';
@@ -95,6 +96,9 @@ export interface UiState {
   focusHistory: FocusHistory;
   // The prefix key was pressed and the next key picks an action.
   prefixArmed: boolean;
+  // Where the hooks strip stands, so the PATH strip waits its turn (M9 fix
+  // 1072). Never persisted; every launch checks again.
+  hooksBanner: HooksBannerState;
   // A line for the prefix indicator's corner when no prefix is armed (M9
   // fix 201: "Nothing is waiting" after the jump key found nothing), gone
   // after a moment; null is the usual state. With the pane a copy came
@@ -350,6 +354,7 @@ let state: UiState = {
   zoomedPaneId: null,
   focusHistory: emptyFocusHistory(),
   prefixArmed: false,
+  hooksBanner: 'checking',
   cornerNote: null,
   cheatSheetOpen: false,
   designPaneId: null,
@@ -458,6 +463,10 @@ export function stepFocusHistory(at: number): void {
 
 export function setPrefixArmed(armed: boolean): void {
   if (state.prefixArmed !== armed) setState({ ...state, prefixArmed: armed });
+}
+
+export function setHooksBanner(next: HooksBannerState): void {
+  if (state.hooksBanner !== next) setState({ ...state, hooksBanner: next });
 }
 
 // Shows a line in the corner for a moment. A second note before the first

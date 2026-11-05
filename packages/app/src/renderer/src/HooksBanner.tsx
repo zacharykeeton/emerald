@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { setHooksBanner } from './ui.ts';
 import type { BannerPhase } from './hooks-banner-model.ts';
 import { TESTING_LABEL, TEST_LABEL, bannerHint, bannerOnStatus, hooksProblem, installLabel, isDeadProblem, shouldPromptHooks, testFailedText, testText } from './hooks-banner-model.ts';
 
@@ -28,6 +29,14 @@ export function HooksBanner() {
   // The problem Not now was clicked on: a pushed status with the same
   // problem keeps the banner down, a different one raises it.
   const dismissed = useRef<string | null>(null);
+  // The first check has settled, whichever way (M9 fix 1072): the PATH
+  // strip waits on it as well as on the strip itself.
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    setHooksBanner(!checked ? 'checking' : shown === null ? 'down' : 'up');
+  }, [checked, shown]);
+  useEffect(() => () => setHooksBanner('down'), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,10 +44,14 @@ export function HooksBanner() {
     void (async () => {
       try {
         const info = await window.emerald.info();
-        if (!shouldPromptHooks(info.config)) return;
+        if (!shouldPromptHooks(info.config)) {
+          setChecked(true);
+          return;
+        }
         const status = await window.emerald.hooksStatus();
         if (cancelled) return;
         const problem = hooksProblem(status);
+        setChecked(true);
         if (problem !== null) setShown({ phase: status.fighting ? 'fighting' : 'prompt', problem, settings: status.settings, error: '', test: null, testing: false, fix: isDeadProblem(status) });
         unsubscribe = window.emerald.onHooksChanged((next) => {
           setShown((current) => {
@@ -54,6 +67,7 @@ export function HooksBanner() {
         // Nothing to offer when the CLI cannot run (a dev tree without a
         // CLI build); the console says why.
         console.warn('[emerald] hooks check skipped', err);
+        setChecked(true);
       }
     })();
     return () => {
