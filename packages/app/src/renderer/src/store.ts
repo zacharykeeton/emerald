@@ -1,11 +1,13 @@
 import { useRef, useSyncExternalStore } from 'react';
 import { FIRST_WINDOW_ID, claimLooseTabs, currentTab, frontWindow, mergeWindowView, pushSample, replaceTab, setFrontWindow, tabHolding, windowView, windowsOf } from '@emerald/shared';
 import { EMPTY_CONFLICTS } from '@emerald/shared';
-import type { ConflictReport, Layout, LayoutTab, SessionInfo } from '@emerald/shared';
+import type { ConflictReport, Layout, LayoutTab, RemoteHost, SessionInfo } from '@emerald/shared';
 import type { DaemonCrash, DaemonInfo, RendererPush } from '../../preload/api.ts';
 import { withPreview } from './color-preview-model.ts';
 import type { ColorPreview } from './color-preview-model.ts';
 import { conflictsSupported, folderLabelsSupported, keptSupported, layoutForWire, normalizeLayout, normalizeSession } from './daemon-model.ts';
+import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, withPaneHosts } from './hosts-model.ts';
+import type { HostState } from './hosts-model.ts';
 import { dropRate, resetRates, setRate } from './rates-store.ts';
 import { RATE_FEATURE_LEVEL } from './session-mark-model.ts';
 
@@ -44,6 +46,10 @@ export interface State {
   conflicts: ConflictReport;
   // What hello said about the daemon this window is on; null until connected.
   daemon: DaemonInfo | null;
+  // M9 fix 1085: each remote host this window has heard of, by name, from main's host.changed and host.setup pushes; this PC is not in it.
+  hosts: ReadonlyMap<string, HostState>;
+  // M9 fix 1085: the hosts the on row offers, ~/.ssh/config's then the added ones (main's merge), read at the sync and again on every hosts.changed.
+  remoteHosts: readonly RemoteHost[];
   // The last daemon this window started that ended on a crash code (M9 fix 815), until Not now; kept across the disconnect, the next hello and a reload (M9 fix 832), the main process holding it.
   crashed: DaemonCrash | null;
   // The colour a Colour row's swatch is previewing on one session (M9
@@ -68,7 +74,7 @@ export function initialDaemon(): DaemonInfo | null {
 // object until a preview is on, then a copy with the previewed colour
 // on its one session, so a reader never sees the preview and the saved
 // colour at once.
-let state: State = { connected: true, layout: null, allLayout: null, windowId: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: initialDaemon(), crashed: null, preview: null };
+let state: State = { connected: true, layout: null, allLayout: null, windowId: null, sessions: new Map(), removed: new Map(), folders: new Map(), conflicts: EMPTY_CONFLICTS, daemon: initialDaemon(), hosts: new Map(), remoteHosts: [], crashed: null, preview: null };
 let snapshot: State = state;
 const listeners = new Set<() => void>();
 let started = false;
@@ -167,6 +173,13 @@ export function useStore<K extends keyof State>(...keys: [K, ...K[]]): Pick<Stat
   });
 }
 
+// The daemon a session on the host answers from (M9 fix 1085): this PC's
+// for no host, else the host's once up.
+export function useDaemonFor(host: string | undefined): DaemonInfo | null {
+  const { daemon, hosts } = useStore('daemon', 'hosts');
+  return host === undefined ? daemon : (hosts.get(host)?.daemon ?? null);
+}
+
 // The held pick when every named field is the same object as the
 // snapshot's, else a new one; exported for the store's test.
 export function pickHeld<K extends keyof State>(held: Pick<State, K> | null, s: State, keys: readonly K[]): Pick<State, K> {
@@ -235,6 +248,23 @@ async function sync(): Promise<void> {
     preview: state.preview?.held === true ? null : state.preview,
   });
   resetRates();
+  await syncHosts();
+}
+
+// M9 fix 1085: the hosts the on row offers and the last state of each
+// host client, so a reloaded window knows which hosts are up before any
+// push. Its own try, so a host read that fails, or a window without the
+// methods, never costs the local sync above.
+async function syncHosts(): Promise<void> {
+  try {
+    const [remote, states] = await Promise.all([window.emerald.remoteHosts(), window.emerald.hostStates()]);
+    const now = Date.now();
+    let hosts: ReadonlyMap<string, HostState> = new Map();
+    for (const h of states) hosts = applyHostChanged(hosts, remote, h, now);
+    setState({ remoteHosts: remote, hosts: applyRemoteHosts(hosts, remote) });
+  } catch (err) {
+    console.warn('[emerald] host sync failed', err);
+  }
 }
 
 // The crash banner's Not now (M9 fix 815).
@@ -307,7 +337,7 @@ export function onPush(msg: RendererPush): void {
       // The daemon keeps the record (M57); the exact removedAt lands with
       // the next sync, and until then the moment the push arrived is it.
       const removed = new Map(state.removed);
-      if (gone !== undefined && keptSupported(state.daemon)) removed.set(msg.sessionId, { ...gone, removedAt: Date.now() });
+      if (gone !== undefined && keptSupported(daemonFor(state, gone.host))) removed.set(msg.sessionId, { ...gone, removedAt: Date.now() });
       setState({ sessions, removed });
       return;
     }
@@ -320,6 +350,24 @@ export function onPush(msg: RendererPush): void {
       return;
     case 'conflicts.changed':
       setState({ conflicts: msg.report });
+      return;
+    case 'host.changed': {
+      // A reattach's sessions reach the store as main's stamped pushes, so
+      // this asks nothing.
+      const { type: _t, ...push } = msg;
+      setState({ hosts: applyHostChanged(state.hosts, state.remoteHosts, push, Date.now()) });
+      return;
+    }
+    case 'host.setup': {
+      const { type: _t, ...push } = msg;
+      setState({ hosts: applyHostSetup(state.hosts, state.remoteHosts, push) });
+      return;
+    }
+    case 'hosts.changed':
+      void window.emerald
+        .remoteHosts()
+        .then((r) => setState({ remoteHosts: r, hosts: applyRemoteHosts(state.hosts, r) }))
+        .catch((err: unknown) => console.warn('[emerald] remote hosts read failed', err));
       return;
     default:
       return;
@@ -364,8 +412,15 @@ async function applyEdit(fn: (layout: Layout) => Layout, whole: boolean): Promis
       setState(patch);
       base = whole ? patch.allLayout! : patch.layout!;
     }
-    const next = fn(base);
+    let next = fn(base);
     if (next === base) return base;
+    // M9 fix 1086: a pane showing a session carries that session's host,
+    // whichever path made the edit (a drop, a pick, a mirror), and a local
+    // session put into a remote pane loses it.
+    next = withPaneHosts(next, (id) => {
+      const s = state.sessions.get(id) ?? state.removed.get(id);
+      return s === undefined ? null : s.host;
+    });
     const id = state.windowId ?? FIRST_WINDOW_ID;
     const merged = whole ? setFrontWindow(claimLooseTabs(next, id), id) : mergeWindowView(state.allLayout ?? next, next, state.windowId);
     try {

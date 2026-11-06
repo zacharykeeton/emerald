@@ -191,3 +191,14 @@ test('M9 fix 768: actionGroup and actionKey name each kind', () => {
   assert.equal(actionGroup(actionRows('>', 'Ctrl+B', null)[0]!), 'Keys');
   assert.equal(actionKey(rows.find((r) => r.kind === 'shell')!), 'shell:powershell');
 });
+
+test('M9 fix 1087: Add a remote host… is listed once something is typed, on the empty pane only', () => {
+  const withHost = { ...picks768(null), addHost: true };
+  assert.deepEqual(
+    pickRows('>remote', withHost).map((r) => [r.kind, r.label, actionGroup(r), actionKey(r)]),
+    [['host', 'Add a remote host…', 'Remote', 'host:add-host']],
+  );
+  assert.deepEqual(pickRows('>remote', picks768(null)), []);
+  assert.deepEqual(pickRows('>', withHost), []);
+  assert.equal(pickRows('>shell:', withHost).some((r) => r.kind === 'host'), false);
+});

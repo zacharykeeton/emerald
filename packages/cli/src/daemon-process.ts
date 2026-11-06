@@ -91,6 +91,46 @@ export function spawnDaemon(daemonMain: string): void {
   child.unref();
 }
 
+// The relay's start (M9 fix 1079), used only by `emmer relay`, which runs
+// inside an ssh session. On Windows the OpenSSH server ends whatever a
+// session started when the session ends, a detached spawn included, but a
+// process made through WMI's Win32_Process.Create outlives it (probed on
+// wfs-db, 2026-11-05). Create passes no environment, so the home and the
+// pipe go on the daemon's command line; ShowWindow 0 keeps its console off
+// a desktop host's screen. Off Windows the detached spawn is a setsid,
+// which a closing session does not reach.
+export function startDaemonDetachedFromSession(daemonMain: string, home: string, pipe: string): Promise<void> {
+  if (!fs.existsSync(daemonMain)) {
+    return Promise.reject(new Error(`emmerd is not built: ${daemonMain} is missing`));
+  }
+  if (process.platform !== 'win32') {
+    const child = spawn(process.execPath, [daemonMain, '--home', home, '--pipe', pipe], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env },
+    });
+    child.unref();
+    return Promise.resolve();
+  }
+  const line = `"${process.execPath}" "${daemonMain}" --home "${home}" --pipe "${pipe}"`.replace(/'/g, "''");
+  const script =
+    `$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; ` +
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${line}'; ProcessStartupInformation = $si }; ` +
+    `exit $r.ReturnValue`;
+  return new Promise((resolve, reject) => {
+    // -EncodedCommand rather than -Command: the line holds double quotes,
+    // which Node's argument quoting and PowerShell's own parse would each
+    // have to agree on; base64 of UTF-16LE crosses untouched.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'ignore', windowsHide: true });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`WMI Create returned ${code}`));
+    });
+  });
+}
+
 // Node's process.kill on Windows is TerminateProcess, which never runs the
 // daemon's shutdown handler, and the shells it spawned would linger as
 // orphans. taskkill /t takes the whole tree the way the verify scripts do;

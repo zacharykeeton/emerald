@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { hidePaneHere, openFileFromOutside, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn } from './actions.ts';
+import { hidePaneHere, openFileFromOutside, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn, typeInto } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, setupFigure, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
+import { paneHost } from './hosts-model.ts';
 import { installedShells } from './daemon-model.ts';
 import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
 import { recordUse } from './use-record.ts';
 import { formatChord, plainKeyFor } from './keys-model.ts';
-import { currentTab, describeState, findPane, focusPane, folderName, groupSessions, hasState, setPaneView } from '@emerald/shared';
+import { currentTab, describeState, findPane, focusPane, folderName, groupSessions, hasState, setPaneSession, setPaneView } from '@emerald/shared';
 import type { SessionInfo, ShellId } from '@emerald/shared';
 import { normalizeFolder } from './new-session-model.ts';
 import { Menu, menuOpen } from './Menu.tsx';
+import { HostChip } from './HostChip.tsx';
 import { ACTION_PREFIX, actionGroup, actionKey, actionRows, isActionQuery, moveHighlight, orderRows, pickRows, rankSessions, segments, waitText } from './palette-model.ts';
 import type { ActionRow, Match } from './palette-model.ts';
 import { paneMenuOf } from './pane-menus.ts';
@@ -21,7 +23,7 @@ import { shownSessions, shownWords } from './shown-sessions.ts';
 import type { Shown } from './shown-sessions.ts';
 import { useSkin } from './skin.ts';
 import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
-import { editTab, useStore } from './store.ts';
+import { editTab, getState, useDaemonFor, useStore } from './store.ts';
 import { getUiState, loadClaudeOpensOn, loadEmptyPaneKind, loadEmptyPaneShell, openNewSession, rememberClaudeOpensOn, rememberEmptyPaneKind, rememberEmptyPaneShell, useUi } from './ui.ts';
 
 interface Props {
@@ -56,7 +58,7 @@ export const PLACEHOLDER_NONE = 'Type > for actions';
 // Ctrl+Enter below). Ctrl+Shift+S and Ctrl+J over a full pane mount the
 // same component as an overlay, list first, with no tiles and no folders.
 export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false }: Props) {
-  const { sessions, layout, daemon } = useStore('sessions', 'layout', 'daemon');
+  const { sessions, layout, daemon, remoteHosts, hosts } = useStore('sessions', 'layout', 'daemon', 'remoteHosts', 'hosts');
   const schemeState = useScheme();
   const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId } = useUi();
   const skin = useSkin();
@@ -91,16 +93,46 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   const [picked, setPicked] = useState<string | null>(null);
   const [home, setHome] = useState<string | null>(null);
   const [recent] = useState<string[]>(() => loadRecent());
+  // The on row (M9 fix 1087): the host the person picked, null until they do
+  // (then the pane's own host, else This PC), and the two boxes that can be
+  // open on it: Add a host… and Another folder… on a host.
+  const [chosenHost, setChosenHost] = useState<string | null>(null);
+  const [hostBox, setHostBox] = useState(false);
+  const [folderBox, setFolderBox] = useState(false);
+  const hostBoxRef = useRef(hostBox);
+  hostBoxRef.current = hostBox;
+  const folderBoxRef = useRef(folderBox);
+  folderBoxRef.current = folderBox;
+  // '' is This PC; a name the config has since forgotten reads as This PC too.
+  const wantedHost = chosenHost ?? paneHost(layout, paneId) ?? '';
+  const pickedHost = wantedHost !== '' && remoteHosts.some((h) => h.name === wantedHost) ? wantedHost : '';
+  const remote = pickedHost === '' ? undefined : pickedHost;
+  const pickedState = remote === undefined ? null : hosts.get(remote) ?? null;
+  const pickedDaemon = useDaemonFor(remote);
+  // M9 fix 1088: the host's setup, drawn while it runs, and the tick that moves its seconds.
+  const setupRunning = pickedState?.state === 'setup' && pickedState.setup !== null && pickedState.setup.phase !== 'done' && pickedState.setup.phase !== 'failed';
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!setupRunning) return;
+    setTick(Date.now());
+    const id = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [setupRunning]);
+  const [appVersion, setAppVersion] = useState('');
+  const [hostNote, setHostNote] = useState<string | null>(null);
+  const waiting = remote !== undefined && hostWaiting(pickedState?.state ?? 'connecting');
   // The shell the Shell tile starts (M9 fix 647): the stored id, read
   // against the installed shells on every render so a daemon that arrives
   // after mount is read; null is the daemon's default.
   const [storedShell, setStoredShell] = useState<ShellId | null>(() => loadEmptyPaneShell());
-  const shells = installedShells(daemon);
+  const shells = installedShells(pickedDaemon);
   const pick = shellChoice(storedShell, shells);
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const caretRef = useRef<HTMLSpanElement>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hostText, setHostText] = useState('');
+  const [folderText, setFolderText] = useState('');
 
   // Capture phase: xterm stops propagation of keys it handles, and Escape
   // is one of them when the terminal still has focus. The root's
@@ -135,7 +167,14 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       // 548's comment above says.
       if (getUiState().pickerPaneId !== paneId && !(rootRef.current?.contains(document.activeElement) ?? false)) return;
       // M9 fix 1010: a path in the box is cleared first, and nothing closes.
-      switch (escapeStep({ actionQuery: isActionQuery(queryRef.current), filePick: tilePickRef.current === 'file', pathText: pathTextRef.current })) {
+      switch (escapeStep({ actionQuery: isActionQuery(queryRef.current), filePick: tilePickRef.current === 'file', pathText: pathTextRef.current, openBox: hostBoxRef.current || folderBoxRef.current })) {
+        case 'leave-box':
+          setHostBox(false);
+          setFolderBox(false);
+          setHostText('');
+          setFolderText('');
+          inputRef.current?.focus();
+          return;
         case 'clear-path':
           setPathText('');
           setPathNote(null);
@@ -185,7 +224,10 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     window.emerald
       .info()
       .then((info) => {
-        if (live) setHome(info.homeDir);
+        if (live) {
+          setHome(info.homeDir);
+          setAppVersion(info.version);
+        }
       })
       .catch((err: unknown) => console.warn('[emerald] info failed', err));
     return () => {
@@ -233,12 +275,20 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           schemes: schemeState.schemes.map((sc) => sc.name),
           windowScheme: schemeState.current.name,
           session: paneSession === undefined ? null : { own: paneSession.scheme ?? null },
+          addHost: showSplits,
         }),
       ]
     : [];
   const count = actionMode ? actions.length : rows.length;
   const current = Math.min(highlighted, Math.max(0, count - 1));
   const runRow = (row: ActionRow) => {
+    // Add a remote host… (M9 fix 1087) empties the box and opens the host box.
+    if (row.kind === 'host') {
+      setQuery('');
+      setHighlighted(0);
+      setHostBox(true);
+      return;
+    }
     // A shell or scheme pick empties the box, so the empty pane's tile keys work at once.
     if (row.kind === 'shell' || row.kind === 'scheme') {
       setQuery('');
@@ -260,10 +310,19 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   // The folders, row 1 the default, and which is selected. The folder
   // the pane was split from (M9 fix 546) can arrive a moment after mount,
   // since it is written once the split's edit resolves.
-  const folders = showSplits ? folderRows({ split: splitFolder.get(paneId) ?? null, recent, home, picked }) : [];
+  const remoteHome = pickedState?.record.home ?? null;
+  const folders = !showSplits || waiting
+    ? []
+    : remote === undefined
+      ? folderRows({ split: splitFolder.get(paneId) ?? null, recent, home, picked })
+      : folderRows({ split: paneHost(layout, paneId) === remote ? splitFolder.get(paneId) ?? null : null, recent: hostRecent(sessions.values(), remote), home: remoteHome, picked });
   const selectedIndex = selectedFolder === null ? 0 : Math.max(0, folders.findIndex((r) => normalizeFolder(r.folder) === normalizeFolder(selectedFolder)));
   const selected = folders[selectedIndex] ?? null;
   const filtering = query !== '';
+  const refusal =
+    remote === undefined || pickedState === null
+      ? null
+      : hostRefusal({ name: remote, os: pickedState.record.os, refusal: pickedState.refusal, setup: pickedState.setup, state: pickedState.state, claude: pickedState.daemon?.claude ?? null }, kind);
 
   const selectFolder = (folder: string) => {
     setSelectedFolder(folder);
@@ -274,6 +333,51 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     setOpensOn(face);
     rememberClaudeOpensOn(face);
   };
+  // Picking a host (M9 fix 1087): the folder state starts over, and a host not yet reached is contacted.
+  const pickHost = (name: string) => {
+    setChosenHost(name);
+    setPicked(null);
+    setSelectedFolder(null);
+    setError(null);
+    setFolderBox(false);
+    if (name === '') return;
+    const st = getState().hosts.get(name)?.state ?? null;
+    if (st === null || st === 'idle' || st === 'refused') {
+      void window.emerald.hostConnect(name).catch((err: unknown) => console.warn('[emerald] host connect failed', err));
+    } else if (st === 'lost') window.emerald.hostTryNow(name);
+  };
+  // The refusal's button (M9 fix 1088).
+  const refusalAct = (reason: string) => {
+    if (remote === undefined) return;
+    if (reason === 'ssh') pickHost(remote);
+    else if (reason === 'setup') void window.emerald.hostConnect(remote).catch((err: unknown) => console.warn('[emerald] host connect failed', err));
+    else if (reason === 'no-claude') {
+      selectKind('shell');
+      if (selected !== null) start('shell', selected.folder);
+    } else if (reason === 'hostkey') {
+      void window.emerald
+        .request('session.spawn', { kind: 'shell', cwd: home ?? '', cols: 120, rows: 30 })
+        .then(({ session }) => editTab((t) => setPaneSession(t, paneId, session.id), paneId).then(() => {
+          typeInto(session.id, `ssh ${remote}\r`);
+          onDone();
+        }))
+        .catch((err: unknown) => console.warn('[emerald] open shell failed', err));
+    }
+  };
+  const addHost = () => {
+    const text = hostText.trim();
+    if (text === '') return;
+    window.emerald
+      .hostAdd(text)
+      .then((added) => {
+        setHostBox(false);
+        setHostText('');
+        setHostNote(null);
+        pickHost(added.name);
+      })
+      .catch((err: unknown) => setHostNote(`Could not add ${text}: ${err instanceof Error ? err.message : String(err)}`));
+  };
+  const onRow = showSplits && onRowShown(remoteHosts.length, hostBox, tilePick);
   const selectKind = (k: EmptyKind) => {
     setKind(k);
     setTilePick(null);
@@ -349,7 +453,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     if (starting) return;
     setStarting(true);
     setError(null);
-    const run = k === 'shell' ? startShellIn(paneId, folder, pick?.id) : startClaudeIn(paneId, folder, { chat: loadClaudeOpensOn() === 'chat' });
+    const run = k === 'shell' ? startShellIn(paneId, folder, pick?.id, remote) : startClaudeIn(paneId, folder, { chat: loadClaudeOpensOn() === 'chat', ...(remote === undefined ? {} : { host: remote }) });
     run
       .then(() => {
         setStarting(false);
@@ -365,6 +469,10 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       });
   };
   const other = () => {
+    if (remote !== undefined) {
+      setFolderBox(true);
+      return;
+    }
     void window.emerald
       .pickFolder(selected?.folder ?? null)
       .then((folder) => {
@@ -380,13 +488,17 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     // The empty pane's own keys, only while the box is empty: what to
     // start, and where.
     if (showSplits && query === '') {
-      const act = emptyKey(ev, folders.length);
+      const act = emptyKey(ev, folders.length, onRow);
       if (act !== null) {
         ev.preventDefault();
         if (act.act === 'flip') {
           const to = nextTile(tilePick ?? kind, act.delta, { browser: browserTile, file: fileTile });
           if (to === 'browser' || to === 'file') setTilePick(to);
           else selectKind(to);
+        } else if (act.act === 'host') {
+          const names = ['', ...remoteHosts.map((h) => h.name)];
+          const at = Math.max(0, names.indexOf(pickedHost));
+          pickHost(names[moveHighlight(at, act.delta, names.length)] ?? '');
         } else if (tilePick !== null && (act.act === 'move' || act.act === 'row')) {
           // The Browser and File picks have no folder to move or choose.
         } else if (act.act === 'move') {
@@ -551,7 +663,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
     );
   }
 
-  const label = browserPick ? { head: 'Open web page', tail: '' } : filePick ? { head: 'Open file here', tail: '' } : selected === null ? { head: startHead(kind, pick), tail: '' } : startLabel(kind, selected.folder, pick);
+  const label = browserPick ? { head: 'Open web page', tail: '' } : filePick ? { head: 'Open file here', tail: '' } : selected === null ? { head: startHead(kind, pick), tail: hostTail(remote) } : startLabel(kind, selected.folder, pick, remote);
   return (
     <div className="empty-pane" data-mode="empty" data-filtering={filtering ? 'true' : undefined} data-picker={pickerPaneId === paneId ? 'open' : undefined} ref={rootRef} tabIndex={-1}>
       {/* The body holds the padding and the gaps, since the narrow rules
@@ -575,6 +687,50 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           {browserTile && <KindTile kind="browser" pressed={browserPick} glyph="://" name="Browser" hint="" sub="a URL, a host or a search" onPick={openBrowser} onMouseDown={keepFocus} />}
           {fileTile && <KindTile kind="file" pressed={filePick} glyph="{}" name="File" hint="" sub="a path, pasted or typed" onPick={pickFile} onMouseDown={keepFocus} />}
         </div>
+        {onRow && (
+          <div className="empty-on-block">
+            <div className="empty-on-head">
+              <span className="muted empty-on-label">on</span>
+              <span className="empty-on-keys">← → switch</span>
+            </div>
+            <div className="empty-on-row">
+              {[{ name: '', destination: '' }, ...remoteHosts].map((h) => (
+                <button key={h.name} className="secondary empty-host" data-host={h.name} aria-pressed={h.name === pickedHost} title={h.destination === '' ? undefined : h.destination} onMouseDown={keepFocus} onClick={() => pickHost(h.name)}>
+                  <span className="empty-host-name">{h.name === '' ? 'This PC' : h.name}</span>
+                  {h.name !== '' && hostSub(hosts.get(h.name)?.state ?? 'idle') !== null && <span className="empty-host-sub">{hostSub(hosts.get(h.name)?.state ?? 'idle')}</span>}
+                </button>
+              ))}
+              {hostBox ? (
+                <>
+                  <input
+                    className="empty-host-box"
+                    type="text"
+                    spellCheck={false}
+                    autoFocus
+                    value={hostText}
+                    onChange={(ev) => {
+                      setHostText(ev.target.value);
+                      setHostNote(null);
+                    }}
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Enter') {
+                        ev.preventDefault();
+                        addHost();
+                      }
+                    }}
+                  />
+                  <div className="muted empty-host-note" data-error={hostNote !== null || undefined}>
+                    {hostNote ?? 'An ssh destination, or a Host from ~/.ssh/config. Enter adds it, Esc leaves it.'}
+                  </div>
+                </>
+              ) : (
+                <button className="secondary empty-host-add" onMouseDown={keepFocus} onClick={() => setHostBox(true)}>
+                  Add a host…
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {shellMenu !== null && (
           <Menu
             x={shellMenu.x}
@@ -619,9 +775,35 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           </div>
         )}
         {/* Which folder: row 1 is where a start would go now. */}
-        {!filePick && (
+        {!filePick && folderBox && (
+          <div className="empty-path-block">
+            <div className="empty-path-row">
+              <input
+                className="empty-path empty-folder-path"
+                type="text"
+                spellCheck={false}
+                autoFocus
+                placeholder={`A folder on ${remote ?? ''}, as that machine spells it. Enter picks it.`}
+                value={folderText}
+                onChange={(ev) => setFolderText(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Enter' && folderText.trim() !== '') {
+                    ev.preventDefault();
+                    setPicked(folderText.trim());
+                    setSelectedFolder(null);
+                    setFolderText('');
+                    setFolderBox(false);
+                    inputRef.current?.focus();
+                  }
+                }}
+              />
+            </div>
+          </div>
+        )}
+        {!filePick && !folderBox && (
           <div className="empty-in-block">
             <div className="muted empty-in">in</div>
+            {waiting && <div className="muted empty-in-wait">{`The folders on ${remote ?? ''} show once it answers.`}</div>}
             <div className="empty-folders">
               {folders.map((r, i) => (
                 <button
@@ -653,7 +835,8 @@ Double-click to start here`}
           <div className="empty-row empty-start-row">
             <button
               className="empty-start"
-              disabled={browserPick ? starting : filePick ? pathText.trim() === '' || starting : selected === null || starting}
+              data-dim={waiting ? 'true' : undefined}
+              disabled={browserPick ? starting : filePick ? pathText.trim() === '' || starting : selected === null || starting || waiting || (refusal?.reason === 'no-claude' && kind === 'claude')}
               onClick={() => (browserPick ? openBrowser() : filePick ? void openTyped('here') : selected !== null && start(kind, selected.folder))}
             >
               {/* One inline label, so the button's text reads as one line. */}
@@ -704,6 +887,35 @@ Double-click to start here`}
               </span>
             )}
           </div>
+          {setupRunning && pickedState?.setup != null && (
+            <div className="empty-setup">
+              <div className="empty-setup-line">{`Setting up ${remote ?? ''}: copying emerald's daemon ${appVersion} there, the first time only`}</div>
+              <div className="empty-setup-figure">{setupFigure(pickedState.setup.bytes, pickedState.setup.startedAt, tick)}</div>
+              <div className="empty-setup-bar" />
+              <button
+                className="secondary empty-setup-cancel"
+                onMouseDown={keepFocus}
+                onClick={() => {
+                  if (remote !== undefined) void window.emerald.hostCancelSetup(remote).catch((err: unknown) => console.warn('[emerald] cancel setup failed', err));
+                  pickHost('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {refusal !== null && (
+            <>
+              <div className="empty-error" data-reason={refusal.reason}>
+                {refusal.text}
+              </div>
+              {refusal.act !== null && (
+                <button className="secondary empty-error-act" onMouseDown={keepFocus} onClick={() => refusalAct(refusal.reason)}>
+                  {refusal.act}
+                </button>
+              )}
+            </>
+          )}
           {error !== null && <div className="empty-error">{error}</div>}
         </div>
         <div className="empty-spacer" />
@@ -803,6 +1015,7 @@ interface RowProps {
 
 function PaletteRow({ session, match, shown, wait, highlighted, here, onHover, onPick }: RowProps) {
   const state = describeState(session);
+  const { remoteHosts } = useStore('remoteHosts');
   // The last column shows where the match is when it is not in the name,
   // so the letters typed are always on screen; otherwise the folder, as
   // before there was a filter.
@@ -833,6 +1046,8 @@ function PaletteRow({ session, match, shown, wait, highlighted, here, onHover, o
           {wait !== null && <span className="palette-wait"> {wait}</span>}
         </span>
       )}
+      {/* M9 fix 1089: between the state and the folder, so the kind and the folder keep their places among the children */}
+      {session.host !== undefined && <HostChip name={session.host} destination={remoteHosts.find((h) => h.name === session.host)?.destination ?? session.host} />}
       <span className="muted" title={detail === null ? session.cwd : `${detail.field}: ${detail.text}`}>
         {detail === null ? session.cwd : <Bold match={detail} />}
       </span>
@@ -849,7 +1064,7 @@ function ActionPaletteRow({ row, heading, highlighted, onHover, onPick }: { row:
       <button
         className={`action-row${highlighted ? ' highlighted' : ''}`}
         data-kind={row.kind}
-        data-action={row.kind === 'key' ? row.action : undefined}
+        data-action={row.kind === 'key' ? row.action : row.kind === 'host' ? 'add-host' : undefined}
         data-run={row.kind === 'pane' ? row.run : undefined}
         data-shell={row.kind === 'pane' || row.kind === 'shell' ? row.shell : undefined}
         data-scope={row.kind === 'scheme' ? row.scope : undefined}

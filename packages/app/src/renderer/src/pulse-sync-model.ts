@@ -40,8 +40,9 @@ export const ONE_OFF_ANIMATIONS: ReadonlySet<string> = new Set([
 ]);
 
 // Endless, but never under a pulsing element: the usage refresh spinner and
-// the title bar mark's glint. Left on their own clocks.
-export const ENDLESS_LEFT_ALONE: ReadonlySet<string> = new Set(['usage-spin', 'title-gem-glint']);
+// the title bar mark's glint, and the empty pane's host setup bar sweep
+// (M9 fix 1087). Left on their own clocks.
+export const ENDLESS_LEFT_ALONE: ReadonlySet<string> = new Set(['usage-spin', 'title-gem-glint', 'empty-setup-sweep']);
 
 export function isPulse(name: string): boolean {
   return PULSE_ANIMATIONS.has(name);

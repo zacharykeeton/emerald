@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
-import { PROTOCOL_VERSION, shellIdsFor } from '@emerald/shared';
+import { HOSTS_LEVEL, PROTOCOL_VERSION, shellIdsFor } from '@emerald/shared';
 import type { Layout, ServerMessage, SessionInfo } from '@emerald/shared';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1537,6 +1537,85 @@ test('an app hello whose read never lands answers the shells it holds within the
     assert.deepEqual(hello.shells, ownManager.installedShells());
   } finally {
     client.close();
+    await own.close();
+  }
+});
+
+test('a hello answers claude as the manager finds it (M9 fix 1084)', windowsOnly, async () => {
+  // An empty home, so ~/.local/bin holds no claude and the registry's Path
+  // alone decides; os.homedir() reads USERPROFILE on Windows.
+  const savedProfile = process.env['USERPROFILE'];
+  process.env['USERPROFILE'] = mkTemp('emerald-pipe-1084-home-');
+  const ownManager = new SessionManager(silentLogger);
+  const ownLayouts = new LayoutStore(path.join(mkTemp('emerald-pipe-1084-'), 'state.json'), silentLogger);
+  ownLayouts.load();
+  const bare = mkTemp('emerald-pipe-1084-bare-');
+  const withClaude = mkTemp('emerald-pipe-1084-claude-');
+  fs.writeFileSync(path.join(withClaude, 'claude.exe'), '');
+  let layer: Record<string, string> = { Path: bare };
+  const own = new PipeServer(ownManager, ownLayouts, {
+    pipePath: `${PIPE}-1084`,
+    daemonVersion: 'test',
+    log: silentLogger,
+    spawnEnv: () => Promise.resolve(layer),
+  });
+  await own.listen();
+  const clients: PipeClient[] = [];
+  try {
+    const hello = async (who: 'app' | 'cli') => {
+      const c = await PipeClient.connect(`${PIPE}-1084`);
+      clients.push(c);
+      return c.request('hello', { client: who, protocolVersion: PROTOCOL_VERSION });
+    };
+    const first = await hello('app');
+    assert.equal(first.claude, false, 'no claude on a bare Path and an empty home');
+    assert.equal(first.claude, ownManager.claudeInstalled());
+    layer = { Path: withClaude };
+    const second = await hello('app');
+    assert.equal(second.claude, true, 'a claude.exe on the Path the read answered');
+    assert.equal(ownManager.claudeInstalled(), true);
+    layer = { Path: bare };
+    assert.equal((await hello('cli')).claude, true, 'a cli hello reads nothing and answers what the manager holds');
+  } finally {
+    for (const c of clients) c.close();
+    ownManager.killAll();
+    await own.close();
+    if (savedProfile === undefined) delete process.env['USERPROFILE'];
+    else process.env['USERPROFILE'] = savedProfile;
+  }
+});
+
+test('hosts.set then hosts.list round trip, a bad record refused, and hosts.changed to a level 80 window alone (M9 fix 1080)', async () => {
+  const pipe = `${PIPE}-hosts`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await own.listen();
+  const clients: PipeClient[] = [];
+  try {
+    const join = async (hello: Record<string, unknown>) => {
+      const c = await PipeClient.connect(pipe);
+      clients.push(c);
+      await c.request('hello', { protocolVersion: PROTOCOL_VERSION, ...hello } as never);
+      await c.request('subscribe', { topics: ['sessions'] });
+      const heard: ServerMessage[] = [];
+      c.on('message', (m: ServerMessage) => heard.push(m));
+      return { c, heard };
+    };
+    const fresh = await join({ client: 'app', featureLevel: HOSTS_LEVEL });
+    const older = await join({ client: 'app', featureLevel: 79 });
+    const cli = await join({ client: 'cli' });
+    const host = { name: 'stub', destination: 'verify@stub', shell: 'powershell' as const, addedAt: 5 };
+    const pushed = waitFor(fresh.c, (m) => m.type === 'hosts.changed');
+    await cli.c.request('hosts.set', { host });
+    assert.deepEqual(await pushed, { type: 'hosts.changed', hosts: [host] });
+    assert.deepEqual(await cli.c.request('hosts.list', {}), { hosts: [host] });
+    await assert.rejects(cli.c.request('hosts.set', { host: { ...host, name: '' } }), (err: Error & { code?: string }) => err.code === 'bad-request' && /host must be a host record: name/.test(err.message));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(older.heard.filter((m) => m.type === 'hosts.changed').length, 0);
+    assert.equal(cli.heard.filter((m) => m.type === 'hosts.changed').length, 0);
+    await cli.c.request('hosts.remove', { name: 'stub' });
+    assert.deepEqual(await cli.c.request('hosts.list', {}), { hosts: [] });
+  } finally {
+    for (const c of clients) c.close();
     await own.close();
   }
 });

@@ -37,3 +37,14 @@ test('clear forgets everything', () => {
   assert.equal(b.detach('s1', 1), true);
   assert.deepEqual(b.drop(2), []);
 });
+
+test('held names every session a window holds, and clear spares what keep answers for (M9 fix 1081)', () => {
+  const b = new PtyBroker();
+  b.attach('local', 1);
+  b.attach('remote', 1);
+  b.attach('remote', 2);
+  assert.deepEqual(b.held().sort(), ['local', 'remote']);
+  b.clear((id) => id === 'remote');
+  assert.deepEqual(b.held(), ['remote']);
+  assert.equal(b.detach('remote', 1), false, 'window 2 still holds it');
+});

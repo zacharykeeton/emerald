@@ -48,3 +48,8 @@ export function promptsPath(): string {
 export function foldersPath(): string {
   return path.join(emeraldHome(), 'folders.json');
 }
+
+// The remote hosts record (M9 fix 1080), one list for every window.
+export function hostsPath(): string {
+  return path.join(emeraldHome(), 'hosts.json');
+}

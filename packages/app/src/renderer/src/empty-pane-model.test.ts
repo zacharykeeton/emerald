@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, nextTile, resolvePath, parentLabel, shellChoice, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, shellChoice, setupFigure, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
 
 test('tileTitle: the folder by name, the whole folder for a drive root, none with no row (M9 fix 705)', () => {
   assert.equal(tileTitle('C:\\code\\emerald'), 'Double-click to start in emerald');
@@ -127,7 +127,91 @@ test('escapeStep: a path in the box is cleared before anything closes, and a pat
   assert.equal(escapeStep({ actionQuery: false, filePick: false, pathText: '' }), 'close');
 });
 
+test('emptyKey: ArrowLeft and ArrowRight move the host pick only with the on row shown (M9 fix 1087)', () => {
+  const k = (key: string, mods: Partial<{ shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }> = {}) => ({ key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, ...mods });
+  assert.deepEqual(emptyKey(k('ArrowLeft'), 3, true), { act: 'host', delta: -1 });
+  assert.deepEqual(emptyKey(k('ArrowRight'), 3, true), { act: 'host', delta: 1 });
+  assert.equal(emptyKey(k('ArrowLeft'), 3), null);
+  assert.equal(emptyKey(k('ArrowRight'), 3, false), null);
+  assert.equal(emptyKey(k('ArrowRight', { shiftKey: true }), 3, true), null);
+  assert.equal(emptyKey(k('ArrowLeft', { ctrlKey: true }), 3, true), null);
+  assert.deepEqual(emptyKey(k('ArrowDown'), 3, true), { act: 'move', delta: 1 });
+  assert.deepEqual(emptyKey(k('ArrowUp'), 3, true), { act: 'move', delta: -1 });
+  assert.deepEqual(emptyKey(k('2'), 3, true), { act: 'row', index: 1 });
+  assert.deepEqual(emptyKey(k('9'), 3, true), { act: 'swallow' });
+});
+
+test('startLabel: a remote host adds its name after the folder, This PC adds nothing (M9 fix 1087)', () => {
+  assert.deepEqual(startLabel('claude', 'C:\\code\\workflow-studio', null, 'wfs-db'), { head: 'Start Claude', tail: ' in workflow-studio on wfs-db' });
+  assert.deepEqual(startLabel('shell', 'C:\\code\\emerald', CMD, 'wfs-db'), { head: 'Start Command Prompt', tail: ' in emerald on wfs-db' });
+  assert.deepEqual(startLabel('shell', 'C:\\code\\emerald', null, undefined), { head: 'Start shell', tail: ' in emerald' });
+  assert.deepEqual(startLabel('shell', 'C:\\code\\emerald', null, ''), { head: 'Start shell', tail: ' in emerald' });
+  assert.equal(hostTail('wfs-db'), ' on wfs-db');
+  assert.equal(hostTail(undefined), '');
+  assert.equal(hostTail(''), '');
+});
+
+test('hostRecent: the host\'s own sessions, latest first, each folder once (M9 fix 1087)', () => {
+  const sessions = [
+    { host: 'wfs-db', groupCwd: 'C:\\Users\\zacha\\a', lastEventAt: 10, stateSince: 1 },
+    { host: 'wfs-db', groupCwd: 'C:\\Users\\zacha\\b', lastEventAt: null, stateSince: 20 },
+    { groupCwd: 'C:\\code\\c', lastEventAt: 30, stateSince: 1 },
+  ];
+  assert.deepEqual(hostRecent(sessions, 'wfs-db'), ['C:\\Users\\zacha\\b', 'C:\\Users\\zacha\\a']);
+  const dup = [...sessions, { host: 'wfs-db', groupCwd: 'c:/users/zacha/a/', lastEventAt: 5, stateSince: 1 }];
+  assert.deepEqual(hostRecent(dup, 'wfs-db'), ['C:\\Users\\zacha\\b', 'C:\\Users\\zacha\\a']);
+  assert.deepEqual(hostRecent(sessions, 'other'), []);
+});
+
+test('onRowShown: a host or the open box, and neither Browser nor File picked (M9 fix 1087)', () => {
+  assert.equal(onRowShown(0, false, null), false);
+  assert.equal(onRowShown(1, false, null), true);
+  assert.equal(onRowShown(0, true, null), true);
+  assert.equal(onRowShown(1, false, 'browser'), false);
+  assert.equal(onRowShown(1, true, 'file'), false);
+});
+
+test('escapeStep: an open host box closes before the query or the pane (M9 fix 1087)', () => {
+  assert.equal(escapeStep({ actionQuery: false, filePick: false, pathText: '', openBox: true }), 'leave-box');
+  assert.equal(escapeStep({ actionQuery: true, filePick: false, pathText: '', openBox: true }), 'leave-box');
+});
+
 test('shellSub: the default line with no pick, the swap with one', () => {
   assert.equal(shellSub(null, [PS, CMD]), 'your default shell, nothing else asked');
   assert.equal(shellSub(CMD, [PS, CMD]), 'Command Prompt in place of Windows PowerShell');
+});
+
+test('hostRefusal: each reason with its words and act, first match wins (M9 fix 1088)', () => {
+  const base = { name: 'wfs-db', refusal: null, setup: null, state: 'up', claude: true as boolean | null };
+  assert.deepEqual(hostRefusal({ ...base, os: 'linux' }, 'shell'), { reason: 'linux', text: 'wfs-db runs Linux, and a pane there waits for a Linux build of emerald.', act: null });
+  assert.deepEqual(hostRefusal({ ...base, refusal: { kind: 'hostkey', line: 'x' } }, 'shell'), {
+    reason: 'hostkey',
+    text: 'wfs-db has not been reached from this PC before, so its key is unchecked. Run ssh wfs-db once in a shell here, check the fingerprint it shows, then pick it again.',
+    act: 'Open a shell here to run it',
+  });
+  assert.deepEqual(hostRefusal({ ...base, refusal: { kind: 'ssh', line: 'Permission denied (publickey).' } }, 'shell'), { reason: 'ssh', text: 'wfs-db refused the login: Permission denied (publickey).', act: 'Try again' });
+  assert.deepEqual(hostRefusal({ ...base, setup: { phase: 'failed', line: 'disk full' } }, 'shell'), { reason: 'setup', text: 'Setting up wfs-db failed: disk full', act: 'Try again' });
+  assert.equal(hostRefusal({ ...base, setup: { phase: 'failed', line: null } }, 'shell')?.text, 'Setting up wfs-db failed: no reason given');
+  assert.deepEqual(hostRefusal({ ...base, claude: false }, 'claude'), {
+    reason: 'no-claude',
+    text: "Claude Code is not on wfs-db's PATH, so a Claude session cannot start there. A shell can. Install Claude Code on wfs-db, then start again.",
+    act: 'Start a shell on wfs-db instead',
+  });
+  assert.equal(hostRefusal({ ...base, os: 'linux', refusal: { kind: 'hostkey', line: 'x' } }, 'shell')?.reason, 'linux');
+  assert.equal(hostRefusal({ ...base, refusal: { kind: 'nokit', line: 'x' } }, 'shell'), null);
+  assert.equal(hostRefusal({ ...base, setup: { phase: 'failed', line: 'cancelled' } }, 'shell'), null);
+  assert.equal(hostRefusal({ ...base, claude: true }, 'claude'), null);
+  assert.equal(hostRefusal({ ...base, claude: null }, 'claude'), null);
+  assert.equal(hostRefusal({ ...base, claude: false }, 'shell'), null);
+});
+
+test('hostSub, setupFigure and hostWaiting (M9 fix 1088)', () => {
+  assert.equal(hostSub('setup'), 'setting up');
+  assert.equal(hostSub('lost'), 'unreachable');
+  assert.equal(hostSub('up'), null);
+  assert.equal(setupFigure(35651584, 1000, 13500), '34.0 MB, 12 s');
+  assert.equal(setupFigure(0, 1000, 4200), '3 s');
+  assert.equal(setupFigure(1048576, 5000, 4000), '1.0 MB, 0 s');
+  for (const s of ['connecting', 'setup', 'refused']) assert.equal(hostWaiting(s), true);
+  for (const s of ['idle', 'up', 'lost']) assert.equal(hostWaiting(s), false);
 });

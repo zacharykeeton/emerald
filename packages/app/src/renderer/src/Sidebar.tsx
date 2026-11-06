@@ -14,6 +14,8 @@ import { runningFigure } from './agents-running-model.ts';
 import { TasksReading } from './TasksPopover.tsx';
 import { folderLabelsSupported, otherShells, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
 import { Menu } from './Menu.tsx';
+import { effectiveState } from './hosts-model.ts';
+import { LOCAL_HOST_HEAD, hostOrderOf, hostSections, lostRowLine } from './host-marks-model.ts';
 import type { MenuItem } from './Menu.tsx';
 import { useFolderChangeCount } from './git-changes-hook.ts';
 import { sweepCounts, sweepLabel, sweepTitle } from './group-sweep-model.ts';
@@ -33,7 +35,7 @@ import { useRates, useRunningShells } from './rates-store.ts';
 import { STALLED_TITLE } from './prompt-model.ts';
 import { useSqueeze } from './squeeze.ts';
 import type { Shown } from './shown-sessions.ts';
-import { useStore } from './store.ts';
+import { useDaemonFor, useStore } from './store.ts';
 import { TurnLineAnchor } from './TurnCard.tsx';
 import { UsageStrip } from './UsageStrip.tsx';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, cycleAttentionSound, markSessionUnread, openFileTab, setSessionHushed, openNewSession, openReviewTab, openTranscriptTab, setAttentionNotify, setAttentionSound, setShowOffscreen, setSidebarFilter, setSidebarOrder, setSidebarWidth, toggleSidebar, toggleSidebarFold, toggleTeamUnfold, useUi } from './ui.ts';
@@ -68,6 +70,7 @@ const REMOVAL_TITLE = 'Closed: removed from the list when the count ends. Hover 
 // pane, or jumps to the pane already showing it.
 export function Sidebar() {
   const { sessions, layout, allLayout, daemon, folders } = useStore('sessions', 'layout', 'allLayout', 'daemon', 'folders');
+  const { hosts, remoteHosts } = useStore('hosts', 'remoteHosts');
   // The shell sessions running a command (M46), by their output rate,
   // for the headings' units: one Set for every heading, held while its
   // members are the same (M9 fix 354). Above the collapsed rail's early
@@ -90,7 +93,7 @@ export function Sidebar() {
   // The heading's right-click menu, with the order setting.
   const [orderMenu, setOrderMenu] = useState<{ x: number; y: number } | null>(null);
   // A right click on a folder heading's +: the Claude choice for that folder.
-  const [addMenu, setAddMenu] = useState<{ folder: string; x: number; y: number } | null>(null);
+  const [addMenu, setAddMenu] = useState<{ folder: string; host: string; x: number; y: number } | null>(null);
   // A right click on the heading itself (M9 fix 193): the sweep over
   // every session under it, by the group's key.
   const [groupMenu, setGroupMenu] = useState<{ key: string; x: number; y: number } | null>(null);
@@ -142,7 +145,10 @@ export function Sidebar() {
   // The unshown chip (M9 fix 249) reads the sessions on a pane of any
   // tab, the same set the rows' "on no pane" word and the headings' count
   // read; a pane in another window is a pane (M9 fix 867).
-  const allGroups = groupSessions(sessions.values(), sidebarOrder, folders);
+  const allGroups = groupSessions(sessions.values(), sidebarOrder, folders, hostOrderOf(remoteHosts));
+  const anyRemote = allGroups.some((g) => g.host !== '');
+  // M9 fix 1090: the sessions whose host's line is lost, counted by the header.
+  const unreachable = [...sessions.values()].filter((s) => effectiveState(s, hosts) === 'unreachable').length;
   const onPanes: ReadonlySet<string> = allLayout === null ? new Set() : sessionsOnPanes(allLayout);
   // M9 fix 787: an Exited row counting down shows under any chip.
   const countingIds: ReadonlySet<string> = new Set([...removing].filter(([, c]) => c.started).map(([id]) => id));
@@ -168,6 +174,67 @@ export function Sidebar() {
     setChooser({ sessionId: id, replacing: replacingName, view: replacing.kind === 'view', x: rect.left + 24, y: rect.bottom, remember: false });
   };
   const onScreen = (id: string) => layout !== null && paneShowingIn(layout, id, layout.currentTabId) !== null;
+  // The sections per host (M9 fix 1089): null while no remote session exists, so the list is today's markup.
+  const sectioned = hostSections(groups, anyRemote);
+  const renderGroup = (g: SessionGroup) => (
+      <Group
+        key={g.key}
+        group={g}
+        now={now}
+        loadCeiling={ceiling}
+        runningShells={runningShells}
+        shown={shown}
+        onPanes={onPanes}
+        renaming={renaming}
+        commenting={commenting}
+        prompting={prompting}
+        promptHistory={promptHistory}
+        onSavePrompt={
+          canSave
+            ? (name, text) =>
+                void window.emerald
+                  .request('prompts.set', { name, text })
+                  .then(() => window.emerald.request('prompts.list', {}))
+                  .then(({ prompts }) => setSavedPrompts(prompts))
+                  .catch(warn('save prompt'))
+            : null
+        }
+        onCommented={(id, comment) => {
+          setCommenting(null);
+          if (comment !== null) void setSessionComment(id, comment).catch(warn('set comment'));
+        }}
+        onPrompted={(id, text) => {
+          if (text === null) {
+            setPrompting(null);
+            return;
+          }
+          void sendPrompt(id, text)
+            .then((outcome) => {
+              if (outcome.kind === 'sent') rememberPromptSent(text);
+              setPrompting(outcome.kind === 'sent' ? null : { sessionId: id, error: outcome.reason });
+            })
+            .catch(warn('send prompt'));
+        }}
+        onShow={onShow}
+        onResume={(id) => void resumeSession(id).catch(warn('resume'))}
+        onMenu={(id, x, y) => setMenu({ sessionId: id, x, y })}
+        onAdd={(folder, host) => void startShellBeside(folder, undefined, host === '' ? undefined : host).catch(warn('shell from the heading'))}
+        onAddMenu={(folder, host, x, y) => setAddMenu({ folder, host, x, y })}
+        onGroupMenu={(key, x, y) => setGroupMenu({ key, x, y })}
+        labelling={labelling}
+        canLabel={folderLabelsSupported(daemon) && g.host === ''}
+        onLabel={setLabelling}
+        onLabelled={(key, label) => {
+          setLabelling(null);
+          if (label !== null) void setFolderLabel(key, label).catch(warn('folder label'));
+        }}
+        onGroupTab={(name, ids) => void newGroupTab(name, ids).catch(warn('tab for the group'))}
+        onRenamed={(id, name) => {
+          setRenaming(null);
+          if (name !== null) void renameSession(id, name).catch(warn('rename'));
+        }}
+      />
+  );
   return (
     <div className="sidebar" style={{ width: sidebarWidth }}>
       <div
@@ -180,6 +247,11 @@ export function Sidebar() {
         }}
       >
         <span>Sessions</span>
+        {unreachable > 0 && (
+          <span className="sidebar-unreachable" title="Sessions on a host whose line is lost; emerald is trying again">
+            {unreachable} unreachable
+          </span>
+        )}
         <button className="sidebar-collapse" title={`Hide sidebar (${plainKeyFor('toggle-sidebar')})`} onClick={toggleSidebar}>
           «
         </button>
@@ -205,65 +277,22 @@ export function Sidebar() {
             </button>
           </div>
         )}
-        {groups.map((g) => (
-          <Group
-            key={g.key}
-            group={g}
-            now={now}
-            loadCeiling={ceiling}
-            runningShells={runningShells}
-            shown={shown}
-            onPanes={onPanes}
-            renaming={renaming}
-            commenting={commenting}
-            prompting={prompting}
-            promptHistory={promptHistory}
-            onSavePrompt={
-              canSave
-                ? (name, text) =>
-                    void window.emerald
-                      .request('prompts.set', { name, text })
-                      .then(() => window.emerald.request('prompts.list', {}))
-                      .then(({ prompts }) => setSavedPrompts(prompts))
-                      .catch(warn('save prompt'))
-                : null
-            }
-            onCommented={(id, comment) => {
-              setCommenting(null);
-              if (comment !== null) void setSessionComment(id, comment).catch(warn('set comment'));
-            }}
-            onPrompted={(id, text) => {
-              if (text === null) {
-                setPrompting(null);
-                return;
-              }
-              void sendPrompt(id, text)
-                .then((outcome) => {
-                  if (outcome.kind === 'sent') rememberPromptSent(text);
-                  setPrompting(outcome.kind === 'sent' ? null : { sessionId: id, error: outcome.reason });
-                })
-                .catch(warn('send prompt'));
-            }}
-            onShow={onShow}
-            onResume={(id) => void resumeSession(id).catch(warn('resume'))}
-            onMenu={(id, x, y) => setMenu({ sessionId: id, x, y })}
-            onAdd={(folder) => void startShellBeside(folder).catch(warn('shell from the heading'))}
-            onAddMenu={(folder, x, y) => setAddMenu({ folder, x, y })}
-            onGroupMenu={(key, x, y) => setGroupMenu({ key, x, y })}
-            labelling={labelling}
-            canLabel={folderLabelsSupported(daemon)}
-            onLabel={setLabelling}
-            onLabelled={(key, label) => {
-              setLabelling(null);
-              if (label !== null) void setFolderLabel(key, label).catch(warn('folder label'));
-            }}
-            onGroupTab={(name, ids) => void newGroupTab(name, ids).catch(warn('tab for the group'))}
-            onRenamed={(id, name) => {
-              setRenaming(null);
-              if (name !== null) void renameSession(id, name).catch(warn('rename'));
-            }}
-          />
-        ))}
+        {sectioned === null ? (
+          groups.map(renderGroup)
+        ) : (
+          <>
+            {sectioned.sections.map((s) => (
+              <section className="sidebar-host" data-host={s.host} key={s.host}>
+                <div className="sidebar-host-title">
+                  <span className="sidebar-host-head">{s.host === '' ? LOCAL_HOST_HEAD : s.host}</span>
+                  {s.host !== '' && <span className="sidebar-host-dest">{remoteHosts.find((h) => h.name === s.host)?.destination ?? s.host}</span>}
+                </div>
+                {s.groups.map(renderGroup)}
+              </section>
+            ))}
+            {sectioned.exited !== null && renderGroup(sectioned.exited)}
+          </>
+        )}
       </div>
       <div className="sidebar-footer">
         <UsageStrip />
@@ -285,12 +314,12 @@ export function Sidebar() {
               onClick: () => {
                 setAddMenu(null);
                 const paneId = layout === null ? undefined : currentTab(layout).focusedPaneId;
-                if (paneId !== undefined) openNewSession(paneId, { folder: addMenu.folder, split: true });
+                if (paneId !== undefined) openNewSession(paneId, { folder: addMenu.folder, split: true, ...(addMenu.host === '' ? {} : { host: addMenu.host }) });
               },
             },
             // The other installed shells (M9 fix 624), second so the first
             // row stays the Claude dialog's.
-            ...(otherShells(daemon).length > 0
+            ...(addMenu.host === '' && otherShells(daemon).length > 0
               ? [
                   {
                     label: 'Other shell here',
@@ -350,7 +379,7 @@ export function Sidebar() {
           ]}
         />
       )}
-      {groupMenu !== null && <GroupMenu x={groupMenu.x} y={groupMenu.y} group={groups.find((g) => g.key === groupMenu.key) ?? null} onRename={folderLabelsSupported(daemon) ? setLabelling : null} onClose={() => setGroupMenu(null)} />}
+      {groupMenu !== null && <GroupMenu x={groupMenu.x} y={groupMenu.y} group={groups.find((g) => g.key === groupMenu.key) ?? null} onRename={folderLabelsSupported(daemon) && (groups.find((g) => g.key === groupMenu.key)?.host ?? '') === '' ? setLabelling : null} onClose={() => setGroupMenu(null)} />}
       {chooser !== null && (
         <Menu
           x={chooser.x}
@@ -630,8 +659,8 @@ interface GroupProps {
   onMenu: (sessionId: string, x: number, y: number) => void;
   // The heading's + (M32): a shell in the group's folder, and its right
   // click for the Claude choice.
-  onAdd: (folder: string) => void;
-  onAddMenu: (folder: string, x: number, y: number) => void;
+  onAdd: (folder: string, host: string) => void;
+  onAddMenu: (folder: string, host: string, x: number, y: number) => void;
   // A right click on the heading itself: the sweep menu for the group.
   onGroupMenu: (key: string, x: number, y: number) => void;
   // The label box (M9 fix 194): which heading has it open, whether the
@@ -682,17 +711,18 @@ function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, o
   const unshownCount = group.key === EXITED_GROUP ? 0 : group.sessions.filter((s) => s.state !== 'exited' && !onPanes.has(s.id)).length;
   // A labelled heading (M9 fix 194) says the folder's own name before
   // the path, so the label never hides where the group is.
-  const labelled = group.key !== EXITED_GROUP && group.title !== folderTitle(group.key);
+  const labelled = group.key !== EXITED_GROUP && group.title !== folderTitle(group.folder);
+  const remote = group.host !== '';
   const isLabelling = labelling === group.key;
   // The changes mark (M9 fix 200): a dot after the name while the
   // folder's tree has uncommitted changes, polled on the rail's cadence,
   // so a heading says the tree is dirty before anyone opens the rail.
-  const changedCount = useFolderChangeCount(group.key === EXITED_GROUP ? null : group.key);
+  const changedCount = useFolderChangeCount(group.key === EXITED_GROUP || remote ? null : group.folder);
   return (
     <div className="sidebar-group" data-group={group.key} data-folded={folded || undefined}>
       <div
         className="sidebar-group-title"
-        title={labelled ? `${folderTitle(group.key)}, ${group.key}` : group.key}
+        title={remote ? `${group.folder} on ${group.host}` : labelled ? `${folderTitle(group.folder)}, ${group.key}` : group.key}
         data-label={labelled ? group.title : undefined}
         data-rollup={acting ? roll?.state : undefined}
         data-rollup-count={acting ? roll?.count : undefined}
@@ -705,9 +735,9 @@ function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, o
           onGroupMenu(group.key, ev.clientX, ev.clientY);
         }}
       >
-        {group.key !== EXITED_GROUP && <FolderIcon folder={group.key} />}
+        {group.key !== EXITED_GROUP && (remote ? <FolderOutline /> : <FolderIcon folder={group.folder} />)}
         {isLabelling ? (
-          <RenameBox initial={group.title} className="sidebar-rename sidebar-group-rename" maxLength={FOLDER_LABEL_MAX} onDone={(label) => onLabelled(group.key, label === null ? null : label === folderTitle(group.key) ? '' : label)} />
+          <RenameBox initial={group.title} className="sidebar-rename sidebar-group-rename" maxLength={FOLDER_LABEL_MAX} onDone={(label) => onLabelled(group.key, label === null ? null : label === folderTitle(group.folder) ? '' : label)} />
         ) : (
           <span className="sidebar-group-head">
             <span
@@ -770,12 +800,12 @@ function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, o
             title={`New shell in ${group.title}, beside the focused pane. Right click for a Claude session or another shell.`}
             onClick={(ev) => {
               ev.stopPropagation();
-              onAdd(group.key);
+              onAdd(group.folder, group.host);
             }}
             onContextMenu={(ev) => {
               ev.preventDefault();
               ev.stopPropagation();
-              onAddMenu(group.key, ev.clientX, ev.clientY);
+              onAddMenu(group.folder, group.host, ev.clientX, ev.clientY);
             }}
             // Keyboard focus stays in the terminal, as with the row's buttons.
             onMouseDown={(ev) => ev.preventDefault()}
@@ -820,6 +850,11 @@ function Group({ group, runningShells, onPanes, onAdd, onAddMenu, onGroupMenu, o
 function FolderIcon({ folder }: { folder: string }) {
   const [url, setUrl] = useFolderIcon(folder);
   if (url !== null) return <img className="sidebar-group-icon" src={url} width={14} height={14} alt="" onError={() => setUrl(null)} />;
+  return <FolderOutline />;
+}
+
+// The outline alone, for a remote group: a favicon would be read off this PC's disk.
+function FolderOutline() {
   return (
     <svg className="sidebar-group-icon sidebar-group-outline" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
       <path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
@@ -889,6 +924,9 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
   // blinks while it runs, goes --error when it failed, and its tooltip
   // says so; a long one's end is a done or errored like any other.
   const stated = hasState(session);
+  // M9 fix 1090: a session whose host's line is lost reads unreachable here, as on its pane's title; data-state keeps what the host last said.
+  const { hosts } = useStore('hosts');
+  const unreachable = effectiveState(session, hosts) === 'unreachable';
   const command = shellCommand(session);
   const isRenaming = renaming === session.id;
   const isCommenting = commenting === session.id;
@@ -917,7 +955,9 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [counting, session.id]);
   // The meter's live samples (M41), when the daemon sends them.
-  const { daemon, sessions, conflicts } = useStore('daemon', 'sessions', 'conflicts');
+  const { sessions, conflicts } = useStore('sessions', 'conflicts');
+  // M9 fix 1085: the rate level is the session's own daemon's.
+  const daemon = useDaemonFor(session.host);
   const rate = useRates(session.id);
   // The row's dollars with the forks' running spend (M9 fix 277).
   const agentsRunning = useAgentsRunning();
@@ -1043,6 +1083,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
       ref={rowRef}
       className="sidebar-row"
       data-session-id={session.id}
+      data-unreachable={unreachable || undefined}
       data-state={session.state}
       data-working={motion ?? undefined}
       data-shown={onScreen}
@@ -1098,7 +1139,9 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
             {session.name}
           </span>
         )}
-        {stated && session.state === 'needs-input' ? (
+        {unreachable ? (
+          <span className="sidebar-row-state state-unreachable">unreachable</span>
+        ) : stated && session.state === 'needs-input' ? (
           // The badge opens the answer card (M55): the same span, as the
           // card's anchor, so the row's layout is unchanged.
           <AnswerBadge session={session} className={`sidebar-row-state state-${label.tone}`} title={`${label.detail ?? ''} Click to see the prompt and answer it here.`.trim()}>
@@ -1148,6 +1191,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
         </button>
       </div>
       <div className="sidebar-row-sub" ref={subRef}>
+        {unreachable && session.host !== undefined && hosts.get(session.host) !== undefined && <span className="sidebar-row-lost">{lostRowLine(hosts.get(session.host)!.since)}</span>}
         {session.branch !== null && (
           <span className="sidebar-row-branch" title={`Branch of ${session.cwd}`}>
             <BranchIcon />
@@ -1365,7 +1409,8 @@ interface RowMenuProps {
 
 function RowMenu({ menu, session, onScreen, showOffscreen, onShowHere, onShowBeside, onShowInTab, onAskAgain, onClose, onRename, onComment, onPrompt, onKill, onResume, onRemove, onMarkUnread, onHush }: RowMenuProps) {
   const { attention, attentionSound } = useUi();
-  const { daemon } = useStore('daemon');
+  // M9 fix 1085: the keep-whole level is the session's own daemon's.
+  const daemon = useDaemonFor(session?.host);
   // Review changes (M64): the count of changed files in the session's
   // folder as the item's hint, read when the menu opens; off on a clean
   // tree.

@@ -828,4 +828,7 @@ export interface SessionInfo {
   // true } with these beside the listed ones. Absent or null on a listed
   // session.
   removedAt?: number | null;
+  // Set by the app's main process on a session that lives on a remote host
+  // (M9 fix 1081); never written by a daemon, absent on this PC's sessions.
+  host?: string;
 }

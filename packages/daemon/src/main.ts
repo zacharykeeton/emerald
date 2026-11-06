@@ -23,7 +23,8 @@ import { SpawnEnv } from './spawn-path.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
 import { ConflictWatch } from './conflicts.ts';
-import { bashrcPath, daemonInfoPath, foldersPath, loadScriptPath, logsDir, promptsPath, sessionsPath, statePath, emeraldHome } from './paths.ts';
+import { HostsStore } from './hosts-store.ts';
+import { bashrcPath, daemonInfoPath, foldersPath, hostsPath, loadScriptPath, logsDir, promptsPath, sessionsPath, statePath, emeraldHome } from './paths.ts';
 import { PipeServer, claimPipe } from './pipe-server.ts';
 import type { ClaimedPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
@@ -31,6 +32,7 @@ import { findShells } from './shells.ts';
 import { LOAD_TICK_MS } from './load-sampler.ts';
 import { SessionStore } from './session-store.ts';
 import { sweepStaleTemps } from './store-file.ts';
+import { applyDaemonArgs } from './daemon-args.ts';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
 
@@ -42,6 +44,14 @@ let startLog: Logger | null = null;
 let shutdownOnThrow: ((signal: string) => void) | null = null;
 
 async function main(): Promise<void> {
+  // --home and --pipe first (M9 fix 1079), before logsDir() or pipePathOf()
+  // reads the environment: a relay on a remote host starts this daemon
+  // through WMI, which passes no environment.
+  const argError = applyDaemonArgs(process.argv.slice(2), process.env);
+  if (argError !== null) {
+    process.stderr.write(argError + '\n');
+    process.exit(64);
+  }
   // This process's start time, once (M9 fix 494): daemon.json, the hello
   // and the exit reaper all carry it, so a client that later kills this
   // daemon by pid can first check the pid is still this process. Taken
@@ -213,6 +223,9 @@ async function main(): Promise<void> {
   prompts.load();
   const folders = new FoldersStore(foldersPath(), log);
   folders.load();
+  // The remote hosts record (M9 fix 1080), beside the folder labels.
+  const hosts = new HostsStore(hostsPath(), log);
+  hosts.load();
   // The conflict forecast (M9 fix 320): a minute's poll over the live
   // sessions' branches and a poll after every credited commit; started
   // once the pipe is ours below.
@@ -271,6 +284,7 @@ async function main(): Promise<void> {
     log,
     prompts,
     folders,
+    hosts,
     conflicts,
     onPresence: presence,
     onUsage: usage,

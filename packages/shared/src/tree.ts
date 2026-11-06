@@ -206,10 +206,24 @@ export function setPaneSession<T extends PaneTree>(layout: T, paneId: string, se
   return { ...layout, root: replaceNode(layout.root, paneId, { ...pane, sessionId, view: null }) };
 }
 
+// M9 fix 1081: sets the remote host a pane's session runs on, or removes
+// the field for undefined (this PC), so a spawn writes the pane's host in
+// the same layout.set as its session. The same tree when nothing changes.
+export function setPaneHost<T extends PaneTree>(layout: T, paneId: string, host: string | undefined): T {
+  const pane = findPane(layout, paneId);
+  if (pane === null) throw new LayoutError(`no pane ${paneId}`);
+  if (pane.host === host) return layout;
+  const { host: _old, ...rest } = pane;
+  const next: PaneNode = host === undefined ? rest : { ...rest, host };
+  return { ...layout, root: replaceNode(layout.root, paneId, next) };
+}
+
 export function setPaneView<T extends PaneTree>(layout: T, paneId: string, view: PaneView | null): T {
   const pane = findPane(layout, paneId);
   if (pane === null) throw new LayoutError(`no pane ${paneId}`);
-  return { ...layout, root: replaceNode(layout.root, paneId, { ...pane, sessionId: null, view }) };
+  // A view is this PC's (M9 fix 1081), so the pane's host goes with the session.
+  const { host: _host, ...rest } = pane;
+  return { ...layout, root: replaceNode(layout.root, paneId, { ...rest, sessionId: null, view }) };
 }
 
 // Where a dropped session goes relative to the target pane: a split on one
@@ -443,7 +457,12 @@ function validateNode(value: unknown, ids: Set<string>, where: string): LayoutNo
     // daemon, has none, which is null.
     const view = validateView(value['view'], `${where}.view`);
     if (view !== null && sessionId !== null) throw new LayoutError(`${where} holds both a session and a view`);
-    return { kind: 'pane', id, sessionId, view };
+    // M9 fix 1081: the remote host the pane's session runs on, kept only
+    // when present, so a pane with none has no host key at all.
+    const host = value['host'];
+    if (host === undefined) return { kind: 'pane', id, sessionId, view };
+    if (typeof host !== 'string' || host.length === 0) throw new LayoutError(`${where}.host must be a non-empty string`);
+    return { kind: 'pane', id, sessionId, view, host };
   }
   if (value['kind'] === 'split') {
     const direction = value['direction'];

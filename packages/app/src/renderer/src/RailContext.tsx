@@ -28,7 +28,7 @@ import {
   transcriptNames,
 } from './context-model.ts';
 import type { ContextAsk, ContextPart, ContextUse, SectionHead, TranscriptNames } from './context-model.ts';
-import { useStore } from './store.ts';
+import { useDaemonFor } from './store.ts';
 import { openFileTab } from './ui.ts';
 
 // M9 fix 1037: the rail's Context tab, what fills the focused session's
@@ -51,7 +51,8 @@ interface Props {
 }
 
 export const RailContext = memo(function RailContext({ session, used, onOpenPane }: Props) {
-  const { daemon } = useStore('daemon');
+  // M9 fix 1085: the context read is the session's own daemon's.
+  const daemon = useDaemonFor(session?.host ?? undefined);
   // No daemon yet reads as supported, as the Stats tab does; the ask then
   // fails and resolves as nobody asked.
   const first = contextState({ session, supported: daemon === null || contextSupported(daemon), reply: null, askedAt: null, now: 0 });

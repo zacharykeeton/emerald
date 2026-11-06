@@ -31,3 +31,5 @@ export * from './use-record.ts';
 export * from './mod-route.ts';
 export * from './trust-dialog.ts';
 export * from './zoom.ts';
+export * from './remote.ts';
+export * from './ssh-config.ts';

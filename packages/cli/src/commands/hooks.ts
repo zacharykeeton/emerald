@@ -19,7 +19,16 @@ const options = {
   settings: { type: 'string' },
   // One Test event through the installed hook to the daemon (M9 fix 606).
   test: { type: 'boolean', default: false },
+  // The emerald home the hook script goes under (M9 fix 1084): the remote
+  // kit installs on a host with its own home, ~/.emerald-remote.
+  home: { type: 'string' },
 } as const;
+
+// --home as the relay takes it (M9 fix 1084): EMERALD_HOME for everything
+// after it, set before any path is read.
+export function applyHomeFlag(home: string | undefined, env: NodeJS.ProcessEnv = process.env): void {
+  if (home !== undefined) env['EMERALD_HOME'] = path.resolve(home);
+}
 
 // The shipped hook script sits in packages/cli/hooks, one level above src
 // and dist alike. Installing copies it under ~/.emerald so the settings entry
@@ -52,10 +61,11 @@ function modShipped(): { modDir: string; modPresent: boolean } {
 const command: Command = {
   name: 'hooks',
   summary: "install or remove emerald's Claude Code hooks",
-  usage: 'emmer hooks install|uninstall|status [--test] [--json] [--settings <settings.json>]',
+  usage: 'emmer hooks install|uninstall|status [--test] [--json] [--settings <settings.json>] [--home <dir>]',
   async run(argv) {
     const parsed = parse(argv, options);
     const { action } = positionals(parsed, ['action']);
+    applyHomeFlag(parsed.values.home);
     const opts = hookOptions(parsed.values.settings);
     const json = parsed.values.json;
     if (parsed.values.test && action !== 'status') throw usageError('--test goes with hooks status');

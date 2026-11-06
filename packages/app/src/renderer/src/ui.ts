@@ -245,6 +245,8 @@ export interface NewSessionPreset {
   split: boolean;
   // Set by the empty pane's More... alone (M9 fix 723): the dialog's Start then opens a Claude session on the face the `opens on` pair picks, read at the click.
   opensOn?: true;
+  // M9 fix 1086: the host the dialog starts on, from the empty pane's on row or a host section's heading; absent is this PC.
+  host?: string;
 }
 
 export interface CloseAsk {

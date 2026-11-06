@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { Duplex, PassThrough } from 'node:stream';
 import { PROTOCOL_VERSION } from '@emerald/shared';
 import { connect } from './connect.ts';
 import { PipeClient } from '@emerald/shared/pipe-client';
@@ -116,4 +117,27 @@ test('a socket error still reaches a caller that listens for it', async () => {
   } finally {
     await closeServer(server);
   }
+});
+
+// M9 fix 1081: the same client over any duplex, here two PassThroughs, as
+// the app's host client runs it over ssh's stdio.
+test('PipeClient.over answers a request over a composed stream (M9 fix 1081)', async () => {
+  const toServer = new PassThrough();
+  const toClient = new PassThrough();
+  const client = PipeClient.over(Duplex.from({ readable: toClient, writable: toServer }), 'ssh stub');
+  toServer.setEncoding('utf8');
+  toServer.once('data', (line: string) => {
+    const msg = JSON.parse(line) as { id: number; type: string };
+    assert.equal(msg.type, 'hello');
+    toClient.write(JSON.stringify({ type: 'reply', id: msg.id, ok: true, result: { daemonPid: 7, daemonVersion: 'x' } }) + '\n');
+  });
+  const hello = await client.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION });
+  assert.equal(hello.daemonPid, 7);
+  const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
+  const pending = client.request('session.list', {});
+  client.destroy();
+  // A composed stream's destroy is an abort rather than a plain close;
+  // either way the pending request is settled naming the stream's label.
+  await assert.rejects(pending, /^Error: emmerd pipe ssh stub[: ]/);
+  await closed;
 });

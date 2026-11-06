@@ -72,20 +72,26 @@ export class ClaudeLauncher implements SessionLauncher {
   }
 
   private resolveClaude(env: NodeJS.ProcessEnv): string | null {
-    // The native installer puts it here and may not be on PATH for a detached daemon.
-    if (this.platform !== 'win32') {
-      // M9 fix 1019: on a Mac the native installer's link (statSync follows
-      // it into ~/.local/share/claude/versions), else the PATH's. The file
-      // runs as it is, a binary or a #! script alike; the kernel reads the
-      // shebang when node-pty execs it.
-      const local = path.join(this.home, '.local', 'bin', 'claude');
-      if (isFile(local)) return local;
-      return findOnPath('claude', env, this.platform);
-    }
-    const local = path.join(this.home, '.local', 'bin', 'claude.exe');
-    if (isFile(local)) return local;
-    return findOnPath('claude.exe', env, this.platform) ?? findOnPath('claude', env, this.platform);
+    return findClaude(env, this.home, this.platform);
   }
+}
+
+// The claude a launch runs, also asked by the hello (M9 fix 1084), so the
+// hello's `claude` and a spawn answer alike.
+export function findClaude(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): string | null {
+  // The native installer puts it here and may not be on PATH for a detached daemon.
+  if (platform !== 'win32') {
+    // M9 fix 1019: on a Mac the native installer's link (statSync follows
+    // it into ~/.local/share/claude/versions), else the PATH's. The file
+    // runs as it is, a binary or a #! script alike; the kernel reads the
+    // shebang when node-pty execs it.
+    const local = path.join(home, '.local', 'bin', 'claude');
+    if (isFile(local)) return local;
+    return findOnPath('claude', env, platform);
+  }
+  const local = path.join(home, '.local', 'bin', 'claude.exe');
+  if (isFile(local)) return local;
+  return findOnPath('claude.exe', env, platform) ?? findOnPath('claude', env, platform);
 }
 
 // Where the emerald mod is (M9 fix 725): packages/cli/mod from the

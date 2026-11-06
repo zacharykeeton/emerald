@@ -2,6 +2,24 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1079 to 1090, 2026-11-05
+
+Twelve fixes, one feature: a pane whose session runs on another machine, reached over ssh. The daemon goes to level 80; the update's restart starts the new daemon, so nothing asks for another.
+
+### Highlights
+
+**A session on another machine.** Every `Host` in your `~/.ssh/config` (one with no wildcard) shows on a new `on` row in the empty pane, between the kinds and the folders: `This PC` first, then each host, then `Add a host…` for an ssh destination typed by hand. Pick one with a click or ← and →, and Start reads `Start shell in <folder> on <host>`. The host needs an ssh server you can reach with a key (Emerald runs `ssh` with batch mode, so a password prompt is a refusal) and `tar`; Windows 11 and macOS have both.
+
+**Emerald copies itself there the first time.** On first use the empty pane says `Setting up <host>: copying emerald's daemon <version> there, the first time only`, with the size and the seconds and a Cancel: a daemon, its command line and a Node of their own, 32 to 36 MB, into `~/.emerald-remote` on the host. It never touches an Emerald installed there. After an update only the small part (under 2 MB) is copied again.
+
+**Where it runs, at a glance.** With a remote session open, the sidebar splits into a section per machine, `this pc` first, and the pane's title carries a small chip with the host's name (its tooltip says how it is reached). If the line drops, the pane keeps its last screen dimmed under `Lost the line to <host> at 14:02. The session runs on there; trying again in 8s.` with a Try now, and its row reads `unreachable` until it is back. The session itself keeps running on the host.
+
+### Details
+
+**Refusals.** A host this PC has never reached says so and offers `Open a shell here to run it`, a local shell with `ssh <host>` typed, to read and accept its key yourself. A login ssh refuses quotes ssh's own last line with Try again. A host without Claude Code on its PATH offers `Start a shell on <host> instead`. A Linux host is refused for now: a pane there waits for a Linux build of Emerald.
+
+**What stays this PC's.** The Files tab and the Timeline say a remote folder is on the host and offer a shell there; the files, the commit graph, the review tab and the Activity, Sessions and Stats tabs read this PC's disk and leave a remote session out for now. A path a remote session prints is not a link.
+
 ## Fixes 1048 to 1078, 2026-11-05
 
 Thirty-one fixes, most of them the follow-through on the light theme, the Context tab and the Mac build: a layout tab that pulses on show, the Context tab's skills grouped by where they live, the question card's tick on a revisited tab, Cmd chords and a zsh row that reports on a Mac, and a run of small ones. The daemon stays at level 79, so nothing asks for a restart.

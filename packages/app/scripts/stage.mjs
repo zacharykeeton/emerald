@@ -13,6 +13,7 @@
 //     bin/emmer.cmd, emmer (the Git Bash shim, M9 fix 884, and the Mac bundle's and its PATH link's, M9 fix 1022), emmer-path.ps1
 //     schemes/*.json, the terminal's shipped colour schemes (M9 fix 225)
 //     WHATS-NEW.md, the notes the What's New tab shows (M9 fix 227)
+//     kit-pins.json, node-pty's version and lockfile integrity for the remote kit (M9 fix 1083)
 //
 // Build first (npm run build at the root). Run: node scripts/stage.mjs
 import fs from 'node:fs';
@@ -141,6 +142,20 @@ export function stage({ arch = 'arm64', platform = process.platform } = {}) {
   // reads the checkout's docs/WHATS-NEW.md.
   require(path.join(repoRoot, 'docs', 'WHATS-NEW.md'), 'the release notes are missing from docs/');
   copyFile(path.join(repoRoot, 'docs', 'WHATS-NEW.md'), path.join(stageDir, 'WHATS-NEW.md'));
+
+  // M9 fix 1083: the remote kit downloads node-pty for a host's arch from
+  // npm and checks it against the lockfile's integrity, read here because
+  // the installed app has no package-lock.json. Node's version is not here:
+  // it is one constant in main/remote-kit.ts, which this script cannot import.
+  const lock = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8'));
+  const ptyLock = lock.packages?.['node_modules/node-pty'];
+  if (typeof ptyLock?.version !== 'string' || typeof ptyLock?.integrity !== 'string') {
+    throw new Error('package-lock.json names no node_modules/node-pty (run npm install)');
+  }
+  fs.writeFileSync(
+    path.join(stageDir, 'kit-pins.json'),
+    JSON.stringify({ nodePty: { version: ptyLock.version, integrity: ptyLock.integrity } }, null, 2) + '\n',
+  );
   return stageDir;
 }
 

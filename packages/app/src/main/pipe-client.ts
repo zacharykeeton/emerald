@@ -85,6 +85,8 @@ export interface DaemonInfo {
   // The shells the daemon found at the connect (M9 fix 624), the first the
   // default; empty from a daemon older than level 61.
   shells: ShellOption[];
+  // Whether the daemon finds a claude (M9 fix 1084); null from a daemon older than level 80.
+  claude: boolean | null;
 }
 
 // Pipe client for the Electron main process. Keeps one connection to emmerd,
@@ -349,7 +351,7 @@ export class PipeClient extends EventEmitter {
     try {
       // The level this build answers at (M9 fix 582), so the daemon waits for this window's answer to every open.
       const hello = await Promise.race([this.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: DAEMON_FEATURE_LEVEL, ...(token !== undefined ? { token } : {}) }), helloDeadline]);
-      this.daemon = { pid: hello.daemonPid, version: hello.daemonVersion, featureLevel: hello.featureLevel ?? null, startedAt: hello.daemonStartedAt ?? null, otherHome: null, shells: hello.shells ?? [] };
+      this.daemon = { pid: hello.daemonPid, version: hello.daemonVersion, featureLevel: hello.featureLevel ?? null, startedAt: hello.daemonStartedAt ?? null, otherHome: null, shells: hello.shells ?? [], claude: hello.claude ?? null };
       // The prefix stays as it was: install-check.mjs reads it.
       this.opts.log(`connected to emmerd ${hello.daemonVersion} pid ${hello.daemonPid} feature level ${hello.featureLevel ?? 'unknown'}`);
       const mine = this.opts.home;

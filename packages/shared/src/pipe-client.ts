@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
+import type { Duplex } from 'node:stream';
 import type { ClientMessage, Reply, RequestType, Requests, ServerMessage } from './protocol.ts';
 import { JsonLinesDecoder, encodeJsonLine } from './jsonlines.ts';
 
@@ -11,16 +12,19 @@ import { JsonLinesDecoder, encodeJsonLine } from './jsonlines.ts';
 // Emits 'message' (ServerMessage) for every push, 'bad-frame' (Error) before a
 // bad frame drops the connection, 'error' to a caller that listens, and 'close'.
 export class PipeClient extends EventEmitter {
-  private readonly socket: net.Socket;
+  // A pipe's socket, or any duplex carrying the same lines (M9 fix 1081:
+  // ssh's stdio to a remote host's relay).
+  private readonly socket: Duplex;
   private readonly decoder = new JsonLinesDecoder();
   private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private nextId = 1;
-  private readonly pipePath: string;
+  // What the error texts name: the pipe's path, or the stream's label.
+  private readonly label: string;
 
-  private constructor(socket: net.Socket, pipePath: string) {
+  private constructor(socket: Duplex, label: string) {
     super();
     this.socket = socket;
-    this.pipePath = pipePath;
+    this.label = label;
     socket.on('data', (chunk: Buffer) => {
       let messages: unknown[];
       try {
@@ -44,14 +48,14 @@ export class PipeClient extends EventEmitter {
     // command's own catch prints one line; the event is still emitted for
     // a caller that did subscribe.
     socket.on('error', (err) => {
-      this.settle(Object.assign(new Error(`emmerd pipe ${this.pipePath}: ${err.message}`), { code: (err as NodeJS.ErrnoException).code ?? 'PIPE_CLOSED' }));
+      this.settle(Object.assign(new Error(`emmerd pipe ${this.label}: ${err.message}`), { code: (err as NodeJS.ErrnoException).code ?? 'PIPE_CLOSED' }));
       socket.destroy();
       if (this.listenerCount('error') > 0) this.emit('error', err);
     });
     socket.once('close', () => {
       // The code makes the CLI's router print it as one line rather than
       // as a bug's stack.
-      this.settle(Object.assign(new Error(`emmerd pipe ${this.pipePath} closed`), { code: 'PIPE_CLOSED' }));
+      this.settle(Object.assign(new Error(`emmerd pipe ${this.label} closed`), { code: 'PIPE_CLOSED' }));
       this.emit('close');
     });
   }
@@ -65,6 +69,13 @@ export class PipeClient extends EventEmitter {
         resolve(new PipeClient(socket, pipePath));
       });
     });
+  }
+
+  // The same client over a given stream (M9 fix 1081), so the app's host
+  // client speaks the pipe protocol over ssh's stdio with the one framing,
+  // the one request ids and the one hello.
+  static over(stream: Duplex, label: string): PipeClient {
+    return new PipeClient(stream, label);
   }
 
   request<K extends RequestType>(type: K, body: Requests[K]['req']): Promise<Requests[K]['res']> {

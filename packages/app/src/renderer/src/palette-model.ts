@@ -128,7 +128,9 @@ export type ActionRow =
   | { kind: 'key'; action: Action; label: string; detail: string; match: Match | null }
   | { kind: 'pane'; run: PaneMenuRun; shell?: ShellId | undefined; label: string; detail: string; match: Match | null }
   | { kind: 'shell'; shell: ShellId; checked: boolean; label: string; detail: string; match: Match | null }
-  | { kind: 'scheme'; scope: 'session' | 'window'; scheme: string | null; checked: boolean; label: string; detail: string; match: Match | null };
+  | { kind: 'scheme'; scope: 'session' | 'window'; scheme: string | null; checked: boolean; label: string; detail: string; match: Match | null }
+  // M9 fix 1087: Add a remote host…, which opens the empty pane's host box.
+  | { kind: 'host'; label: string; detail: string; match: Match | null };
 
 export interface PaneForActions {
   // The focused pane's session name or view name, shown after the label.
@@ -178,6 +180,8 @@ export interface PalettePicks {
   windowScheme: string;
   // The pane's session's own scheme, or null with no session in the pane.
   session: { own: string | null } | null;
+  // M9 fix 1087: list Add a remote host… (the empty pane only).
+  addHost?: boolean;
 }
 
 export function pickRows(query: string, picks: PalettePicks): ActionRow[] {
@@ -205,7 +209,8 @@ export function pickRows(query: string, picks: PalettePicks): ActionRow[] {
     const checked = n === picks.windowScheme;
     return { kind: 'scheme', scope: 'window', scheme: n, checked, label: `Terminal colours: ${n}`, detail: checked ? 'in use' : '', match };
   });
-  return [...shellRows, ...sessionRows, ...windowRows];
+  const hostRows = matchRows(q, picks.addHost === true ? ['Add a remote host…'] : [], (l) => l, (l, match): ActionRow => ({ kind: 'host', label: l, detail: '', match }));
+  return [...shellRows, ...sessionRows, ...windowRows, ...hostRows];
 }
 
 export function actionGroup(row: ActionRow): string {
@@ -214,6 +219,7 @@ export function actionGroup(row: ActionRow): string {
     case 'pane': return 'Pane';
     case 'shell': return 'Shell';
     case 'scheme': return 'Terminal colours';
+    case 'host': return 'Remote';
   }
 }
 
@@ -223,6 +229,7 @@ export function actionKey(row: ActionRow): string {
     case 'pane': return `pane:${row.run}:${row.shell ?? ''}`;
     case 'shell': return `shell:${row.shell}`;
     case 'scheme': return `scheme:${row.scope}:${row.scheme ?? ''}`;
+    case 'host': return 'host:add-host';
   }
 }
 

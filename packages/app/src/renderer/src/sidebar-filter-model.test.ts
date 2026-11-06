@@ -8,7 +8,7 @@ import { aSession } from './test-support.ts';
 const session = (id: string, state: SessionState): SessionInfo =>
   aSession({ id, kind: 'claude', name: id, autoName: true, spawnCwd: 'C:\\work\\a', cwd: 'C:\\work\\a', groupCwd: 'C:\\work\\a', state, stateSince: 1000, color: '#61afef', createdAt: 1000 });
 
-const group = (key: string, ...sessions: SessionInfo[]): SessionGroup => ({ key, title: key, sessions });
+const group = (key: string, ...sessions: SessionInfo[]): SessionGroup => ({ key, title: key, sessions, host: '', folder: key });
 
 const none: ReadonlySet<string> = new Set();
 

@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { currentTab, findPane, formatDuration } from '@emerald/shared';
+import { currentTab, findPane, folderTitle, formatDuration } from '@emerald/shared';
+import { HostChip } from './HostChip.tsx';
+import { filesRemoteMuted, filesRemoteShellLabel, filesRemoteText } from './host-marks-model.ts';
 import { plainKeyFor } from './keys-model.ts';
 import type { PaneView, SessionInfo } from '@emerald/shared';
 import type { ChangedFile, FileEntry, FileListing, FileSearch, GitChanges, SearchMode } from '../../preload/api.ts';
@@ -33,7 +35,7 @@ import { RailStats } from './StatsView.tsx';
 import { RailContext } from './RailContext.tsx';
 import { BranchIcon } from './Sidebar.tsx';
 import { ActivitySection, useRailScope, useRailUnit } from './ActivitySection.tsx';
-import { openLocalPage, openViewBeside, typeInto } from './actions.ts';
+import { openLocalPage, openViewBeside, startShellBeside, typeInto } from './actions.ts';
 import { contextSupported, fileViewSupported, localPageSupported, statsSupported, viewStateSupported, viewsSupported } from './daemon-model.ts';
 import { useContextHistory } from './context-history-store.ts';
 import { contextUse } from './skill-history-model.ts';
@@ -46,7 +48,7 @@ import { graphFolder } from './graph-folder.ts';
 import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, isImage, renameFilePanes, statsPath } from './tabs-model.ts';
 import { COPY_IMAGE_REFUSED, copyableImage } from './file-menu-model.ts';
 import { commitsQuery, commitsView } from './view-state.ts';
-import { editLayout, getState, useStore } from './store.ts';
+import { editLayout, getState, useDaemonFor, useStore } from './store.ts';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, clearRevealFile, closeFileTabsUnder, flashCornerNote, keepSearchScopeUnder, openFileTab, openFolderReviewTab, openPreviewTab, openReviewTab, pinFileTab, renameFileTabs, setFilesChanged, setFilesWidth, setRailTab, setSearchMode, setSearchScope, toggleFiles, useUi } from './ui.ts';
 import type { RailTab } from './ui.ts';
 
@@ -98,6 +100,8 @@ function isUnder(root: string, p: string): boolean {
 export function FilesRail() {
   const { filesCollapsed, filesWidth, tabs, railTab, filesChanged, search: searchSettings, revealFile, chatPanes } = useUi();
   const focused = useFocusedSession();
+  // M9 fix 1089: a remote session's folder is the host's, so nothing here lists or runs git on it.
+  const remoteHost = focused === null ? undefined : focused.host;
   const focusedView = useFocusedView();
   // A look above the followed folder (M9 fix 332): the header's up button
   // sets it to the parent of what is shown, and it drops whenever the
@@ -138,7 +142,7 @@ export function FilesRail() {
   // folder, which the answer would then never leave.
   const shownBefore = lift ?? lastRoot;
   const fileRoot = frontFile === null ? null : shownBefore !== null && isUnder(shownBefore, frontFile) ? lastRoot : (fileRoots.get(frontFolder!) ?? lastRoot);
-  const root = frontFile !== null ? fileRoot : focused?.cwd ?? (focusedView?.kind === 'commits' ? focusedView.folder : focusedView?.kind === 'activity' || focusedView?.kind === 'browser' || focusedView?.kind === 'context' ? lastRoot : null);
+  const root = frontFile !== null ? fileRoot : (remoteHost === undefined ? focused?.cwd : null) ?? (focusedView?.kind === 'commits' ? focusedView.folder : focusedView?.kind === 'activity' || focusedView?.kind === 'browser' || focusedView?.kind === 'context' ? lastRoot : null);
   if (root !== null) lastRoot = root;
   // What the tree shows: the lift while one is on, else the followed root.
   const shown = lift ?? root;
@@ -157,10 +161,14 @@ export function FilesRail() {
   if (focused !== null && focused.branch !== null) lastRepoCwd.set(focused.id, focused.cwd);
   // A file in front (fix 331) moves the graph and the strip with the
   // tree; a lift (fix 332) does not, since it is a look above.
-  const commitsRoot = focused === null || frontFile !== null ? root : graphFolder(focused, lastRepoCwd.get(focused.id));
+  const commitsRoot = focused === null || frontFile !== null || remoteHost !== undefined ? root : graphFolder(focused, lastRepoCwd.get(focused.id));
+  // The Files and Timeline tabs say so instead of drawing this PC's disk for a host's folder, until a file is in front.
+  const remoteNote = remoteHost !== undefined && frontFile === null;
   // The focused pane of the tab on show (M36): a tab switch counts as a
   // look too.
   const { layout: layoutForFocus, daemon, sessions } = useStore('layout', 'daemon', 'sessions');
+  // M9 fix 1085: the focused session's own daemon, for its context read.
+  const focusedDaemon = useDaemonFor(focused?.host);
   const focusedPaneId = layoutForFocus === null ? null : currentTab(layoutForFocus).focusedPaneId;
   // The Context tab's history (M9 fix 1040), asked while the tab shows a
   // session and again at each new breakdown.
@@ -976,13 +984,14 @@ export function FilesRail() {
         <RailContext
           session={focused}
           used={contextUse(contextHistory.session, focused?.context ?? null)}
-          {...(viewsSupported(daemon) && contextSupported(daemon) && focused !== null
+          {...(viewsSupported(daemon) && contextSupported(focusedDaemon) && focused !== null
             ? { onOpenPane: () => void openViewBeside({ kind: 'context', sessionId: focused.id }).catch((err: unknown) => console.warn('[emerald] context in a pane failed', err)) }
             : {})}
         />
       )}
-      {railTab === 'timeline' && <ActivitySection folder={root} scope={activityScope} onScope={setActivityScope} unit={activityUnit} onUnit={setActivityUnit} place="rail" />}
-      {railTab === 'timeline' && (
+      {remoteNote && (railTab === 'files' || railTab === 'timeline') && focused !== null && remoteHost !== undefined && <FilesRemoteNote session={focused} host={remoteHost} />}
+      {railTab === 'timeline' && !remoteNote && <ActivitySection folder={root} scope={activityScope} onScope={setActivityScope} unit={activityUnit} onUnit={setActivityUnit} place="rail" />}
+      {railTab === 'timeline' && !remoteNote && (
         <CommitsPanel
           folder={commitsRoot}
           branch={focused?.branch ?? null}
@@ -995,7 +1004,7 @@ export function FilesRail() {
           onOpenPane={viewsSupported(daemon) ? (dir, state) => void openViewBeside(commitsView(dir, viewStateSupported(daemon) ? state : null)).catch((err: unknown) => console.warn('[emerald] commits in a pane failed', err)) : undefined}
         />
       )}
-      {railTab === 'files' && (
+      {railTab === 'files' && !remoteNote && (
         <>
       <div className="files-header">
         {model.root !== null && parentPath(model.root) !== model.root && (
@@ -1261,6 +1270,25 @@ export function FilesRail() {
 // folder, null when the rail is on nothing or the daemon is too old to
 // keep a view. Nothing shows until the mouse has moved, so a click still
 // switches tabs.
+// M9 fix 1089: what the Files and Timeline tabs show for a session on another machine.
+function FilesRemoteNote({ session, host }: { session: SessionInfo; host: string }) {
+  const { remoteHosts } = useStore('remoteHosts');
+  const folder = folderTitle(session.cwd);
+  return (
+    <div className="files-remote-note" data-host={host}>
+      <div className="files-remote-head">
+        <span className="files-remote-folder">{folder}</span>
+        <HostChip name={host} destination={remoteHosts.find((h) => h.name === host)?.destination ?? host} />
+      </div>
+      <p className="files-remote-text">{filesRemoteText(host)}</p>
+      <p className="files-remote-muted">{filesRemoteMuted(host)}</p>
+      <button className="secondary files-remote-shell" onClick={() => void startShellBeside(session.cwd, undefined, host).catch((err: unknown) => console.warn('[emerald] shell on the host failed', err))}>
+        {filesRemoteShellLabel(host, folder)}
+      </button>
+    </div>
+  );
+}
+
 function RailTabs({ active, changed, dragFolder, folder }: { active: RailTab; changed: number; dragFolder: string | null; folder: string | null }) {
   const tab = (key: RailTab, label: string, title: string, icon: React.ReactNode, count?: number, onPress?: (ev: React.MouseEvent) => void) => (
     <button

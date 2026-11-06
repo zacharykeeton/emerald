@@ -22,6 +22,7 @@ import {
   paneRects,
   paneShowing,
   parentSplit,
+  setPaneHost,
   setPaneSession,
   setPaneView,
   setRatio,
@@ -298,6 +299,17 @@ test('setPaneSession and paneShowing', () => {
   assert.equal(paneShowing(after, 'sess-2'), null);
   assert.equal(findPane(setPaneSession(after, b, null), b)?.sessionId, null);
   assert.throws(() => setPaneSession(layout, 'nope', 'x'), LayoutError);
+});
+
+test('setPaneHost sets and clears a pane host, the same tree when nothing changes (M9 fix 1081)', () => {
+  const { layout, b } = threePanes();
+  const on = setPaneHost(layout, b, 'wfs-db');
+  assert.equal(findPane(on, b)?.host, 'wfs-db');
+  assert.equal(setPaneHost(on, b, 'wfs-db'), on);
+  const off = setPaneHost(on, b, undefined);
+  assert.equal('host' in (findPane(off, b) ?? {}), false);
+  assert.equal(setPaneHost(layout, b, undefined), layout);
+  assert.throws(() => setPaneHost(layout, 'nope', 'x'), LayoutError);
 });
 
 test('dropSession in the center fills an empty pane and replaces in an occupied one', () => {
@@ -779,4 +791,23 @@ test('dropAtRight puts the old root first and the new pane second, full height, 
 
   const mirror = dropAtRight(one, { sessionId: 's1', view: null }, ids);
   assert.deepEqual(listPanes(mirror).map((p) => p.sessionId), ['s1', 's1'], 'a session already there gets a second pane');
+});
+
+test('validateLayout keeps a pane host, writes no key without one and refuses an empty one; setPaneSession keeps it and setPaneView drops it (M9 fix 1081)', () => {
+  const { layout, a, b } = threePanes();
+  const hosted = setPaneHost(setPaneSession(layout, b, 's-remote'), b, 'stub');
+  const wrapped = wrapSingleTree(hosted, 't1');
+  const parsed = validateLayout(JSON.parse(JSON.stringify(wrapped)));
+  assert.deepEqual(parsed, wrapped);
+  assert.equal(findPane(parsed.tabs[0]!, b)?.host, 'stub');
+  assert.equal('host' in (findPane(parsed.tabs[0]!, a) ?? {}), false, 'a pane with no host has no host key');
+  const copy = JSON.parse(JSON.stringify(wrapped)) as { tabs: Array<{ root: Record<string, unknown> }> };
+  const paneB = (copy.tabs[0]!.root['second'] as Record<string, unknown>)['first'] as Record<string, unknown>;
+  paneB['host'] = '';
+  assert.throws(() => validateLayout(copy), /host must be a non-empty string/);
+  paneB['host'] = 7;
+  assert.throws(() => validateLayout(copy), /host must be a non-empty string/);
+  assert.equal(findPane(setPaneSession(hosted, b, 's-other'), b)?.host, 'stub', 'setPaneSession keeps the host');
+  const viewed = setPaneView(hosted, b, { kind: 'commits', folder: 'C:/repo' });
+  assert.equal('host' in (findPane(viewed, b) ?? {}), false, 'setPaneView drops the host');
 });

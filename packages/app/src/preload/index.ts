@@ -206,11 +206,19 @@ const api: EmeraldApi = {
   },
   daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
   dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),
-  request: (type, body) =>
-    ipcRenderer.invoke('emerald:request', type, body).catch((err: unknown) => {
+  request: (type, body, host) =>
+    ipcRenderer.invoke('emerald:request', type, body, host ?? null).catch((err: unknown) => {
       throw decodeRequestError(err);
     }),
-  send: (msg: FireAndForget) => ipcRenderer.send('emerald:send', msg),
+  send: (msg: FireAndForget, host) => ipcRenderer.send('emerald:send', msg, host ?? null),
+  // The remote hosts (M9 fix 1081).
+  remoteHosts: () => ipcRenderer.invoke('emerald:remote-hosts'),
+  hostStates: () => ipcRenderer.invoke('emerald:host-states'),
+  hostConnect: (name) => ipcRenderer.invoke('emerald:host-connect', name),
+  hostTryNow: (name) => ipcRenderer.send('emerald:host-try-now', name),
+  hostForget: (name) => ipcRenderer.invoke('emerald:host-forget', name),
+  hostAdd: (destination) => ipcRenderer.invoke('emerald:host-add', destination),
+  hostCancelSetup: (name) => ipcRenderer.invoke('emerald:host-cancel-setup', name),
   on: (handler) => {
     const listener = (_event: IpcRendererEvent, msg: RendererPush) => handler(msg);
     ipcRenderer.on('emerald:message', listener);

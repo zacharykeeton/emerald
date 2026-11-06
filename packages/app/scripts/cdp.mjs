@@ -261,7 +261,9 @@ export async function launch(port, opts = {}) {
     // theme.json (M9 fix 1032): one left by a verify:skin run that died
     // mid-block would open every later script on its pick and beat the
     // dark pin, a wrong colour read rather than an error. skin.json stays.
-    for (const f of ['state.json', 'sessions.json', 'daemon.json', 'theme.json', 'context-history.json']) fs.rmSync(path.join(home, f), { force: true });
+    // hosts.json (M9 fix 1080): a host verify:remote added by hand would
+    // put the on row in every later script's empty pane.
+    for (const f of ['state.json', 'sessions.json', 'daemon.json', 'theme.json', 'context-history.json', 'hosts.json']) fs.rmSync(path.join(home, f), { force: true });
     // M9 fix 621: a window that has not quite let go of its profile (a
     // relaunch in verify:files, a rerun right after a failed run) failed
     // the whole run with EPERM here. It is tried again every 200 ms for
@@ -309,6 +311,10 @@ export async function launch(port, opts = {}) {
     CLAUDE_SETTINGS: process.env['CLAUDE_SETTINGS'] ?? path.join(home, 'claude-settings.json'),
     CLAUDE_CONFIG_DIR: claudeConfig,
     CLAUDE_SECURESTORAGE_CONFIG_DIR: realClaudeCredentials,
+    // M9 fix 1081: the remote hosts come from a config file under the
+    // harness home, absent unless a script writes it, so no harness reads
+    // the person's own ~/.ssh/config and every empty pane has no on row.
+    EMERALD_SSH_CONFIG: path.join(home, 'ssh-config'),
     ...pairEnv,
     ...(opts.env ?? {}),
   };
@@ -700,7 +706,33 @@ export const setInput = (s, selector, value) =>
 // Claude tile, then More… (M9 fix 545; the dialog still offers both kinds,
 // so this is how a script picks the folder). cwd defaults to the home
 // directory; args only apply to claude.
-export async function startSession(s, { kind = 'shell', cwd = null, args = '' } = {}) {
+// M9 fix 1081: with host, it drives no UI: the session is spawned on that
+// remote host through the renderer's request, then put in the first empty
+// pane of the tab on show by a layout.set carrying the pane's host, and
+// the new session's id is answered. The on row's own Start is verify:remote's
+// row block's read.
+export async function startSession(s, { kind = 'shell', cwd = null, args = '', host = undefined } = {}) {
+  if (host !== undefined) {
+    const before = await s.evalJs(`document.querySelectorAll('.term-host').length`);
+    const body = { kind, cwd: cwd ?? os.homedir(), cols: 80, rows: 24, ...(args ? { args: args.split(' ') } : {}) };
+    const id = await s.evalJs(`(async () => {
+      const { layout } = await window.emerald.request('layout.get', {});
+      const tab = layout.tabs.find((t) => t.id === layout.currentTabId);
+      const empties = [];
+      const walk = (n) => (n.kind === 'pane' ? (n.sessionId === null && n.view === null && empties.push(n.id)) : (walk(n.first), walk(n.second)));
+      walk(tab.root);
+      if (empties.length === 0) return { error: 'startSession with host: no empty pane on the tab in front' };
+      const { session } = await window.emerald.request('session.spawn', ${JSON.stringify(body)}, ${JSON.stringify(host)});
+      const fill = (n) => (n.kind === 'pane' ? (n.id === empties[0] ? { ...n, sessionId: session.id, view: null, host: ${JSON.stringify(host)} } : n) : { ...n, first: fill(n.first), second: fill(n.second) });
+      const { layout: now } = await window.emerald.request('layout.get', {});
+      const tabs = now.tabs.map((t) => (t.id === tab.id ? { ...t, root: fill(t.root), focusedPaneId: empties[0] } : t));
+      await window.emerald.request('layout.set', { layout: { ...now, tabs } });
+      return { id: session.id };
+    })()`);
+    if (id?.error !== undefined) throw new Error(id.error);
+    await s.waitFor(`document.querySelectorAll('.term-host').length === ${before + 1}`, `a session on ${host}`);
+    return id.id;
+  }
   await s.evalJs(`document.querySelector('.empty-pane .empty-kind[data-kind="claude"]').click()`);
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-more')`, 'the empty pane offers More…');
   await s.evalJs(`document.querySelector('.empty-pane .empty-more').click()`);

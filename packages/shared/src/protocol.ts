@@ -129,7 +129,29 @@ export const PROTOCOL_VERSION = 1;
 //  78: M9 fix 1001, queued on session.submit's reply, set when the mod's word says queued or no word came in time while the turn ran, so a send to a row read idle says it waits behind a turn
 //  79: M9 fix 1036, context on SessionInfo, the emerald mod's breakdown of the context window off its Context post, and session.context, which asks a session's mod for one through its channel (mod.context)
 //  79: M9 fix 1040, the context view, { kind: 'context', sessionId } in a layout, the context of one session in a pane
-export const DAEMON_FEATURE_LEVEL = 79;
+//  80: M9 fix 1080, hosts.list, hosts.set, hosts.remove and the hosts.changed push, the remote hosts added by hand with what first contact read of each
+//  80: M9 fix 1081, host on a layout pane, the remote host its session runs on, which a daemon before 80 drops
+//  80: M9 fix 1084, claude on the hello, whether the daemon finds a claude (~/.local/bin, then PATH) at its start and again at each app hello on the registry's PATH, by which the empty pane refuses a Claude session on a host without one
+export const DAEMON_FEATURE_LEVEL = 80;
+
+// The level at which the daemon keeps the remote hosts record and pushes
+// hosts.changed (M9 fix 1080).
+export const HOSTS_LEVEL = 80;
+
+// One remote host the person added by hand, or a Host of ~/.ssh/config
+// that first contact read facts about (M9 fix 1080), kept in hosts.json
+// under the local daemon's home. The facts are absent until first contact.
+export interface HostRecord {
+  name: string;                       // the word the on row and the chip show; unique
+  destination: string;                // what ssh is given: a Host of ~/.ssh/config, or user@host
+  os?: 'win32' | 'darwin' | 'linux';  // read at first contact, absent until then
+  arch?: string;                      // 'x64' | 'arm64', node's spelling
+  shell?: 'powershell' | 'sh';        // what sshd runs the command in, read at first contact
+  home?: string;                      // the host's home folder, absolute, in the host's spelling
+  nodeVersion?: string;               // the kit's Node on the host, once copied
+  kitVersion?: string;                // the emerald version on the host, once copied
+  addedAt: number;                    // epoch ms, when added by hand or first contacted
+}
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
 // kind (five_hour, seven_day, ...), the percent used and when it resets.
@@ -199,7 +221,8 @@ export interface Requests {
   // shells (M9 fix 624) are the shells the daemon found, found again on the
   // registry's PATH at each app hello since fix 996, in SHELL_IDS order, the first the default New shell starts; an older
   // daemon leaves it out.
-  'hello':          { req: { client: 'app' | 'cli'; protocolVersion: number; featureLevel?: number; token?: string };            res: { daemonPid: number; daemonStartedAt?: number; home?: string; daemonVersion: string; featureLevel?: number; feed?: { dir: string; port: number } | null; shells?: ShellOption[] } };
+  // claude (M9 fix 1084) is whether the daemon finds a claude, found again at each app hello; an older daemon leaves it out.
+  'hello':          { req: { client: 'app' | 'cli'; protocolVersion: number; featureLevel?: number; token?: string };            res: { daemonPid: number; daemonStartedAt?: number; home?: string; daemonVersion: string; featureLevel?: number; feed?: { dir: string; port: number } | null; shells?: ShellOption[]; claude?: boolean } };
   // removed (M57): the removed sessions after the listed ones, each with
   // its removedAt, for the Commits tab's lanes and the activity timeline.
   'session.list':   { req: { removed?: boolean };                                          res: { sessions: SessionInfo[] } };
@@ -254,6 +277,12 @@ export interface Requests {
   // change goes out as folders.changed on the sessions topic.
   'folders.list':   { req: {};                                                             res: { folders: FolderLabel[] } };
   'folders.set':    { req: { folder: string; label: string | null };                      res: {} };
+  // The remote hosts record (M9 fix 1080): hosts.set upserts by name,
+  // hosts.remove of an unknown name changes nothing. Every change goes out
+  // as hosts.changed on the sessions topic to app windows at level 80.
+  'hosts.list':     { req: {};                                                             res: { hosts: HostRecord[] } };
+  'hosts.set':      { req: { host: HostRecord };                                           res: {} };
+  'hosts.remove':   { req: { name: string };                                               res: {} };
   // The sessions active between from and to (epoch ms) with their working
   // spans clipped to that window (M54), in start order. With
   // requestsSince (M9 fix 217), a row's request points are those opened
@@ -439,6 +468,9 @@ export type ServerMessage =
   | { type: 'layout.changed';  layout: Layout }
   // The whole list after a folders.set (M9 fix 194), on the sessions topic.
   | { type: 'folders.changed'; folders: FolderLabel[] }
+  // The whole hosts record after a change (M9 fix 1080), on the sessions
+  // topic to app windows at level 80.
+  | { type: 'hosts.changed'; hosts: HostRecord[] }
   // The forecast after a poll that changed it (M9 fix 320), on the
   // sessions topic.
   | { type: 'conflicts.changed'; report: ConflictReport }

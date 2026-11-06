@@ -1,0 +1,680 @@
+// M76 acceptance, the remote panes (M9 fixes 1079 to 1090): a pane whose
+// session runs on another machine's daemon, reached over ssh. The host is
+// a stub on this box: a second daemon on a private pair under the harness
+// home (its $HOME is <home>\stub-host, its emerald home that folder's
+// .emerald-remote), reached through stub-ssh.mjs and stub-scp.mjs in place
+// of ssh.exe and scp.exe (EMERALD_SSH and EMERALD_SCP). No run touches the
+// network or a real host. The stub's mode per destination is the JSON file
+// <stub home>\stub-ssh-modes.json, rewritten by a step, since main's
+// environment is fixed at launch.
+//
+// Block `relay` (fixes 1079 to 1081): ~/.ssh/config's host listed, a
+// connect through the stub's relay with the argv's quotes intact, a shell
+// started on the host routed by its id both ways, a dropped line lost and
+// back with the screen replayed, the host daemon started again through
+// WMI (its parent WmiPrvSE.exe), and an unknown host key refused.
+// Block `store` (fixes 1085 and 1086, needs relay): a reload's one list
+// holds the remote row and replays its screen; a lost line reads
+// unreachable on the row. Block `row` (fixes 1087 and 1088, needs relay):
+// the empty pane's on row, its keys, the Start label's host, a split
+// keeping the host, Add a host… and two refusals, the palette's row.
+// Block `marks` (fixes 1089 and 1090, needs relay): the sidebar's host
+// sections, the host chip, the Files tab's note, the lost band and Try now.
+// Block `kit` (fixes 1083 and 1084, needs relay; last, since it replaces
+// the stub's daemon): a first contact that copies the kit from local
+// fixtures (a stage, a Node zip, a node-pty tarball) and starts the kit's
+// own daemon, then the Linux refusal. The store, row, marks and kit
+// blocks read what the other branches of the batch build; they were
+// written from the plan's contracts (C4 to C7) and run first at the
+// batch's close-out on the merged tree.
+// Run: npm run verify:remote -w @emerald/app [-- --only relay]
+import { createHash } from 'node:crypto';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm76-remote-home');
+process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m76-remote';
+const { blockRunner, daemonRecord, emeraldHome, expect, freshPort, getTabs, killDaemonIfSame, killTree, launch, leaves, repoRoot, sleep, splitWithShell, startSession, step, stopDaemon, zreq } = await import('./cdp.mjs');
+
+const { block, blocksRun } = blockRunner([
+  { name: 'relay', fixes: ['1079', '1080', '1081', '1082'], needs: [] },
+  { name: 'store', fixes: ['1085', '1086'], needs: ['relay'] },
+  { name: 'row', fixes: ['1087', '1088'], needs: ['relay'] },
+  { name: 'marks', fixes: ['1089', '1090'], needs: ['relay'] },
+  // Replaces the stub's daemon with the kit's, so it stays last.
+  { name: 'kit', fixes: ['1083', '1084'], needs: ['relay'] },
+]);
+
+let app = null;
+setTimeout(() => {
+  console.error('[verify] WATCHDOG: run exceeded 600 s');
+  if (app !== null) killTree(app.child);
+  stopDaemon();
+  setTimeout(() => process.exit(3), 500);
+}, 600000);
+
+const scriptsDir = path.join(repoRoot, 'packages', 'app', 'scripts');
+const cliMain = path.join(repoRoot, 'packages', 'cli', 'dist', 'main.js');
+const appVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'packages', 'app', 'package.json'), 'utf8')).version;
+const H = path.join(emeraldHome, 'stub-host');
+const R = path.join(H, '.emerald-remote');
+const stubPipe = `${process.env['EMERALD_PIPE']}-stub`;
+const modesFile = path.join(H, 'stub-ssh-modes.json');
+const sshLog = path.join(H, 'stub-ssh.log');
+const pidFile = path.join(H, 'stub-ssh.pid');
+const stubEnv = { ...process.env, EMERALD_HOME: R, EMERALD_PIPE: stubPipe, CLAUDE_CONFIG_DIR: path.join(H, '.claude'), CLAUDE_SETTINGS: path.join(H, '.claude', 'settings.json') };
+const cli = (env, ...args) => {
+  const r = spawnSync(process.execPath, [cliMain, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  return { code: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
+};
+const setModes = (modes) => fs.writeFileSync(modesFile, JSON.stringify(modes));
+const powershell = (command) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true }).trim();
+// The stub ssh's pid as it wrote it at its start, read and killed at once
+// (never a number kept: Windows recycles them within minutes).
+const killStubSsh = () => {
+  const pid = fs.readFileSync(pidFile, 'utf8').trim();
+  spawnSync('taskkill', ['/pid', pid, '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+};
+const stubArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const stubRecord = (extra = {}) => ({ name: 'stub', destination: 'stub', os: 'win32', arch: stubArch, shell: 'powershell', home: H, nodeVersion: '24.20.0', kitVersion: appVersion, addedAt: Date.now(), ...extra });
+
+// Every process run from under the stub host's home, matched on its command
+// line (never a remembered pid): the kit's daemon, started through WMI from
+// R\<version>\daemon on a pipe of its own, outlived a run's daemon.json
+// kill at the close-out of fixes 1079 to 1090, held the folder, and the
+// next run's rmSync of H failed EPERM.
+const killUnderStubHome = () => {
+  const pattern = H.replace(/'/g, "''");
+  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { "$($_.CommandLine)".Contains('${pattern}') } | ForEach-Object { taskkill /pid $_.ProcessId /t /f | Out-Null }`], { stdio: 'ignore', windowsHide: true });
+};
+// A run that died left the stub's daemon on R; it goes before R does.
+killDaemonIfSame(daemonRecord(R));
+killUnderStubHome();
+fs.rmSync(H, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+fs.mkdirSync(H, { recursive: true });
+fs.writeFileSync(path.join(emeraldHome, 'ssh-config'), 'Host stub\n  HostName stub.invalid\n  User verify\n');
+setModes({});
+{
+  const r = cli(stubEnv, 'daemon', 'start');
+  expect(r.code === 0, `the stub host's daemon started (${r.code}: ${r.out}${r.err})`);
+}
+
+const launchEnv = {
+  EMERALD_SSH: path.join(scriptsDir, 'stub-ssh.mjs'),
+  EMERALD_SCP: path.join(scriptsDir, 'stub-scp.mjs'),
+  EMERALD_STUB_SSH_MODES: modesFile,
+  EMERALD_STUB_HOME: H,
+  EMERALD_STUB_PIPE: stubPipe,
+};
+let s = await launch(freshPort(), { freshState: true, env: launchEnv });
+app = s;
+
+const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
+const paneSel = (id) => `.pane[data-pane-id=${JSON.stringify(id)}]`;
+const typeRaw = (sessionId, text) => s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: ${JSON.stringify(text)} })`);
+const screenHas = async (sessionId, line, what, ms = 10_000) => {
+  const until = Date.now() + ms;
+  let rows = [];
+  while (Date.now() < until) {
+    rows = (await zreq(s, 'pty.screen', { sessionId })).rows.map((r) => r.trimEnd());
+    if (rows.includes(line)) return;
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for ${what}: no row ${JSON.stringify(line)} in ${JSON.stringify(rows.filter((r) => r !== '').slice(-6))}`);
+};
+const listed = async (id) => (await zreq(s, 'session.list', { removed: true })).sessions.find((x) => x.id === id);
+const listenPushes = () => s.evalJs(`(() => { window.__hostPushes = []; window.emerald.on((m) => { if (m.type === 'host.changed') window.__hostPushes.push(m); }); return true; })()`);
+const pushCount = () => s.evalJs(`window.__hostPushes.length`);
+// The first push for stub at or after index from that pred holds.
+const waitPush = async (from, pred, what, ms) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const pushes = await s.evalJs(`window.__hostPushes.slice(${from}).filter((m) => m.host === 'stub')`);
+    const hit = pushes.find(pred);
+    if (hit !== undefined) return hit;
+    await sleep(150);
+  }
+  const seen = await s.evalJs(`window.__hostPushes.slice(${from}).map((m) => m.state + (m.refusal ? ':' + m.refusal.kind : ''))`);
+  throw new Error(`timed out waiting for ${what} (pushes since: ${JSON.stringify(seen)})`);
+};
+const lastSshArgv = () => {
+  const lines = fs.readFileSync(sshLog, 'utf8').trim().split('\n');
+  const last = lines[lines.length - 1];
+  return JSON.parse(last.slice(last.indexOf(' ') + 1));
+};
+const layoutPane = async (sessionId) => {
+  const layout = await getTabs(s);
+  for (const tab of layout.tabs) for (const p of leaves(tab)) if (p.sessionId === sessionId) return p;
+  return null;
+};
+const termText = (paneId) =>
+  s.evalJs(
+    `(() => { const t = document.querySelector(${JSON.stringify(paneSel(paneId) + ' .term-host')})?.emeraldTerm; if (!t) return []; const b = t.buffer.active; const lines = []; for (let i = 0; i < b.length; i++) lines.push((b.getLine(i)?.translateToString(true) ?? '').trimEnd()); return lines; })()`,
+  );
+// The empty pane split to the right of a pane: a plain click on its split
+// button gives an empty pane (the harness's default).
+const splitEmpty = async (paneId) => {
+  const before = (await getTabs(s)).revision;
+  await s.evalJs(`${q(paneSel(paneId) + ' .pane-split-right')}.click()`);
+  await s.waitFor(`(async () => (await window.emerald.request('layout.get', {})).layout.revision > ${before})()`, 'the split landed');
+  const layout = await getTabs(s);
+  const tab = layout.tabs.find((t) => t.id === layout.currentTabId);
+  const empty = leaves(tab).find((p) => p.sessionId === null && p.view === null);
+  expect(empty !== undefined, 'the split made an empty pane');
+  await s.waitFor(`!!${q(paneSel(empty.id) + ' .empty-pane')}`, 'the empty pane drawn');
+  return empty.id;
+};
+
+let stubId = null;
+let stubPane = null;
+let firstPid = null;
+let storeStubId = null;
+let storeStubPane = null;
+let localPane = null;
+let rowStubPane = null;
+let rowLocalPane = null;
+
+try {
+  // The record facts first contact would have written, with the app's own
+  // version as the kit's, so the cut connects with no setup and the kit,
+  // once merged, finds this version already there.
+  await zreq(s, 'hosts.set', { host: stubRecord() });
+  await listenPushes();
+
+  await block('relay', async () => {
+    // 1. The config's one host, its record's facts merged in.
+    const hosts = await s.evalJs(`window.emerald.remoteHosts()`);
+    expect(Array.isArray(hosts) && hosts.length === 1, `one remote host listed, got ${JSON.stringify(hosts)}`);
+    const h = hosts[0];
+    expect(h.name === 'stub' && h.destination === 'verify@stub.invalid' && h.source === 'config' && h.shell === 'powershell' && h.home === H, `the stub host from ~/.ssh/config with its record's facts, got ${JSON.stringify(h)}`);
+    step('fix 1081 (1): remoteHosts lists the config host stub, destination verify@stub.invalid, with the record facts');
+
+    // 2. The connect through the stub's relay.
+    let from = await pushCount();
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    const up = await waitPush(from, (m) => m.state === 'up', 'stub up', 20_000);
+    firstPid = up.daemon?.pid ?? null;
+    expect(firstPid === daemonRecord(R)?.pid, `the host's daemon is the stub's (${firstPid} against ${daemonRecord(R)?.pid})`);
+    const argv = lastSshArgv();
+    const head = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', 'stub', '&'];
+    expect(JSON.stringify(argv.slice(0, head.length)) === JSON.stringify(head), `ssh's argv starts with the options, stub and &, got ${JSON.stringify(argv)}`);
+    const [nodeWord, cliWord, relay, homeFlag, homeWord] = argv.slice(head.length);
+    expect(nodeWord.startsWith('"') && nodeWord.endsWith('node-24.20.0\\node.exe"'), `the node path in its quotes, one word: ${nodeWord}`);
+    expect(cliWord.startsWith('"') && cliWord.endsWith('\\cli\\dist\\main.js"'), `the CLI path in its quotes, one word: ${cliWord}`);
+    expect(relay === 'relay' && homeFlag === '--home' && homeWord === `"${R}"`, `relay --home "<R>", got ${JSON.stringify([relay, homeFlag, homeWord])}`);
+    step(`fix 1081 (2): up on the stub's daemon pid ${firstPid}; ssh got the -o words, stub and the relay's quoted words intact`);
+
+    // 3. A shell on the host.
+    stubId = await startSession(s, { kind: 'shell', cwd: H, host: 'stub' });
+    const pane = await layoutPane(stubId);
+    stubPane = pane?.id ?? null;
+    expect(pane?.host === 'stub', `the pane holding the stub shell carries host stub, got ${JSON.stringify(pane)}`);
+    expect((await listed(stubId))?.host === 'stub', 'session.list holds the stub shell stamped host stub');
+    const onStub = cli(stubEnv, 'ls', '--json');
+    expect(onStub.code === 0 && onStub.out.includes(stubId), `emmer ls on the stub pair lists it (${onStub.code})`);
+    const onHarness = cli(process.env, 'ls', '--json');
+    expect(onHarness.code === 0 && !onHarness.out.includes(stubId), `emmer ls on the harness pair does not (${onHarness.code})`);
+    step('fix 1081 (3): the shell lives on the stub daemon, stamped host stub by main, its pane carrying host stub');
+
+    // 4. The routing by session id, both ways.
+    await typeRaw(stubId, 'echo relay-1082\r');
+    await screenHas(stubId, 'relay-1082', 'relay-1082 on the stub shell');
+    step('fix 1081 (4): typed into the stub shell and read back off its screen');
+
+    // 5. The drop.
+    from = await pushCount();
+    killStubSsh();
+    const lost = await waitPush(from, (m) => m.state === 'lost', 'lost after the drop', 5000);
+    expect(lost.retryIn === 2, `the first retry in 2 s, got ${lost.retryIn}`);
+    const back = await waitPush(from, (m) => m.state === 'up', 'up again', 15_000);
+    expect(back.daemon?.pid === firstPid, `the same daemon (${back.daemon?.pid})`);
+    const after = await listed(stubId);
+    expect(after?.host === 'stub' && after.state !== 'exited', `the shell still listed live on stub, got ${JSON.stringify(after?.state)}`);
+    await screenHas(stubId, 'relay-1082', 'relay-1082 still on the screen');
+    await s.waitFor(`(() => { const t = ${q(paneSel(stubPane) + ' .term-host')}?.emeraldTerm; if (!t) return false; const b = t.buffer.active; for (let i = 0; i < b.length; i++) if ((b.getLine(i)?.translateToString(true) ?? '').trimEnd() === 'relay-1082') return true; return false; })()`, 'the pane replayed relay-1082 after the reattach', 10_000);
+    await typeRaw(stubId, 'echo relay-again\r');
+    await screenHas(stubId, 'relay-again', 'relay-again after the reconnect');
+    step('fix 1081 (5): the dropped line read lost in 2 s, came back on the same daemon, the screen replayed and typing reached it');
+
+    // 6. The WMI start, fix 1079's route on this box.
+    from = await pushCount();
+    const stopped = cli(stubEnv, 'daemon', 'stop');
+    expect(stopped.code === 0, `daemon stop on the stub pair (${stopped.code}: ${stopped.out}${stopped.err})`);
+    await waitPush(from, (m) => m.state === 'lost', 'lost after the stub daemon stopped', 10_000);
+    const again = await waitPush(from, (m) => m.state === 'up', 'up on a daemon the relay started', 30_000);
+    const newPid = again.daemon?.pid;
+    expect(typeof newPid === 'number' && newPid !== firstPid, `a new daemon (${newPid} against ${firstPid})`);
+    const line = powershell(`(Get-CimInstance Win32_Process -Filter "ProcessId = ${newPid}").CommandLine`);
+    expect(line.includes(`--home "${R}"`) && line.includes(`--pipe "${stubPipe}"`), `the WMI-started daemon carries --home and --pipe: ${line}`);
+    const parent = powershell(`$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${newPid}"; (Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)").Name`);
+    expect(parent.toLowerCase() === 'wmiprvse.exe', `its parent is WmiPrvSE.exe, got ${parent}`);
+    await s.waitFor(`(async () => (await window.emerald.request('session.list', { removed: true })).sessions.find((x) => x.id === ${JSON.stringify(stubId)})?.state === 'exited')()`, 'the stub shell listed exited after the stop', 10_000);
+    step(`fix 1079 (6): the relay started the stub daemon again through WMI, pid ${newPid} under WmiPrvSE.exe with --home and --pipe`);
+
+    // 7. An unknown host key.
+    setModes({ stub: 'hostkey' });
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    from = await pushCount();
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    const refused = await waitPush(from, (m) => m.state === 'refused', 'refused on the host key', 15_000);
+    expect(refused.refusal?.kind === 'hostkey' && refused.refusal.line === 'Host key verification failed.', `refused hostkey with ssh's last line, got ${JSON.stringify(refused.refusal)}`);
+    step('fix 1081 (7): an unknown host key is refused hostkey with the last stderr line');
+
+    // 8. Back.
+    setModes({});
+    from = await pushCount();
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    await waitPush(from, (m) => m.state === 'up', 'up after the refusal', 20_000);
+    step('fix 1081 (8): connected again once the stub answers');
+  });
+
+  await block('store', async () => {
+    // 1. A local shell beside the exited stub pane, then a live stub
+    // shell in its place.
+    // A split from the stub pane starts on stub (fix 1086: the source
+    // pane's host), and a spawn there lands later than a local one, so the
+    // step waits for the split's pane to hold its session.
+    await splitWithShell(s, `${paneSel(stubPane)} .pane-split-right`);
+    await s.waitFor(
+      `(async () => { const l = (await window.emerald.request('layout.get', {})).layout; const walk = (n) => (n.kind === 'pane' ? [n] : [...walk(n.first), ...walk(n.second)]); const t = l.tabs.find((x) => x.id === l.currentTabId); return walk(t.root).some((p) => p.id !== ${JSON.stringify(stubPane)} && p.sessionId !== null); })()`,
+      'a shell beside the stub pane',
+      15_000,
+    );
+    let layout = await getTabs(s);
+    let tab = layout.tabs.find((t) => t.id === layout.currentTabId);
+    localPane = leaves(tab).find((p) => p.id !== stubPane && p.sessionId !== null)?.id ?? null;
+    expect(localPane !== null, 'a shell beside the stub pane');
+    const empty = (n) => (n.kind === 'pane' ? (n.id === stubPane ? (({ host: _h, ...rest }) => ({ ...rest, sessionId: null, view: null }))(n) : n) : { ...n, first: empty(n.first), second: empty(n.second) });
+    layout = await getTabs(s);
+    await zreq(s, 'layout.set', { layout: { ...layout, tabs: layout.tabs.map((t) => (t.id === layout.currentTabId ? { ...t, root: empty(t.root) } : t)) } });
+    await s.waitFor(`!!${q(paneSel(stubPane) + ' .empty-pane')}`, 'the stub pane emptied');
+    storeStubId = await startSession(s, { kind: 'shell', cwd: H, host: 'stub' });
+    storeStubPane = (await layoutPane(storeStubId))?.id ?? null;
+    step(`fix 1086 (1): a shell split off the stub pane beside a live stub shell ${storeStubId}`);
+    await typeRaw(storeStubId, 'echo relay-store\r');
+    await screenHas(storeStubId, 'relay-store', 'relay-store on the stub shell');
+
+    // 2. A reload: the one list carries the remote row, the pane replays.
+    await s.send('Page.reload');
+    await s.waitFor(`!!${q(`.sidebar-row[data-session-id=${JSON.stringify(storeStubId)}]`)}`, 'the stub row after the reload, from the merged session.list', 15_000);
+    await listenPushes();
+    await s.waitFor(`(() => { const t = ${q(paneSel(storeStubPane) + ' .term-host')}?.emeraldTerm; if (!t) return false; const b = t.buffer.active; for (let i = 0; i < b.length; i++) if ((b.getLine(i)?.translateToString(true) ?? '').trimEnd() === 'relay-store') return true; return false; })()`, 'the stub pane replayed relay-store after the reload', 15_000);
+    step('fix 1085 (2): after a reload the stub row is listed and its pane replays relay-store');
+
+    // 3. A lost line reads unreachable on the row.
+    setModes({ stub: 'down' });
+    killStubSsh();
+    const rowState = `${q(`.sidebar-row[data-session-id=${JSON.stringify(storeStubId)}] .sidebar-row-state`)}?.textContent`;
+    await s.waitFor(`${rowState} === 'unreachable'`, 'the stub row reads unreachable', 5000);
+    step('fix 1086 (3): the dropped line reads unreachable on the stub row');
+
+    // 4. Back.
+    setModes({});
+    const from = await pushCount();
+    await s.evalJs(`window.emerald.hostTryNow('stub')`);
+    await waitPush(from, (m) => m.state === 'up', 'up after Try now', 20_000);
+    await s.waitFor(`${rowState} !== 'unreachable'`, 'the stub row reads its live state again', 5000);
+    step('fix 1086 (4): Try now brought the line back and the row reads its own state');
+  });
+
+  await block('row', async () => {
+    // A new tab in front with a local shell, an empty pane split off it.
+    const tabsBefore = (await getTabs(s)).tabs.length;
+    await s.evalJs(`${q('.tab-add')}.click()`);
+    await s.waitFor(`(async () => (await window.emerald.request('layout.get', {})).layout.tabs.length === ${tabsBefore + 1})()`, 'a new tab');
+    let layout = await getTabs(s);
+    const first = leaves(layout.tabs.find((t) => t.id === layout.currentTabId))[0];
+    const { session: localShell } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: os.homedir(), cols: 80, rows: 24 });
+    layout = await getTabs(s);
+    await zreq(s, 'layout.set', { layout: { ...layout, tabs: layout.tabs.map((t) => (t.id === layout.currentTabId ? { ...t, root: { ...first, sessionId: localShell.id } } : t)) } });
+    rowLocalPane = first.id;
+    await s.waitFor(`!!${q(paneSel(rowLocalPane) + ' .term-host')}`, 'the local shell in the new tab');
+    const emptyPane = await splitEmpty(rowLocalPane);
+    const E = paneSel(emptyPane);
+
+    // 1. The on row's place and its parts.
+    const order = await s.evalJs(`(() => { const p = ${q(E)}; const kinds = p.querySelector('.empty-kinds'), on = p.querySelector('.empty-on-block'), inb = p.querySelector('.empty-in-block'); if (!kinds || !on || !inb) return null; return { afterKinds: !!(kinds.compareDocumentPosition(on) & 4), beforeIn: !!(on.compareDocumentPosition(inb) & 4) }; })()`);
+    expect(order?.afterKinds === true && order.beforeIn === true, `the on block between the kinds and the in block, got ${JSON.stringify(order)}`);
+    const head = await s.evalJs(`({ label: ${q(E + ' .empty-on-head .empty-on-label')}?.textContent, keys: ${q(E + ' .empty-on-head .empty-on-keys')}?.textContent })`);
+    expect(head.label === 'on' && head.keys === '← → switch', `the on head, got ${JSON.stringify(head)}`);
+    const buttons = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(E + ' .empty-on-row > button')})].map((b) => ({ cls: b.className, host: b.dataset.host ?? null, text: b.querySelector('.empty-host-name')?.textContent ?? b.textContent, pressed: b.getAttribute('aria-pressed') }))`);
+    expect(buttons.length === 3 && buttons[0].cls.includes('secondary') && buttons[0].cls.includes('empty-host') && buttons[0].host === '' && buttons[0].text === 'This PC' && buttons[0].pressed === 'true', `This PC first and pressed, got ${JSON.stringify(buttons)}`);
+    expect(buttons[1].host === 'stub' && buttons[1].pressed !== 'true', `stub second, got ${JSON.stringify(buttons[1])}`);
+    expect(buttons[2].cls.includes('empty-host-add') && buttons[2].text === 'Add a host…', `Add a host… last, got ${JSON.stringify(buttons[2])}`);
+    // The label alone: the button's own text ends in its ⏎ key glyph.
+    const startText = () => s.evalJs(`${q(E + ' .empty-start-label')}?.textContent ?? ''`);
+    expect(!/ on \S+$/.test(await startText()), `no host tail on This PC's Start, got ${await startText()}`);
+    step('fix 1087 (1): the on row sits between the kinds and the in block: on, ← → switch, This PC pressed, stub, Add a host…');
+
+    // 2. The keys.
+    await s.evalJs(`${q(E + ' .palette-input')}.focus()`);
+    await s.key('ArrowRight', 'ArrowRight', 39);
+    await s.waitFor(`${q(E + ' .empty-host[data-host="stub"]')}?.getAttribute('aria-pressed') === 'true'`, 'ArrowRight pressed stub');
+    await s.waitFor(`(${q(E + ' .empty-start-label')}?.textContent ?? '').endsWith(' on stub')`, 'the Start label ends on stub', 5000);
+    await s.waitFor(`${q(E + ' .empty-in-block .empty-folder')}?.dataset.folder === ${JSON.stringify(H)}`, "the in block's first row is the stub's home", 15_000);
+    await s.key('ArrowLeft', 'ArrowLeft', 37);
+    await s.waitFor(`${q(E + ' .empty-host[data-host=""]')}?.getAttribute('aria-pressed') === 'true'`, 'ArrowLeft back to This PC');
+    step("fix 1087 (2): ArrowRight picked stub (Start ends on stub, the stub's home first), ArrowLeft This PC");
+
+    // 3. Start on the host.
+    await s.evalJs(`${q(E + ' .empty-host[data-host="stub"]')}.click()`);
+    await s.evalJs(`${q(E + ' .empty-kind[data-kind="shell"]')}.click()`);
+    await s.waitFor(`${q(E + ' .empty-start')}?.disabled === false && (${q(E + ' .empty-start-label')}?.textContent ?? '').endsWith(' on stub')`, 'Start ready on stub', 15_000);
+    const terms = await s.evalJs(`document.querySelectorAll('.term-host').length`);
+    await s.evalJs(`${q(E + ' .empty-start')}.click()`);
+    await s.waitFor(`document.querySelectorAll('.term-host').length === ${terms + 1}`, 'a shell started on stub', 15_000);
+    layout = await getTabs(s);
+    const startedNode = leaves(layout.tabs.find((t) => t.id === layout.currentTabId)).find((p) => p.id === emptyPane);
+    expect(startedNode?.host === 'stub', `the started pane's node carries host stub, got ${JSON.stringify(startedNode)}`);
+    rowStubPane = emptyPane;
+    step('fix 1087 (3): Start on stub opened a shell whose pane node carries host stub');
+
+    // 4. A split from the stub pane starts on stub.
+    const fromStub = await splitEmpty(rowStubPane);
+    await s.waitFor(`${q(paneSel(fromStub) + ' .empty-host[data-host="stub"]')}?.getAttribute('aria-pressed') === 'true'`, 'the split from the stub pane starts with stub pressed');
+    step('fix 1087 (4): an empty pane split from the stub pane has stub pressed');
+
+    // 5. Add a host… and an unknown key.
+    const F = paneSel(fromStub);
+    await s.evalJs(`${q(F + ' .empty-host-add')}.click()`);
+    await s.waitFor(`!!${q(F + ' input.empty-host-box')} && document.activeElement === ${q(F + ' input.empty-host-box')}`, 'the host box open and focused');
+    const note = await s.evalJs(`${q(F + ' .empty-host-note')}?.textContent`);
+    expect(note === 'An ssh destination, or a Host from ~/.ssh/config. Enter adds it, Esc leaves it.', `the box's note, got ${JSON.stringify(note)}`);
+    setModes({ 'verify@stub2.invalid': 'hostkey' });
+    await s.type('verify@stub2.invalid');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`${q(F + ' .empty-host[data-host="stub2.invalid"]')}?.getAttribute('aria-pressed') === 'true'`, 'stub2.invalid added and pressed', 15_000);
+    const hostkeyLine = 'stub2.invalid has not been reached from this PC before, so its key is unchecked. Run ssh stub2.invalid once in a shell here, check the fingerprint it shows, then pick it again.';
+    await s.waitFor(`${q(F + ' .empty-error[data-reason="hostkey"]')}?.textContent === ${JSON.stringify(hostkeyLine)}`, "A4's line for stub2.invalid", 15_000);
+    expect((await s.evalJs(`${q(F + ' .empty-error-act')}?.textContent`)) === 'Open a shell here to run it', 'its button reads Open a shell here to run it');
+    step("fix 1088 (5): Add a host… took verify@stub2.invalid, picked it and refused it with A4's line and button");
+
+    // 6. The button runs ssh in a local shell.
+    const shellsBefore = new Set((await zreq(s, 'session.list', {})).sessions.map((x) => x.id));
+    await s.evalJs(`${q(F + ' .empty-error-act')}.click()`);
+    let sshShell = null;
+    const until6 = Date.now() + 10_000;
+    while (sshShell === null && Date.now() < until6) {
+      sshShell = (await zreq(s, 'session.list', {})).sessions.find((x) => !shellsBefore.has(x.id) && x.host === undefined) ?? null;
+      if (sshShell === null) await sleep(200);
+    }
+    expect(sshShell !== null, 'a local shell opened for the key');
+    const until6b = Date.now() + 10_000;
+    let typed = false;
+    let sshRows = [];
+    while (!typed && Date.now() < until6b) {
+      sshRows = (await zreq(s, 'pty.screen', { sessionId: sshShell.id })).rows;
+      // The pane is narrow by now (sixteen columns after the block's
+      // splits), so the command wraps: read the rows joined.
+      typed = sshRows.join('').replace(/\s+/g, ' ').includes('ssh stub2.invalid');
+      if (!typed) await sleep(250);
+    }
+    expect(typed, `the local shell ran ssh stub2.invalid, its screen ${JSON.stringify(sshRows.map((r) => r.trimEnd()).filter((r) => r !== '').slice(-6))}`);
+    step('fix 1088 (6): Open a shell here ran ssh stub2.invalid in a local shell');
+
+    // 7. A refused login.
+    setModes({ 'verify@stub2.invalid': 'down' });
+    const emptyAgain = await splitEmpty(rowStubPane);
+    const G = paneSel(emptyAgain);
+    await s.evalJs(`${q(G + ' .empty-host[data-host="stub2.invalid"]')}.click()`);
+    const sshLine = 'stub2.invalid refused the login: ssh: connect to host verify@stub2.invalid port 22: Connection refused';
+    await s.waitFor(`${q(G + ' .empty-error[data-reason="ssh"]')}?.textContent === ${JSON.stringify(sshLine)}`, 'the refused login line', 15_000);
+    expect((await s.evalJs(`${q(G + ' .empty-error-act')}?.textContent`)) === 'Try again', 'its button reads Try again');
+    step('fix 1088 (7): a refused login reads its line with Try again');
+
+    // 8. Forgotten.
+    await s.evalJs(`window.emerald.hostForget('stub2.invalid')`);
+    await s.waitFor(`!${q(G + ' .empty-host[data-host="stub2.invalid"]')}`, 'stub2.invalid gone from the row', 10_000);
+    setModes({});
+    step('fix 1088 (8): hostForget took stub2.invalid off the row');
+
+    // 9. The palette's row.
+    await s.evalJs(`${q(G + ' .empty-host[data-host=""]')}.click()`);
+    const box = `${G} .palette-input`;
+    await s.evalJs(`${q(box)}.focus()`);
+    await s.type('>');
+    await s.waitFor(`${q(box)}?.dataset.mode === 'actions'`, 'the box in action mode');
+    expect((await s.evalJs(`document.querySelectorAll(${JSON.stringify(G + ' .action-row[data-kind="host"]')}).length`)) === 0, 'a bare > lists no host row');
+    // `>host` alone also matches three key rows by their letters (Jump to
+    // waiting first), so the step types enough to rank the host row first.
+    await s.type('remote host');
+    await s.waitFor(`!!${q(G + ' .action-row[data-kind="host"][data-action="add-host"]')}`, '>remote host lists Add a remote host…');
+    const group = await s.evalJs(`(() => { const row = ${q(G + ' .action-row[data-kind="host"][data-action="add-host"]')}; let el = row.previousElementSibling; while (el && !el.classList.contains('palette-group')) el = el.previousElementSibling; return el?.textContent ?? null; })()`);
+    expect(group === 'Remote', `in the Remote group, got ${JSON.stringify(group)}`);
+    const listedRows = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(G + ' .action-row')})].map((r) => (r.dataset.kind ?? '') + ':' + (r.dataset.action ?? '') + (r.classList.contains('highlighted') || r.getAttribute('aria-selected') === 'true' ? '*' : ''))`);
+    expect(listedRows[0] === 'host:add-host*', `Add a remote host… listed first and highlighted, got ${JSON.stringify(listedRows)}`);
+    await s.key('Enter', 'Enter', 13);
+    try {
+      await s.waitFor(`!!${q(G + ' .empty-on-block')} && document.activeElement === ${q(G + ' input.empty-host-box')}`, 'Enter showed the on row with the host box focused');
+    } catch (err) {
+      const focus = await s.evalJs(`document.activeElement?.className ?? null`);
+      const boxThere = await s.evalJs(`!!${q(G + ' input.empty-host-box')}`);
+      throw new Error(`${err.message}; rows before Enter ${JSON.stringify(listedRows)}, focus ${JSON.stringify(focus)}, box drawn ${boxThere}`);
+    }
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!${q(G + ' input.empty-host-box')}`, 'Escape left the host box');
+    step('fix 1087 (9): >remote host lists Add a remote host… first under Remote; Enter opens the host box, Escape leaves it');
+  });
+
+  await block('marks', async () => {
+    // 1. The sections.
+    const sections = await s.evalJs(`[...document.querySelectorAll('.sidebar-list > section.sidebar-host')].map((sec) => ({ host: sec.dataset.host, head: sec.querySelector(':scope > div.sidebar-host-title > span.sidebar-host-head')?.textContent ?? null, dest: sec.querySelector(':scope > div.sidebar-host-title > span.sidebar-host-dest')?.textContent ?? null }))`);
+    expect(sections.length === 2 && sections[0].host === '' && sections[0].head === 'this pc' && sections[0].dest === null, `this pc first with no destination, got ${JSON.stringify(sections)}`);
+    expect(sections[1].host === 'stub' && sections[1].head === 'stub' && sections[1].dest === 'verify@stub.invalid', `stub second with its destination, got ${JSON.stringify(sections[1])}`);
+    const live = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.host === 'stub' && x.state !== 'exited');
+    for (const x of live) {
+      expect(await s.evalJs(`!!document.querySelector('section.sidebar-host[data-host="stub"] .sidebar-row[data-session-id=${JSON.stringify(x.id).replace(/'/g, "\\'")}]')`), `stub row ${x.id} inside the stub section`);
+    }
+    const groups = await s.evalJs(`[...document.querySelectorAll('.sidebar-group')].map((g) => ({ key: g.dataset.group, remote: !!g.closest('section.sidebar-host[data-host="stub"]') }))`);
+    const remoteKeys = groups.filter((g) => g.remote).map((g) => g.key);
+    expect(remoteKeys.length > 0 && remoteKeys.every((k) => k.startsWith('stub\u0000')), `a remote group's key is stub NUL folder, got ${JSON.stringify(remoteKeys)}`);
+    const stubCwd = live[0]?.groupCwd ?? H;
+    expect(remoteKeys.includes(`stub\u0000${stubCwd}`), `the stub shells' group is stub NUL ${stubCwd}, got ${JSON.stringify(remoteKeys)}`);
+    expect(groups.filter((g) => !g.remote && g.key !== 'exited').every((g) => !g.key.includes('\u0000')), 'every local group key is the bare folder');
+    const lastIsExited = await s.evalJs(`(() => { const list = document.querySelector('.sidebar-list'); const last = list.lastElementChild; return last !== null && last.tagName !== 'SECTION'; })()`);
+    expect(lastIsExited, 'the Exited group comes after the last section');
+    step('fix 1089 (1): two sections, this pc then stub with its destination, the stub rows inside, the remote group keyed stub NUL folder, Exited last');
+
+    // 2. The chip on the stub pane's title.
+    const chip = await s.evalJs(`(() => { const c = ${q(paneSel(rowStubPane) + ' .pane-title .host-chip')}; return c ? { text: c.textContent, title: c.title } : null; })()`);
+    expect(chip?.text === 'stub' && chip.title === 'Runs on stub, reached by ssh as verify@stub.invalid', `the host chip, got ${JSON.stringify(chip)}`);
+    step('fix 1089 (2): the stub pane title carries the host chip with its tooltip');
+
+    // 3. The Files tab's note.
+    // Focus the stub pane by the layout itself: a synthetic click on its
+    // terminal does not move the pane focus.
+    {
+      const l = await getTabs(s);
+      await zreq(s, 'layout.set', { layout: { ...l, tabs: l.tabs.map((t) => (t.id === l.currentTabId ? { ...t, focusedPaneId: rowStubPane } : t)) } });
+    }
+    await s.evalJs(`${q('.rail-tab[data-tab="files"]')}?.click()`);
+    try {
+      await s.waitFor(`!!${q('.files-remote-note .host-chip')}`, 'the Files tab note with the chip', 10_000);
+    } catch (err) {
+      const why = await s.evalJs(`(async () => { const l = (await window.emerald.request('layout.get', {})).layout; const t = l.tabs.find((x) => x.id === l.currentTabId); return { rail: !!document.querySelector('.files-rail'), tab: document.querySelector('.files-rail')?.dataset.tab ?? null, focusedPane: t?.focusedPaneId ?? null, stubPane: ${JSON.stringify(rowStubPane)}, tabs: [...document.querySelectorAll('.rail-tab')].map((b) => b.dataset.tab) }; })()`);
+      throw new Error(`${err.message}: ${JSON.stringify(why)}`);
+    }
+    const noteText = await s.evalJs(`${q('.files-remote-note')}.textContent`);
+    expect(noteText.includes("This folder is on stub. The files, the commit graph and the review tab read this PC's disk, so they are not drawn for it yet.") && noteText.includes('The terminal, the chat view, the state on the row and the hooks all come from stub as they do from here.'), `the note's two lines, got ${JSON.stringify(noteText)}`);
+    expect((await s.evalJs(`${q('button.secondary.files-remote-shell')}?.textContent`)) === 'Shell on stub in stub-host', 'its button reads Shell on stub in stub-host');
+    step("fix 1089 (3): the Files tab says the folder is on stub, with the chip and Shell on stub in stub-host");
+
+    // 4. The lost band.
+    setModes({ stub: 'down' });
+    killStubSsh();
+    const P = paneSel(rowStubPane);
+    await s.waitFor(`!!${q(P + ' div.host-lost-note')}`, 'the lost band on the stub pane', 10_000);
+    const band = await s.evalJs(`(() => { const n = ${q(P + ' div.host-lost-note')}; const prev = n.previousElementSibling; return { text: n.querySelector('.host-lost-note-text')?.textContent ?? n.textContent, btn: n.querySelector('button.host-lost-try')?.textContent ?? null, prev: prev?.className ?? null }; })()`);
+    expect(/^Lost the line to stub at \d\d:\d\d\. The session runs on there; trying again in \d+s\.$/.test(band.text), `the band's line, got ${JSON.stringify(band.text)}`);
+    expect(band.btn === 'Try now', `Try now, got ${band.btn}`);
+    expect(/pane-title|claude-theme-note/.test(band.prev ?? ''), `the band after the title or the theme note, got ${band.prev}`);
+    const dim = await s.evalJs(`(() => { const root = ${q(P)}; return { lost: root?.hasAttribute('data-host-lost') ?? false, opacity: getComputedStyle(root.querySelector('.term-wrap')).opacity }; })()`);
+    expect(dim.lost && dim.opacity === '0.45', `the pane marked lost and its body at 45 percent, got ${JSON.stringify(dim)}`);
+    const liveNow = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.host === 'stub' && x.state !== 'exited');
+    for (const x of liveNow) {
+      await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(x.id).replace(/'/g, "\\'")}] .sidebar-row-state')?.textContent === 'unreachable'`, `row ${x.id} unreachable`, 5000);
+    }
+    const count = await s.evalJs(`(() => { const c = document.querySelector('.sidebar-header span.sidebar-unreachable'); return c ? { text: c.textContent, afterSessions: c.previousElementSibling?.textContent === 'Sessions' } : null; })()`);
+    expect(count?.text === `${liveNow.length} unreachable` && count.afterSessions, `the header's count, got ${JSON.stringify(count)}`);
+    step(`fix 1090 (4): the lost band with Try now, the body at 45 percent, ${liveNow.length} rows and the header reading unreachable`);
+
+    // 5. Try now.
+    setModes({});
+    await s.evalJs(`${q(P + ' button.host-lost-try')}.click()`);
+    await s.waitFor(`!${q(P + ' div.host-lost-note')} && !document.querySelector('.sidebar-unreachable')`, 'the band and the count gone after Try now', 5000);
+    step('fix 1090 (5): Try now brought the line back and the band and the count went');
+  });
+
+  await block('kit', async () => {
+    // 1. The stub host as it was before any kit: no daemon, no folder.
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    cli(stubEnv, 'daemon', 'stop');
+    killDaemonIfSame(daemonRecord(R));
+    await sleep(500);
+    fs.rmSync(R, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    // 2. The record with no kit.
+    const { nodeVersion: _n, kitVersion: _k, ...bare } = stubRecord();
+    await zreq(s, 'hosts.set', { host: bare });
+
+    // 3. The fixtures: a stage, a Node zip and a node-pty tarball, all local.
+    const { stage, stageDir } = await import('./stage.mjs');
+    stage({ arch: stubArch });
+    const kitStage = path.join(emeraldHome, 'kit-stage');
+    fs.rmSync(kitStage, { recursive: true, force: true });
+    fs.cpSync(stageDir, kitStage, { recursive: true });
+    const nodeBase = path.join(emeraldHome, 'kit-node');
+    const zipName = `node-v24.20.0-win-${stubArch}.zip`;
+    const zipDir = path.join(nodeBase, 'v24.20.0');
+    const zipTop = path.join(emeraldHome, 'kit-zip', `node-v24.20.0-win-${stubArch}`);
+    fs.rmSync(path.dirname(zipTop), { recursive: true, force: true });
+    fs.mkdirSync(zipTop, { recursive: true });
+    fs.mkdirSync(zipDir, { recursive: true });
+    fs.copyFileSync(process.execPath, path.join(zipTop, 'node.exe'));
+    // bsdtar's zip writes / in its entry names; Windows PowerShell 5.1's
+    // Compress-Archive writes \, which no zip reader takes as a folder.
+    fs.rmSync(path.join(zipDir, zipName), { force: true });
+    execFileSync('tar.exe', ['-a', '-cf', path.join(zipDir, zipName), '-C', path.dirname(zipTop), path.basename(zipTop)], { windowsHide: true });
+    const zipSha = createHash('sha256').update(fs.readFileSync(path.join(zipDir, zipName))).digest('hex');
+    fs.writeFileSync(path.join(zipDir, 'SHASUMS256.txt'), `${zipSha}  ${zipName}\n`);
+    const ptyPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'node_modules', 'node-pty', 'package.json'), 'utf8'));
+    const npmBase = path.join(emeraldHome, 'kit-npm');
+    const ptyDir = path.join(npmBase, 'node-pty', '-');
+    fs.rmSync(npmBase, { recursive: true, force: true });
+    fs.mkdirSync(ptyDir, { recursive: true });
+    // --ignore-scripts: npm pack of a folder runs node-pty's prepare, a tsc
+    // build of its sources that fails here, before it packs.
+    execSync(`npm pack "${path.join(repoRoot, 'node_modules', 'node-pty')}" --ignore-scripts --pack-destination "${ptyDir}"`, { stdio: 'ignore', windowsHide: true });
+    const tgz = path.join(ptyDir, `node-pty-${ptyPkg.version}.tgz`);
+    expect(fs.existsSync(tgz), `npm pack wrote ${tgz}`);
+    const integrity = `sha512-${createHash('sha512').update(fs.readFileSync(tgz)).digest('base64')}`;
+    const pinsFile = path.join(kitStage, 'kit-pins.json');
+    const pins = fs.existsSync(pinsFile) ? JSON.parse(fs.readFileSync(pinsFile, 'utf8')) : {};
+    fs.writeFileSync(pinsFile, JSON.stringify({ ...pins, nodePty: { version: ptyPkg.version, integrity } }, null, 2));
+    step(`fix 1083 (3): the fixtures: a stage, ${zipName} with its SHASUMS256.txt, node-pty-${ptyPkg.version}.tgz with its integrity pinned`);
+
+    // Main's environment is fixed at launch, so the window starts again on
+    // the same home and daemon with the kit's three knobs.
+    s.close();
+    killTree(s.child);
+    await sleep(1500);
+    s = await launch(freshPort(), {
+      env: { ...launchEnv, EMERALD_KIT_STAGE: kitStage, EMERALD_KIT_NODE_URL: pathToFileURL(nodeBase).href, EMERALD_KIT_NPM_URL: pathToFileURL(npmBase).href },
+    });
+    app = s;
+    await listenPushes();
+
+    // 4. First contact.
+    const layout = await getTabs(s);
+    const tab = layout.tabs.find((t) => t.id === layout.currentTabId);
+    const holder = leaves(tab).find((p) => p.sessionId !== null) ?? leaves(tab)[0];
+    const kitPane = await splitEmpty(holder.id);
+    const K = paneSel(kitPane);
+    await s.evalJs(`${q(K + ' .empty-kind[data-kind="shell"]')}.click()`);
+    await s.evalJs(`${q(K + ' .empty-host[data-host="stub"]')}.click()`);
+    await s.waitFor(`${q(K + ' .empty-in-wait')}?.textContent === 'The folders on stub show once it answers.' && ${q(K + ' .empty-start')}?.hasAttribute('data-dim')`, 'the folders wait and Start dims', 15_000);
+    await s.waitFor(`${q(K + ' .empty-setup-line')}?.textContent === ${JSON.stringify(`Setting up stub: copying emerald's daemon ${appVersion} there, the first time only`)}`, 'the setup line', 30_000);
+    await s.waitFor(`/^\\d+(\\.\\d+)? MB, \\d+ s$/.test(${q(K + ' .empty-setup-figure')}?.textContent ?? '') && !!${q(K + ' .empty-setup-bar')} && ${q(K + ' .empty-host[data-host="stub"] .empty-host-sub')}?.textContent === 'setting up'`, 'the figure, the bar and the sub-line', 30_000);
+    step('fix 1084 (4): first contact: the folders wait, Start dims, the setup line, its figure, its bar and setting up under stub');
+
+    // 5. Done.
+    await s.waitFor(`!${q(K + ' .empty-in-wait')}`, 'the folders once the kit answers', 120_000);
+    const rec = (await zreq(s, 'hosts.list', {})).hosts.find((x) => x.name === 'stub');
+    expect(rec?.kitVersion === appVersion && rec.nodeVersion === '24.20.0', `the record carries the kit, got ${JSON.stringify(rec)}`);
+    expect(fs.existsSync(path.join(R, appVersion, 'cli', 'dist', 'main.js')) && fs.existsSync(path.join(R, 'node-24.20.0', 'node.exe')), 'the kit and its Node unpacked under R');
+    const tgzLeft = [];
+    const walk = (d) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (e.isDirectory()) walk(path.join(d, e.name));
+        else if (e.name.endsWith('.tgz')) tgzLeft.push(path.join(d, e.name));
+      }
+    };
+    walk(R);
+    expect(tgzLeft.length === 0, `no archive left under R, got ${JSON.stringify(tgzLeft)}`);
+    const scpLines = fs.readFileSync(path.join(H, 'stub-scp.log'), 'utf8').trim().split('\n');
+    expect(scpLines.length === 2, `two copies, got ${scpLines.length}`);
+    step('fix 1084 (5): the kit copied in two archives, unpacked with none left, the record pinned to it');
+
+    // 6. A shell through the kit's own relay, CLI and daemon.
+    const terms = await s.evalJs(`document.querySelectorAll('.term-host').length`);
+    await s.waitFor(`${q(K + ' .empty-start')}?.disabled === false`, 'Start ready on stub', 15_000);
+    await s.evalJs(`${q(K + ' .empty-start')}.click()`);
+    await s.waitFor(`document.querySelectorAll('.term-host').length === ${terms + 1}`, 'a shell on the kit', 15_000);
+    const kitShell = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.host === 'stub' && x.state !== 'exited').sort((a, b) => b.createdAt - a.createdAt)[0];
+    await typeRaw(kitShell.id, 'echo kit-1083\r');
+    await screenHas(kitShell.id, 'kit-1083', 'kit-1083 through the kit');
+    // The last relay line: the kit's prune of old kits runs over ssh right
+    // after the connect, so the log's very last line may be that.
+    const kitArgv = fs
+      .readFileSync(sshLog, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l.slice(l.indexOf(' ') + 1)))
+      .filter((a) => a.includes('relay'))
+      .pop() ?? [];
+    const kitNode = (kitArgv.find((w) => w.endsWith('node.exe"')) ?? '').replace(/"/g, '');
+    expect(kitNode !== '' && fs.existsSync(kitNode), `the relay ran the kit's own node, ${kitNode}`);
+    step("fix 1083 (6): a shell through the kit's own node, relay and daemon read back kit-1083");
+
+    // 7. A Linux host.
+    setModes({ stub: 'linux' });
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    await zreq(s, 'hosts.set', { host: { name: 'stub', destination: 'stub', home: H, addedAt: Date.now() } });
+    const kitShellPane = (await layoutPane(kitShell.id))?.id ?? kitPane;
+    const linuxPane = await splitEmpty(kitShellPane);
+    const L = paneSel(linuxPane);
+    await s.evalJs(`${q(L + ' .empty-host[data-host="stub"]')}.click()`);
+    try {
+      await s.waitFor(`${q(L + ' .empty-error[data-reason="linux"]')}?.textContent === 'stub runs Linux, and a pane there waits for a Linux build of emerald.'`, 'the Linux refusal', 30_000);
+    } catch (err) {
+      const shown = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(L + ' .empty-error')})].map((e) => (e.dataset.reason ?? '') + ': ' + e.textContent)`);
+      const sub = await s.evalJs(`${q(L + ' .empty-host[data-host="stub"] .empty-host-sub')}?.textContent ?? null`);
+      const rec = (await zreq(s, 'hosts.list', {})).hosts.find((x) => x.name === 'stub');
+      const tail = fs.readFileSync(sshLog, 'utf8').trim().split('\n').slice(-3);
+      throw new Error(`${err.message}: errors ${JSON.stringify(shown)}, sub ${JSON.stringify(sub)}, record ${JSON.stringify(rec)}, ssh log ${JSON.stringify(tail)}`);
+    }
+    expect(!(await s.evalJs(`!!${q(L + ' .empty-error-act')}`)), 'the Linux refusal has no button');
+    step('fix 1084 (7): a Linux host is refused with no button');
+  });
+
+  step(`PASS (${blocksRun()})`);
+} catch (err) {
+  console.error('[verify] FAIL', err);
+  await s.screenshot('m76-remote-fail.png').catch(() => {});
+  console.error(s.logs.join(''));
+  console.error(s.consoleLog.slice(-15).join('\n'));
+  process.exitCode = 1;
+} finally {
+  s.close();
+  killTree(s.child);
+  stopDaemon();
+  // The stub host's daemon: the CLI's stop, then whichever daemon last
+  // wrote R's daemon.json (the WMI-started one, the kit's), by its start
+  // time as well as its pid.
+  cli(stubEnv, 'daemon', 'stop');
+  killDaemonIfSame(daemonRecord(R));
+  killUnderStubHome();
+  setTimeout(() => process.exit(), 500);
+}

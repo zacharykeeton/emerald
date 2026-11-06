@@ -25,6 +25,7 @@ import {
   renameTab,
   replaceTab,
   sessionsOnPanes,
+  setPaneHost,
   setPaneSession,
   setPaneView,
   splitPane,
@@ -45,6 +46,7 @@ import { CLOSE_GRACE_MS, closeTyping } from './group-sweep-model.ts';
 import type { SweepMode } from './group-sweep-model.ts';
 import { CLAUDE_ENTER_DELAY_MS, STALL_MS, btwQuestion, chainOn, ctrlCWaitMs, isBusy, promptRefusal, sendRoute } from './prompt-model.ts';
 import { editLayout, editTab, getState, subscribe, whenSynced } from './store.ts';
+import { daemonFor, hostOfPane, splitPaneOnHost } from './hosts-model.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
 import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, loadClaudeOpensOn, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setDropping, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
@@ -630,7 +632,8 @@ async function sendNow(sessionId: string, text: string, typed: boolean): Promise
   if (reason !== null) return { kind: 'refused', reason };
   const busy = isBusy(session.state);
   const claude = markKind(session) === 'claude';
-  const daemon = getState().daemon;
+  // M9 fix 1085: the submit level is the session's own daemon's.
+  const daemon = daemonFor(getState(), session.host);
   let via: 'mod' | 'typed' = sendRoute(session, text, daemon === null ? 1 : daemonLevel(daemon), typed);
   if (via === 'mod') {
     // An older daemon or a closed pipe rejects; the text is typed then. No
@@ -865,8 +868,9 @@ async function dropToShell(sessionId: string, paneId: string): Promise<void> {
   // pane as it was.
   setDropping(sessionId, true);
   try {
-    const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 });
-    const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneSession(t, paneId, shell.id) : t), paneId);
+    // M9 fix 1086: the shell starts on the exited Claude's host.
+    const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 }, claude.host);
+    const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneHost(setPaneSession(t, paneId, shell.id), paneId, shell.host) : t), paneId);
     if (findPane(tab, paneId)?.sessionId !== shell.id) await killSessionUnrecorded(shell.id, true);
   } finally {
     setDropping(sessionId, false);
@@ -1078,22 +1082,25 @@ export function rememberSplitSource(newPaneId: string, sourcePaneId: string): vo
 // since M9: a shell next to the one you are in, with no dialog. The pane
 // resizes the PTY as soon as the terminal mounts, so any sane starting
 // size will do. shell (M9 fix 624) is one of the daemon's other shells;
-// none is the default.
-export async function startShellIn(paneId: string, folder: string, shell?: ShellId): Promise<void> {
-  const { session } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: folder, ...(shell === undefined ? {} : { shell }), cols: 120, rows: 30 });
-  rememberFolderUsed(folder);
-  await editTab((t) => setPaneSession(t, paneId, session.id), paneId);
+// none is the default. host (M9 fix 1086) starts it on that remote host
+// and writes the pane's host in the same layout.set; a host's folder never
+// joins this PC's recent list.
+export async function startShellIn(paneId: string, folder: string, shell?: ShellId, host?: string): Promise<void> {
+  const { session } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: folder, ...(shell === undefined ? {} : { shell }), cols: 120, rows: 30 }, host);
+  if (host === undefined) rememberFolderUsed(folder);
+  await editTab((t) => setPaneHost(setPaneSession(t, paneId, session.id), paneId, session.host), paneId);
 }
 
 // Starts a Claude session in the folder and shows it in the pane, the
 // Claude twin of startShellIn: the split's Claude arm (M9 fix 343) and the
 // empty pane's Start (M9 fix 545). No dialog and no args, the shape
 // NewSessionDialog.tsx's Start button uses. opts.chat opens the pane on
-// the chat face (M9 fix 689), the empty pane's `opens on` pick.
-export async function startClaudeIn(paneId: string, folder: string, opts: { chat?: boolean } = {}): Promise<void> {
-  const { session } = await window.emerald.request('session.spawn', { kind: 'claude', cwd: folder, cols: 120, rows: 30 });
-  rememberFolderUsed(folder);
-  await editTab((t) => setPaneSession(t, paneId, session.id), paneId);
+// the chat face (M9 fix 689), the empty pane's `opens on` pick. opts.host
+// (M9 fix 1086) as startShellIn's host.
+export async function startClaudeIn(paneId: string, folder: string, opts: { chat?: boolean; host?: string } = {}): Promise<void> {
+  const { session } = await window.emerald.request('session.spawn', { kind: 'claude', cwd: folder, cols: 120, rows: 30 }, opts.host);
+  if (opts.host === undefined) rememberFolderUsed(folder);
+  await editTab((t) => setPaneHost(setPaneSession(t, paneId, session.id), paneId, session.host), paneId);
   if (opts.chat === true) setChatFace(paneId, session.id, true);
 }
 
@@ -1199,10 +1206,14 @@ export async function roomBeside(paneId: string, view?: PaneView): Promise<strin
 // bug: it asked the new empty pane for the folder it should have asked
 // the focused one for). An explicit folder (the heading's +) wins over
 // whatever the source pane holds.
-export async function startShell(opts: { pane: string | 'focused'; folder?: string; shell?: ShellId }): Promise<void> {
+// M9 fix 1086: with no folder named it starts on opts.host or the source
+// pane's host (New shell here and Ctrl+Shift+N over a remote pane, whose
+// folderFor is the host's path); with a folder named, on opts.host alone.
+export async function startShell(opts: { pane: string | 'focused'; folder?: string; shell?: ShellId; host?: string }): Promise<void> {
   const layout = getState().layout;
   if (layout === null) throw new Error('no layout yet');
   const sourceId = opts.pane === 'focused' ? currentTab(layout).focusedPaneId : opts.pane;
+  const host = opts.folder === undefined ? (opts.host ?? (sourceId === null ? undefined : hostOfPane(getState(), sourceId))) : opts.host;
   const folder = opts.folder ?? (await folderFor(sourceId));
   const target =
     sourceId !== null && isEmptyPane(sourceId)
@@ -1210,7 +1221,7 @@ export async function startShell(opts: { pane: string | 'focused'; folder?: stri
       : opts.pane === 'focused'
         ? await roomBesideFocused()
         : await roomBeside(opts.pane);
-  await startShellIn(target, folder, opts.shell);
+  await startShellIn(target, folder, opts.shell, host);
 }
 
 // New shell here: the pane menu's row, the empty pane's button and
@@ -1227,10 +1238,11 @@ export async function startShellBesideFocused(): Promise<void> {
 
 // The + on a folder heading: a shell in that folder, beside the focused
 // pane. The row lands under the heading it was clicked on, since groups
-// are keyed by the live folder.
-export async function startShellBeside(folder: string, shell?: ShellId): Promise<void> {
+// are keyed by the live folder. host (M9 fix 1086), a host section's
+// heading, starts it on that host; absent is this PC.
+export async function startShellBeside(folder: string, shell?: ShellId, host?: string): Promise<void> {
   recordUse('shell-beside');
-  return startShell({ pane: 'focused', folder, ...(shell === undefined ? {} : { shell }) });
+  return startShell({ pane: 'focused', folder, ...(shell === undefined ? {} : { shell }), ...(host === undefined ? {} : { host }) });
 }
 
 // Whether the pane holds nothing at all, no session and no view. The one
@@ -1249,22 +1261,25 @@ function isEmptyPane(paneId: string): boolean {
 // last folder used, else home. A plain split, an empty pane, when the kind
 // is empty (M9 fix 537) or the pane is empty itself.
 export async function splitWith(paneId: string, direction: SplitDirection, kind: SplitKind): Promise<void> {
+  // M9 fix 1086: the new pane is on the source's host, so the on row's
+  // default there is that host and a shell or a Claude starts on it.
+  const host = hostOfPane(getState(), paneId);
   if (kind === 'empty' || isEmptyPane(paneId)) {
-    const after = await editTab((t) => splitPane(t, paneId, direction), paneId);
+    const after = await editTab((t) => splitPaneOnHost(t, paneId, direction, host), paneId);
     inheritFontSize(paneId, after.focusedPaneId);
     rememberSplitSource(after.focusedPaneId, paneId);
     return;
   }
   const folder = await folderFor(paneId);
-  const after = await editTab((t) => splitPane(t, paneId, direction), paneId);
+  const after = await editTab((t) => splitPaneOnHost(t, paneId, direction, host), paneId);
   inheritFontSize(paneId, after.focusedPaneId);
   rememberSplitSource(after.focusedPaneId, paneId);
   if (folder === null) return;
   if (kind === 'shell') {
-    await startShellIn(after.focusedPaneId, folder);
+    await startShellIn(after.focusedPaneId, folder, undefined, host);
     return;
   }
-  await startClaudeIn(after.focusedPaneId, folder);
+  await startClaudeIn(after.focusedPaneId, folder, host === undefined ? {} : { host });
 }
 
 // The title buttons, the empty pane's buttons and the pane menu's Split
@@ -1298,12 +1313,14 @@ export function pullSource(splitId: string): { paneId: string; place: SplitPlace
 export async function pullPane(paneId: string, direction: SplitDirection, place: SplitPlace): Promise<string> {
   recordUse('pull-pane');
   const folder = paneFolder(paneId);
-  const after = await editTab((t) => splitPane(t, paneId, direction, undefined, place), paneId);
+  // M9 fix 1086: the pulled pane is on the source's host.
+  const host = hostOfPane(getState(), paneId);
+  const after = await editTab((t) => splitPaneOnHost(t, paneId, direction, host, place), paneId);
   const newPaneId = after.focusedPaneId;
   const holder = parentSplit(after, newPaneId);
   if (holder === null) throw new Error('the pulled pane has no parent split');
   inheritFontSize(paneId, newPaneId);
-  if (folder !== null) void startShellIn(newPaneId, folder).catch(warn('shell for the pulled pane'));
+  if (folder !== null) void startShellIn(newPaneId, folder, undefined, host).catch(warn('shell for the pulled pane'));
   return holder.id;
 }
 

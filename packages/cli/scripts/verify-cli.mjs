@@ -317,6 +317,12 @@ try {
   expect(/^  mod-channel +stream a session's queued prompts to the emerald mod, which starts this itself$/m.test(r.out), 'help lists mod-channel with its summary');
   r = emerald('mod-channel');
   expect(r.code === 64 && /missing session/.test(r.err) && /usage: emmer mod-channel <session>/.test(r.err), `mod-channel with no session: usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  // M9 fix 1079: the relay the app runs on a remote host over ssh. Never
+  // run bare here: it would connect and wait on stdin.
+  r = emerald('help');
+  expect(/^  relay +carry the app's pipe over ssh: each stdin line to this machine's emmerd and each frame back on stdout; the app starts this itself$/m.test(r.out), 'help lists relay with its summary (M9 fix 1079)');
+  r = emerald('relay', 'x');
+  expect(r.code === 64 && /unexpected argument x/.test(r.err) && /usage: emmer relay \[--home <dir>\] \[--pipe <path>\]/.test(r.err), `relay x: unexpected argument, exit 64 and the usage (M9 fix 1079) (${r.code}: ${JSON.stringify(r.err)})`);
   // M9 fix 677: emmer usage report reads files only. This home has the
   // night's four applied hook lines ten days back and no usage.jsonl.
   r = emerald('usage');

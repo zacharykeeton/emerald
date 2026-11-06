@@ -51,6 +51,9 @@ import { useRates } from './rates-store.ts';
 import { resolveScheme, themeOf } from './scheme-model.ts';
 import type { XtermTheme } from './scheme-model.ts';
 import { ClaudeThemeNote } from './ClaudeThemeNote.tsx';
+import { HostChip } from './HostChip.tsx';
+import { HostLostNote } from './HostLostNote.tsx';
+import { effectiveState } from './hosts-model.ts';
 import { liveSamples, rateText, shellMarkTitle, shellRunning } from './session-mark-model.ts';
 import { useSqueeze } from './squeeze.ts';
 import { paneTextVars } from './pane-text.ts';
@@ -59,7 +62,7 @@ import { dialStyle } from './usage-model.ts';
 import { folderName } from './files-model.ts';
 import { lastFolder } from './recent-folders.ts';
 import { ackable, compactPercent, contextPercentText, contextText, describeState, hasState, idleClock, idleClockTitle, markKind, memberHandle, memberParts, modelEffortWords, modelWord, resumeTitle, shellCommand, teamCounts, tasksText, tokensText, waitingOnText, workingMotion } from '@emerald/shared';
-import { editTab, getState, useStore } from './store.ts';
+import { editTab, getState, useDaemonFor, useStore } from './store.ts';
 import { browserViewSupported, fileViewSupported, otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
 import { joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, urlLinkTitle } from './path-links.ts';
@@ -94,10 +97,15 @@ const EXITED_NOTICE_MS = 4000;
 // pane is empty. Clicking anywhere in it makes it the focused pane; a right
 // click anywhere in it, terminal included, opens the pane menu.
 export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
-  const { sessions, daemon, layout } = useStore('sessions', 'daemon', 'layout');
+  const { sessions, layout } = useStore('sessions', 'layout');
+  // M9 fixes 1089 and 1090: the host chip's destination and the lost line's band.
+  const { hosts, remoteHosts } = useStore('hosts', 'remoteHosts');
   // This session's output samples alone (M9 fix 354), for the mark.
   const rate = useRates(sessionId);
   const session = sessions.get(sessionId ?? '');
+  const lost = session !== undefined && effectiveState(session, hosts) === 'unreachable';
+  // M9 fix 1085: the session's own daemon, the host's for a remote one.
+  const daemon = useDaemonFor(session?.host);
   const { pickerPaneId, zoomedPaneId, sessionDrag, attention, shadedPanes, autoShaded, shadeAfter, splitKind, fontSizes, copyOnSelect, chatPanes } = useUi();
   // The face (M9 fix 689): a Claude session's pane shows its chat view or
   // its terminal; a shell, an empty pane and an unknown session have only
@@ -360,6 +368,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       ref={rootRef}
       className={focused ? 'pane focused' : 'pane'}
       data-pane-id={paneId}
+      data-host-lost={lost || undefined}
       data-color={session?.color ?? undefined}
       data-flash={flashing || undefined}
       data-shaded={shaded || undefined}
@@ -423,9 +432,13 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
             </span>
           )}
           {/* A plain shell shows no state (hasState); an unknown session says so. The mark before the name is the one motion (M46). */}
-          {(session === undefined || hasState(session)) && (
+          {(session === undefined || hasState(session) || lost) && (
             // The word opens the turn card (M73 task 4), which carries the state's sentence and the terminal title its tooltip did.
-            session === undefined ? (
+            lost ? (
+              <span className="pane-state state-unreachable" data-state="unreachable" data-squeeze-exact="">
+                unreachable
+              </span>
+            ) : session === undefined ? (
               <span className="pane-state state-unknown" data-state="unknown" data-squeeze-exact="">
                 unknown
               </span>
@@ -444,6 +457,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
           {session !== undefined && team !== null && <RosterUnits id={session.id} counts={team} members={session.team} size="unit" />}
           {session !== undefined && team !== null && <RosterUnits id={session.id} counts={team} members={session.team} size="unit" folded />}
           {session !== undefined && session.cwd !== session.groupCwd && <span className="pane-cwd">{session.cwd}</span>}
+          {session !== undefined && session.host !== undefined && <HostChip name={session.host} destination={remoteHosts.find((h) => h.name === session.host)?.destination ?? session.host} />}
           {session !== undefined && contextText(session) !== null && (
             <ContextReading session={session} className="pane-context">
               {/* The tooltip is the card the reading opens (M9 fix 67). The words in a span of their own, so a short title takes them first and leaves the dial (M9 fix 50); the dial (M9 fix 44) sits right before the percent it pictures, "Opus 5 · ◔ 19%" (M9 fix 66). */}
@@ -485,6 +499,10 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       )}
       {/* M9 fix 1035: Claude Code's own theme against this pane's scheme */}
       {claudePane && face === 'terminal' && session !== undefined && <ClaudeThemeNote session={session} />}
+      {/* M9 fix 1090: the lost line to the session's host, after the theme note so that note's previous sibling stays the title */}
+      {lost && session !== undefined && session.host !== undefined && (
+        <HostLostNote name={session.host} since={hosts.get(session.host)?.since ?? Date.now()} retryIn={hosts.get(session.host)?.retryIn ?? null} onTryNow={() => window.emerald.hostTryNow(session.host!)} />
+      )}
       {menu !== null && (
         <Menu
           x={menu.x}
@@ -897,9 +915,14 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
   const refitRef = useRef<(() => void) | null>(null);
   // Clears the screen and attaches afresh; set once the terminal is open.
   const reattachRef = useRef<(() => void) | null>(null);
-  const { layout, sessions, daemon } = useStore('layout', 'sessions', 'daemon');
+  const { layout, sessions } = useStore('layout', 'sessions');
   const revision = layout?.revision ?? 0;
   const session = sessions.get(sessionId);
+  // M9 fix 1090: while the line to the session's host is lost the terminal takes no input.
+  const { hosts } = useStore('hosts');
+  const lost = session !== undefined && effectiveState(session, hosts) === 'unreachable';
+  // M9 fix 1085: the kept screen is the session's own daemon's record.
+  const daemon = useDaemonFor(session?.host);
   const sessionState = session?.state;
   // Whether the terminal shows the frame kept at the session's exit (M9
   // fix 159): asked of the daemon once the session is exited, since the
@@ -946,6 +969,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blockedRef = useRef<() => boolean>(() => false);
   blockedRef.current = () => {
+    if (lost) return true;
     if (sessionState !== 'exited') return false;
     setNotice(true);
     if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
@@ -1049,6 +1073,10 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
     if (term === null) return;
     term.options.theme = themeRef.current;
   }, [scheme]);
+  useEffect(() => {
+    const term = termRef.current;
+    if (term !== null) term.options.disableStdin = lost;
+  }, [lost, sessionId]);
 
   // Also fit whenever the layout or the zoom changes. ResizeObserver
   // callbacks and animation frames are paused while the window is hidden or
@@ -1822,6 +1850,11 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   const hoverStatCache = createStatCache<FileStat>();
   const pathLinks = term.registerLinkProvider({
     provideLinks: (y, callback) => {
+      // M9 fix 1085: a remote session's paths are the host's disk, which nothing here can open yet.
+      if (getState().sessions.get(sessionId)?.host !== undefined) {
+        callback(undefined);
+        return;
+      }
       const line = term.buffer.active.getLine(y - 1);
       if (line === undefined) {
         callback(undefined);

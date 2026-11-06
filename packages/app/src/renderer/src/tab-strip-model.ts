@@ -26,7 +26,7 @@ export function tabWanting(
   if (waiting.length === 0) return undefined;
   // A stalled session (M9 fix 232) is not a state the rollup ranks: the
   // tab takes its tone when nothing ranked wants someone.
-  const state = rollup({ key: tab.id, title: tab.name, sessions: waiting })?.state;
+  const state = rollup({ key: tab.id, title: tab.name, sessions: waiting, host: '', folder: '' })?.state;
   if (state !== undefined && ATTENTION_STATES.has(state)) return state;
   return waiting.some((s) => attentionState(s) === 'quiet') ? 'quiet' : state;
 }

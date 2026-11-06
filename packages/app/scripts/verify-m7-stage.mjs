@@ -144,6 +144,12 @@ async function main() {
   const stagedMod = path.join(stageCopy, 'cli', 'mod');
   const modFiles = ['.claude-plugin/plugin.json', 'hooks/hooks.json', 'hooks/register.js'];
   expect(modFiles.every((f) => fs.existsSync(path.join(stagedMod, f))) && !fs.existsSync(path.join(stagedMod, 'hooks', 'register.test.tsx')), 'the emerald mod is staged under cli/mod, its test left out');
+
+  // M9 fix 1083: the remote kit's pins ride in the stage's root, from the lockfile.
+  const pinsPath = path.join(stageCopy, 'kit-pins.json');
+  const pins = fs.existsSync(pinsPath) ? JSON.parse(fs.readFileSync(pinsPath, 'utf8')) : {};
+  const lock = JSON.parse(fs.readFileSync(path.resolve(packagesDir, '..', 'package-lock.json'), 'utf8')).packages['node_modules/node-pty'];
+  expect(pins.nodePty?.version === lock.version && pins.nodePty?.integrity === lock.integrity, "kit-pins.json carries node-pty's version and integrity from package-lock.json (fix 1083)");
   if (spawnSync('claude --version', { shell: true, windowsHide: true, timeout: 60_000 }).status !== 0) {
     log("claude is not on PATH; the staged mod's validate was not run");
   } else {
@@ -172,6 +178,10 @@ async function main() {
 
   r = emerald('daemon', 'start');
   expect(r.code === 0 && /^started emmerd/.test(r.out), `daemon start through the shim: ${r.out.trim()}`);
+  // M9 fix 1079: the relay ships with the CLI's dist; a stage that dropped
+  // the module fails here.
+  r = emerald('help');
+  expect(/^  relay +/m.test(r.out), 'help through the staged shim lists relay (M9 fix 1079)');
   const info = readDaemonInfo();
   expect(info !== null && info.pipe === env.EMERALD_PIPE, 'daemon.json in the private home names the private pipe');
   // Both sides through realpath, since os.tmpdir() may be a short 8.3 path.

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionKind } from '@emerald/shared';
-import { findPane, setPaneSession, tabHolding } from '@emerald/shared';
+import { findPane, setPaneHost, setPaneSession, tabHolding } from '@emerald/shared';
 import { roomBesideFocused } from './actions.ts';
 import { splitArgs } from './new-session-model.ts';
 import { loadRecent, rememberFolderUsed } from './recent-folders.ts';
@@ -29,6 +29,11 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
   const tab = layout === null ? null : tabHolding(layout, paneId);
   const currentSession = sessions.get((tab === null ? null : findPane(tab, paneId))?.sessionId ?? '');
   const [cwd, setCwd] = useState(preset?.folder ?? currentSession?.cwd ?? recent[0] ?? '');
+  // M9 fix 1086: the host the session starts on, the preset's (the on
+  // row's or a host section's) else the pane's session's; absent is this
+  // PC. A host's folder is that machine's, so Browse and this PC's recent
+  // list are not offered for it.
+  const host = preset?.host ?? currentSession?.host;
   const [kind, setKind] = useState<SessionKind>('claude');
   const [args, setArgs] = useState('');
   // M56: what the session starts on, handed to claude as its last
@@ -85,14 +90,14 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
     // The pane resizes the PTY as soon as the terminal mounts, so any sane
     // starting size will do.
     window.emerald
-      .request('session.spawn', { kind, cwd: folder, cols: 120, rows: 30, ...(extra.length > 0 ? { args: extra } : {}) })
+      .request('session.spawn', { kind, cwd: folder, cols: 120, rows: 30, ...(extra.length > 0 ? { args: extra } : {}) }, host)
       .then(async ({ session }) => {
         const target = preset?.split === true ? await roomBesideFocused() : paneId;
-        await editTab((t) => setPaneSession(t, target, session.id), target);
+        await editTab((t) => setPaneHost(setPaneSession(t, target, session.id), target, session.host), target);
         if (chat) setChatFace(target, session.id, true);
       })
       .then(() => {
-        rememberFolderUsed(folder);
+        if (host === undefined) rememberFolderUsed(folder);
         closeNewSession();
       })
       .catch((err: unknown) => {
@@ -117,12 +122,20 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
           <span>Folder</span>
           <div className="dialog-inline">
             <input ref={cwdRef} name="cwd" value={cwd} onChange={(e) => setCwd(e.target.value)} spellCheck={false} />
-            <button type="button" onClick={browse}>
-              Browse
-            </button>
+            {host === undefined && (
+              <button type="button" onClick={browse}>
+                Browse
+              </button>
+            )}
           </div>
         </label>
-        {recent.length > 0 && (
+        {host !== undefined && (
+          <div className="dialog-field dialog-host" data-host={host}>
+            <span>On</span>
+            <span className="dialog-host-name">{host}</span>
+          </div>
+        )}
+        {host === undefined && recent.length > 0 && (
           <div className="dialog-recent">
             {recent.map((f) => (
               <button type="button" key={f} className="dialog-recent-item" title={f} onClick={() => setCwd(f)}>

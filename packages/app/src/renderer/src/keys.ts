@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { closePane, cycleFocus, findPane, focusPane, neighborPane, splitPane } from '@emerald/shared';
+import { closePane, cycleFocus, findPane, focusPane, neighborPane } from '@emerald/shared';
+import { hostOfPane, splitPaneOnHost } from './hosts-model.ts';
 import type { Direction, SplitDirection, UseFrom } from '@emerald/shared';
 import { cycleLayoutTab, cycleStripTabs, newTab, openFileByDialog, rememberSplitSource, showSession, shownTab, startShellHere } from './actions.ts';
 import { waitingOrder } from './attention-model.ts';
@@ -320,7 +321,8 @@ function focusToward(direction: Direction): Promise<unknown> {
 // The new pane keeps the text size of the one it split from.
 async function splitFocused(direction: SplitDirection): Promise<unknown> {
   const before = shownTab();
-  const after = await editTab((t) => splitPane(t, t.focusedPaneId, direction));
+  // M9 fix 1086: the new empty pane is on the focused pane's host.
+  const after = await editTab((t) => splitPaneOnHost(t, t.focusedPaneId, direction, hostOfPane(getState(), t.focusedPaneId)));
   if (before !== null) {
     inheritFontSize(before.focusedPaneId, after.focusedPaneId);
     rememberSplitSource(after.focusedPaneId, before.focusedPaneId);

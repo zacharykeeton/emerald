@@ -90,7 +90,8 @@ export type PaneView = CommitsPaneView | ActivityPaneView | FilePaneView | Brows
 
 export type LayoutNode =
   | { kind: 'split'; id: string; direction: SplitDirection; ratio: number; first: LayoutNode; second: LayoutNode }
-  | { kind: 'pane'; id: string; sessionId: string | null; view: PaneView | null };
+  // M9 fix 1081: host, the name of the remote host the pane's session runs on, absent for this PC; kept so a split from the pane starts on the same host and the title can say where it runs.
+  | { kind: 'pane'; id: string; sessionId: string | null; view: PaneView | null; host?: string };
 
 // One split tree with a focused pane: what the pure tree ops in tree.ts
 // work on. A tab is one of these with a name; the shape before M36 was one

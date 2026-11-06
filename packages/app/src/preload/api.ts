@@ -1,4 +1,4 @@
-import type { ClientMessage, DesignPick, PaneView, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage, UseLineIn } from '@emerald/shared';
+import type { ClientMessage, DesignPick, HostRecord, PaneView, RemoteHost, RequestType, Requests, ServerMessage, ShellOption, Turn, UsageMessage, UseLineIn } from '@emerald/shared';
 import type { GitFile, GitStatusResult } from '../renderer/src/git-status-model.ts';
 import type { TerminalScheme } from '../renderer/src/scheme-model.ts';
 import type { UpdateState } from '../renderer/src/update-model.ts';
@@ -32,6 +32,15 @@ export type RendererPush =
   // tell on its own (neither the overlay's visible flag nor display-mode
   // moves under Electron), so the main process says.
   | { type: 'window.fullscreen'; on: boolean }
+  // A remote host's line (M9 fix 1081): main's client for the host moved
+  // to a state; since is when it entered it (a lost line's drop time,
+  // kept across the retries of one outage), retryIn the seconds to the
+  // next try while lost.
+  // idle: the host was forgotten (hostForget), so the next pick contacts it afresh.
+  | { type: 'host.changed'; host: string; state: 'idle' | 'connecting' | 'up' | 'lost' | 'refused'; daemon: DaemonInfo | null; since: number; retryIn: number | null; refusal: { kind: 'hostkey' | 'ssh' | 'nokit'; line: string } | null }
+  | { type: 'hosts.changed'; hosts: HostRecord[] }     // the local daemon's push, relayed as it is
+  // the kit's (C4), declared here by remote-cut so remote-kit only fills it in main:
+  | { type: 'host.setup'; host: string; phase: 'probing' | 'copying' | 'unpacking' | 'starting' | 'done' | 'failed'; bytes: number; startedAt: number; line: string | null }
   // The updater's state changed (M9 fix 239): the title row's badge
   // follows it.
   | { type: 'update.state'; state: UpdateState };
@@ -55,6 +64,9 @@ export interface DaemonInfo {
   // The shells the daemon found at the connect (M9 fix 624), the first the
   // default; absent from a daemon older than level 61.
   shells?: ShellOption[];
+  // Whether the daemon finds a claude (M9 fix 1084); null from a daemon
+  // older than level 80, absent from a test's literal.
+  claude?: boolean | null;
 }
 
 export type FireAndForget = Extract<ClientMessage, { type: 'pty.input' | 'pty.resize' }>;
@@ -1077,7 +1089,22 @@ export interface EmeraldApi {
   daemonCrash(): Promise<DaemonCrash | null>;
   // Not now on the crash banner: the main process forgets the crash.
   dismissCrash(): void;
-  request<K extends RequestType>(type: K, body: Requests[K]['req']): Promise<Requests[K]['res']>;
-  send(msg: FireAndForget): void;
+  // The remote hosts (M9 fix 1081): ~/.ssh/config's hosts then the ones
+  // added by hand, read again on every call.
+  remoteHosts(): Promise<RemoteHost[]>;                                    // the config's hosts then the record's
+  // The last host.changed of each host main has a client for, for a
+  // renderer's sync after a reload.
+  hostStates(): Promise<Array<Omit<Extract<RendererPush, { type: 'host.changed' }>, 'type'>>>;
+  hostConnect(name: string): Promise<void>;                                // make the client, contact the host (the kit's first contact when it has none)
+  hostTryNow(name: string): void;                                          // cut a lost client's wait
+  hostForget(name: string): Promise<void>;                                 // stop the client, hosts.remove when it was added by hand
+  hostAdd(destination: string): Promise<RemoteHost>;                       // hosts.set with name = destination's host part, then hostConnect
+  // Kills the setup's running scp or ssh (M9 fix 1084, A5's Cancel); the
+  // setup ends failed with the line cancelled.
+  hostCancelSetup(name: string): Promise<void>;
+  // host names a remote host's daemon (M9 fix 1081); without it a body's
+  // sessionId on a host goes there, anything else to this PC's daemon.
+  request<K extends RequestType>(type: K, body: Requests[K]['req'], host?: string | null): Promise<Requests[K]['res']>;
+  send(msg: FireAndForget, host?: string | null): void;
   on(handler: (msg: RendererPush) => void): () => void;
 }

@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultLayout } from '@emerald/shared';
-import type { Layout, SessionInfo } from '@emerald/shared';
+import { defaultLayout, findPane, replaceTab, setPaneSession } from '@emerald/shared';
+import type { Layout, SessionInfo, SingleTree } from '@emerald/shared';
 import { getRates, resetRates, runningShellsHeld, subscribeRates } from './rates-store.ts';
-import { dismissCrash, editAllLayout, endSessionColorPreview, getState, holdSessionColorPreview, initialDaemon, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
+import { dismissCrash, editAllLayout, editLayout, endSessionColorPreview, getState, holdSessionColorPreview, initialDaemon, onPush, pickHeld, subscribe, whenSynced } from './store.ts';
 import { aSession } from './test-support.ts';
+import { effectiveState } from './hosts-model.ts';
 
 // M9 fix 354: the output rate leaves the main store for one of its own,
 // so a pty.rate push reaches the rates store's listeners and not the
@@ -285,5 +286,121 @@ test("initialDaemon reads the main process's hello synchronously, and null with 
   } finally {
     if (held === undefined) delete g.window;
     else g.window = held;
+  }
+});
+
+// M9 fix 1085: the store knows every host from main's pushes and its
+// sync, and a remote session keeps the host main stamped on it.
+const hostDaemon = { pid: 4242, version: '0.1.1079', featureLevel: 80, otherHome: null };
+const hostChanged = (state: string, over: Record<string, unknown> = {}) => ({ type: 'host.changed', host: 'wfs-db', state, daemon: state === 'up' ? hostDaemon : null, since: 7, retryIn: null, refusal: null, ...over });
+
+test('a host.changed push to up holds the host daemon, and a stamped session.changed keeps its host (M9 fix 1085)', () => {
+  push(hostChanged('up'));
+  assert.deepEqual(getState().hosts.get('wfs-db')?.daemon, hostDaemon);
+  push({ type: 'session.changed', session: aSession({ id: 'remote-1085', host: 'wfs-db', state: 'working' }) });
+  const s = getState().sessions.get('remote-1085')!;
+  assert.equal(s.host, 'wfs-db');
+  assert.equal(effectiveState(s, getState().hosts), 'working');
+  push(hostChanged('lost', { retryIn: 2 }));
+  assert.equal(effectiveState(getState().sessions.get('remote-1085')!, getState().hosts), 'unreachable');
+  push({ type: 'host.setup', host: 'wfs-db', phase: 'copying', bytes: 1024, startedAt: 30, line: null });
+  assert.equal(getState().hosts.get('wfs-db')?.state, 'setup');
+  push({ type: 'session.removed', sessionId: 'remote-1085' });
+});
+
+test('the sync fills the hosts and the sessions, local and stamped, from one list and the host states (M9 fix 1085)', async () => {
+  const g = globalThis as { window?: unknown };
+  const held = g.window;
+  const wfs = { name: 'wfs-db', destination: 'zacha@wfs-db.example', addedAt: 0, source: 'config', home: 'C:\\Users\\zacha' };
+  try {
+    g.window = {
+      emerald: {
+        request: async (type: string) => {
+          if (type === 'layout.get') return { layout: defaultLayout() };
+          if (type === 'session.list') return { sessions: [aSession({ id: 'local-sync' }), aSession({ id: 'remote-sync', host: 'wfs-db' })] };
+          return {};
+        },
+        daemonInfo: async () => ({ pid: 17600, version: '0.1.1079', featureLevel: 1, otherHome: null }),
+        daemonCrash: async () => null,
+        windowId: async () => 'first',
+        remoteHosts: async () => [wfs],
+        hostStates: async () => [{ host: 'wfs-db', state: 'up', daemon: hostDaemon, since: 3, retryIn: null, refusal: null }],
+      },
+    };
+    push({ type: 'daemon.connected', daemon: { pid: 17600, version: '0.1.1079', featureLevel: 1, otherHome: null } });
+    await turns(6);
+    const s = getState();
+    assert.equal(s.sessions.get('local-sync')?.host, undefined);
+    assert.equal(s.sessions.get('remote-sync')?.host, 'wfs-db');
+    assert.deepEqual(s.remoteHosts, [wfs]);
+    assert.equal(s.hosts.get('wfs-db')?.state, 'up');
+    assert.equal(s.hosts.get('wfs-db')?.record.home, 'C:\\Users\\zacha');
+    // A window without the host methods (every older stub) syncs the local
+    // side all the same.
+    g.window = {
+      emerald: {
+        request: async (type: string) => {
+          if (type === 'layout.get') return { layout: defaultLayout() };
+          if (type === 'session.list') return { sessions: [aSession({ id: 'local-only' })] };
+          return {};
+        },
+        daemonInfo: async () => ({ pid: 17601, version: '0.1.1079', featureLevel: 1, otherHome: null }),
+        daemonCrash: async () => null,
+        windowId: async () => 'first',
+      },
+    };
+    push({ type: 'daemon.connected', daemon: { pid: 17601, version: '0.1.1079', featureLevel: 1, otherHome: null } });
+    await turns(6);
+    assert.equal(getState().sessions.has('local-only'), true);
+    assert.equal(getState().daemon?.pid, 17601);
+  } finally {
+    if (held === undefined) delete g.window;
+    else g.window = held;
+  }
+});
+
+// M9 fix 1086: whichever edit puts a remote session in a pane, the
+// layout.set carries the pane's host.
+test('an edit that puts a remote session in a pane sends the pane with its host (M9 fix 1086)', async () => {
+  const g = globalThis as { window?: unknown };
+  const held = g.window;
+  const start = { ...defaultLayout(), revision: 40 };
+  // The wire is one tree for a daemon before tabs (the store's daemon
+  // here is an earlier test's level 1), the layout otherwise.
+  const box: { sent: Layout | SingleTree | null } = { sent: null };
+  const sentTree = () => {
+    const l = box.sent!;
+    return 'tabs' in l ? l.tabs[0]! : l;
+  };
+  try {
+    g.window = {
+      emerald: {
+        request: async (type: string, body: { layout?: Layout | SingleTree }) => {
+          if (type === 'layout.get') return { layout: start };
+          if (type === 'layout.set') {
+            box.sent = body.layout!;
+            return { layout: { ...box.sent, revision: box.sent.revision + 1 } };
+          }
+          return {};
+        },
+      },
+    };
+    push({ type: 'layout.changed', layout: start });
+    push({ type: 'session.changed', session: aSession({ id: 'remote-1086', host: 'wfs-db' }) });
+    const paneId = start.tabs[0]!.focusedPaneId;
+    await editLayout((l) => replaceTab(l, setPaneSession(l.tabs[0]!, paneId, 'remote-1086')));
+    assert.notEqual(box.sent, null);
+    const pane = findPane(sentTree(), paneId)!;
+    assert.equal(pane.sessionId, 'remote-1086');
+    assert.equal(pane.host, 'wfs-db');
+    // A local session put into that pane takes the host off.
+    push({ type: 'session.changed', session: aSession({ id: 'local-1086' }) });
+    await editLayout((l) => replaceTab(l, setPaneSession(l.tabs[0]!, paneId, 'local-1086')));
+    assert.equal('host' in findPane(sentTree(), paneId)!, false);
+  } finally {
+    if (held === undefined) delete g.window;
+    else g.window = held;
+    push({ type: 'session.removed', sessionId: 'remote-1086' });
+    push({ type: 'session.removed', sessionId: 'local-1086' });
   }
 });

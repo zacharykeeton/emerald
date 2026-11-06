@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { hookOptions } from './hooks.ts';
+import { applyHomeFlag, hookOptions } from './hooks.ts';
 
 // M9 fix 544: the settings file follows CLAUDE_CONFIG_DIR, which Claude
 // Code honours, below --settings and CLAUDE_SETTINGS. Each case sets both
@@ -54,4 +54,20 @@ test('neither variable gives ~/.claude/settings.json, and a CLAUDE_CONFIG_DIR of
   const home = path.join(os.homedir(), '.claude', 'settings.json');
   withEnv(undefined, undefined, () => assert.equal(hookOptions(undefined).settingsPath, home));
   withEnv(undefined, '   ', () => assert.equal(hookOptions(undefined).settingsPath, home));
+});
+
+test('--home puts the hook script under the named home (M9 fix 1084)', () => {
+  const saved = process.env['EMERALD_HOME'];
+  const home = path.join(os.tmpdir(), 'emerald-remote-1084');
+  try {
+    withEnv(undefined, undefined, () => {
+      applyHomeFlag(home);
+      assert.equal(hookOptions(undefined, 'win32').scriptDest, path.join(home, 'hooks', 'claude-hook.cmd'));
+    });
+    applyHomeFlag(undefined);
+    assert.equal(process.env['EMERALD_HOME'], path.resolve(home), 'no flag leaves the home as it was');
+  } finally {
+    if (saved === undefined) delete process.env['EMERALD_HOME'];
+    else process.env['EMERALD_HOME'] = saved;
+  }
 });

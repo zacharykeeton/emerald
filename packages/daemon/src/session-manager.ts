@@ -19,7 +19,7 @@ import { SpinnerScanner } from './spinner-word.ts';
 import { PtySession, stampEnv } from './pty-session.ts';
 import { withRegistry } from './spawn-path.ts';
 import { TranscriptTail } from './transcript-tail.ts';
-import { ClaudeLauncher } from './launchers/claude.ts';
+import { ClaudeLauncher, findClaude } from './launchers/claude.ts';
 import { BASH_RC, ShellLauncher, ZSH_FILES, bashRc, zshDirFor } from './launchers/shell.ts';
 import { findShells } from './shells.ts';
 import type { SessionLauncher } from './launchers/types.ts';
@@ -227,12 +227,16 @@ export class SessionManager extends EventEmitter {
   private closed = false;
   private readonly offReftable: () => void;
   private shells: ShellOption[];
+  // Whether a claude is found (M9 fix 1084), read at the start and again
+  // with the shells at each app hello, as the hello reports it.
+  private claude: boolean;
 
   constructor(log: Logger, opts: SessionManagerOptions = {}) {
     super();
     this.log = log;
     this.opts = opts;
     this.shells = opts.shells ?? findShells();
+    this.claude = findClaude(process.env, os.homedir(), process.platform) !== null;
     this.bashrcPath = opts.bashrcPath ?? path.join(os.tmpdir(), `emerald-bashrc-${process.pid}-${randomUUID().slice(0, 8)}`, 'emerald.bashrc');
     this.launchers = { claude: new ClaudeLauncher({ modDir: opts.claudeModDir ?? null }), shell: new ShellLauncher({ bashrcPath: this.bashrcPath, modDir: opts.claudeModDir ?? null }) };
     this.staleAfterMs = opts.staleAfterMs ?? Limits.staleAfterMs;
@@ -294,13 +298,26 @@ export class SessionManager extends EventEmitter {
   // one installed since the daemon started is offered and started; the
   // list is replaced, with a line, only when an id or a file differs.
   refreshShells(registry: Record<string, string>): ShellOption[] {
-    const found = findShells(withRegistry(process.env, registry));
+    const env = withRegistry(process.env, registry);
+    const found = findShells(env);
     const same = found.length === this.shells.length && found.every((o, i) => o.id === this.shells[i]!.id && o.file === this.shells[i]!.file);
     if (!same) {
       this.log.info('shells changed', { from: this.shells.map((o) => o.id), to: found.map((o) => o.id) });
       this.shells = found;
     }
+    // M9 fix 1084: a claude installed since the start clears the empty
+    // pane's refusal without a daemon restart.
+    const claude = findClaude(env, os.homedir(), process.platform) !== null;
+    if (claude !== this.claude) {
+      this.log.info('claude on PATH changed', { from: this.claude, to: claude });
+      this.claude = claude;
+    }
     return this.installedShells();
+  }
+
+  // Whether a claude is found (M9 fix 1084), as the hello reports it.
+  claudeInstalled(): boolean {
+    return this.claude;
   }
 
   // The shell a spawn asked for, among the installed ones; none asked is

@@ -1,6 +1,12 @@
 import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron';
 import type { WebContents } from 'electron';
-import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, isLocalPageUrl, LOCAL_PAGE_SCHEME, paneShowingIn, windowHolding, windowsOf } from '@emerald/shared';
+import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, HOSTS_LEVEL, hostNameOf, isLocalPageUrl, LOCAL_PAGE_SCHEME, mergeRemoteHosts, paneShowingIn, sshConfigHosts, windowHolding, windowsOf } from '@emerald/shared';
+import type { HostRecord, RemoteHost, SessionInfo } from '@emerald/shared';
+import { HostClient } from './host-client.ts';
+import { cancelSetup, pruneOldKits, setupHost, spawnRunner } from './host-setup.ts';
+import type { ConnectRefusal } from './host-setup.ts';
+import { assembleKit, kitRoot } from './remote-kit.ts';
+import type { KitArch, KitOs } from './remote-kit.ts';
 import { Readable } from 'node:stream';
 import { answerLocalPage, LOCAL_PAGE_HEADERS, localRequestAllowed, localRootIn } from './local-page.ts';
 import type { Layout } from '@emerald/shared';
@@ -361,7 +367,9 @@ ipcMain.handle('emerald:daemon-info', () => client.daemonInfo);
 // A reloaded renderer seeds its store with the hello main already holds (M9 fix 1013).
 ipcMain.on('emerald:daemon-info-sync', (e) => { e.returnValue = client.daemonInfo ?? null; });
 client.on('disconnected', () => {
-  broker.clear();
+  // A remote host's sessions are not this daemon's (M9 fix 1081); their
+  // holders stay for the host's own reattach.
+  broker.clear((id) => sessionHost(id) !== undefined);
   pushToRenderer({ type: 'daemon.disconnected' });
 });
 // The layout window a page shows (M9 fix 866): a window opened from a
@@ -393,7 +401,11 @@ ipcMain.on('emerald:dismiss-crash', () => {
 // The wait has a deadline (M9 fix 453, M75's L38): a daemon that never came
 // up left every such request pending for good.
 const READY_DEADLINE_MS = 10_000;
-ipcMain.handle('emerald:request', async (event, type: RequestType, body: Requests[RequestType]['req']) => {
+ipcMain.handle('emerald:request', async (event, type: RequestType, body: Requests[RequestType]['req'], host?: string | null) => {
+  // A remote host's daemon (M9 fix 1081): named, or found by the body's
+  // session id; the layout, the windows and this PC's records stay local.
+  const remote = routeHost(type, body, host);
+  if (remote !== undefined) return hostRequest(event.sender.id, remote, type, body);
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error('emmerd did not come up')), READY_DEADLINE_MS);
@@ -421,6 +433,13 @@ ipcMain.handle('emerald:request', async (event, type: RequestType, body: Request
   } catch (err) {
     throw encodeRequestError(err);
   }
+  // An unhosted list carries every host's kept sessions after this PC's
+  // (M9 fix 1081), so a reloaded renderer's one sync sees the remote rows.
+  if (type === 'session.list') {
+    const withRemoved = (body as { removed?: boolean }).removed === true;
+    const local = (reply as Requests['session.list']['res']).sessions;
+    reply = { sessions: [...local, ...keptHostSessions(withRemoved)] };
+  }
   // A page's own layout read binds the startup window as soon as main's
   // would (M9 fix 866), so the page's window id is never later than its
   // layout.
@@ -433,7 +452,285 @@ ipcMain.handle('emerald:request', async (event, type: RequestType, body: Request
   }
   return reply;
 });
-ipcMain.on('emerald:send', (_event, msg: ClientMessage) => client.send(msg));
+ipcMain.on('emerald:send', (_event, msg: ClientMessage, host?: string | null) => {
+  const remote = routeHost(msg.type as RequestType, msg as never, host);
+  if (remote === undefined) client.send(msg);
+  else hostClients.get(remote)?.send(msg);
+});
+
+// The remote hosts (M9 fix 1081, contract C3): one HostClient per host,
+// each a child ssh running the host's `emmer relay`, made on the first
+// request that names the host and kept until hostForget. Every session a
+// host lists is kept here by id, stamped with the host's name, so a
+// request is routed by its session id and an unhosted list carries them.
+type HostChanged = Omit<Extract<RendererPush, { type: 'host.changed' }>, 'type'>;
+const hostClients = new Map<string, HostClient>();
+const hostMaking = new Map<string, Promise<HostClient>>();
+const hostSessions = new Map<string, Map<string, SessionInfo>>();
+const hostLast = new Map<string, HostChanged>();
+// What always goes to this PC's daemon, whatever host a request names.
+const LOCAL_ONLY = /^(layout|window|folders|hosts|prompts|conflicts)\./;
+
+function sessionHost(id: string): string | undefined {
+  for (const [name, kept] of hostSessions) if (kept.has(id)) return name;
+  return undefined;
+}
+
+// The host a request goes to, or undefined for this PC's daemon.
+function routeHost(type: string, body: unknown, host: string | null | undefined): string | undefined {
+  if (LOCAL_ONLY.test(type)) return undefined;
+  if (typeof host === 'string' && host !== '') return host;
+  const sessionId = typeof body === 'object' && body !== null ? (body as { sessionId?: unknown }).sessionId : undefined;
+  return typeof sessionId === 'string' ? sessionHost(sessionId) : undefined;
+}
+
+function stampHost(name: string, info: SessionInfo): SessionInfo {
+  return { ...info, host: name };
+}
+
+function keepHostSession(name: string, info: SessionInfo): SessionInfo {
+  const stamped = stampHost(name, info);
+  let kept = hostSessions.get(name);
+  if (kept === undefined) {
+    kept = new Map();
+    hostSessions.set(name, kept);
+  }
+  kept.set(stamped.id, stamped);
+  return stamped;
+}
+
+function keptHostSessions(withRemoved: boolean): SessionInfo[] {
+  const out: SessionInfo[] = [];
+  for (const kept of hostSessions.values()) {
+    for (const s of kept.values()) if (withRemoved || s.removedAt === undefined || s.removedAt === null) out.push(s);
+  }
+  return out;
+}
+
+// ~/.ssh/config's hosts (EMERALD_SSH_CONFIG for a harness, which points it
+// at a file of its own) then the record's, read on every call; the record
+// only from a local daemon that keeps one.
+async function remoteHosts(): Promise<RemoteHost[]> {
+  const file = process.env['EMERALD_SSH_CONFIG'] ?? path.join(os.homedir(), '.ssh', 'config');
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    // No config is no hosts.
+  }
+  let records: HostRecord[] = [];
+  if ((client.daemonInfo?.featureLevel ?? 0) >= HOSTS_LEVEL) {
+    try {
+      records = (await client.request('hosts.list', {})).hosts;
+    } catch (err) {
+      log(`hosts.list failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return mergeRemoteHosts(sshConfigHosts(text), records);
+}
+
+function pushHostState(c: HostClient): void {
+  if (c.state === 'idle') return;
+  const body: HostChanged = { host: c.name, state: c.state, daemon: c.daemon, since: c.since, retryIn: c.retryIn, refusal: c.refusal };
+  hostLast.set(c.name, body);
+  pushToRenderer({ type: 'host.changed', ...body });
+}
+
+// What main relays from a host: a session's output, its state and its
+// rows; everything window-wide is this PC's and dropped.
+function onHostMessage(name: string, msg: ServerMessage): void {
+  switch (msg.type) {
+    case 'pty.output': {
+      const data = new Uint8Array(Buffer.from(msg.data, 'base64'));
+      pushToRenderer(msg.replay ? { type: 'pty.output', sessionId: msg.sessionId, data, replay: true } : { type: 'pty.output', sessionId: msg.sessionId, data });
+      return;
+    }
+    case 'session.changed':
+      pushToRenderer({ type: 'session.changed', session: keepHostSession(name, msg.session) });
+      return;
+    case 'session.removed':
+      hostSessions.get(name)?.delete(msg.sessionId);
+      pushToRenderer(msg);
+      return;
+    case 'pty.exit':
+    case 'pty.activity':
+    case 'pty.rate':
+    case 'sessions.load':
+    case 'transcript.row':
+      pushToRenderer(msg);
+      return;
+    default:
+      return;
+  }
+}
+
+function hostClientFor(name: string): Promise<HostClient> {
+  const have = hostClients.get(name);
+  if (have !== undefined) return Promise.resolve(have);
+  const making = hostMaking.get(name);
+  if (making !== undefined) return making;
+  const made = (async () => {
+    const host = (await remoteHosts()).find((h) => h.name === name);
+    if (host === undefined) throw new Error(`no host ${name}`);
+    const c = new HostClient({ host, runner, log });
+    c.on('message', (msg: ServerMessage) => onHostMessage(name, msg));
+    c.on('connecting', () => pushHostState(c));
+    c.on('lost', () => pushHostState(c));
+    c.on('refused', () => pushHostState(c));
+    c.on('connected', (_daemon: DaemonInfo, sessions: SessionInfo[]) => {
+      // The host's list, kept and pushed stamped; a reattach's sessions
+      // reach the renderer this way, as the store asks nothing on up.
+      const kept = new Map<string, SessionInfo>();
+      hostSessions.set(name, kept);
+      for (const s of sessions) {
+        const stamped = keepHostSession(name, s);
+        pushToRenderer({ type: 'session.changed', session: stamped });
+      }
+      pushHostState(c);
+      // M9 fix 1084: the old kits go once the recorded kit's daemon answers.
+      void pruneOldKits(c.record, _daemon, { run: remoteRunner, log });
+      // Every pane on the host replays and resets as on a window reload.
+      for (const id of broker.held()) {
+        if (!kept.has(id)) continue;
+        c.request('pty.attach', { sessionId: id }).catch((err: unknown) => log(`host ${name}: reattach of ${id} failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+    hostClients.set(name, c);
+    return c;
+  })();
+  hostMaking.set(name, made);
+  return made.finally(() => hostMaking.delete(name));
+}
+
+async function hostRequest(contentsId: number, name: string, type: RequestType, body: Requests[RequestType]['req']): Promise<unknown> {
+  let c: HostClient;
+  try {
+    c = await hostClientFor(name);
+  } catch (err) {
+    throw encodeRequestError(err);
+  }
+  if (type === 'pty.attach' || type === 'pty.detach') {
+    const sessionId = (body as { sessionId?: unknown }).sessionId;
+    if (typeof sessionId === 'string') {
+      if (type === 'pty.attach') broker.attach(sessionId, contentsId);
+      else if (!broker.detach(sessionId, contentsId)) return {};
+    }
+  }
+  let reply: unknown;
+  try {
+    reply = await c.request(type, body);
+  } catch (err) {
+    throw encodeRequestError(err);
+  }
+  // Every SessionInfo from a host is stamped before the renderer sees it;
+  // a spawn or a resume is kept, so its later requests route by its id.
+  if (typeof reply === 'object' && reply !== null) {
+    const r = reply as { session?: SessionInfo; sessions?: SessionInfo[] };
+    if (r.session !== undefined && typeof r.session === 'object' && r.session !== null) {
+      return { ...r, session: type === 'session.spawn' || type === 'session.resume' ? keepHostSession(name, r.session) : stampHost(name, r.session) };
+    }
+    if (Array.isArray(r.sessions)) return { ...r, sessions: r.sessions.map((s) => stampHost(name, s)) };
+  }
+  return reply;
+}
+
+// Makes the client from the merged record (read again, so facts a setup
+// wrote are used) and contacts the host; resolves once up or refused.
+// M9 fix 1084: a host whose record holds no kit of this app's version is
+// set up first (the kit copied there, then the connect through its relay),
+// and so is one whose plain connect is refused nokit.
+async function hostConnect(name: string): Promise<void> {
+  const c = await hostClientFor(name);
+  const fresh = (await remoteHosts()).find((h) => h.name === name);
+  if (fresh !== undefined) c.setHost(fresh);
+  if (c.state === 'up') return;
+  if (c.record.kitVersion !== appVersion()) {
+    await setUpHost(c);
+    return;
+  }
+  await c.connect();
+  if (c.state === 'refused' && c.refusal?.kind === 'nokit') await setUpHost(c);
+}
+
+// The remote kit (M9 fix 1083) and the setup that copies it (fix 1084):
+// every ssh and scp through one runner, EMERALD_SSH and EMERALD_SCP naming
+// the verify's stubs; the kit's sources found beside the daemon, or in
+// packages/app/stage in a checkout, or under EMERALD_KIT_STAGE.
+const remoteRunner = spawnRunner(runner);
+
+function kitFor(kitOs: KitOs, arch: KitArch) {
+  const root = kitRoot({ daemonMain: resolveDaemonMain(), checkoutStage: path.resolve(__dirname, '..', '..', 'stage'), env: process.env });
+  return assembleKit({ os: kitOs, arch, appVersion: appVersion(), cacheRoot: path.join(app.getPath('userData'), 'remote-kits'), root, env: process.env, log });
+}
+
+// The setup's start: the client takes the record with the kit's versions
+// before its connect, which would otherwise refuse nokit at once.
+async function connectWithKit(c: HostClient, record: HostRecord): Promise<DaemonInfo> {
+  c.setHost({ ...record, source: c.record.source });
+  await c.connect();
+  if (c.state === 'up' && c.daemon !== null) return c.daemon;
+  const refusal = c.refusal;
+  const err: ConnectRefusal = new Error(refusal?.line ?? `${c.name} did not answer`);
+  if (refusal !== null) err.kind = refusal.kind;
+  throw err;
+}
+
+async function setUpHost(c: HostClient): Promise<void> {
+  const name = c.name;
+  await setupHost(c.record, {
+    run: remoteRunner,
+    kit: kitFor,
+    setRecord: async (r) => {
+      await client.request('hosts.set', { host: r });
+    },
+    connect: (r) => connectWithKit(c, r),
+    push: (p) => pushToRenderer({ type: 'host.setup', ...p }),
+    // A probe's ssh exit 255 is the login's or the key's refusal: the row
+    // shows A4's line or the login line rather than a failed setup.
+    refused: (refusal) => {
+      const body: HostChanged = { host: name, state: 'refused', daemon: null, since: Date.now(), retryIn: null, refusal };
+      hostLast.set(name, body);
+      pushToRenderer({ type: 'host.changed', ...body });
+    },
+    appVersion: appVersion(),
+    now: () => Date.now(),
+    log,
+  });
+}
+
+async function hostForget(name: string): Promise<void> {
+  const c = hostClients.get(name);
+  const record = c?.record ?? (await remoteHosts()).find((h) => h.name === name);
+  c?.stop();
+  c?.removeAllListeners();
+  hostClients.delete(name);
+  hostSessions.delete(name);
+  hostLast.delete(name);
+  // The renderer would otherwise keep the host's last state (up, say), and
+  // the on row's pick would contact nothing; idle makes the next pick
+  // connect afresh. Not kept in hostLast, so a reload starts with no entry.
+  if (c !== undefined) pushToRenderer({ type: 'host.changed', host: name, state: 'idle', daemon: null, since: Date.now(), retryIn: null, refusal: null });
+  if (record?.source === 'added') await client.request('hosts.remove', { name });
+}
+
+async function hostAdd(destination: string): Promise<RemoteHost> {
+  const dest = destination.trim();
+  const name = hostNameOf(dest);
+  if ((await remoteHosts()).some((h) => h.name === name)) throw new Error(`a host named ${name} is already listed`);
+  await client.request('hosts.set', { host: { name, destination: dest, addedAt: Date.now() } });
+  await hostConnect(name);
+  const added = (await remoteHosts()).find((h) => h.name === name);
+  if (added === undefined) throw new Error(`no host ${name}`);
+  return added;
+}
+
+ipcMain.handle('emerald:remote-hosts', () => remoteHosts());
+ipcMain.handle('emerald:host-states', () => [...hostLast.values()]);
+ipcMain.handle('emerald:host-connect', (_e, name: string) => hostConnect(name));
+ipcMain.on('emerald:host-try-now', (_e, name: string) => hostClients.get(name)?.tryNow());
+ipcMain.handle('emerald:host-forget', (_e, name: string) => hostForget(name));
+ipcMain.handle('emerald:host-add', (_e, destination: string) => hostAdd(destination));
+ipcMain.handle('emerald:host-cancel-setup', (_e, name: string) => cancelSetup(name));
 
 // version: the app's own, from its package.json (M9 fix 234, the app
 // menu's What's new hint), which the docs commit of every batch bumps.

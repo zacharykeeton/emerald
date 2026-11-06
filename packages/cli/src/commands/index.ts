@@ -59,6 +59,11 @@ export const commands: CommandEntry[] = [
     summary: "stream a session's queued prompts to the emerald mod, which starts this itself",
     load: () => import('./mod-channel.ts').then((m) => m.default),
   },
+  {
+    name: 'relay',
+    summary: "carry the app's pipe over ssh: each stdin line to this machine's emmerd and each frame back on stdout; the app starts this itself",
+    load: () => import('./relay.ts').then((m) => m.default),
+  },
   { name: 'skill', summary: 'print the emmer-cli skill, the guide a Claude session reads to drive emerald', load: () => import('./skill.ts').then((m) => m.default) },
   { name: 'daemon', summary: 'start, stop or show emmerd', load: () => import('./daemon.ts').then((m) => m.default) },
   { name: 'update', summary: "show the app's update state, or click its badge: --check, --download, --install", load: () => import('./update.ts').then((m) => m.default) },

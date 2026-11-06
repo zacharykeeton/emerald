@@ -193,3 +193,61 @@ test('a folder label titles its group and the others keep the folder name (M9 fi
   assert.equal(groupSessions(stateOrderSessions)[0]!.title, 'a');
   assert.equal(groupSessions(stateOrderSessions, 'created', new Map())[0]!.title, 'a');
 });
+
+// M9 fix 1089: a session's host groups it apart from the same folder elsewhere.
+const on = (s: SessionInfo, host: string): SessionInfo & { host: string } => ({ ...s, host });
+
+test('with no remote session every group is on this PC and its folder is its key (M9 fix 1089)', () => {
+  for (const g of groupSessions(stateOrderSessions)) {
+    assert.equal(g.host, '');
+    assert.equal(g.folder, g.key === EXITED_GROUP ? '' : g.key);
+  }
+});
+
+test('hostOrder puts each host together, this PC first (M9 fix 1089)', () => {
+  const groups = groupSessions([on(session('b1', 'idle', 1000), 'b'), on(session('a1', 'idle', 2000), 'a'), session('l1', 'idle', 3000)], 'created', undefined, ['', 'a', 'b']);
+  assert.deepEqual(
+    groups.map((g) => g.key),
+    ['C:\\work\\a', 'a\u0000C:\\work\\a', 'b\u0000C:\\work\\a'],
+  );
+  assert.deepEqual(
+    groups.map((g) => [g.host, g.folder]),
+    [
+      ['', 'C:\\work\\a'],
+      ['a', 'C:\\work\\a'],
+      ['b', 'C:\\work\\a'],
+    ],
+  );
+});
+
+test('a host the order does not name goes after the named ones, before Exited (M9 fix 1089)', () => {
+  const groups = groupSessions([on(session('z1', 'idle', 1000), 'z'), on(session('a1', 'idle', 2000), 'a'), session('x1', 'exited', 500)], 'created', undefined, ['', 'a']);
+  assert.deepEqual(
+    groups.map((g) => g.host),
+    ['a', 'z', ''],
+  );
+  assert.equal(groups[2]!.key, EXITED_GROUP);
+});
+
+test('the same folder on two hosts is two groups (M9 fix 1089)', () => {
+  const groups = groupSessions([session('l1', 'idle', 1000), on(session('r1', 'idle', 2000), 'a')], 'created', undefined, ['', 'a']);
+  assert.equal(groups.length, 2);
+});
+
+test('a local label does not title the remote group of the same folder (M9 fix 1089)', () => {
+  const labels = new Map([['C:\\work\\a', 'Work']]);
+  const groups = groupSessions([session('l1', 'idle', 1000), on(session('r1', 'idle', 2000), 'a')], 'created', labels, ['', 'a']);
+  assert.deepEqual(
+    groups.map((g) => g.title),
+    ['Work', 'a'],
+  );
+});
+
+test('a remote exited session joins the one Exited group (M9 fix 1089)', () => {
+  const groups = groupSessions([session('l1', 'exited', 1000), on(session('r1', 'exited', 2000), 'a'), session('l2', 'idle', 3000)], 'created', undefined, ['', 'a']);
+  assert.deepEqual(
+    groups.map((g) => g.key),
+    ['C:\\work\\a', EXITED_GROUP],
+  );
+  assert.equal(groups[1]!.sessions.length, 2);
+});

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeLauncher, SHIM_NOTE, resolveClaudeModDir } from './launchers/claude.ts';
+import { ClaudeLauncher, SHIM_NOTE, findClaude, resolveClaudeModDir } from './launchers/claude.ts';
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-501-')));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -164,4 +164,16 @@ test("resolveClaudeModDir answers off under EMERALD_CLAUDE_MOD=0 and the repo's 
   const repoMod = path.resolve(import.meta.dirname, '..', '..', 'cli', 'mod');
   assert.equal(on.dir, repoMod);
   assert.equal(on.line, `claude mod: ${repoMod}`);
+});
+
+test("findClaude takes .local\\bin's claude.exe over the PATH's, then the PATH's claude.exe, and answers null with none (M9 fix 1084)", () => {
+  const onPath = folder();
+  fs.writeFileSync(path.join(onPath, 'claude.exe'), '');
+  const env = { PATH: onPath, PATHEXT: '.EXE;.CMD' };
+  const home = folder();
+  assert.equal(findClaude(env, home, 'win32'), path.join(onPath, 'claude.exe'));
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.local', 'bin', 'claude.exe'), '');
+  assert.equal(findClaude(env, home, 'win32'), path.join(home, '.local', 'bin', 'claude.exe'));
+  assert.equal(findClaude({ PATH: folder(), PATHEXT: '.EXE' }, emptyHome, 'win32'), null);
 });

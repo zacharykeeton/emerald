@@ -57,12 +57,18 @@ export function comparatorFor(order: SidebarOrder): (a: SessionInfo, b: SessionI
 
 export interface SessionGroup {
   // The folder the sessions are grouped under (groupCwd), or 'exited' for
-  // the group of finished sessions.
+  // the group of finished sessions. A remote group's key is its host and
+  // the folder joined by a NUL (M9 fix 1089); a local group's is the folder
+  // alone.
   key: string;
   // What the heading shows: the person's own label for the folder (M9
   // fix 194) or its last path segment, with the full path as the tooltip.
   title: string;
   sessions: SessionInfo[];
+  // The host the folder is on: '' for this PC, and for the Exited group.
+  host: string;
+  // The folder itself, the groupCwd; '' for the Exited group.
+  folder: string;
 }
 
 export const EXITED_GROUP = 'exited';
@@ -75,30 +81,51 @@ export const EXITED_GROUP = 'exited';
 // session rises to the top. Exited sessions go in one group at the bottom
 // either way. labels (M9 fix 194) is the daemon's folder labels by the
 // group's key; a group with one is titled by it.
-export function groupSessions(sessions: Iterable<SessionInfo>, order: SidebarOrder = 'created', labels?: ReadonlyMap<string, string>): SessionGroup[] {
+// M9 fix 1089: hostOrder, the on row's order with this PC first as '', puts each host's groups together; a remote group's key is host and folder joined by a NUL, a local one's the folder alone, so every reader of a local key is unchanged.
+export function groupSessions(
+  sessions: Iterable<SessionInfo & { host?: string }>,
+  order: SidebarOrder = 'created',
+  labels?: ReadonlyMap<string, string>,
+  hostOrder: readonly string[] = [''],
+): SessionGroup[] {
   const compare = comparatorFor(order);
-  const byFolder = new Map<string, SessionInfo[]>();
+  const byKey = new Map<string, { host: string; folder: string; list: SessionInfo[] }>();
   const exited: SessionInfo[] = [];
   for (const s of sessions) {
     if (s.state === 'exited') {
       exited.push(s);
       continue;
     }
-    const list = byFolder.get(s.groupCwd);
-    if (list === undefined) byFolder.set(s.groupCwd, [s]);
-    else list.push(s);
+    const host = s.host ?? '';
+    const key = host === '' ? s.groupCwd : host + '\u0000' + s.groupCwd;
+    const entry = byKey.get(key);
+    if (entry === undefined) byKey.set(key, { host, folder: s.groupCwd, list: [s] });
+    else entry.list.push(s);
   }
+  // A host the order does not name ranks after every named one.
+  const rank = (host: string): number => {
+    const i = hostOrder.indexOf(host);
+    return i === -1 ? hostOrder.length : i;
+  };
   const groups: SessionGroup[] = [];
-  for (const [folder, list] of byFolder) {
+  for (const [key, { host, folder, list }] of byKey) {
     list.sort(compare);
-    groups.push({ key: folder, title: labels?.get(folder) ?? folderTitle(folder), sessions: list });
+    // A folder label is this PC's record, so it titles local groups only.
+    const title = host === '' ? (labels?.get(folder) ?? folderTitle(folder)) : folderTitle(folder);
+    groups.push({ key, title, sessions: list, host, folder });
   }
   // Each group's list is sorted, so its first session is the one the
   // order ranks highest: the most urgent, or the oldest.
-  groups.sort((a, b) => compare(a.sessions[0]!, b.sessions[0]!));
+  groups.sort((a, b) => {
+    const ra = rank(a.host);
+    const rb = rank(b.host);
+    if (ra !== rb) return ra - rb;
+    if (a.host !== b.host) return a.host < b.host ? -1 : 1;
+    return compare(a.sessions[0]!, b.sessions[0]!);
+  });
   if (exited.length > 0) {
     exited.sort(compare);
-    groups.push({ key: EXITED_GROUP, title: 'exited', sessions: exited });
+    groups.push({ key: EXITED_GROUP, title: 'exited', sessions: exited, host: '', folder: '' });
   }
   return groups;
 }

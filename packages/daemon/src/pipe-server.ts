@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, shellIdsFor, updateText } from '@emerald/shared';
-import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, HOSTS_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, shellIdsFor, updateText } from '@emerald/shared';
+import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, HostRecord, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -14,6 +14,7 @@ import type { Logger } from './log.ts';
 import type { OutputSink } from './pty-session.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
+import { HostsStore } from './hosts-store.ts';
 import type { ConflictWatch } from './conflicts.ts';
 import { SessionError, SessionManager, type LoadTick, type SpawnRequest } from './session-manager.ts';
 import { HELLO_WAIT_MS } from './spawn-path.ts';
@@ -52,6 +53,8 @@ export interface PipeServerOptions {
   prompts?: PromptsStore;
   // The folder labels (M9 fix 194), the same way.
   folders?: FoldersStore;
+  // The remote hosts record (M9 fix 1080), the same way.
+  hosts?: HostsStore;
   // The conflict forecast (M9 fix 320); a server without one (tests)
   // answers the empty report and pushes nothing.
   conflicts?: ConflictWatch;
@@ -354,7 +357,10 @@ export class PipeServer {
   constructor(manager: SessionManager, layouts: LayoutStore, opts: PipeServerOptions) {
     this.manager = manager;
     this.layouts = layouts;
-    this.opts = { ...opts, prompts: opts.prompts ?? new PromptsStore('', opts.log), folders: opts.folders ?? new FoldersStore('', opts.log) };
+    this.opts = { ...opts, prompts: opts.prompts ?? new PromptsStore('', opts.log), folders: opts.folders ?? new FoldersStore('', opts.log), hosts: opts.hosts ?? new HostsStore('', opts.log) };
+    // The hosts record after a change (M9 fix 1080), to app windows at
+    // level 80 on the sessions topic; an older window has no use for it.
+    this.opts.hosts?.on('changed', (hosts: HostRecord[]) => this.broadcastHosts(hosts));
     // A label set from one window reaches every other and the CLI (M9
     // fix 194), on the sessions topic since it is the sidebar's list.
     this.opts.folders?.on('changed', (folders: FolderLabel[]) => this.broadcast('sessions', { type: 'folders.changed', folders }));
@@ -764,6 +770,13 @@ export class PipeServer {
     }
   }
 
+  private broadcastHosts(hosts: HostRecord[]): void {
+    const push: ServerMessage = { type: 'hosts.changed', hosts };
+    for (const client of this.clients) {
+      if (client.isApp && client.subscribed('sessions') && client.appLevel >= HOSTS_LEVEL) client.send(push);
+    }
+  }
+
   private broadcastRow(given: { sessionId: string; at: number; uuid: string; row: ModRow; cut: boolean }): void {
     const push: ServerMessage = { type: 'transcript.row', sessionId: given.sessionId, at: given.at, uuid: given.uuid, row: given.row, ...(given.cut ? { cut: true as const } : {}) };
     for (const client of this.clients) {
@@ -791,6 +804,7 @@ class ClientConnection {
   private readonly layouts: LayoutStore;
   private readonly prompts: PromptsStore;
   private readonly folders: FoldersStore;
+  private readonly hosts: HostsStore;
   private readonly opts: PipeServerOptions;
   private readonly decoder = new JsonLinesDecoder();
   private readonly topics = new Set<Topic>();
@@ -826,6 +840,7 @@ class ClientConnection {
     // The server put one on the options for every connection to share.
     this.prompts = opts.prompts ?? new PromptsStore('', opts.log);
     this.folders = opts.folders ?? new FoldersStore('', opts.log);
+    this.hosts = opts.hosts ?? new HostsStore('', opts.log);
     this.opts = opts;
     this.authed = opts.token === undefined;
     socket.on('data', (chunk: Buffer) => this.onData(chunk));
@@ -1022,6 +1037,7 @@ class ClientConnection {
           featureLevel: this.opts.featureLevel ?? DAEMON_FEATURE_LEVEL,
           feed: this.opts.feed?.() ?? null,
           shells: this.manager.installedShells(),
+          claude: this.manager.claudeInstalled(),
         });
         // An app's hello finds the shells again on the registry (M9 fix
         // 996), waiting at most HELLO_WAIT_MS for the read; a read that
@@ -1322,6 +1338,14 @@ class ClientConnection {
         return { folders: this.folders.list() };
       case 'folders.set':
         this.folders.set(expectString(req, 'folder'), req.label === null ? null : expectString(req, 'label'));
+        return {};
+      case 'hosts.list':
+        return { hosts: this.hosts.list() };
+      case 'hosts.set':
+        this.hosts.set(req.host);
+        return {};
+      case 'hosts.remove':
+        this.hosts.remove(expectString(req, 'name'));
         return {};
       case 'conflicts.get':
         return this.opts.conflicts?.current() ?? { conflicts: [], base: {} };
