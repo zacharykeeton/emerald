@@ -13,6 +13,7 @@ import {
   commandFile,
   hookCommand,
   hooksStatus,
+  otherStatusLine,
   installHooks,
   skillPaths,
   skillText,
@@ -238,7 +239,7 @@ test('a group mixing our hook with someone else\'s keeps theirs', () => {
 test('status reports installed and missing events and the script state', () => {
   const { opts, settingsPath, scriptDest } = setup(orcaSettings());
   const shipped = statusLineVersion(statusLinePaths(opts).jsSource);
-  assert.equal(shipped, 4, 'the shipped status line script declares its version');
+  assert.equal(shipped, 5, 'the shipped status line script declares its version');
   // Orca's command names an absolute path that is on no box, so each of
   // its seven events reads as a stranger's dead entry (M9 fix 710); the
   // status line `something long` is a bare word and is never judged.
@@ -255,8 +256,9 @@ test('status reports installed and missing events and the script state', () => {
     scriptPresent: false,
     scriptStale: false,
     statusLine: false,
+    statusLineShared: null,
     statusLineVersion: null,
-    shippedStatusLineVersion: 4,
+    shippedStatusLineVersion: 5,
     skill: false,
     fighting: false,
     dead: orcaDead,
@@ -269,8 +271,9 @@ test('status reports installed and missing events and the script state', () => {
     scriptPresent: true,
     scriptStale: false,
     statusLine: true,
-    statusLineVersion: 4,
-    shippedStatusLineVersion: 4,
+    statusLineShared: null,
+    statusLineVersion: 5,
+    shippedStatusLineVersion: 5,
     skill: true,
     fighting: false,
     dead: orcaDead,
@@ -293,7 +296,7 @@ test('status reports installed and missing events and the script state', () => {
   assert.equal(status.statusLineVersion, null);
   assert.equal(status.scriptStale, true);
   installHooks(opts);
-  assert.equal(hooksStatus(opts).statusLineVersion, 4);
+  assert.equal(hooksStatus(opts).statusLineVersion, 5);
   // A wrapper rendered for another Node is stale too, and a status line
   // pointing elsewhere is not ours.
   assert.equal(hooksStatus({ ...opts, nodePath: 'C:\\elsewhere\\node.exe' }).scriptStale, true);
@@ -333,7 +336,7 @@ test('hookCommand quotes a forward-slash path', () => {
 function runWrapper(cmdDest: string, input: string, env: Record<string, string>): Promise<{ stdout: string; stderr: string; status: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.env['COMSPEC'] ?? 'cmd.exe', ['/d', '/s', '/c', `""${cmdDest}""`], {
-      env: { ...process.env, EMERALD_SESSION_ID: '', EMERALD_HOOK_PORT: '', EMERALD_HOOK_TOKEN: '', EMERALD_HOME: path.dirname(path.dirname(cmdDest)), ...env },
+      env: { ...process.env, EMERALD_SESSION_ID: '', EMERALD_HOOK_PORT: '', EMERALD_HOOK_TOKEN: '', EMERALD_STATUSLINE_CHAIN: '', EMERALD_HOME: path.dirname(path.dirname(cmdDest)), ...env },
       windowsVerbatimArguments: true,
     });
     let stdout = '';
@@ -885,4 +888,90 @@ test('a dead sh entry of an old home is ours and install takes it out (M9 fix 10
   const { removed } = installHooks(opts);
   assert.equal(removed.length, 1);
   assert.ok(!fs.readFileSync(settingsPath, 'utf8').includes('old-home'), 'no command of the old home is left');
+});
+
+test("an install over another emerald's live status line wrapper leaves it, keeps no wrapper as previous, and status says so (M9 fix 1103)", () => {
+  const { opts, dir, settingsPath } = setup({ statusLine: { type: 'command', command: 'theirs' } });
+  const other = { ...opts, scriptDest: path.join(dir, 'other-home', 'hooks', 'claude-hook.cmd') };
+  const bLine = { type: 'command', command: hookCommand(statusLinePaths(other).cmdDest) };
+  const bPath = statusLinePaths(other).cmdDest.replace(/\\/g, '/');
+  const previous = statusLinePaths(opts).previous;
+  // The other emerald takes the slot from `theirs`, as today.
+  installHooks(other);
+  assert.deepEqual(read(settingsPath)['statusLine'], bLine);
+  const run = installHooks(opts);
+  assert.equal(run.statusLineShared, bPath);
+  assert.deepEqual(read(settingsPath)['statusLine'], bLine, 'the other wrapper keeps the slot');
+  assert.deepEqual(read(previous), { statusLine: null });
+  const status = hooksStatus(opts);
+  assert.equal(status.statusLine, false);
+  assert.equal(status.statusLineShared, bPath);
+  assert.deepEqual(status.missing, []);
+  assert.equal(status.scriptStale, false);
+  assert.equal(otherStatusLine(bLine, statusLinePaths(opts).cmdDest), bPath);
+  // A second install changes nothing.
+  assert.equal(installHooks(opts).changed, false);
+  assert.deepEqual(read(previous), { statusLine: null });
+  // A previous that names a wrapper goes; a stranger's stays.
+  fs.writeFileSync(previous, JSON.stringify({ statusLine: bLine }));
+  installHooks(opts);
+  assert.deepEqual(read(previous), { statusLine: null });
+  fs.writeFileSync(previous, JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }));
+  installHooks(opts);
+  assert.deepEqual(read(previous), { statusLine: { type: 'command', command: 'mine' } });
+  // Uninstall restores only a slot that is ours.
+  uninstallHooks(opts);
+  assert.deepEqual(read(settingsPath)['statusLine'], bLine);
+  // A dead wrapper by shape is fix 710's: ours takes the slot.
+  fs.unlinkSync(statusLinePaths(other).cmdDest);
+  const after = installHooks(opts);
+  assert.equal(after.statusLineShared, null);
+  assert.deepEqual(read(settingsPath)['statusLine'], { type: 'command', command: hookCommand(statusLinePaths(opts).cmdDest) });
+});
+
+test('the wrapper stops at once when its folder is on EMERALD_STATUSLINE_CHAIN, and hands the list on to the previous line (M9 fix 1103)', onWindows, async () => {
+  const { opts, dir } = setup({});
+  installHooks(opts);
+  const sl = statusLinePaths(opts);
+  const prev = path.join(dir, 'prev.cmd');
+  fs.writeFileSync(prev, `@echo off\r\n"${process.execPath}" -e "process.stdout.write(process.env.EMERALD_STATUSLINE_CHAIN || '(unset)')"\r\n`);
+  fs.writeFileSync(sl.previous, JSON.stringify({ statusLine: { type: 'command', command: `"${prev.replace(/\\/g, '/')}"` } }));
+  const key = path.dirname(sl.cmdDest).replace(/\\/g, '/').toLowerCase();
+  const sink = await fakeSink();
+  try {
+    const env = { EMERALD_SESSION_ID: 'emerald-1', EMERALD_HOOK_PORT: String(sink.port), EMERALD_HOOK_TOKEN: 'tok' };
+    const first = await runWrapper(sl.cmdDest, STATUS_JSON, env);
+    assert.equal(first.status, 0);
+    assert.equal(first.stdout, key);
+    assert.equal(sink.posts.length, 1);
+    const listed = await runWrapper(sl.cmdDest, STATUS_JSON, { ...env, EMERALD_STATUSLINE_CHAIN: ['c:/elsewhere/hooks', key].join(path.delimiter) });
+    assert.equal(listed.status, 0);
+    assert.equal(listed.stdout, '');
+    assert.equal(sink.posts.length, 1, 'no post from a wrapper already on the list');
+    const other = await runWrapper(sl.cmdDest, STATUS_JSON, { ...env, EMERALD_STATUSLINE_CHAIN: 'c:/elsewhere/hooks' });
+    assert.equal(other.stdout, ['c:/elsewhere/hooks', key].join(path.delimiter));
+    assert.equal(sink.posts.length, 2);
+  } finally {
+    sink.close();
+  }
+});
+
+test("two emeralds' wrappers that name each other as previous run one round each and stop (M9 fix 1103)", { ...onWindows, timeout: 30_000 }, async () => {
+  const { opts, dir } = setup({});
+  const other = { ...opts, scriptDest: path.join(dir, 'other-home', 'hooks', 'claude-hook.cmd') };
+  installHooks(opts);
+  installHooks(other);
+  const a = statusLinePaths(opts);
+  const b = statusLinePaths(other);
+  fs.writeFileSync(a.previous, JSON.stringify({ statusLine: { type: 'command', command: hookCommand(b.cmdDest) } }));
+  fs.writeFileSync(b.previous, JSON.stringify({ statusLine: { type: 'command', command: hookCommand(a.cmdDest) } }));
+  const sink = await fakeSink();
+  try {
+    const run = await runWrapper(a.cmdDest, STATUS_JSON, { EMERALD_SESSION_ID: 'emerald-1', EMERALD_HOOK_PORT: String(sink.port), EMERALD_HOOK_TOKEN: 'tok' });
+    assert.equal(run.status, 0);
+    assert.equal(run.stdout, '');
+    assert.equal(sink.posts.length, 2, "the first wrapper's post and the second's");
+  } finally {
+    sink.close();
+  }
 });

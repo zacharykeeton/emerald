@@ -23,7 +23,7 @@
 // sessions' lanes) and the strip at a narrow rail.
 // Uses a private home and pipe unless the environment already names them.
 // Run: npm run verify:files -w @emerald/app
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -157,6 +157,8 @@ let context1040 = null;
 let transcript1040 = null;
 // M9 fix 1056: the outside transcript, under os.tmpdir() beside the harness.
 let transcript1056 = null;
+// M9 fix 1102, on the poll since M9 fix 1125: the stand-in mod channel's abort.
+let abort1102 = null;
 // M9 fix 438: let, not const, since its own step below closes this window
 // and relaunches pointed at a settings file with a new scheme, the way
 // verify-m19-history.mjs and verify-m52-view.mjs already reassign theirs;
@@ -2991,6 +2993,89 @@ try {
   fs.rmSync(pick982, { recursive: true, force: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(rowSel(drag981))}) && !document.querySelector(${JSON.stringify(rowSel(pick982))})`, 'drag981 and pick982 gone', 5000);
   step('M9 fix 982: Ctrl+click toggles rows in and out of a picked set and Shift+click and Shift+arrows pick a range across a folder, opening nothing; Escape clears the set; the set drags into a folder with one note; a set or a folder dragged onto a pane or the + is refused with a note, and the menu of a set copies both paths and offers Delete (fix 1006); Delete on the set or its menu moves every picked row to the recycle bin with one note');
+  // M9 fix 1122: a row of the Files tab dragged past the window's edge with
+  // no window of ours under the pointer goes to the OS as a file drag. Under
+  // the harness main holds it to the open log (EMERALD_OPEN_LOG) as a
+  // `drag-out` line per path and never starts one, since the OS loop reads
+  // the real button. On fix 982's window: one window, the panes tab in
+  // front, the rail on repo, drag981 and pick982 gone.
+  const a1122 = path.join(repo, 'a1122.json');
+  const b1122 = path.join(repo, 'b1122.txt');
+  const out1122 = path.join(repo, 'out1122');
+  fs.writeFileSync(a1122, '{"a":1}\n');
+  fs.writeFileSync(b1122, 'b\n');
+  fs.mkdirSync(out1122, { recursive: true });
+  fs.writeFileSync(path.join(out1122, 'inner.txt'), 'i\n');
+  await s.waitFor(`[${JSON.stringify(rowSel(a1122))}, ${JSON.stringify(rowSel(b1122))}, ${JSON.stringify(rowSel(out1122))}].every((q) => !!document.querySelector(q))`, 'the three rows of fix 1122 listed', 5000);
+  const below1122 = await s.evalJs(`({ x: Math.round(innerWidth / 2), y: innerHeight + 200 })`);
+  const at1122 = (p) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rowSel(p))}); r.scrollIntoView({ block: 'center' }); const { x, y, width, height } = r.getBoundingClientRect(); return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) }; })()`);
+  const drag1122 = async (p) => {
+    const from = await at1122(p);
+    await s.mouse('mousePressed', from.x, from.y);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + 10, y: from.y, button: 'left', buttons: 1 });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: below1122.x, y: below1122.y, button: 'left', buttons: 1 });
+  };
+  const release1122 = () => s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: below1122.x, y: below1122.y, button: 'left', clickCount: 1 });
+  const openLines1122 = () => (fs.existsSync(openedPaths) ? fs.readFileSync(openedPaths, 'utf8').split(/\r?\n/).filter((l) => l.startsWith('drag-out ')) : []);
+  const mainLog1122 = () => fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  const waitLines1122 = async (want, what) => {
+    const by = Date.now() + 3000;
+    while (JSON.stringify(openLines1122()) !== JSON.stringify(want) && Date.now() < by) await sleep(100);
+    expect(JSON.stringify(openLines1122()) === JSON.stringify(want), `${what} (${JSON.stringify(openLines1122())})`);
+  };
+  const windows1122 = async () => (await getTabs(s)).windows?.length ?? 1;
+  const windowsBefore1122 = await windows1122();
+  const panesBefore1122 = leaves(await getLayout(s)).length;
+  // (a) A file row.
+  const linesA1122 = ['drag-out ' + a1122];
+  await drag1122(a1122);
+  await waitLines1122(linesA1122, 'a1122.json went to the OS, held as one drag-out line');
+  const endedA1122 = await s.evalJs(`({ dragging: document.body.classList.contains('dragging-session'), ghost: !!document.querySelector('.drag-ghost') })`);
+  expect(!endedA1122.dragging && !endedA1122.ghost, `the drag ended in the window at the hand-over (${JSON.stringify(endedA1122)})`);
+  await release1122();
+  await sleep(500);
+  const logA1122 = mainLog1122();
+  expect(logA1122.includes('window drag: a file from window ') && logA1122.includes(' handed to the OS at '), 'main.log says a file was handed to the OS');
+  expect((await windows1122()) === windowsBefore1122 && leaves(await getLayout(s)).length === panesBefore1122, 'no window and no pane was opened');
+  // (b) A picked set of two, dragged by its second row.
+  const picked1122 = `[...document.querySelectorAll('.files-list .files-row[data-picked]')].map((r) => r.dataset.path)`;
+  // A press and release by the mouse, not clickRow's click(): (a)'s drag
+  // ended past the edge with no click, so the row still swallows the next
+  // click that comes with no press of its own.
+  const atA1122 = await at1122(a1122);
+  await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: atA1122.x, y: atA1122.y, button: 'left', clickCount: 1 });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: atA1122.x, y: atA1122.y, button: 'left', clickCount: 1 });
+  await s.waitFor(`JSON.stringify(${picked1122}) === ${JSON.stringify(JSON.stringify([a1122]))}`, 'a1122.json picked alone', 3000);
+  const atB1122 = await at1122(b1122);
+  await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: atB1122.x, y: atB1122.y, button: 'left', clickCount: 1, modifiers: CTRL });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: atB1122.x, y: atB1122.y, button: 'left', clickCount: 1, modifiers: CTRL });
+  await s.waitFor(`JSON.stringify(${picked1122}) === ${JSON.stringify(JSON.stringify([a1122, b1122]))}`, 'a1122.json and b1122.txt picked', 3000);
+  const linesB1122 = [...linesA1122, 'drag-out ' + a1122, 'drag-out ' + b1122];
+  await drag1122(b1122);
+  await waitLines1122(linesB1122, 'the set went to the OS in its order, a1122.json then b1122.txt');
+  await release1122();
+  await sleep(300);
+  expect(mainLog1122().includes('window drag: 2 files from window '), 'main.log says two files were handed to the OS');
+  await s.waitFor(`JSON.stringify(${picked1122}) === ${JSON.stringify(JSON.stringify([a1122, b1122]))}`, 'the set is still picked after the hand-over', 3000);
+  // (c) A folder row, the set cleared first.
+  await s.key('Escape', 'Escape', 27);
+  const linesC1122 = [...linesB1122, 'drag-out ' + out1122];
+  await drag1122(out1122);
+  await waitLines1122(linesC1122, 'out1122 went to the OS as a folder');
+  await release1122();
+  await sleep(800);
+  const noteC1122 = await s.evalJs(noteJs981);
+  expect(noteC1122 !== 'A folder opens in no pane; drop it on a folder in the tree', `no refusal note after a folder went to the OS (${noteC1122})`);
+  for (let i = 0; i < 4 && (await s.evalJs(`document.querySelector('.tab-strip')?.dataset.activeTab`)) !== 'panes'; i++) {
+    await s.key('w', 'KeyW', 87, CTRL);
+    await sleep(300);
+  }
+  await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, "fix 1122's file tab closed", 3000);
+  fs.rmSync(a1122, { force: true });
+  fs.rmSync(b1122, { force: true });
+  fs.rmSync(out1122, { recursive: true, force: true });
+  await s.waitFor(`[${JSON.stringify(rowSel(a1122))}, ${JSON.stringify(rowSel(b1122))}, ${JSON.stringify(rowSel(out1122))}].every((q) => !document.querySelector(q))`, 'the rows of fix 1122 gone', 5000);
+  step('M9 fix 1122: a file row, a picked set of two and a folder row dragged past the window\'s edge with no window under the pointer go to the OS as files, held to the open log under the harness, the drag ended in the window with no new window and no note');
   // M9 fix 337: a file open in a pane with no tab hears a change on
   // disk. A shell in a folder of its own, focused so the rail follows
   // it; the file opened beside it through the row menu's Open in a
@@ -3382,6 +3467,32 @@ try {
     (await s.evalJs(`${railState1056('reading')} && document.querySelector('.files-rail .rail-context-sections .files-empty')?.textContent === 'reading the context'`)) === true,
     'a Claude with the mod and no channel stays reading after the 3 s wait (fix 1056)',
   );
+  // M9 fix 1102: a mod channel up (a poll loop in this script standing in for the mod's own, M9 fix 1125) on a conversation with no reply: the ask reaches it as a context line, nothing answers, and at CONTEXT_ASK_MS the tab reads fresh rather than outside.
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="files"]').click()`);
+  await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === 'files'`, 'the rail is on Files (fix 1102)', 5000);
+  const up1102 = countLog1056(`mod channel up for ${id8_1056}`);
+  const down1102 = countLog1056(`mod channel down for ${id8_1056}`);
+  let out1102 = '';
+  abort1102 = new AbortController();
+  const poll1102 = async () => {
+    for (;;) {
+      const res = await fetch(`http://127.0.0.1:${daemon1038.hookPort}/channel`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': daemon1038.hookToken, 'X-Emerald-Session': shell1038.id, 'X-Emerald-Hook': 'emerald-mod' }, body: '{}', signal: abort1102.signal });
+      if (res.status !== 200) return;
+      for (const line of (await res.json()).lines) out1102 += JSON.stringify(line) + '\n';
+    }
+  };
+  void poll1102().catch(() => undefined);
+  for (let i = 0; i < 50 && countLog1056(`mod channel up for ${id8_1056}`) !== up1102 + 1; i++) await sleep(200);
+  expect(countLog1056(`mod channel up for ${id8_1056}`) === up1102 + 1, 'the stand-in mod channel is up (fix 1102)');
+  await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
+  for (let i = 0; i < 25 && !out1102.includes('{"context":"summary"}\n'); i++) await sleep(200);
+  expect(out1102.includes('{"context":"summary"}\n'), `fix 1102: the ask reached the channel as a context line, got ${JSON.stringify(out1102)}`);
+  await s.waitFor(`${railState1056('fresh')} && document.querySelector('.files-rail .rail-context-sections .files-empty')?.textContent === 'A new conversation; the breakdown comes with its first reply' && !document.querySelector('.files-rail .rail-context-outside')`, 'the Context tab reads fresh at 10 s on a conversation with no reply (fix 1102)', 15000);
+  abort1102.abort();
+  abort1102 = null;
+  for (let i = 0; i < 50 && countLog1056(`mod channel down for ${id8_1056}`) !== down1102 + 1; i++) await sleep(200);
+  expect(countLog1056(`mod channel down for ${id8_1056}`) === down1102 + 1, 'the stand-in mod channel is down (fix 1102)');
+  step('M9 fix 1102: with a mod channel up the Context tab\'s ask reaches it as {"context":"summary"}, and with no answer on a conversation with no reply the tab reads A new conversation; the breakdown comes with its first reply at 10 s, not outside');
   const used1038 =(name, tokens) => ({ name, tokens, color: 'x', isDeferred: false, kind: 'used' });
   const tools1038 = (server, n, total) => Array.from({ length: n }, (_, i) => ({ name: `mcp__${server}__t${i}`, serverName: server, tokens: Math.floor(total / n) + (i < total % n ? 1 : 0), isLoaded: true }));
   const breakdown1038 = {
@@ -3428,7 +3539,7 @@ try {
     if (context1038 === null) await sleep(200);
   }
   expect(context1038 !== null && context1038.totalTokens === 86400 && context1038.detail === 'summary' && !('gridRows' in context1038), `the record carries the breakdown less its grid (fix 1036): ${JSON.stringify(context1038)?.slice(0, 200)}`);
-  // M9 fix 1056 left the rail on Context, reading; the Context post above turns it loaded in place and this click on the active tab is a no-op.
+  // M9 fix 1102 left the rail on Context, fresh; the Context post above turns it loaded in place and this click on the active tab is a no-op.
   await s.evalJs(`document.querySelector('.rail-tab[data-tab="context"]').click()`);
   await s.waitFor(`!!document.querySelector('.files-rail .rail-context[data-state="loaded"]')`, 'the Context tab loaded on the stub breakdown', 10000);
   const partsOrder1038 = ['prompt', 'tools', 'mcp', 'mcp-instructions', 'agents', 'memory', 'skills', 'messages', 'free', 'buffer'];
@@ -3581,6 +3692,8 @@ try {
   );
   expect(skills1040.folder === 'this folder, 1' && skills1040.yours === 'yours, 3, never used ~500 in every request' && skills1040.yoursRows === 'ado,qa-story-refinement' && skills1040.fold === '1 skill, < 20, pdf' && skills1040.groups === 'folder,yours', `the skills grouped by where each lives: ${JSON.stringify(skills1040)}`);
   expect(skills1040.last === '3 days' && skills1040.title === 'From this folder; 2k tokens in the turns it ran, over the last 7 days; 2 uses', `batch dated off the transcript, the ten-day use in its uses and not its tokens: ${JSON.stringify(skills1040)}`);
+  const groupButton1105 = '.files-rail [data-group="yours"] > .listing-group-action > .listing-group-button';
+  await s.waitFor(`document.querySelector(${JSON.stringify(groupButton1105)})?.textContent === 'Turn off these 2 ▾'`, 'fix 1105: the yours group\'s button counts its two never-used skills as these 2', 5000);
   // The listing: Off in this folder on qa-story-refinement.
   const local1040 = path.join(context1040, '.claude', 'settings.local.json');
   const user1040 = path.join(emeraldHome, 'claude-config', 'settings.json');
@@ -3602,6 +3715,7 @@ try {
   }
   expect(wrote1040 !== null, `the folder's settings.local.json holds qa-story-refinement off: ${fs.existsSync(local1040) ? fs.readFileSync(local1040, 'utf8') : 'absent'}`);
   await s.waitFor(`document.querySelector(${JSON.stringify(`${rowSel1040('qa-story-refinement')} .rail-context-item-name`)})?.classList.contains('listing-off-name') === true && document.querySelector(${JSON.stringify(`${rowSel1040('qa-story-refinement')} .context-skills-last`)})?.textContent === 'off'`, 'the row struck through and its last used off', 5000);
+  await s.waitFor(`document.querySelector(${JSON.stringify(groupButton1105)})?.textContent === 'Turn off ado ▾'`, 'fix 1105: with one left the button names it', 5000);
   let userOverride1040 = undefined;
   try {
     userOverride1040 = JSON.parse(fs.readFileSync(user1040, 'utf8'))?.skillOverrides?.['qa-story-refinement'];
@@ -3646,7 +3760,7 @@ try {
     await s.evalJs(`document.querySelector(${JSON.stringify(`.rail-tab[data-tab="${rail1040}"]`)}).click()`);
     await s.waitFor(`document.querySelector('.files-rail')?.dataset.tab === ${JSON.stringify(rail1040)}`, 'the rail back on the tab it was on');
   }
-  step('M9 fix 1040: the Skills section groups the skills by where each lives and dates the used off a seeded transcript, a listing pick of Off writes the folder\'s settings.local.json and Undo takes it back, and the context opens in a pane with every column');
+  step('M9 fix 1040: the Skills section groups the skills by where each lives and dates the used off a seeded transcript, a listing pick of Off writes the folder\'s settings.local.json and Undo takes it back, the group\'s button naming the one skill left (fix 1105), and the context opens in a pane with every column');
 
   step('PASS');
 } catch (err) {
@@ -3667,6 +3781,7 @@ try {
     if (liftParent !== null) fs.rmSync(liftParent, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     if (context1040 !== null) fs.rmSync(context1040, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     if (transcript1056 !== null) fs.rmSync(transcript1056, { force: true });
+    if (abort1102 !== null) abort1102.abort();
     if (transcript1040 !== null) fs.rmSync(path.dirname(transcript1040), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     fs.rmSync(rootMenuParent, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     fs.rmSync(openedPaths, { force: true });

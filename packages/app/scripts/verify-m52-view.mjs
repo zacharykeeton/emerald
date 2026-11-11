@@ -1068,6 +1068,25 @@ try {
   // The split holding a pane, so "beside P" can be read as a row split
   // with P first and the new pane second (M9 fix 863).
   const splitHolding = (node, id) => (node.kind !== 'split' ? null : node.first.id === id || node.second.id === id ? node : (splitHolding(node.first, id) ?? splitHolding(node.second, id)));
+  // M9 fix 1098: mouse tracking switched on in xterm itself (fix 538's
+  // recipe, verify-m2-keys.mjs: a shell printing the modes does not reach
+  // xterm through ConPTY), and a probe on the terminal's own output to the
+  // pty that keeps every SGR mouse report (ESC [ <), the bytes a program
+  // that tracks the mouse would hear.
+  const term1098 = `document.querySelector(${JSON.stringify(linkHost357)}).emeraldTerm`;
+  const trackOn1098 = async () => {
+    await s.evalJs(`${term1098}.write(String.fromCharCode(27) + '[?1000h' + String.fromCharCode(27) + '[?1006h')`);
+    await s.waitFor(`${term1098}.modes.mouseTrackingMode === 'vt200'`, 'fix 1098: mouse tracking on', 3000);
+    await s.evalJs(`(() => { window.__reports1098 = []; window.__reportsOff1098 = ${term1098}.onData((d) => { if (d.includes(String.fromCharCode(27) + '[<')) window.__reports1098.push(d); }); return true; })()`);
+  };
+  const reports1098 = () => s.evalJs(`window.__reports1098 ?? null`);
+  const trackOff1098 = async () => {
+    // Anything a report typed at the prompt goes with a Ctrl+C.
+    await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(repoShell)}, data: String.fromCharCode(3) })`);
+    await s.evalJs(`(() => { window.__reportsOff1098?.dispose(); window.__reportsOff1098 = undefined; return true; })()`);
+    await s.evalJs(`${term1098}.write(String.fromCharCode(27) + '[?1000l' + String.fromCharCode(27) + '[?1006l')`);
+    await s.waitFor(`${term1098}.modes.mouseTrackingMode === 'none'`, 'fix 1098: mouse tracking off again', 3000);
+  };
   // M9 fix 863: a URL a pane prints, Ctrl+clicked, opens in a browser
   // pane beside that pane, and nothing goes to the system browser. The
   // discard port refuses at once, so the guest reaches no network and
@@ -1083,6 +1102,9 @@ try {
     await screenEvent357('mousemove', urlCell);
     await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(url863)}`, 'the URL on the host', 5000);
     expect((await hostTitle357()) === `Ctrl+click opens ${url863} in a pane beside`, `the URL's tooltip says beside (fix 863), got ${await hostTitle357()}`);
+    // M9 fix 1098: the Ctrl+click below runs under mouse tracking, as a
+    // fullscreen Claude's would.
+    await trackOn1098();
     await screenEvent357('mousedown', urlCell, ', ctrlKey: true');
     await screenEvent357('mouseup', urlCell, ', ctrlKey: true');
     const browserLeaf = async () => leaves(await getLayout(s)).find((p) => p.view?.kind === 'browser' && p.view.url === url863) ?? null;
@@ -1097,10 +1119,25 @@ try {
     expect(await s.evalJs(`document.querySelector('.tab-strip').dataset.activeTab === 'panes'`), 'the panes still on show');
     const opened = fs.existsSync(openedPaths) ? fs.readFileSync(openedPaths, 'utf8').split(/\r?\n/) : [];
     expect(!opened.includes(url863), `nothing went to the system browser, the open log holds ${JSON.stringify(opened)}`);
+    {
+      const reports = await reports1098();
+      expect(Array.isArray(reports) && reports.length === 0, `fix 1098: no press reached the program, got ${JSON.stringify(reports)}`);
+      // The control, so the empty read is not a probe that hears nothing:
+      // a Ctrl+click off any link, at the screen's bottom-right cell read
+      // fresh (the pane beside moved the screen), still reaches the program.
+      const corner = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(linkHost357 + ' .xterm-screen')}).getBoundingClientRect(); return { x: r.right - 4, y: r.bottom - 4 }; })()`);
+      await screenEvent357('mousemove', corner);
+      await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`, 'fix 1098: the pointer off the URL for the control', 5000);
+      await screenEvent357('mousedown', corner, ', ctrlKey: true');
+      await screenEvent357('mouseup', corner, ', ctrlKey: true');
+      await s.waitFor(`(window.__reports1098 ?? []).some((d) => d.startsWith(String.fromCharCode(27) + '[<16;'))`, 'fix 1098: the Ctrl+click off any link still reaches the program', 3000);
+      await trackOff1098();
+    }
     await s.screenshot('m52-fix863-beside.png');
     await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(leaf.id)}] .pane-hide`)}).click()`);
     await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(leaf.id)}]`)}) && document.querySelectorAll('.pane').length === 4`, 'the browser pane closed, four panes again');
     step('M9 fix 863: a URL a pane prints says beside on hover, and a Ctrl+click opens it in a browser pane beside that pane, nothing sent to the system browser');
+    step('M9 fix 1098: under mouse tracking a Ctrl+click on a URL a pane prints opens the browser pane beside and no press reaches the program, while a Ctrl+click off the link still does');
     await clickRepoPane();
     await s.waitFor(focusedPaneIs(repoPane), 'the repo shell focused again for the path step');
     await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(repoPane)}] .pane-zoom`)}).click()`);
@@ -1138,6 +1175,8 @@ try {
   await screenEvent357('mouseup', relCell);
   await sleep(400);
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore357, 'a plain click opens nothing');
+  // M9 fix 1098: the path's Ctrl+click runs under mouse tracking too.
+  await trackOn1098();
   await screenEvent357('mousedown', relCell, ', ctrlKey: true');
   await screenEvent357('mouseup', relCell, ', ctrlKey: true');
   // M9 fix 864: the Ctrl+click opens a file pane beside the repo pane, no
@@ -1151,6 +1190,10 @@ try {
   const notesPane = await notesLeaf();
   expect(notesPane !== null, `the Ctrl+click opened a file pane on ${notesFile}, got ${JSON.stringify(leaves(await getLayout(s)).map((p) => p.view))}`);
   {
+    const reports = await reports1098();
+    expect(Array.isArray(reports) && reports.length === 0, `fix 1098: no press on the path reached the program, got ${JSON.stringify(reports)}`);
+  }
+  {
     const split = splitHolding((await getLayout(s)).root, notesPane.id);
     expect(split !== null && split.direction === 'row' && split.first.id === repoPane && split.second.id === notesPane.id, `the file pane sits beside the repo pane, got ${JSON.stringify(split && { direction: split.direction, first: split.first.id, second: split.second.id })}`);
   }
@@ -1159,7 +1202,9 @@ try {
   expect(await s.evalJs(`document.querySelector('.splitview.zoomed') === null`), 'the zoom cleared for the pane beside');
   await s.waitFor(`(() => { const e = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(notesPane.id)}] .file-view .file-editor`)})?.emeraldEditor; return !!e && !!e.getModel() && e.getPosition().lineNumber === 3; })()`, "the pane's editor cursor on line 3", 5000);
   await s.screenshot('m52-fix864-beside.png');
+  await trackOff1098();
   step('M9 fix 357 and 864: a path a pane prints is a link, the hover says beside, a plain click opens nothing and a Ctrl+click opens a file pane beside that pane at its line, no tab');
+  step('M9 fix 1098: under mouse tracking a Ctrl+click on a path a pane prints opens the file pane beside and no press reaches the program');
   // The pane and the file go, so the steps below see the repo pane narrow
   // and unzoomed, as they did when the Ctrl+click opened a tab: the split
   // already cleared the zoom, so no click on the zoom button is made.
@@ -1205,6 +1250,71 @@ try {
   await screenEvent357('mousemove', { x: wrapPos.x, y: wrapPos.y + 200 });
   await s.waitFor(`document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`, 'the pointer off the wrapped path clears the host', 5000);
   step("M9 fix 423: a path wrapped across the pane's rows by its own length is still one link, hovered whole from the row its wrap lands on");
+
+  // M9 fix 1099: a program that breaks its own rows (Claude Code's
+  // hand-off line) indents the continuation and marks no row wrapped. The
+  // repo shell prints such a pair, on a pane zoomed wide enough that xterm
+  // wraps neither row; the first row's part (head1099) is no file and the
+  // whole is, so the path is one link from either row, and a Ctrl+click on
+  // the first row opens it in a file pane beside. The path is relative to
+  // the shell's folder (the repo): the harness's zoomed pane is about 80
+  // columns, and the repo's absolute path put the first row past 100, so
+  // xterm wrapped it; a relative token goes through the same walk, scan
+  // and resolve as an absolute one.
+  {
+    const dir1099 = path.join(repo, 'wrap1099');
+    const head1099 = 'wrap1099\\handoff-plan-batch';
+    const file1099 = path.join(repo, head1099 + '-test-shield.md');
+    const first1099 = `Read ${head1099}`;
+    const second1099 = '  -test-shield.md and do what it says.';
+    fs.mkdirSync(dir1099, { recursive: true });
+    fs.writeFileSync(file1099, '1099\n');
+    await clickRepoPane();
+    await s.waitFor(focusedPaneIs(repoPane), 'fix 1099: the repo shell focused');
+    await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(repoPane)}] .pane-zoom`)}).click()`);
+    await s.waitFor(`document.querySelector('.splitview.zoomed') !== null`, 'fix 1099: the repo pane zoomed');
+    await s.waitFor(`(document.querySelector(${JSON.stringify(linkHost357)})?.emeraldTerm?.cols ?? 0) >= ${first1099.length + 2}`, `fix 1099: the zoomed pane wide enough for the first row (${first1099.length} columns)`, 10000);
+    await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(repoShell)}, data: ${JSON.stringify(`Write-Host '${first1099}'; Write-Host '${second1099}'`)} + String.fromCharCode(13) })`);
+    // The output's first row (the command's echo holds Write-Host), with
+    // the indented row under it: the cell at the middle of the path on the
+    // first and of -test-shield.md on the second.
+    const cells1099 = `(() => { const host = document.querySelector(${JSON.stringify(linkHost357)}); const t = host?.emeraldTerm; if (!t) return null; const b = t.buffer.active; for (let i = 0; i + 1 < b.length; i++) { const text = b.getLine(i)?.translateToString(true) ?? ''; const next = b.getLine(i + 1)?.translateToString(true) ?? ''; if (text.trim() === ${JSON.stringify(first1099)} && !text.includes('Write-Host') && next.startsWith(${JSON.stringify(second1099)})) { const cell = t._core._renderService.dimensions.css.cell; const r = host.querySelector('.xterm-screen').getBoundingClientRect(); const at = (x, row) => ({ x: r.left + (x + 0.5) * cell.width, y: r.top + (row - b.viewportY) * cell.height + cell.height / 2 }); return { first: at(text.indexOf(${JSON.stringify(head1099)}) + ${Math.floor(head1099.length / 2)}, i), second: at(2 + ${Math.floor('-test-shield.md'.length / 2)}, i + 1) }; } } return null; })()`;
+    {
+      const printed = Date.now() + 10000;
+      while ((await s.evalJs(cells1099)) === null && Date.now() < printed) await sleep(250);
+      if ((await s.evalJs(cells1099)) === null) throw new Error(`fix 1099: the broken path never printed on the repo shell: ${await s.evalJs(dumpBuf357)}`);
+    }
+    const at1099 = await s.evalJs(cells1099);
+    const linked1099 = `document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === ${JSON.stringify(file1099)}`;
+    const off1099 = `document.querySelector(${JSON.stringify(linkHost357)})?.dataset.link === undefined`;
+    await screenEvent357('mousemove', at1099.second);
+    await s.waitFor(linked1099, 'fix 1099: the broken path, hovered on its indented row, resolves whole', 5000);
+    expect((await hostTitle357()) === `Ctrl+click opens ${file1099} in a pane beside`, `fix 1099: the tooltip names the whole path, got ${await hostTitle357()}`);
+    await screenEvent357('mousemove', { x: at1099.second.x, y: at1099.second.y + 200 });
+    await s.waitFor(off1099, 'fix 1099: the pointer off the path clears the host', 5000);
+    await screenEvent357('mousemove', at1099.first);
+    await s.waitFor(linked1099, 'fix 1099: the broken path, hovered on its first row, resolves whole', 5000);
+    await screenEvent357('mousedown', at1099.first, ', ctrlKey: true');
+    await screenEvent357('mouseup', at1099.first, ', ctrlKey: true');
+    const leaf1099 = async () => leaves(await getLayout(s)).find((p) => JSON.stringify(p.view) === JSON.stringify({ kind: 'file', path: file1099 })) ?? null;
+    {
+      const until = Date.now() + 5000;
+      while ((await leaf1099()) === null && Date.now() < until) await sleep(150);
+    }
+    const pane1099 = await leaf1099();
+    expect(pane1099 !== null, `fix 1099: the Ctrl+click opened a file pane on ${file1099}, got ${JSON.stringify(leaves(await getLayout(s)).map((p) => p.view))}`);
+    {
+      const split = splitHolding((await getLayout(s)).root, pane1099.id);
+      expect(split !== null && split.direction === 'row' && split.first.id === repoPane && split.second.id === pane1099.id, `fix 1099: the file pane sits beside the repo pane, got ${JSON.stringify(split && { direction: split.direction, first: split.first.id, second: split.second.id })}`);
+    }
+    // The split cleared the zoom, as fix 357's comment says, so the steps
+    // below start on the narrow pane they start on without this one.
+    await s.evalJs(`document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(pane1099.id)}] .pane-hide`)}).click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(pane1099.id)}]`)}) && document.querySelectorAll('.pane').length === 4`, 'fix 1099: the file pane closed, four panes again');
+    expect(await s.evalJs(`document.querySelector('.splitview.zoomed') === null`), 'fix 1099: the repo pane unzoomed after the step');
+    fs.rmSync(dir1099, { recursive: true, force: true });
+    step('M9 fix 1099: a path a program broke across two rows with an indent is one link from either row, and a Ctrl+click opens it in a file pane beside');
+  }
 
   // M9 fix 425: the hover's stat is cached for five seconds, so hovering
   // the same link twice inside that window makes one call. A token of

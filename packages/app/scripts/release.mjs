@@ -17,10 +17,11 @@
 //   npm run release -w @emerald/app                 build, check, draft
 //   npm run release -w @emerald/app -- --no-build   use release/ and release-x64/ as they are
 //   npm run release -w @emerald/app -- --no-build --publish   draft, read back, publish
-//   npm run release -w @emerald/app -- --dry-run    build and upload nothing; print the plan
+//   npm run release -w @emerald/app -- --dry-run    build and upload nothing; print the plan and whether the tree is still the version's
 //
 // --arm64-dir and --x64-dir point the checks at other folders, with
 // --no-build or --dry-run only (verify:release runs on fixtures that way).
+// --tree points the dry run's read of the version's bump at another checkout (verify:release runs on a scratch repository that way).
 // The gh token stays in gh's keyring: this never reads it, never creates a
 // repo and never deletes a release.
 import { spawnSync } from 'node:child_process';
@@ -52,6 +53,28 @@ function option(name) {
   const v = argv[i + 1];
   if (v === undefined || v.startsWith('--')) refuse(`${name} needs a folder`);
   return path.resolve(v);
+}
+
+// The dry run's line on whether the tree has moved past the version's code:
+// the commit that set packages/app/package.json to this version, and how many
+// commits under packages came after it. A line, never a refusal: a later
+// batch's plan commit or a retro commit under packages must not stop a
+// release, and the release session reads the line.
+function versionBump(tree, version) {
+  const unread = "--- git could not read the tree's history, so the version's bump is not checked";
+  const pattern = version.replace(/\./g, '[.]');
+  const bump = run('git', ['log', '-1', '--format=%H', `-G"version": "${pattern}"`, '--', 'packages/app/package.json'], { cwd: tree });
+  if (bump.missing || bump.status !== 0) return unread;
+  const hash = bump.stdout.trim();
+  if (hash === '') return `--- no commit sets packages/app/package.json to ${version}; commit the bump before the export`;
+  const count = run('git', ['rev-list', '--count', `${hash}..HEAD`, '--', 'packages'], { cwd: tree });
+  const name = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tree });
+  if (count.missing || count.status !== 0 || name.missing || name.status !== 0) return unread;
+  const n = Number(count.stdout.trim());
+  const h = hash.slice(0, 8);
+  const b = name.stdout.trim();
+  if (n === 0) return `--- ${b} is at the version's code: nothing under packages past ${h}, the version's bump`;
+  return `--- ${b} has ${n} commit${n === 1 ? '' : 's'} under packages past ${h}, the version's bump; export from a detached worktree of it`;
 }
 
 // A child with no shell, so gh and git resolve to their .exe on the PATH
@@ -98,6 +121,8 @@ function main() {
   const arm64Opt = option('--arm64-dir');
   const x64Opt = option('--x64-dir');
   if ((arm64Opt || x64Opt) && !dryRun && !noBuild) refuse('--arm64-dir and --x64-dir go with --no-build or --dry-run');
+  const treeOpt = option('--tree');
+  if (treeOpt && !dryRun) refuse('--tree goes with --dry-run');
   const arm64Dir = arm64Opt ?? path.join(appDir, 'release');
   const x64Dir = x64Opt ?? path.join(appDir, 'release-x64');
 
@@ -159,6 +184,7 @@ function main() {
       process.stdout.write(merged);
       console.log(`--- notes: ${notes.heading} (${lines} lines)`);
       console.log(`--- the code: v${version} tags ${PUBLIC_RELEASES_REPO}'s default branch, which node scripts/export-public.mjs --update and a push put at Emerald ${version} first`);
+      console.log(versionBump(treeOpt ?? repoRoot, version));
       console.log(`--- gh ${ghArgs.map(quoteArg).join(' ')}`);
       console.log(`--- the Mac build: publishing v${version} starts mac.yml on ${PUBLIC_RELEASES_REPO}, which uploads ${macAssetNames(version).join(', ')} to the release`);
       if (publish) console.log(`--- then, once the draft's five assets read back with the local names and sizes: gh release edit v${version} --repo ${PUBLIC_RELEASES_REPO} --draft=false --latest`);
@@ -192,9 +218,17 @@ function main() {
     // run or refuses on it: the Windows release is complete without it.
     const names = macAssetNames(version);
     console.log(`the Mac build: mac.yml uploads ${names.join(', ')} to v${version} when its run passes; gh run watch it, then gh release view v${version} --repo ${PUBLIC_RELEASES_REPO} lists eight assets`);
-    const runs = run('gh', ['run', 'list', '--workflow', 'mac.yml', '--repo', PUBLIC_RELEASES_REPO, '--limit', '1']);
-    const listed = runs.status === 0 ? runs.stdout.trim() : '';
-    console.log(listed !== '' ? listed : '(no run listed yet; GitHub can take a minute to start one)');
+    // The release's own run, by its tag: a release event's run carries the
+    // tag as its branch. `--limit 1` alone printed the previous release's run
+    // at three installs running (1015, 1030, 1048), since GitHub lists the
+    // new one a few seconds after the publish. So wait up to 60 s for it.
+    let listed = '';
+    for (let tries = 0; tries < 12 && listed === ''; tries++) {
+      if (tries > 0) spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 5000)']);
+      const runs = run('gh', ['run', 'list', '--workflow', 'mac.yml', '--repo', PUBLIC_RELEASES_REPO, '--branch', `v${version}`, '--limit', '1']);
+      listed = runs.status === 0 ? runs.stdout.trim() : '';
+    }
+    console.log(listed !== '' ? listed : `(no run for v${version} listed after 60 s; gh run list --workflow mac.yml --repo ${PUBLIC_RELEASES_REPO} --branch v${version})`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

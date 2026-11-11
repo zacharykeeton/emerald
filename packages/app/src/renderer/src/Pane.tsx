@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -65,15 +65,19 @@ import { ackable, compactPercent, contextPercentText, contextText, describeState
 import { editTab, getState, useDaemonFor, useStore } from './store.ts';
 import { browserViewSupported, fileViewSupported, otherShells } from './daemon-model.ts';
 import { createStatCache } from './path-link-cache.ts';
-import { joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, urlLinkTitle } from './path-links.ts';
+import { continuedLinkHolds, joinContinuedRows, joinWrappedRows, linkPressKept, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, seamIn, urlLinkTitle } from './path-links.ts';
+import type { JoinedLine, PathLink } from './path-links.ts';
 import type { FileStat } from '../../preload/api.ts';
 import { TokensArrow, TokensText } from './TokensText.tsx';
 import { RollingFigure } from './RollingFigure.tsx';
 import { HushButton } from './HushButton.tsx';
 import { feed } from './terminal-feed.ts';
+import { osc52Text } from './osc52-model.ts';
 import type { Fit } from './mirror-model.ts';
 import { PaneNote } from './CheatSheet.tsx';
-import { fileViewAt } from './tabs-model.ts';
+import { PANES, fileViewAt } from './tabs-model.ts';
+import { paneInFront, webglBudget } from './webgl-budget.ts';
+import type { WebglMember } from './webgl-budget.ts';
 import { closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, revealInPane, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
@@ -208,7 +212,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
       case 'new-shell':
         return void startShellHere(paneId, shell).catch(warn('new shell'));
       case 'new-claude':
-        return openNewSession(paneId);
+        return openNewSession(paneId, null, true);
       case 'rename':
         return startRename();
       case 'pick':
@@ -845,6 +849,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
             {
               label: 'Split empty',
               onClick: () => {
+                recordUse('split-empty');
                 const direction = splitMenu.direction;
                 setSplitMenu(null);
                 void splitWith(paneId, direction, 'empty').catch(warn('split'));
@@ -853,6 +858,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
             {
               label: 'Split with shell',
               onClick: () => {
+                recordUse('split-with-shell');
                 const direction = splitMenu.direction;
                 setSplitMenu(null);
                 void splitWith(paneId, direction, 'shell').catch(warn('split'));
@@ -861,15 +867,37 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
             {
               label: 'Split with Claude',
               onClick: () => {
+                recordUse('split-with-claude');
                 const direction = splitMenu.direction;
                 setSplitMenu(null);
                 void splitWith(paneId, direction, 'claude').catch(warn('split'));
               },
             },
             { heading: 'By default', title: 'What a plain click on either split button gives' },
-            { label: 'Empty pane', checked: splitKind === 'empty', onClick: () => setSplitKind('empty') },
-            { label: 'Shell', checked: splitKind === 'shell', onClick: () => setSplitKind('shell') },
-            { label: 'Claude', checked: splitKind === 'claude', onClick: () => setSplitKind('claude') },
+            {
+              label: 'Empty pane',
+              checked: splitKind === 'empty',
+              onClick: () => {
+                recordUse('set-split-kind');
+                setSplitKind('empty');
+              },
+            },
+            {
+              label: 'Shell',
+              checked: splitKind === 'shell',
+              onClick: () => {
+                recordUse('set-split-kind');
+                setSplitKind('shell');
+              },
+            },
+            {
+              label: 'Claude',
+              checked: splitKind === 'claude',
+              onClick: () => {
+                recordUse('set-split-kind');
+                setSplitKind('claude');
+              },
+            },
           ]}
         />
       )}
@@ -982,7 +1010,12 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
     },
     [],
   );
-  const { zoomedPaneId, fontSizes, findOpen, dropping } = useUi();
+  const { zoomedPaneId, fontSizes, findOpen, dropping, tabs } = useUi();
+  // M9 fix 1130: on the window's current tab with no file tab over it.
+  const inFront = paneInFront(layout, paneId, tabs.active !== PANES);
+  const inFrontRef = useRef(inFront);
+  inFrontRef.current = inFront;
+  const showRef = useRef<((shown: boolean) => void) | null>(null);
   const fontSize = fontSizes.get(paneId) ?? FONT_SIZE_DEFAULT;
   // The search addon is built with the terminal; the find bar (M26) gets
   // it through state rather than a ref so the bar follows a new terminal
@@ -1008,11 +1041,13 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       parked.delete(key);
       handle = waiting.handle;
       handle.adopt(host, kindRef, paneIdRef, blockedRef);
+      handle.show(inFrontRef.current);
     } else {
-      handle = openTerminal(sessionId, host, fontSizeRef.current, kindRef, paneIdRef, themeRef.current, blockedRef);
+      handle = openTerminal(sessionId, host, fontSizeRef.current, kindRef, paneIdRef, themeRef.current, blockedRef, inFrontRef.current);
     }
     termRef.current = handle.term;
     refitRef.current = handle.refit;
+    showRef.current = handle.show;
     reattachRef.current = handle.reattach;
     setSearch(handle.search);
 
@@ -1029,9 +1064,15 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
       setSearch(null);
       termRef.current = null;
       refitRef.current = null;
+      showRef.current = null;
       reattachRef.current = null;
     };
   }, [paneId, sessionId]);
+
+  // M9 fix 1130: the budget hears a tab switch in the commit that shows it; its settle runs as a microtask, before the browser paints the tab, so a pane coming to the front has its WebGL back for its first frame where it can.
+  useLayoutEffect(() => {
+    showRef.current?.(inFront);
+  }, [inFront]);
 
   // A resumed session has a new PTY behind the same id. The daemon does not
   // move attachments over, so when the session leaves `exited` this pane
@@ -1587,6 +1628,8 @@ interface TerminalHandle {
   reattach: () => void;
   adopt: (host: HTMLDivElement, kindRef: KindRef, paneIdRef: PaneIdRef, blockedRef: BlockedRef) => void;
   dispose: () => void;
+  // M9 fix 1130: whether the pane is on show, for the window's WebGL budget.
+  show: (shown: boolean) => void;
 }
 
 type KindRef = React.RefObject<'claude' | 'shell'>;
@@ -1621,16 +1664,46 @@ function parkKey(paneId: string, sessionId: string): string {
   return `${paneId} ${sessionId}`;
 }
 
+// M9 fix 1130: the addon's dispose takes its canvas off the page and leaves the context to the collector, which Chromium counts toward its sixteen until then; losing it by hand frees the slot now. _renderer and _gl are addon-webgl 0.19.0's private fields, read defensively. The loss comes after the dispose, so no listener of the addon sees it.
+function dropWebgl(addon: WebglAddon): void {
+  const gl = (addon as unknown as { _renderer?: { _gl?: WebGL2RenderingContext } })._renderer?._gl;
+  addon.dispose();
+  gl?.getExtension('WEBGL_lose_context')?.loseContext();
+}
+
 // Builds the terminal in the host and opens it on the session's feed,
 // which attaches, sizes and writes it (M50). The host-bound pieces (the
 // ResizeObserver, the wheel listener, the tags the verify scripts read,
 // the size check in refit) go through `host`, which adopt swaps for a
 // new element.
-function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: number, initialKindRef: KindRef, initialPaneIdRef: PaneIdRef, theme: XtermTheme, initialBlockedRef: BlockedRef): TerminalHandle {
+function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: number, initialKindRef: KindRef, initialPaneIdRef: PaneIdRef, theme: XtermTheme, initialBlockedRef: BlockedRef, initialShown: boolean): TerminalHandle {
   let host = initialHost;
   let kindRef = initialKindRef;
   let paneIdRef = initialPaneIdRef;
   let blockedRef = initialBlockedRef;
+
+  // M9 fix 1091: an OSC 8 hyperlink (Claude Code's login URL, drawn as one
+  // over every row it wraps to) opens as a printed URL does, Ctrl+click
+  // alone, the whole URI from any of its rows; without a handler xterm asked
+  // with confirm() and opened a window on any click. The bodies are the
+  // WebLinksAddon's below.
+  const urlLink = {
+    allowNonHttpProtocols: false,
+    activate: (ev: MouseEvent, uri: string) => {
+      if (!ev.ctrlKey) return;
+      const fail = (err: unknown) => console.warn('[emerald] open link failed', err);
+      if (browserViewSupported(getState().daemon)) void openBeside({ kind: 'browser', url: uri }, paneIdRef.current).catch(fail);
+      else void window.emerald.files.openExternal(uri).catch(fail);
+    },
+    hover: (_ev: MouseEvent, uri: string) => {
+      host.dataset['link'] = uri;
+      host.title = urlLinkTitle(uri, browserViewSupported(getState().daemon));
+    },
+    leave: () => {
+      delete host.dataset['link'];
+      host.removeAttribute('title');
+    },
+  };
 
   const term = new Terminal({
     // The search addon's highlights are decorations, still a proposed
@@ -1645,6 +1718,7 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     // own (M9 fix 244), resolved by TerminalView, handed in at build and
     // followed through its effect.
     theme,
+    linkHandler: urlLink,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -1764,7 +1838,10 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
   // fix 355 carries to main.log.
   let webglTries = 0;
   let webglTimer = 0;
-  let renderer: 'webgl' | 'dom' = 'dom';
+  // 'released': the pane gave its context up to the window's budget while
+  // hidden (M9 fix 1130) and takes one back when shown.
+  let renderer: 'webgl' | 'dom' | 'released' = 'dom';
+  let liveWebgl: WebglAddon | null = null;
   const setRenderer = (kind: 'webgl' | 'dom', why: string) => {
     renderer = kind;
     host.dataset['renderer'] = kind;
@@ -1780,16 +1857,20 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     const wait = WEBGL_RETRY_MS[webglTries] ?? 0;
     webglTries++;
     setRenderer('dom', `${what}, retry ${webglTries} of ${WEBGL_RETRY_MS.length} in ${wait} ms`);
-    webglTimer = window.setTimeout(() => loadWebgl(`retry ${webglTries}`), wait);
+    // M9 fix 1130: a retry due while the pane is hidden and the window is at
+    // its mark leaves it released, with no line; it takes WebGL back when shown.
+    webglTimer = window.setTimeout(() => (webglBudget.roomFor(member) ? loadWebgl(`retry ${webglTries}`) : member.release()), wait);
   };
   const loadWebgl = (why: string | null) => {
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
+        if (liveWebgl === webgl) liveWebgl = null;
         webgl.dispose();
         fallBack('context lost');
       });
       term.loadAddon(webgl);
+      liveWebgl = webgl;
       // The open itself is not a change worth a line in the log.
       if (why === null) {
         renderer = 'webgl';
@@ -1799,7 +1880,25 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
       fallBack(`addon unavailable (${err instanceof Error ? err.message : String(err)})`);
     }
   };
-  loadWebgl(null);
+  // M9 fix 1130: the terminal as the window's WebGL budget sees it. A
+  // release writes no console line (the budget's note is the record) and a
+  // take is the silent load, which spends no retry.
+  const member: WebglMember = {
+    live: () => liveWebgl !== null,
+    released: () => renderer === 'released',
+    release: () => {
+      clearTimeout(webglTimer);
+      if (liveWebgl !== null) dropWebgl(liveWebgl);
+      liveWebgl = null;
+      renderer = 'released';
+      host.dataset['renderer'] = 'released';
+    },
+    take: () => loadWebgl(null),
+  };
+  // A pane opened on a hidden tab past the mark starts released and never
+  // takes a context the front tab will want.
+  if (webglBudget.join(member, initialShown)) loadWebgl(null);
+  else member.release();
   // M9 fix 204: a URL a session prints is a link, underlined on hover by
   // the addon and opened on Ctrl+click alone, since a plain click is the
   // terminal's (Claude's own prompt box takes clicks). Since fix 863 the
@@ -1860,13 +1959,9 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
         callback(undefined);
         return;
       }
-      // M9 fix 423: the row joined with the rows its wrap continues from
-      // and into (joinWrappedRows), so a path wrapped at the pane's edge
-      // is one token and not two halves; cellOf now carries each
-      // character's own row too, since a wrapped match can end on a row
-      // other than the one queried.
-      const { text, cellOf } = joinWrappedRows(term.buffer.active, y - 1);
-      const links = pathLinksIn(text).map((l) => {
+      // M9 fix 1099: the links of one joined line, whichever walk joined it;
+      // cellOf carries each character's own row (fix 423).
+      const toLinks = ({ cellOf }: JoinedLine, found: PathLink[]) => found.map((l) => {
         const start = cellOf[l.start];
         const end = cellOf[l.end - 1];
         return {
@@ -1936,9 +2031,74 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
           },
         };
       });
-      callback(links.length === 0 ? undefined : links);
+      const answer = (links: ReturnType<typeof toLinks>) => callback(links.length === 0 ? undefined : links);
+      // M9 fix 423: the row joined with the rows its wrap continues from
+      // and into (joinWrappedRows), so a path wrapped at the pane's edge
+      // is one token and not two halves; cellOf carries each character's
+      // own row too, since a wrapped match can end on a row other than the
+      // one queried.
+      const wrapped = joinWrappedRows(term.buffer.active, y - 1);
+      const plain = () => answer(toLinks(wrapped, pathLinksIn(wrapped.text)));
+      // M9 fix 1099: a path a program broke across rows itself, its next
+      // row indented (joinContinuedRows), is one link when the whole is a
+      // file and the first row's part is not; a row with no indented
+      // neighbour, or no token across a seam, answers as before and makes
+      // no stat. The stats go into the hover's cache, so the hover that
+      // follows reads them with no second round trip.
+      const continued = joinContinuedRows(term.buffer.active, y - 1);
+      const all = pathLinksIn(continued.text);
+      const across = continued.seams.length === 0 ? [] : all.filter((l) => seamIn(l, continued.seams) !== null);
+      if (across.length === 0) {
+        plain();
+        return;
+      }
+      const statOf = (full: string): Promise<FileStat> => {
+        const cached = hoverStatCache.get(full);
+        if (cached !== undefined) return Promise.resolve(cached);
+        return window.emerald.files
+          .stat(full)
+          .catch((): FileStat => ({ error: 'stat failed' }))
+          .then((st) => {
+            hoverStatCache.set(full, st);
+            return st;
+          });
+      };
+      const folder = sessionFolder(sessionId);
+      void Promise.all(
+        across.map(async (l) => {
+          const seam = seamIn(l, continued.seams) ?? l.end;
+          const whole = resolvePathLink(folder, pathLinkParts(l.text).path);
+          const head = resolvePathLink(folder, pathLinkParts(continued.text.slice(l.start, seam)).path);
+          const [w, h] = await Promise.all([statOf(whole), statOf(head)]);
+          return continuedLinkHolds(w, h) ? l : null;
+        }),
+      ).then((results) => {
+        const held = results.filter((l): l is PathLink => l !== null);
+        if (held.length === 0) plain();
+        else answer(toLinks(continued, all.filter((l) => seamIn(l, continued.seams) === null || held.includes(l))));
+      });
     },
   });
+  // M9 fix 1098: a program that tracks the mouse, Claude Code in fullscreen
+  // among them, opens a link under a Ctrl release in the system browser,
+  // so a Ctrl+click on a link emerald shows opened twice. xterm's Linkifier
+  // listens on .xterm-screen in the bubble phase and its mouse reporter on
+  // .xterm, the screen's parent. This listener on the screen runs after the
+  // Linkifier's (registered inside term.open, so earlier): the Linkifier
+  // still records the press and its mouseup still opens the link, and the
+  // stop keeps the press from bubbling to .xterm, so no press is reported,
+  // no document mouseup reporter is armed and no release is sent. The
+  // preventDefault and the focus are what xterm's skipped handler did first.
+  // A capture listener on .xterm or the host would end the dispatch before
+  // the screen, and the click would open nothing.
+  const screenEl = term.element?.querySelector<HTMLElement>('.xterm-screen') ?? null;
+  const onLinkPress = (ev: MouseEvent) => {
+    if (!linkPressKept(ev, term.modes.mouseTrackingMode, host.dataset['link'] !== undefined)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    term.focus();
+  };
+  screenEl?.addEventListener('mousedown', onLinkPress);
   // What the host fits, or null while it has no size: a pane hidden by
   // zoom has none, and sizing the PTY to it would shrink it to nothing
   // and reflow the shell, so the feed is told nothing and leaves the size
@@ -1953,6 +2113,16 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     return { cols: dims.cols, rows: dims.rows };
   };
   const feedHandle = feed().open(sessionId, term, { paneId: () => paneIdRef.current, host: () => host, fit: propose() });
+  // M9 fix 1091: OSC 52, a program's write to the clipboard (Claude Code's
+  // copy over ssh, and its "c to copy"), lands on this PC's through main,
+  // with the copied note fix 806 shows; a read is never answered, a replay
+  // copies nothing (the ring replays raw bytes), and a session in two panes
+  // copies once. True always, so nothing else in xterm acts on one.
+  term.parser.registerOscHandler(52, (data) => {
+    const text = osc52Text(data);
+    if (text !== null && feedHandle.copies()) copyAndNote(text, paneIdRef.current);
+    return true;
+  });
   const refit = () => feedHandle.report(propose());
   // A new PTY behind the same id: the feed clears every terminal on the
   // session and attaches once for them all.
@@ -2021,6 +2191,12 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     observer.disconnect();
     cancelAnimationFrame(frame);
     clearTimeout(webglTimer);
+    // M9 fix 1130: a closed pane frees its context at once.
+    webglBudget.leave(member);
+    if (liveWebgl !== null) {
+      dropWebgl(liveWebgl);
+      liveWebgl = null;
+    }
     pathLinks.dispose();
     input.dispose();
     binary.dispose();
@@ -2030,10 +2206,13 @@ function openTerminal(sessionId: string, initialHost: HTMLDivElement, fontSize: 
     term.element?.removeEventListener('contextmenu', onContextMenu);
     term.element?.removeEventListener('mouseup', onMouseUp);
     term.element?.removeEventListener('mousedown', onLinkShiftPress, { capture: true });
+    screenEl?.removeEventListener('mousedown', onLinkPress);
     term.dispose();
   };
 
-  return { term, search, refit, reattach, adopt, dispose };
+  const show = (shown: boolean) => webglBudget.show(member, shown);
+
+  return { term, search, refit, reattach, adopt, dispose, show };
 }
 
 // M9 fix 57: xterm anchors its IME composition view at the cursor, so a

@@ -161,6 +161,7 @@ export class HostClient extends EventEmitter {
     if (this.state === 'up' && this.conn !== null) return this.conn.request(type, body);
     if (this.state === 'refused' && this.refusal !== null) return Promise.reject(new Error(this.refusal.line));
     if (this.state === 'idle') void this.connect();
+    const lost = this.state === 'lost';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
@@ -175,13 +176,23 @@ export class HostClient extends EventEmitter {
         cleanup();
         reject(new Error(r.line));
       };
+      const onLost = (): void => {
+        cleanup();
+        reject(new Error(`${this.name} is unreachable`));
+      };
       const cleanup = (): void => {
         clearTimeout(timer);
         this.off('connected', onUp);
         this.off('refused', onRefused);
+        this.off('lost', onLost);
       };
       this.once('connected', onUp);
       this.once('refused', onRefused);
+      // M9 fix 1095: a lost client is tried at once, and the request settles at that try: through on connected, unreachable at the next lost; the timer stays as the upper bound.
+      if (lost) {
+        this.once('lost', onLost);
+        this.tryNow();
+      }
     });
   }
 

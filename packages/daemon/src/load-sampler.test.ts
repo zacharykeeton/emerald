@@ -136,6 +136,27 @@ test('parseSweepLine reads the child line and skips a malformed row', () => {
   assert.equal(parseSweepLine('{"p":[]}'), null, 'no time');
 });
 
+test("parseSweepLine reads the child's private bytes as childPrivateBytes, and leaves the key out without a number (M9 fix 1126)", () => {
+  const s = parseSweepLine('{"at":1,"m":73400320,"p":[]}');
+  assert.ok(s !== null);
+  assert.equal(s.childPrivateBytes, 73400320);
+  const none = parseSweepLine('{"at":1,"p":[]}');
+  assert.ok(none !== null && !('childPrivateBytes' in none));
+  const text = parseSweepLine('{"at":1,"m":"x","p":[]}');
+  assert.ok(text !== null && !('childPrivateBytes' in text));
+});
+
+test("both sweep scripts write the child's own private bytes (M9 fix 1126)", () => {
+  for (const method of ['gp', 'cim'] as const) assert.ok(sweepScript(4000, method).includes('`"m`":$($me.PrivateMemorySize64)'), method);
+});
+
+test('the gp sweep disposes each Process after its row, the cim sweep has none to dispose (M9 fix 1126)', () => {
+  const gp = sweepScript(4000, 'gp');
+  assert.ok(gp.includes('$p.Dispose()'));
+  assert.ok(gp.indexOf('$p.Dispose()') > gp.indexOf('[void]$sb.Append('), 'after the row is appended');
+  assert.ok(!sweepScript(4000, 'cim').includes('$p.Dispose()'));
+});
+
 test('sweepScript names the tick and the method', () => {
   const gp = sweepScript(4000, 'gp');
   assert.ok(gp.includes('$tick = 4000'));

@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dropWindowBounds, toClient, toScreen, windowAt } from './window-drag-model.ts';
+import { dropWindowBounds, handOut, toClient, toScreen, windowAt } from './window-drag-model.ts';
+
+test('handOut hands a drag\'s files to the OS only with no window under the point, and never a drag that carries none (M9 fix 1122)', () => {
+  const payload = { kind: 'view', view: { kind: 'file', path: 'C:\\r\\a.json' } } as const;
+  const file = { kind: 'pane', payload, fromPaneId: null, files: ['C:\\r\\a.json'] } as const;
+  assert.deepEqual(handOut(file, null), ['C:\\r\\a.json']);
+  assert.equal(handOut(file, 7), null);
+  assert.equal(handOut({ kind: 'pane', payload, fromPaneId: 'p1' }, null), null);
+  assert.equal(handOut({ kind: 'pane', payload, fromPaneId: null, files: [] }, null), null);
+  assert.equal(handOut({ kind: 'tab', tabId: 't1' }, null), null);
+  const set = { kind: 'files', files: ['C:\\r\\a.json', 'C:\\r\\b.txt'] } as const;
+  assert.deepEqual(handOut(set, null), ['C:\\r\\a.json', 'C:\\r\\b.txt']);
+  assert.equal(handOut(set, 7), null);
+});
 
 test('windowAt picks the window under a screen point, the shared edge going right (M9 fix 927)', () => {
   const two = [

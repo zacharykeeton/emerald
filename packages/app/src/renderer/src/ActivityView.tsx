@@ -27,6 +27,7 @@ import { CARD_BAR_PX, paceBar, usageWindowName } from './usage-model.ts';
 import { fiveHourBounds, useFiveHourUsage, useUsageReading } from './usage-reading.ts';
 import { activityFromQuery, activityQuery } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
+import { editKey } from './keys-model.ts';
 
 // The activity card's Expand (M54): the same day as a tab, the strip at
 // full width with a named row per session and the prompts under hover,
@@ -663,7 +664,7 @@ export function ActivityView({ window: key, path, onShow, onClose, state: stateP
             ⇅
           </button>
           {onClose !== undefined && (
-            <button className="files-button" title="Close (Ctrl+W)" onClick={onClose}>
+            <button className="files-button" title={`Close (${editKey('KeyW')})`} onClick={onClose}>
               ×
             </button>
           )}

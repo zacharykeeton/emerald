@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent, ReactNode } from 'react';
+import type { Dispatch, MouseEvent, ReactNode, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { editCounts } from '@emerald/shared';
 import type { SessionInfo, Step } from '@emerald/shared';
@@ -9,7 +9,7 @@ import { editHunk, lineOf } from './chat-hunk.ts';
 import type { PendingEdit } from './chat-hunk.ts';
 import { renderReply } from './chat-markdown.ts';
 import { bashCut } from './chat-model.ts';
-import { PATH_CACHE_MAX, PATH_MENU } from './chat-paths.ts';
+import { PATH_CACHE_MAX, PATH_MENU, promptParts } from './chat-paths.ts';
 import type { PathAction } from './chat-paths.ts';
 import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
 import { normalizePath, relativePath } from './files-model.ts';
@@ -137,6 +137,18 @@ export function ChatReply({ step, session, time, fullTime }: { step: Extract<Ste
   // Bumped when a stat lands, so the paths it settled are drawn as links.
   const [version, setVersion] = useState(0);
   const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
+  useStatAsks(ask, setVersion);
+  // The clicks are the turn's (usePathLinks), which this sits inside.
+  return (
+    <div className="chat-step chat-reply" data-kind={step.kind} data-time={time ?? undefined} title={fullTime ?? undefined}>
+      <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  );
+}
+
+// The paths a draw asked about, each statted once into `known`, then the
+// draw bumped so the files among them are drawn as links.
+function useStatAsks(ask: string[], setVersion: Dispatch<SetStateAction<number>>): void {
   useEffect(() => {
     if (ask.length === 0) return;
     let live = true;
@@ -158,11 +170,28 @@ export function ChatReply({ step, session, time, fullTime }: { step: Extract<Ste
       live = false;
     };
   }, [ask]);
-  // The clicks are the turn's (usePathLinks), which this sits inside.
+}
+
+// M9 fix 1099: the prompt bubble's text, with every absolute path to a
+// file in it (and since M9 fix 1135 every relative path or @ mention to a
+// file inside the session's folder) a link the turn's handlers serve (usePathLinks), as a
+// reply's are; its textContent is the prompt's own.
+export function ChatPromptText({ text, cwd }: { text: string; cwd: string }) {
+  const [version, setVersion] = useState(0);
+  const { parts, ask } = useMemo(() => promptParts(text, cwd, knownPath), [text, cwd, version]);
+  useStatAsks(ask, setVersion);
   return (
-    <div className="chat-step chat-reply" data-kind={step.kind} data-time={time ?? undefined} title={fullTime ?? undefined}>
-      <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
-    </div>
+    <>
+      {parts.map((part, i) =>
+        part.path === null ? (
+          part.text
+        ) : (
+          <span key={i} className="chat-path" data-path={part.path} data-line={part.line ?? undefined}>
+            {part.text}
+          </span>
+        ),
+      )}
+    </>
   );
 }
 

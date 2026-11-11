@@ -12,7 +12,7 @@ import { dirtyFiles, isDirty } from './file-edits.ts';
 import { dropDirFor, hoverEffect, SPRING_OPEN_MS, springDirFor } from './files-drop-model.ts';
 import type { RailDrop } from './files-drop-model.ts';
 import { dropIntoFolder } from './files-drop.ts';
-import { setCopy, treeRefusal } from './files-set-model.ts';
+import { dragOutFiles, setCopy, treeRefusal } from './files-set-model.ts';
 import { setRailDrop } from './explorer-drop.ts';
 import type { FilesModel, MenuFrom, Pending, Row, TouchedBy, TouchedIndex } from './files-model.ts';
 import { indexCodes, indexStatuses, letterAt, letterFor, statusAt } from './git-status-model.ts';
@@ -47,6 +47,7 @@ import { useFocusedSession, useFocusedView } from './shown-sessions.ts';
 import { graphFolder } from './graph-folder.ts';
 import { commitsPath, defaultView, deletedFilePanes, isDocument, isFileTab, isImage, renameFilePanes, statsPath } from './tabs-model.ts';
 import { COPY_IMAGE_REFUSED, copyableImage } from './file-menu-model.ts';
+import { copyImage } from './copy-image.ts';
 import { commitsQuery, commitsView } from './view-state.ts';
 import { editLayout, getState, useDaemonFor, useStore } from './store.ts';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, clearRevealFile, closeFileTabsUnder, flashCornerNote, keepSearchScopeUnder, openFileTab, openFolderReviewTab, openPreviewTab, openReviewTab, pinFileTab, renameFileTabs, setFilesChanged, setFilesWidth, setRailTab, setSearchMode, setSearchScope, toggleFiles, useUi } from './ui.ts';
@@ -1807,8 +1808,8 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
         { label: 'Reveal in Explorer', onClick: done(() => void window.emerald.files.reveal(menu.path).catch(warn('reveal'))) },
         ...copyItems,
         // M9 fix 1007: a picture's row copies the picture itself, as the
-        // file view's menu does, disabled with the reason on a kind main
-        // cannot decode.
+        // file view's menu does: every picture kind, the first frame of an
+        // animated one (fix 1111), disabled with the reason on any other.
         ...(menu.kind === 'file' && isImage(menu.path)
           ? [
               {
@@ -1817,8 +1818,7 @@ function EntryMenu({ menu, root, onClose, onFindInFolder, onOpenInPane, onOpenIn
                 disabled: !copyableImage(menu.path),
                 onClick: done(
                   () =>
-                    void window.emerald.clipboard
-                      .writeImageFile(menu.path)
+                    void copyImage(menu.path, null)
                       .then((ok) => {
                         if (!ok) console.warn('[emerald] copy image decoded nothing from', menu.path);
                       })
@@ -2006,8 +2006,10 @@ function useFilePress(path: string | null, line?: number, column?: number, tree?
       const onBegin = () => {
         dragged.current = true;
       };
-      if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin);
-      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items`, refusal: payload === null ? treeRefusal(paths.length, kind) : null });
+      // M9 fix 1122: the paths the OS takes past every window.
+      const out = dragOutFiles(path === null ? null : normalizePath(path), paths);
+      if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin, null, null, out);
+      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items`, refusal: payload === null ? treeRefusal(paths.length, kind) : null }, out);
     },
     swallowClick: () => {
       if (!dragged.current) return false;

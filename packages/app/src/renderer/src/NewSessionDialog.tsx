@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionKind } from '@emerald/shared';
 import { findPane, setPaneHost, setPaneSession, tabHolding } from '@emerald/shared';
-import { roomBesideFocused } from './actions.ts';
-import { splitArgs } from './new-session-model.ts';
+import { retireReplaced, roomBesideFocused } from './actions.ts';
+import { closeOldOffer, panesShowing, splitArgs } from './new-session-model.ts';
 import { loadRecent, rememberFolderUsed } from './recent-folders.ts';
-import { editTab, useStore } from './store.ts';
-import { closeNewSession, loadClaudeOpensOn, setChatFace, useUi } from './ui.ts';
+import { editTab, getState, useStore } from './store.ts';
+import { closeNewSession, getUiState, loadClaudeOpensOn, loadCloseReplaced, rememberCloseReplaced, setChatFace, useUi } from './ui.ts';
 import type { NewSessionPreset } from './ui.ts';
 
 // Modal for starting a session with choices: folder, Claude or shell, extra
@@ -15,12 +15,12 @@ import type { NewSessionPreset } from './ui.ts';
 // beside the focused one, made on Start so a cancel leaves nothing behind.
 
 export function NewSessionDialog() {
-  const { newSessionPaneId, newSessionPreset } = useUi();
+  const { newSessionPaneId, newSessionPreset, newSessionReplace } = useUi();
   if (newSessionPaneId === null) return null;
-  return <Dialog key={newSessionPaneId} paneId={newSessionPaneId} preset={newSessionPreset} />;
+  return <Dialog key={newSessionPaneId} paneId={newSessionPaneId} preset={newSessionPreset} replace={newSessionReplace} />;
 }
 
-function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset | null }) {
+function Dialog({ paneId, preset, replace }: { paneId: string; preset: NewSessionPreset | null; replace: boolean }) {
   const { layout, sessions } = useStore('layout', 'sessions');
   const [recent] = useState<string[]>(loadRecent);
   // Prefer the heading's folder when there is one, then the folder of the
@@ -28,6 +28,11 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
   // home (filled in asynchronously).
   const tab = layout === null ? null : tabHolding(layout, paneId);
   const currentSession = sessions.get((tab === null ? null : findPane(tab, paneId))?.sessionId ?? '');
+  // M9 fix 1131: read at the open, so a turn that starts while the dialog is up does not move the tick under the pointer.
+  const [old] = useState(() => (replace ? currentSession : undefined));
+  const [offer] = useState(() => closeOldOffer(old, layout === null || old === undefined ? 0 : panesShowing(layout, old.id), replace));
+  const [oldOnChat] = useState(() => old !== undefined && getUiState().chatPanes.get(paneId) === old.id);
+  const [closeOld, setCloseOld] = useState(() => offer.offered && !offer.busy && loadCloseReplaced());
   const [cwd, setCwd] = useState(preset?.folder ?? currentSession?.cwd ?? recent[0] ?? '');
   // M9 fix 1086: the host the session starts on, the preset's (the on
   // row's or a host section's) else the pane's session's; absent is this
@@ -85,8 +90,9 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
     setBusy(true);
     setError(null);
     const extra = kind === 'claude' ? [...splitArgs(args), ...(firstPrompt.trim() === '' ? [] : [firstPrompt.trim()])] : [];
-    // From the empty pane's More... the face follows the `opens on` pick (M9 fix 723), read now.
-    const chat = kind === 'claude' && preset?.opensOn === true && loadClaudeOpensOn() === 'chat';
+    // From the empty pane's More... the face follows the `opens on` pick (M9 fix 723), read now;
+    // over a Claude on the chat face the new one keeps that face (M9 fix 1131).
+    const chat = kind === 'claude' && ((preset?.opensOn === true && loadClaudeOpensOn() === 'chat') || oldOnChat);
     // The pane resizes the PTY as soon as the terminal mounts, so any sane
     // starting size will do.
     window.emerald
@@ -95,6 +101,14 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
         const target = preset?.split === true ? await roomBesideFocused() : paneId;
         await editTab((t) => setPaneHost(setPaneSession(t, target, session.id), target, session.host), target);
         if (chat) setChatFace(target, session.id, true);
+        // M9 fix 1131: not awaited, so a kill that fails leaves the dialog
+        // closed and the new session in place. A working session's untick is
+        // not remembered, so the next idle replace reads the person's own default.
+        if (offer.offered && old !== undefined) {
+          if (!offer.busy) rememberCloseReplaced(closeOld);
+          const live = getState().sessions.get(old.id);
+          if (closeOld && live !== undefined && live.state !== 'exited') void retireReplaced(old.id, target).catch((err: unknown) => console.warn('[emerald] could not close the replaced session', err));
+        }
       })
       .then(() => {
         if (host === undefined) rememberFolderUsed(folder);
@@ -108,7 +122,7 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
 
   // Enter in a text box starts the session; on a button it stays a click.
   const onFormKeyDown = (ev: React.KeyboardEvent) => {
-    if (ev.key === 'Enter' && !busy && ev.target instanceof HTMLInputElement && ev.target.type !== 'radio') {
+    if (ev.key === 'Enter' && !busy && ev.target instanceof HTMLInputElement && ev.target.type !== 'radio' && ev.target.type !== 'checkbox') {
       ev.preventDefault();
       start();
     }
@@ -155,6 +169,14 @@ function Dialog({ paneId, preset }: { paneId: string; preset: NewSessionPreset |
             </label>
           </div>
         </div>
+        {offer.offered && old !== undefined && (
+          <div className="dialog-field dialog-close-old">
+            <label>
+              <input type="checkbox" name="closeOld" checked={closeOld} onChange={(e) => setCloseOld(e.target.checked)} /> {`Close "${old.name}"`}
+            </label>
+            {offer.busy && <span className="dialog-close-old-busy">{`"${old.name}" is working`}</span>}
+          </div>
+        )}
         {kind === 'claude' && (
           <label className="dialog-field">
             <span>Extra Claude args</span>

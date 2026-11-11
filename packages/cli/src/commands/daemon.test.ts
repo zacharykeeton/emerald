@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CliError } from '../cli-error.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
+import { readStartedAt } from '@emerald/shared/process-identity';
 import { captureOutput } from '../command.ts';
 import command from './daemon.ts';
 
@@ -73,6 +74,67 @@ test('emmer daemon stop does not kill a pid that is not the daemon the hello nam
   assert.ok(err instanceof CliError, `a CliError, got ${String(err)}`);
   assert.equal(err.message, `not killing pid ${child.pid}: it is not the daemon that was started at 1970-01-01T00:00:00.001Z`);
   assert.equal(alive(child.pid ?? 0), true, 'the unrelated process is still alive');
+});
+
+// M9 fix 1093: a stop on a pipe nobody owns removes daemon.json only when it
+// names that pipe or a daemon that has gone.
+async function stopOnNobodysPipe(record: { pid: number; pipe: string; startedAt: number }, json = false): Promise<{ lines: string[]; kept: boolean; text: string }> {
+  const info = path.join(home, 'daemon.json');
+  fs.writeFileSync(info, JSON.stringify({ ...record, protocolVersion: 1, version: 'fake', hookPort: 0, hookToken: 'x' }));
+  process.env['EMERALD_PIPE'] = `${PIPE}-none`;
+  let text = '';
+  const restore = captureOutput((t) => (text += t));
+  try {
+    await command.run(['stop', ...(json ? ['--json'] : [])]);
+    return { lines: text.split(/\r?\n/).filter((l) => l !== ''), kept: fs.existsSync(info), text };
+  } finally {
+    restore();
+    process.env['EMERALD_PIPE'] = PIPE;
+    fs.rmSync(info, { force: true });
+  }
+}
+
+test('emmer daemon stop on a pipe nobody owns leaves a live daemon\'s daemon.json for another pipe, with a note (M9 fix 1093)', async () => {
+  const startedAt = readStartedAt(process.pid);
+  assert.notEqual(startedAt, null, 'this process has a start time');
+  const got = await stopOnNobodysPipe({ pid: process.pid, pipe: `${PIPE}-other`, startedAt: startedAt ?? 0 });
+  assert.equal(got.kept, true, 'the record of a live daemon on another pipe stays');
+  assert.deepEqual(got.lines, ['emmerd is not running', `daemon.json names pid ${process.pid} on ${PIPE}-other, not this pipe; left in place`]);
+  const asJson = await stopOnNobodysPipe({ pid: process.pid, pipe: `${PIPE}-other`, startedAt: startedAt ?? 0 }, true);
+  assert.equal(asJson.kept, true);
+  assert.deepEqual(JSON.parse(asJson.text), { stopped: false, pid: null, record: 'left', recordPid: process.pid, recordPipe: `${PIPE}-other` });
+});
+
+test('emmer daemon stop on a pipe nobody owns removes a daemon.json naming that pipe, whatever its pid (M9 fix 1093)', async () => {
+  const got = await stopOnNobodysPipe({ pid: process.pid, pipe: `${PIPE}-none`, startedAt: 1 });
+  assert.equal(got.kept, false);
+  assert.deepEqual(got.lines, ['emmerd is not running']);
+  const asJson = await stopOnNobodysPipe({ pid: process.pid, pipe: `${PIPE}-none`, startedAt: 1 }, true);
+  assert.equal(asJson.kept, false);
+  assert.deepEqual(JSON.parse(asJson.text), { stopped: false, pid: null, record: 'removed' });
+});
+
+test('emmer daemon stop on a pipe nobody owns removes a daemon.json naming a daemon that has gone (M9 fix 1093)', async () => {
+  const got = await stopOnNobodysPipe({ pid: 0, pipe: `${PIPE}-other`, startedAt: 1 });
+  assert.equal(got.kept, false);
+  assert.deepEqual(got.lines, ['emmerd is not running']);
+  const asJson = await stopOnNobodysPipe({ pid: 0, pipe: `${PIPE}-other`, startedAt: 1 }, true);
+  assert.equal(asJson.kept, false);
+  assert.deepEqual(JSON.parse(asJson.text), { stopped: false, pid: null, record: 'removed' });
+});
+
+test('emmer daemon stop --json on a pipe nobody owns with no daemon.json says record none (M9 fix 1138)', async () => {
+  fs.rmSync(path.join(home, 'daemon.json'), { force: true });
+  process.env['EMERALD_PIPE'] = `${PIPE}-none`;
+  let text = '';
+  const restore = captureOutput((t) => (text += t));
+  try {
+    await command.run(['stop', '--json']);
+  } finally {
+    restore();
+    process.env['EMERALD_PIPE'] = PIPE;
+  }
+  assert.deepEqual(JSON.parse(text), { stopped: false, pid: null, record: 'none' });
 });
 
 test('emmer daemon status names each set-aside store file (M9 fix 556)', async () => {

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { FileClash, FileMade, FileRenamed, FileSaved, FilesMoved, FilesProgress, FileStamp, FileTrashed, MoveMode, MoveOutcome, TextFormat } from '../preload/api.ts';
 
 // The file service's one write (M9 fix 248): the editor's text back onto
@@ -238,16 +239,61 @@ export function entryMode(mode: MoveMode, from: string, dir: string): 'move' | '
 // small files does not flood the window.
 export const COPY_PROGRESS_MS = 100;
 
+// A file over this is copied by stream, its bytes counted as they go (M9 fix 1123); cp's native copy, which is faster but says nothing until it returns, takes the rest.
+export const STREAM_COPY_MIN_BYTES = 64 * 1024 * 1024;
+// The read stream's highWaterMark, so one pace step and one count per 64 KB.
+export const STREAM_COPY_CHUNK_BYTES = 64 * 1024;
+
 export function progressDue(startAt: number, lastAt: number | null, now: number): boolean {
   return now - (lastAt ?? startAt) >= COPY_PROGRESS_MS;
 }
 
 // A harness's slowed copy (M9 fix 1008): verify:drop sets
 // EMERALD_COPY_PACE_MS so a few hundred files take long enough to read a
-// progress note. Unset, nothing waits.
+// progress note. Unset, nothing waits. Inside a file copied by stream it is slept after each chunk too (M9 fix 1123), so verify:drop can read a byte note move inside one file.
 export function copyPaceMs(raw: string | undefined): number {
   if (raw === undefined || !/^\d+$/.test(raw)) return 0;
   return Math.min(Number(raw), 1000);
+}
+
+export interface CopyOneOptions {
+  size: number;
+  onBytes: (n: number) => void;
+  signal: AbortSignal | null;
+  pace: number;
+  streamAt?: number;
+  chunk?: number;
+}
+
+// One file or one link copied (M9 fix 1123). Small files and links go by
+// cp's native copy and count nothing until they return; a big file goes
+// through a stream so its bytes are counted and a Cancel can stop it
+// between chunks.
+export async function copyOneFile(from: string, to: string, o: CopyOneOptions): Promise<void> {
+  if (o.size <= (o.streamAt ?? STREAM_COPY_MIN_BYTES)) {
+    await fs.promises.cp(from, to, { errorOnExist: true, force: false, preserveTimestamps: true });
+    return;
+  }
+  const st = await fs.promises.stat(from);
+  const pace = o.pace;
+  const onBytes = o.onBytes;
+  const counted = async function* (source: AsyncIterable<Buffer>): AsyncGenerator<Buffer> {
+    for await (const c of source) {
+      onBytes(c.length);
+      if (pace > 0) await new Promise((r) => setTimeout(r, pace));
+      yield c;
+    }
+  };
+  const read = fs.createReadStream(from, { highWaterMark: o.chunk ?? STREAM_COPY_CHUNK_BYTES });
+  // wx answers EEXIST for a name that appeared since the check, as
+  // errorOnExist did, so copyInto's catch spares it.
+  const write = fs.createWriteStream(to, { flags: 'wx' });
+  if (o.signal !== null) await pipeline(read, counted, write, { signal: o.signal });
+  else await pipeline(read, counted, write);
+  // The preserveTimestamps the native copy kept; before the chmod, since
+  // Windows refuses times on a read-only file.
+  await fs.promises.utimes(to, st.atime, st.mtime);
+  if ((st.mode & 0o200) === 0) await fs.promises.chmod(to, st.mode & 0o777);
 }
 
 // What a copy of one dropped entry will make: its folders top-down, the
@@ -294,8 +340,9 @@ export interface MoveDeps {
   rename?: (from: string, to: string) => Promise<void>;
   log?: (msg: string) => void;
   // One file or one link copied (M9 fix 1008); the tests' fake counts
-  // the calls and moves a clock.
-  copyFile?: (from: string, to: string) => Promise<void>;
+  // the calls and moves a clock. onBytes counts a streamed file's bytes as
+  // they land (M9 fix 1123).
+  copyFile?: (from: string, to: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null }) => Promise<void>;
   // A copy's figures so far, at most every COPY_PROGRESS_MS and once at
   // the end (M9 fix 1008).
   progress?: (p: Omit<FilesProgress, 'dir'>) => void;
@@ -305,6 +352,49 @@ export interface MoveDeps {
   pace?: number;
   // The platform whose path compare applies (M9 fix 1025); a test names it.
   platform?: NodeJS.Platform;
+  // The drop's Cancel (M9 fix 1124): checked before each entry and each file, and handed to a streamed file's pipeline.
+  signal?: AbortSignal;
+}
+
+// The running copies a Cancel can stop (M9 fix 1124), shaped as
+// SearchRuns but keyed by window and folder, since one window can copy
+// into two folders at once.
+export class CopyRuns {
+  private readonly running = new Map<string, Set<AbortController>>();
+
+  private static key(owner: number, dir: string): string {
+    return `${owner}\n${dir}`;
+  }
+
+  begin(owner: number, dir: string): AbortSignal {
+    const key = CopyRuns.key(owner, dir);
+    let set = this.running.get(key);
+    if (set === undefined) {
+      set = new Set();
+      this.running.set(key, set);
+    }
+    const c = new AbortController();
+    set.add(c);
+    return c.signal;
+  }
+
+  // Aborts every copy of this window into dir and answers how many.
+  cancel(owner: number, dir: string): number {
+    const key = CopyRuns.key(owner, dir);
+    const set = this.running.get(key);
+    if (set === undefined) return 0;
+    this.running.delete(key);
+    for (const c of set) c.abort();
+    return set.size;
+  }
+
+  end(owner: number, dir: string, signal: AbortSignal): void {
+    const key = CopyRuns.key(owner, dir);
+    const set = this.running.get(key);
+    if (set === undefined) return;
+    for (const c of set) if (c.signal === signal) set.delete(c);
+    if (set.size === 0) this.running.delete(key);
+  }
 }
 
 // An entry the drop can act on, or the outcome that stops it before
@@ -381,9 +471,9 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
   // far it is. A move on one drive is a rename and copies nothing, so it
   // shows nothing. A walk that throws leaves its entry out, and its copy
   // then fails and is reported as before.
-  const copyFile = deps.copyFile ?? ((a: string, b: string) => fs.promises.cp(a, b, { errorOnExist: true, force: false, preserveTimestamps: true }));
   const now = deps.now ?? Date.now;
   const pace = deps.pace ?? 0;
+  const copyFile = deps.copyFile ?? ((a: string, b: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null }) => copyOneFile(a, b, { ...o, pace }));
   const walks = new Map<string, TreeWalk>();
   let total = 0;
   let bytesTotal = 0;
@@ -419,7 +509,16 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
     bytesTotal += copied.bytes;
   };
 
+  const tick = () => {
+    if (startAt !== null && progressDue(startAt, lastAt, now())) {
+      lastAt = now();
+      push();
+    }
+  };
+
   const copyInto = async (src: string, to: string, copied: { files: number; bytes: number }): Promise<unknown> => {
+    // The bytes a streamed file has counted so far, taken back if it fails.
+    let got = 0;
     try {
       let w = walks.get(src);
       if (w === undefined) {
@@ -435,20 +534,31 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
       // answers EEXIST, as cp's errorOnExist did, and is spared below.
       for (const d of w.dirs) await fs.promises.mkdir(target(d));
       for (const f of w.files) {
+        if (deps.signal?.aborted === true) throw Object.assign(new Error('Cancelled'), { code: 'ABORT_ERR' });
         startAt ??= now();
-        await copyFile(f.path, target(f.path));
+        got = 0;
+        await copyFile(f.path, target(f.path), {
+          size: f.size,
+          signal: deps.signal ?? null,
+          onBytes: (n) => {
+            got += n;
+            bytesDone += n;
+            tick();
+          },
+        });
         filesDone += 1;
-        bytesDone += f.size;
+        // A native copy counts whole at its end; a streamed one is not
+        // counted twice.
+        bytesDone += Math.max(0, f.size - got);
+        got = 0;
         copied.files += 1;
         copied.bytes += f.size;
         if (pace > 0) await new Promise((r) => setTimeout(r, pace));
-        if (progressDue(startAt, lastAt, now())) {
-          lastAt = now();
-          push();
-        }
+        tick();
       }
       return null;
     } catch (err) {
+      bytesDone -= got;
       // The check before found nothing at `to`, so a partial copy is ours
       // to take back; an exists code means someone else's entry is there.
       const code = errCode(err);
@@ -471,6 +581,12 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
     }
     const { src, to } = e;
     const copied = { files: 0, bytes: 0 };
+    // A Cancel leaves every entry not started untouched (M9 fix 1124).
+    if (deps.signal?.aborted === true) {
+      uncount(src, copied);
+      done.push({ from: src, to, result: 'skipped', cancelled: true });
+      continue;
+    }
     let replaced = false;
     if ((await thereAt(to)) !== null) {
       if (!isChosen(src)) {
@@ -488,10 +604,14 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
       replaced = true;
     }
     const extra = replaced ? { replaced: true as const } : {};
+    // The entry being copied when a Cancel landed, taken back by copyInto's
+    // catch as a refused copy is (M9 fix 1124).
+    const failed = (err: unknown): MoveOutcome =>
+      deps.signal?.aborted === true ? { from: src, to, result: 'refused', ...extra, why: 'Cancelled', cancelled: true } : { from: src, to, result: 'refused', ...extra, why: describeWrite(err) };
     if (entryMode(mode, src, into) === 'copy') {
       const err = await copyInto(src, to, copied);
       if (err !== null) uncount(src, copied);
-      done.push(err === null ? { from: src, to, result: 'copied', ...extra } : { from: src, to, result: 'refused', ...extra, why: describeWrite(err) });
+      done.push(err === null ? { from: src, to, result: 'copied', ...extra } : failed(err));
       continue;
     }
     try {
@@ -503,7 +623,7 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
         const copyErr = await copyInto(src, to, copied);
         if (copyErr !== null) {
           uncount(src, copied);
-          done.push({ from: src, to, result: 'refused', ...extra, why: describeWrite(copyErr) });
+          done.push(failed(copyErr));
           continue;
         }
         try {
@@ -523,7 +643,7 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
   // the last push already carried them.
   const final = last as Omit<FilesProgress, 'dir'> | null;
   if (final !== null && (final.done !== filesDone || final.total !== total || final.bytesDone !== bytesDone || final.bytesTotal !== bytesTotal)) push();
-  const words = done.map((o) => `${path.basename(o.from)} ${o.result}${o.replaced === true ? ' replaced' : ''}${o.sourceKept === true ? ' source kept' : ''}`);
+  const words = done.map((o) => `${path.basename(o.from)} ${o.result}${o.cancelled === true ? ' cancelled' : ''}${o.replaced === true ? ' replaced' : ''}${o.sourceKept === true ? ' source kept' : ''}`);
   deps.log?.(`files-move into ${into} (${mode}): ${words.join(', ')}`);
   return { done };
 }

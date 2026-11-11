@@ -46,7 +46,7 @@ const BLOCKS = [
   { name: 'fix-320', fixes: ['fix-320'], needs: ['fix-240'] },
   { name: 'fix-379', fixes: ['fix-379', 'fix-403'], needs: [] },
   { name: 'fix-402', fixes: ['fix-402'], needs: [] },
-  { name: 'fix-710', fixes: ['fix-710', 'fix-733'], needs: [] },
+  { name: 'fix-710', fixes: ['fix-710', 'fix-733', 'fix-1103'], needs: [] },
 ];
 const { block, blocksRun } = blockRunner(BLOCKS);
 
@@ -312,11 +312,11 @@ try {
   r = emerald('browser', 'snapshot', '--pane', 'nosuchpane');
   expect(r.code === 1 && r.err.trim() === 'emmer: no pane nosuchpane', `browser snapshot --pane nosuchpane: exit 1 and the line (${r.code}: ${JSON.stringify(r.err)})`);
   log("M9 fix 672: emmer browser's usage, an unknown verb, no browser pane and no such pane, and help's summary");
-  // M9 fix 741: the mod's channel command, which the mod starts itself.
+  // M9 fix 1125: no mod-channel command; the mod polls the hook sink.
   r = emerald('help');
-  expect(/^  mod-channel +stream a session's queued prompts to the emerald mod, which starts this itself$/m.test(r.out), 'help lists mod-channel with its summary');
+  expect(!/^  mod-channel /m.test(r.out), 'help lists no mod-channel (fix 1125)');
   r = emerald('mod-channel');
-  expect(r.code === 64 && /missing session/.test(r.err) && /usage: emmer mod-channel <session>/.test(r.err), `mod-channel with no session: usage, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
+  expect(r.code === 64 && r.err.startsWith('emmer: unknown command "mod-channel"'), `mod-channel is an unknown command, exit 64 (${r.code}: ${JSON.stringify(r.err)})`);
   // M9 fix 1079: the relay the app runs on a remote host over ssh. Never
   // run bare here: it would connect and wait on stdin.
   r = emerald('help');
@@ -1346,6 +1346,37 @@ try {
       `hooks uninstall takes out emerald's dead entries and leaves the stranger's (${r.code}: ${JSON.stringify(r.out)})`,
     );
     log("M9 fix 733: hooks uninstall takes out emerald's dead entries too and leaves anyone else's");
+    // M9 fix 1103: another emerald's live status line wrapper keeps the
+    // slot; this home's install leaves it, keeps no wrapper as its previous,
+    // and status says who holds it. The script's last step, so no later read
+    // counts what it adds.
+    const sharedSettings = path.join(home, 'claude-1103', 'settings.json');
+    const otherHome = path.join(home, 'other-emerald');
+    const otherCmd = path.resolve(otherHome, 'hooks', 'claude-statusline.cmd').split(path.sep).join('/');
+    const statusLineOf = () => JSON.parse(fs.readFileSync(sharedSettings, 'utf8')).statusLine?.command;
+    r = emerald('hooks', 'install', '--settings', sharedSettings, '--home', otherHome);
+    expect(r.code === 0, `the other emerald's install on the shared settings (${r.code})`);
+    j = emeraldJson('hooks', 'install', '--settings', sharedSettings, '--json');
+    const keptPrevious = JSON.parse(fs.readFileSync(path.join(home, 'hooks', 'statusline-previous.json'), 'utf8'));
+    expect(
+      j.code === 0 && j.json?.statusLineShared === otherCmd && statusLineOf() === `"${otherCmd}"` && keptPrevious.statusLine === null,
+      `this home's install leaves the other wrapper in the slot and keeps no previous (${j.code}: ${JSON.stringify(j.json?.statusLineShared)}, ${statusLineOf()}, ${JSON.stringify(keptPrevious)})`,
+    );
+    j = emeraldJson('hooks', 'status', '--settings', sharedSettings, '--json');
+    expect(
+      j.code === 0 && j.json?.complete === true && j.json?.statusLine === false && j.json?.statusLineShared === otherCmd,
+      `hooks status --json is complete with the slot shared (${j.code}: ${JSON.stringify(j.json?.statusLineShared)})`,
+    );
+    r = emerald('hooks', 'status', '--settings', sharedSettings);
+    expect(
+      r.code === 0 && r.out.split(/\r?\n/).includes(`status line: held by another emerald's wrapper, ${otherCmd}, which reports this home's sessions too (version 5, shipped 5)`),
+      `hooks status says who holds the slot (${r.code}: ${JSON.stringify(r.out)})`,
+    );
+    r = emerald('hooks', 'uninstall', '--settings', sharedSettings);
+    expect(r.code === 0 && statusLineOf() === `"${otherCmd}"`, `uninstall leaves the other wrapper in the slot (${r.code}: ${statusLineOf()})`);
+    r = emerald('hooks', 'uninstall', '--settings', sharedSettings, '--home', otherHome);
+    expect(r.code === 0 && statusLineOf() === undefined, `the other emerald's uninstall empties the slot (${r.code}: ${statusLineOf()})`);
+    log("M9 fix 1103: an install leaves another emerald's live status line wrapper in the slot, and hooks status says it holds it");
   });
 
   log(blocksRun());

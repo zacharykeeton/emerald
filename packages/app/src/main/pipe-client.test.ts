@@ -236,7 +236,7 @@ test('a restart does not kill a pid that is not the daemon the hello named', asy
     assert.equal(c.daemonInfo?.startedAt, 1);
     c.restartDaemon();
     const line = `not killing pid ${pid}: it is not the daemon that was started at 1970-01-01T00:00:00.001Z`;
-    await until('the refusal logged', () => log.includes(line), 15_000);
+    await until('the refusal logged', () => log.includes(line) || log.includes(`not killing pid ${pid}: its start time could not be read`), 15_000);
     await sleep(1000);
     assert.equal(alive(pid), true, `the unrelated process is still alive: ${JSON.stringify(log)}`);
     assert.equal(log.some((l) => l.startsWith('restarting emmerd: killing')), false, JSON.stringify(log));

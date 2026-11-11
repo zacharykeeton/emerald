@@ -1,5 +1,8 @@
 // Pure helpers behind the new-session dialog, covered by node:test.
 
+import type { Layout, SessionInfo } from '@emerald/shared';
+import { listPanes } from '@emerald/shared';
+
 // Turns the extra-args box into argv. Whitespace separates, double quotes
 // group so a path with spaces survives, and a backslash before a quote
 // keeps it literal. Anything fancier belongs in a real shell.
@@ -42,4 +45,21 @@ export function rememberFolder(recent: readonly string[], folder: string, max = 
 
 export function normalizeFolder(folder: string): string {
   return folder.trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+}
+
+// M9 fix 1131: whether the dialog opened from a pane's menu offers to close
+// the session its Start replaces. A live Claude alone: a shell is kept as it
+// always was, an exited one has nothing to close, and one also shown in
+// another pane is kept for that pane. busy is a working or asking Claude,
+// whose box starts unticked whatever was remembered.
+export function closeOldOffer(old: Pick<SessionInfo, 'kind' | 'state'> | undefined, panesShowing: number, replace: boolean): { offered: boolean; busy: boolean } {
+  const offered = replace && old !== undefined && old.kind !== 'shell' && old.state !== 'exited' && panesShowing <= 1;
+  return { offered, busy: offered && (old.state === 'working' || old.state === 'needs-input') };
+}
+
+// How many panes of every layout tab show the session.
+export function panesShowing(layout: Layout, sessionId: string): number {
+  let n = 0;
+  for (const tab of layout.tabs) for (const pane of listPanes(tab)) if (pane.sessionId === sessionId) n++;
+  return n;
 }

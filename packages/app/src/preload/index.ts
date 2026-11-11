@@ -1,7 +1,14 @@
 import { decodeRequestError } from '../main/request-error.ts';
+import { fanOut } from '../main/ipc-fan-out.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget } from './api.ts';
+
+// M9 fix 1137: one listener per channel, fanned out, so Node's count stays at one; ipc-fan-out.ts warns at 50 handlers instead.
+const filesChanged = fanOut<[string, { renamed: boolean } | undefined]>('emerald:files-changed');
+ipcRenderer.on('emerald:files-changed', (_event: IpcRendererEvent, dir: string, info?: { renamed: boolean }) => filesChanged.emit(dir, info));
+const rendererPush = fanOut<[RendererPush]>('emerald:message');
+ipcRenderer.on('emerald:message', (_event: IpcRendererEvent, msg: RendererPush) => rendererPush.emit(msg));
 
 const api: EmeraldApi = {
   // M9 fix 900: the window's zoom, VS Code's Ctrl+= and Ctrl+-.
@@ -60,16 +67,13 @@ const api: EmeraldApi = {
     search: (root, needle, mode) => ipcRenderer.invoke('emerald:files-search', root, needle, mode),
     stopSearch: () => ipcRenderer.invoke('emerald:files-search-stop'),
     watch: (dirs) => ipcRenderer.invoke('emerald:files-watch', dirs),
-    onChanged: (handler) => {
-      const listener = (_event: IpcRendererEvent, dir: string, info?: { renamed: boolean }) => handler(dir, info);
-      ipcRenderer.on('emerald:files-changed', listener);
-      return () => ipcRenderer.off('emerald:files-changed', listener);
-    },
+    onChanged: (handler) => filesChanged.add(handler),
     onProgress: (handler) => {
       const listener = (_event: IpcRendererEvent, p: FilesProgress) => handler(p);
       ipcRenderer.on('emerald:files-progress', listener);
       return () => ipcRenderer.off('emerald:files-progress', listener);
     },
+    cancel: (dir) => ipcRenderer.invoke('emerald:files-cancel', dir),
     open: (path) => ipcRenderer.invoke('emerald:files-open', path),
     reveal: (path) => ipcRenderer.invoke('emerald:files-reveal', path),
     openFolder: (path) => ipcRenderer.invoke('emerald:files-open-folder', path),
@@ -136,6 +140,7 @@ const api: EmeraldApi = {
     write: (text) => ipcRenderer.invoke('emerald:clipboard-write', text),
     writeImage: (dataUrl) => ipcRenderer.invoke('emerald:clipboard-write-image', dataUrl),
     writeImageFile: (file) => ipcRenderer.invoke('emerald:clipboard-write-image-file', file),
+    imageData: (file) => ipcRenderer.invoke('emerald:clipboard-image-data', file),
     image: (keyRoute) => ipcRenderer.invoke('emerald:clipboard-image', keyRoute),
   },
   // Design Mode (M9 fix 674): main checks the pane's guest is this
@@ -203,6 +208,12 @@ const api: EmeraldApi = {
     },
     open: (tabId, x, y) => ipcRenderer.invoke('emerald:window-drag-open', tabId, x, y),
     landed: () => ipcRenderer.send('emerald:window-drag-landed'),
+    // M9 fix 1122: main handed the drag to the OS.
+    onHandedOut: (handler) => {
+      const listener = () => handler();
+      ipcRenderer.on('emerald:file-drag-out', listener);
+      return () => ipcRenderer.off('emerald:file-drag-out', listener);
+    },
   },
   daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
   dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),
@@ -219,11 +230,7 @@ const api: EmeraldApi = {
   hostForget: (name) => ipcRenderer.invoke('emerald:host-forget', name),
   hostAdd: (destination) => ipcRenderer.invoke('emerald:host-add', destination),
   hostCancelSetup: (name) => ipcRenderer.invoke('emerald:host-cancel-setup', name),
-  on: (handler) => {
-    const listener = (_event: IpcRendererEvent, msg: RendererPush) => handler(msg);
-    ipcRenderer.on('emerald:message', listener);
-    return () => ipcRenderer.off('emerald:message', listener);
-  },
+  on: (handler) => rendererPush.add(handler),
 };
 
 contextBridge.exposeInMainWorld('emerald', api);

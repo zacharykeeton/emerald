@@ -1,13 +1,13 @@
 // Chrome DevTools Protocol driver for the built app. Launches Electron with
 // remote debugging, evaluates JS in the renderer, dispatches input, takes
 // screenshots. Used by the verify-*.mjs scripts; build the app first.
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { killTree as killPidTree, processIdentity } from '@emerald/shared/process-identity';
+import { killTree as killPidTree, processIdentity, START_TOLERANCE_MS } from '@emerald/shared/process-identity';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const emeraldHome = process.env['EMERALD_HOME'] ?? path.join(os.homedir(), '.emerald');
@@ -321,6 +321,7 @@ export async function launch(port, opts = {}) {
   // Up to three spawns: a port the probe passed can still be refused by
   // Chromium's own server (the comment above freshPort), in which case
   // that window is killed and the next port tried.
+  const spawnedAt = Date.now();
   let child;
   let logs;
   let pages = [];
@@ -364,10 +365,14 @@ export async function launch(port, opts = {}) {
     await sleep(1500);
     port += 1;
   }
-  if (pages.length === 0) throw new Error('no page target: ' + logs.join(''));
-  // M9 fix 645: a connect that gives up ends the window it spawned (Node's
-  // handle alone, never killTree, which takes the daemon) and carries this
-  // window's lines, since a relaunch's catch prints the old session's.
+  if (pages.length === 0) {
+    await killWindow(profile, spawnedAt, child);
+    throw new Error('no page target: ' + logs.join(''));
+  }
+  // M9 fix 645: a connect that gives up ends the window it spawned (never
+  // killTree, which takes the daemon; since M9 fix 1115 every electron.exe on
+  // its profile, through killWindow) and carries this window's lines, since a
+  // relaunch's catch prints the old session's.
   // M9 fix 867: on a layout with two windows the first window's page,
   // the one with no window query, is the one a script drives.
   const first = pages.find((p) => !new URL(p.url).searchParams.has('window')) ?? pages[0];
@@ -375,7 +380,7 @@ export async function launch(port, opts = {}) {
   try {
     session = await connect(first.webSocketDebuggerUrl);
   } catch (err) {
-    child.kill();
+    await killWindow(profile, spawnedAt, child);
     throw new Error(`${err.message}; the window's lines: ${logs.join('')}`);
   }
   session.port = port;
@@ -463,10 +468,11 @@ export async function connect(wsUrl) {
   // M9 fix 796: 40 s, since with many seats building and launching at once a
   // window's devtools answered past 20 s (22 runs at the kickoff of fixes 738
   // to 768); no retry, which would start a second window under the same load.
-  const CONNECT_MS = 40000;
+  // EMERALD_VERIFY_CONNECT_MS (M9 fix 1115) shortens the budget for a probe of the give-up path; no script sets it.
+  const CONNECT_MS = Number(process.env['EMERALD_VERIFY_CONNECT_MS']) || 40000;
   const connectBy = Date.now() + CONNECT_MS;
   const connectLeft = () => Math.max(0, connectBy - Date.now());
-  const tooSlow = "the window's devtools did not answer within 40 s";
+  const tooSlow = `the window's devtools did not answer within ${CONNECT_MS / 1000} s`;
   const ws = new WebSocket(wsUrl);
   try {
     await within(new Promise((resolve, reject) => {
@@ -747,6 +753,11 @@ export async function startFromEmpty(s, paneSel = '', { kind = 'shell' } = {}) {
   const before = await s.evalJs(`document.querySelectorAll('.term-host').length`);
   const tile = `${paneSel} .empty-pane .empty-kind[data-kind="${kind}"]`;
   const start = `${paneSel} .empty-pane .empty-start`;
+  // launch() returns before the window's first render, and a script that
+  // starts at once clicked a tile that was not there yet (verify:browser-drive
+  // 3 s into two close-out lists, fixes 997 to 1014 and 1091 to 1114; the
+  // tile lands 1 to 220 ms after the return), so wait for it.
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(tile)})`, `the empty pane's ${kind} tile`);
   await s.evalJs(`document.querySelector(${JSON.stringify(tile)}).click()`);
   // Start is off until the pane knows its folder rows (home comes from
   // the main process a moment after mount).
@@ -835,6 +846,72 @@ export function killTree(child) {
   spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
 }
 
+// M9 fix 1115: a launch that gives up ends every electron.exe on its own profile started since the spawn, the window and its --type= helpers, so the next run on the pair does not meet the profile held (EPERM, three runs in a row at the batch of fixes 1048 to 1078). Matched on --user-data-dir and the creation time, never a bare pid, and never a node.exe, so the daemon is left as fix 645 wants. Matching the profile is safe here though sweep.ps1 never matches on --user-data-dir: the path is a private %TEMP%\emerald-verify-* home's, which the user's window never carries.
+const WINDOW_LIST_TIMEOUT_MS = 10_000;
+const WINDOW_LIST_SCRIPT = [
+  "Get-CimInstance Win32_Process -Filter \"name = 'electron.exe'\" | ForEach-Object {",
+  "  $ms = [int64](($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds)",
+  '  "$($_.ProcessId)`t$ms`t$($_.CommandLine)"',
+  '}',
+  '',
+].join('\n');
+
+function windowListScript() {
+  const script = path.join(os.tmpdir(), 'emerald-window-list.ps1');
+  let current = null;
+  try {
+    current = fs.readFileSync(script, 'utf8');
+  } catch {
+    // Not there yet.
+  }
+  if (current !== WINDOW_LIST_SCRIPT) fs.writeFileSync(script, WINDOW_LIST_SCRIPT);
+  return script;
+}
+
+export function windowPidsOf(out, profile, spawnedAt) {
+  const want = '--user-data-dir=' + profile.toLowerCase();
+  const windows = [];
+  const helpers = [];
+  for (const line of out.split(/\r?\n/)) {
+    const a = line.indexOf('\t');
+    const b = a < 0 ? -1 : line.indexOf('\t', a + 1);
+    if (b < 0) continue;
+    const pid = Number(line.slice(0, a));
+    const ms = Number(line.slice(a + 1, b));
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ms) || ms <= 0) continue;
+    const cmd = line.slice(b + 1).replaceAll('"', '').toLowerCase();
+    const at = cmd.indexOf(want);
+    if (at < 0) continue;
+    const next = cmd[at + want.length];
+    if (next !== undefined && !/\s/.test(next)) continue;
+    if (ms < spawnedAt - START_TOLERANCE_MS) continue;
+    (cmd.includes('--type=') ? helpers : windows).push(pid);
+  }
+  return [...windows, ...helpers];
+}
+
+export async function killWindow(profile, spawnedAt, child) {
+  if (process.platform !== 'win32') {
+    child.kill();
+    return;
+  }
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', windowListScript()];
+  const result = await new Promise((resolve) => {
+    execFile('powershell.exe', args, { encoding: 'utf8', windowsHide: true, timeout: WINDOW_LIST_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => resolve({ err, stdout }));
+  });
+  if (result.err) {
+    child.kill();
+    console.log(`[verify] note: the window list failed (${String(result.err.message).split('\n')[0]}); ended the window's own pid alone`);
+    return;
+  }
+  const pids = windowPidsOf(result.stdout, profile, spawnedAt);
+  for (const pid of pids) spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
+  child.kill();
+  console.log(pids.length > 0
+    ? `[verify] note: the window on ${profile} gave up; ended electron.exe ${pids.join(', ')}`
+    : `[verify] note: the window on ${profile} gave up; no electron.exe left on it`);
+}
+
 export function daemonPid(home = emeraldHome) {
   return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')).pid;
 }
@@ -854,8 +931,9 @@ export function daemonRecord(home = emeraldHome) {
 
 // Kills the daemon a daemonRecord read named, and only while its pid is
 // still that process (M9 fix 1048): on 'same' a tree kill, or /f on the pid
-// alone with tree false (the step kills' flags), and on 'gone' or 'other'
-// nothing. Returns the identity. Synchronous, so a finally that exits half
+// alone with tree false (the step kills' flags), and on 'gone', 'other' or
+// 'unknown' nothing (a start time that could not be read is unknown since
+// M9 fix 1109, and gets a note line like other). Returns the identity. Synchronous, so a finally that exits half
 // a second later has finished its kill.
 export function killDaemonIfSame(record, { tree = true } = {}) {
   if (record === null || record === undefined) return 'gone';
@@ -865,6 +943,8 @@ export function killDaemonIfSame(record, { tree = true } = {}) {
     else spawnSync('taskkill', ['/pid', String(record.pid), '/f'], { stdio: 'ignore', windowsHide: true });
   } else if (identity === 'other') {
     console.log(`[verify] note: pid ${record.pid} is another process now, not the daemon daemon.json named; left alone`);
+  } else if (identity === 'unknown') {
+    console.log(`[verify] note: pid ${record.pid}: its start time could not be read, left alone; the close-out's sweep takes it if it is the daemon`);
   }
   return identity;
 }

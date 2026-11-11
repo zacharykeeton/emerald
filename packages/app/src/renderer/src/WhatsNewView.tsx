@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { MarkdownView } from './MarkdownView.tsx';
 import { closeFileTab } from './ui.ts';
 import { whatsNewStamp } from './whats-new-model.ts';
+import { editKey } from './keys-model.ts';
 
 // The What's New tab (M9 fix 227): the release notes, docs/WHATS-NEW.md,
 // rendered by the same markdown view a README gets, under the file
@@ -36,7 +37,7 @@ export function WhatsNewView({ path }: { path: string }) {
         <span className="file-path whats-new-title" title="What is new in this build of emerald">
           What&apos;s new
         </span>
-        <button className="files-button" title="Close (Ctrl+W)" onClick={() => closeFileTab(path)}>
+        <button className="files-button" title={`Close (${editKey('KeyW')})`} onClick={() => closeFileTab(path)}>
           ×
         </button>
       </div>

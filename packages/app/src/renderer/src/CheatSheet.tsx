@@ -2,7 +2,7 @@ import { currentPrefix } from './keys.ts';
 import { BINDINGS, formatChord, hostPlatform, plainKeyFor } from './keys-model.ts';
 import { useSkin } from './skin.ts';
 import { closeCheatSheet, useUi } from './ui.ts';
-import { noteIn } from './copy-note.ts';
+import { actionIn, noteIn } from './copy-note.ts';
 
 // The key table, opened with prefix then ? (or Ctrl+Shift+?). Rendered from
 // the same BINDINGS the handler uses, so it cannot drift. Any key or a
@@ -58,7 +58,22 @@ export function PrefixIndicator() {
   const { prefixArmed, cornerNote } = useUi();
   if (prefixArmed) return <div className="prefix-armed">{formatChord(currentPrefix())} …</div>;
   const text = noteIn(cornerNote, null);
-  if (text !== null) return <div className="corner-note">{text}</div>;
+  const action = actionIn(cornerNote, null);
+  // The text in a span of its own, so fix 1124's Cancel can sit beside it
+  // and a read of the note's words still takes the words alone (M9 fix 1123).
+  // The press is held back so the focus stays in the terminal the person
+  // was typing in.
+  if (text !== null)
+    return (
+      <div className="corner-note">
+        <span className="corner-note-text">{text}</span>
+        {action !== null && (
+          <button type="button" className="corner-note-action" onMouseDown={(e) => e.preventDefault()} onClick={action.run}>
+            {action.label}
+          </button>
+        )}
+      </div>
+    );
   return null;
 }
 

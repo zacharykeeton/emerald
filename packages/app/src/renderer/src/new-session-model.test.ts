@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeFolder, rememberFolder, splitArgs } from './new-session-model.ts';
+import type { Layout } from '@emerald/shared';
+import { closeOldOffer, normalizeFolder, panesShowing, rememberFolder, splitArgs } from './new-session-model.ts';
 
 test('splitArgs splits on whitespace and drops empties', () => {
   assert.deepEqual(splitArgs(''), []);
@@ -31,4 +32,26 @@ test('rememberFolder puts the newest first without duplicates and caps the list'
 test('normalizeFolder ignores case, slash style and trailing slashes', () => {
   assert.equal(normalizeFolder('C:/Users/Me/'), 'c:\\users\\me');
   assert.equal(normalizeFolder('  C:\\Users\\Me\\\\ '), 'c:\\users\\me');
+});
+
+test('closeOldOffer offers the box over a live Claude alone, unticked when it is busy, and panesShowing counts every tab (M9 fix 1131)', () => {
+  const none = { offered: false, busy: false };
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'idle' }, 1, true), { offered: true, busy: false });
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'working' }, 1, true), { offered: true, busy: true });
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'needs-input' }, 1, true), { offered: true, busy: true });
+  assert.deepEqual(closeOldOffer({ kind: 'shell', state: 'idle' }, 1, true), none);
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'exited' }, 1, true), none);
+  assert.deepEqual(closeOldOffer(undefined, 0, true), none);
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'idle' }, 2, true), none);
+  assert.deepEqual(closeOldOffer({ kind: 'claude', state: 'idle' }, 1, false), none);
+  const layout: Layout = {
+    tabs: [
+      { id: 't1', name: 'Panes', root: { kind: 'split', id: 's', direction: 'row', ratio: 0.5, first: { kind: 'pane', id: 'a', sessionId: 'x' }, second: { kind: 'pane', id: 'b', sessionId: null } }, focusedPaneId: 'a' },
+      { id: 't2', name: 'Two', root: { kind: 'pane', id: 'c', sessionId: 'x' }, focusedPaneId: 'c' },
+    ],
+    currentTabId: 't1',
+    revision: 1,
+  } as Layout;
+  assert.equal(panesShowing(layout, 'x'), 2);
+  assert.equal(panesShowing(layout, 'y'), 0);
 });

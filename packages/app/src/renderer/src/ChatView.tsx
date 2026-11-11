@@ -3,26 +3,26 @@ import { contextWords, describeState, effortFold, effortState, folderName, forma
 import type { EffortState, QueueState, SessionInfo, SessionState, Step, StepState, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendCtrlC, sendPrompt, typeInto } from './actions.ts';
 import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
-import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
+import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, freshPaste, pasteChipLabel, pastesOnly, promptRowMarked, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
 // M9 fix 1005, the side strip.
-import { BTW_OPEN_MS, SIDE_CLOSE_MS, SIDE_STILL_OPEN } from './chat-model.ts';
+import { BTW_OPEN_MS, SIDE_CLOSE_MS, SIDE_STILL_OPEN, sideCloseSends } from './chat-model.ts';
 import { btwPanel } from './screen-prompt-model.ts';
 import { btwQuestion } from './prompt-model.ts';
 import { SideStrip } from './SideStrip.tsx';
 import type { ReactNode } from 'react';
-import type { ChatMode, FoldItem, PendingItem, SlashRow } from './chat-model.ts';
+import type { ChatMode, FoldItem, PastedMarker, PendingItem, SlashRow } from './chat-model.ts';
 import { CARRY_MS, CARRY_POLL_MS, carryRead, noticeOf, noticeRefusal, pickRoute, stopCarry } from './chat-model.ts';
 import type { CarryOutcome, PickRoute } from './chat-model.ts';
 import { routeAfterCarry } from './chat-model.ts';
 import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.tsx';
-import { isPasteKey } from './keys-model.ts';
+import { editKey, isPasteKey } from './keys-model.ts';
 import type { MentionRow } from './ChatMenus.tsx';
 import type { SkillEntry, TailMark } from '../../preload/api.ts';
 import { parentPath } from './files-model.ts';
-import { ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
+import { ChatPromptText, ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
 import { openWebLink } from './ChatParts.tsx';
 import { ChatBash, ChatCompact } from './ChatParts.tsx';
 import { pendingEdit } from './chat-hunk.ts';
@@ -637,8 +637,12 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           // answer; nothing was asked, so nothing is carried or said.
           if (noticeOf(sc.rows) !== null) return;
           const read = carryRead(sc);
-          if (read.kind === 'blocked') setRefusal(CARRY_BLOCKED);
-          else if (read.kind === 'text') void carryInput();
+          if (read.kind === 'blocked') {
+            // M9 fix 1136: an input of paste markers alone flips to chips; anything beside a marker keeps the hint.
+            const only = pastesOnly(sc.rows);
+            if (only !== null) setChips((c) => [...c, ...only.filter((m) => !c.some((x) => x.n === m.n)).map((m) => ({ id: ++nextChip.current, thumb: '', n: m.n, paste: m }))]);
+            else setRefusal(CARRY_BLOCKED);
+          } else if (read.kind === 'text') void carryInput();
         })
         .catch(() => {});
     }
@@ -658,6 +662,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     // a mod submit would send the words alone and leave them there, so a
     // send with chips is typed.
     const typed = chipsRef.current.length > 0;
+    const pasted = chipsRef.current.some((c) => c.paste !== null);
     setBox('');
     lastSent.current = Date.now();
     setChips([]);
@@ -666,7 +671,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     // (emptied above, so the draft lands alone) rather than going with it.
     if (prompt.trimStart().startsWith('/') && !typed) {
       void inputFirst().then((ok) => {
-        if (ok) dispatch(prompt, typed);
+        if (ok) dispatch(prompt, typed, pasted);
         else if (alive.current && sessionRef.current === session.id) {
           const now = boxRef.current?.value ?? '';
           const next = now === '' ? prompt : `${prompt}\n${now}`;
@@ -676,9 +681,9 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       });
       return;
     }
-    dispatch(prompt, typed);
+    dispatch(prompt, typed, pasted);
   };
-  const dispatch = (prompt: string, typed: boolean) => {
+  const dispatch = (prompt: string, typed: boolean, pasted: boolean) => {
     const menu = opensMenu(prompt);
     // M9 fix 1005: a /btw with a question opens the side strip. One sent
     // with chips is typed after the images and is no command, so it goes
@@ -692,7 +697,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     const draws = drawsPending(prompt);
     setPending((list) => {
       const kept = pendingAfter(list, landedRef.current).filter((p) => pendingWords(p, sentAt, quietSince.current).state === 'sending');
-      return draws ? [...kept, pendingItem(id, prompt, sentAt, kept, landedRef.current)] : kept;
+      return draws ? [...kept, pendingItem(id, prompt, sentAt, kept, landedRef.current, pasted)] : kept;
     });
     void sendPrompt(session.id, prompt, { typed }).then((outcome) => {
       if (outcome.kind === 'refused') {
@@ -723,12 +728,15 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   };
   // M9 fix 1005: the strip closed, and the panel with it by its own close
   // key when the newest read still draws it; no Esc goes otherwise, since
-  // one to a working Claude stops its turn. True once the panel is gone.
+  // one to a working Claude stops its turn. Since M9 fix 1134 it also goes
+  // when no read ever drew the panel and the session is not working
+  // (sideCloseSends). True once the panel is gone.
   const closeSide = async (): Promise<boolean> => {
     const drawn = screen !== null && btwPanel(screen.rows) !== null;
-    if (drawn) typeInto(session.id, '\x1b');
+    const sends = sideCloseSends(drawn, side?.seen ?? false, working);
+    if (sends) typeInto(session.id, '\x1b');
     setSide(null);
-    if (!drawn) return true;
+    if (!sends) return true;
     const id = session.id;
     const until = Date.now() + SIDE_CLOSE_MS;
     while (Date.now() < until) {
@@ -1146,7 +1154,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   // screen read shows a marker on the prompt row, and never while the
   // session works or asks (M9 fix 748); Escape and Stop leave the chips
   // alone.
-  const [chips, setChips] = useState<{ id: number; thumb: string; n: number | null }[]>([]);
+  const [chips, setChips] = useState<{ id: number; thumb: string; n: number | null; paste: PastedMarker | null }[]>([]);
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   const nextChip = useRef(0);
@@ -1159,14 +1167,14 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const addChip = (thumb: string, onMarker = false) => {
     nextChip.current += 1;
     const id = nextChip.current;
-    if (!onMarker) setChips((c) => [...c, { id, thumb, n: null }]);
+    if (!onMarker) setChips((c) => [...c, { id, thumb, n: null, paste: null }]);
     const until = Date.now() + 3000;
     const look = () => {
       window.emerald
         .request('pty.screen', { sessionId: sessionIdRef.current })
         .then((res) => {
           const n = freshImage(res.rows, new Set(chipsRef.current.map((c) => c.n)));
-          if (n !== null) setChips((c) => (onMarker ? [...c, { id, thumb, n }] : c.map((x) => (x.id === id ? { ...x, n } : x))));
+          if (n !== null) setChips((c) => (onMarker ? [...c, { id, thumb, n, paste: null }] : c.map((x) => (x.id === id ? { ...x, n } : x))));
           else if (Date.now() < until) setTimeout(look, 250);
         })
         .catch(() => {});
@@ -1190,6 +1198,40 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     window.addEventListener('emerald:chat-image', onImage);
     return () => window.removeEventListener('emerald:chat-image', onImage);
   }, [paneId]);
+  // M9 fix 1136: a paste Emerald typed into this session (a Design Mode pick) gets a chip once Claude Code's marker shows on the prompt row, polled every 250 ms for 3 s as an image's is; a paste Claude Code kept as text has no marker, and fix 778's carry then moves it into the box.
+  const addPaste = () => {
+    const until = Date.now() + 3000;
+    const look = () => {
+      window.emerald
+        .request('pty.screen', { sessionId: sessionIdRef.current })
+        .then((res) => {
+          const m = freshPaste(res.rows, new Set(chipsRef.current.map((c) => c.n)));
+          if (m !== null) {
+            nextChip.current += 1;
+            const id = nextChip.current;
+            setChips((c) => [...c, { id, thumb: '', n: m.n, paste: m }]);
+          } else if (Date.now() < until) setTimeout(look, 250);
+          else if (CARRY_STATES.has(stateRef.current) && !askingRef.current) {
+            void carry(null, null).then((outcome) => {
+              if (outcome === 'blocked') setRefusal(CARRY_BLOCKED);
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    setTimeout(look, 250);
+  };
+  const addPasteRef = useRef(addPaste);
+  addPasteRef.current = addPaste;
+  useEffect(() => {
+    const onPaste = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ sessionId?: unknown }>).detail;
+      if (typeof detail?.sessionId !== 'string' || detail.sessionId !== sessionIdRef.current) return;
+      addPasteRef.current();
+    };
+    window.addEventListener('emerald:chat-paste', onPaste);
+    return () => window.removeEventListener('emerald:chat-paste', onPaste);
+  }, []);
   // M9 fix 783: the × waits CHIP_SETTLE_MS after the session leaves
   // working or needs-input, since a Ctrl+C a moment after a turn's Stop
   // left the marker in Claude Code's prompt.
@@ -1227,7 +1269,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
         if (settle > 0) await new Promise((r) => setTimeout(r, settle));
         if (sessionBusy()) return false;
         const before = await window.emerald.request('pty.screen', { sessionId: id });
-        if (promptRowImages(before.rows).length === 0) {
+        if (!promptRowMarked(before.rows)) {
           setChips([]);
           return false;
         }
@@ -1239,7 +1281,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       for (let waited = 0; waited < 2000; waited += 250) {
         await new Promise((r) => setTimeout(r, 250));
         const after = await window.emerald.request('pty.screen', { sessionId: id });
-        if (promptRowImages(after.rows).length === 0) {
+        if (!promptRowMarked(after.rows)) {
           setChips([]);
           return;
         }
@@ -1494,16 +1536,22 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           {chips.length > 0 && (
             <div className="chat-image-chips">
               {chips.map((c) => (
-                <span key={c.id} className="chat-image-chip">
-                  <img className="chat-image-chip-thumb" src={c.thumb} alt="" />
-                  <span className="chat-image-chip-label">{c.n === null ? 'Image' : `Image #${c.n}`}</span>
-                </span>
+                c.paste !== null ? (
+                  <span key={c.id} className="chat-paste-chip" data-paste={c.n ?? undefined}>
+                    <span className="chat-paste-chip-label">{pasteChipLabel(c.paste)}</span>
+                  </span>
+                ) : (
+                  <span key={c.id} className="chat-image-chip">
+                    <img className="chat-image-chip-thumb" src={c.thumb} alt="" />
+                    <span className="chat-image-chip-label">{c.n === null ? 'Image' : `Image #${c.n}`}</span>
+                  </span>
+                )
               ))}
               <button
                 type="button"
                 className="chat-image-chips-clear"
-                title={chipsBusy ? 'Waiting for Claude Code' : "Remove the images (clears Claude Code's prompt; your text stays)"}
-                aria-label="Remove the images"
+                title={chipsBusy ? 'Waiting for Claude Code' : "Remove the pasted text and images (clears Claude Code's prompt; your text stays)"}
+                aria-label="Remove the pasted text and images"
                 data-busy={chipsBusy ? 'true' : undefined}
                 disabled={working || asking || settling}
                 onMouseDown={keepKeys}
@@ -1635,7 +1683,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               items={[
                 {
                   label: 'Cut',
-                  hint: 'Ctrl+X',
+                  hint: editKey('KeyX'),
                   disabled: selection() === '',
                   onClick: () => {
                     setBoxMenu(null);
@@ -1647,7 +1695,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 },
                 {
                   label: 'Copy',
-                  hint: 'Ctrl+C',
+                  hint: editKey('KeyC'),
                   disabled: selection() === '',
                   onClick: () => {
                     setBoxMenu(null);
@@ -1656,7 +1704,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 },
                 {
                   label: 'Paste',
-                  hint: 'Ctrl+V',
+                  hint: editKey('KeyV'),
                   onClick: () => {
                     setBoxMenu(null);
                     void paste();
@@ -2161,7 +2209,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
       {turn.prompt !== '' && (
         <div className="chat-prompt-row">
           <div className="chat-prompt" data-bare={bare ? '' : undefined}>
-            {bare ? null : turn.prompt}
+            {bare ? null : <ChatPromptText text={turn.prompt} cwd={session.cwd} />}
             <PromptImages images={turn.images} />
           </div>
           {stamp !== null && <span className="chat-prompt-time">{stamp}</span>}

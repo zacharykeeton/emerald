@@ -16,6 +16,14 @@ test('an unknown flag and a bare --home give their lines (M9 fix 1079)', () => {
   assert.equal(applyDaemonArgs(['--pipe'], {}), 'emmerd: --pipe needs a value');
 });
 
+test('--ssh-connection sets SSH_CONNECTION beside --home and --pipe, and a bare one gives its line (M9 fix 1091)', () => {
+  const env: NodeJS.ProcessEnv = {};
+  assert.equal(applyDaemonArgs(['--home', 'h', '--pipe', 'p', '--ssh-connection', '10.0.0.5 51234 10.0.0.9 22'], env), null);
+  assert.equal(env['SSH_CONNECTION'], '10.0.0.5 51234 10.0.0.9 22');
+  assert.equal(env['EMERALD_PIPE'], 'p');
+  assert.equal(applyDaemonArgs(['--ssh-connection'], {}), 'emmerd: --ssh-connection needs a value');
+});
+
 test('no argument changes nothing (M9 fix 1079)', () => {
   const env: NodeJS.ProcessEnv = { EMERALD_HOME: 'kept' };
   assert.equal(applyDaemonArgs([], env), null);

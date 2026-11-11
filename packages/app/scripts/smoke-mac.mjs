@@ -515,7 +515,7 @@ async function main() {
   // proves the matcher and the hints, not whether a menu item takes the key
   // first (the install's eye reads that).
   const s13 = 'Cmd+Shift+E splits a pane and the hints say Cmd';
-  if (gated('cmd', s13, ['window'])) {
+  if (gated('cmd', s13, ['window', 'row'])) {
     try {
       await page.send('Emulation.setFocusEmulationEnabled', { enabled: true });
       const n = await evalJs(page, "document.querySelectorAll('.pane').length");
@@ -525,8 +525,10 @@ async function main() {
       await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...keyArgs });
       const split = await until(5000, async () => ((await evalJs(page, "document.querySelectorAll('.pane').length")) === n + 1 ? true : null));
       const after = await evalJs(page, "document.querySelectorAll('.pane').length");
-      if (title === 'Hide sidebar (Cmd+Shift+B)' && split === true) pass('cmd', s13);
-      else fail('cmd', s13, `the sidebar's hide button reads ${JSON.stringify(title)} (want "Hide sidebar (Cmd+Shift+B)"), and the panes went ${n} to ${after} in 5 s after Cmd+Shift+E (want ${n + 1})`);
+      const hints = await evalJs(page, "[...document.querySelectorAll('.palette-input')].map((i) => i.title)");
+      const wantHint = 'Type to filter: name, folder, branch, last prompt. Enter shows it here, Shift+Enter beside, Cmd+Enter below. > for actions.';
+      if (title === 'Hide sidebar (Cmd+Shift+B)' && split === true && Array.isArray(hints) && hints.includes(wantHint)) pass('cmd', s13);
+      else fail('cmd', s13, `the sidebar's hide button reads ${JSON.stringify(title)} (want "Hide sidebar (Cmd+Shift+B)"), and the panes went ${n} to ${after} in 5 s after Cmd+Shift+E (want ${n + 1}), and the empty pane's box titles read ${JSON.stringify(hints)} (want one ${JSON.stringify(wantHint)})`);
     } catch (err) {
       fail('cmd', s13, err.message);
     }

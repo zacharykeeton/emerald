@@ -53,22 +53,12 @@ export class ClaudeLauncher implements SessionLauncher {
     // Only the command line carries the flag; the record's own args (what
     // session.list and emmer resume show) stay the user's.
     const args = this.modDir === null ? [...extraArgs] : ['--plugin-dir', this.modDir, ...extraArgs];
-    const channel = this.modChannelEnv();
     if (this.platform === 'win32' && file.toLowerCase().endsWith('.cmd')) {
       const resolved = resolveNpmShim(file, env);
-      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args], ...channel };
-      return { file, args, note: SHIM_NOTE, ...channel };
+      if (resolved !== null) return { file: resolved.node, args: [resolved.script, ...args] };
+      return { file, args, note: SHIM_NOTE };
     }
-    return { file, args, ...channel };
-  }
-
-  // How the mod starts its prompt channel (M9 fix 741): this daemon's own
-  // runner (node.exe, or Emerald.exe under ELECTRON_RUN_AS_NODE once
-  // installed) on the CLI's main.js, which sits beside cli/mod in the repo
-  // and the stage alike, so the pty's PATH needs no emmer.
-  private modChannelEnv(): { env?: Record<string, string> } {
-    if (this.modDir === null) return {};
-    return { env: { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve(this.modDir, '..', 'dist', 'main.js'), 'mod-channel']) } };
+    return { file, args };
   }
 
   private resolveClaude(env: NodeJS.ProcessEnv): string | null {
@@ -92,6 +82,20 @@ export function findClaude(env: NodeJS.ProcessEnv, home: string, platform: NodeJ
   const local = path.join(home, '.local', 'bin', 'claude.exe');
   if (isFile(local)) return local;
   return findOnPath('claude.exe', env, platform) ?? findOnPath('claude', env, platform);
+}
+
+// The claude a one-off read runs (M9 fix 1094, claude auth status): the
+// one findClaude finds, npm's .cmd resolved to node on its script. A shim
+// that cannot be read answers null rather than running under cmd.exe,
+// which Node 24 refuses for a .cmd without a shell anyway.
+export function claudeRun(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): { file: string; args: string[] } | null {
+  const file = findClaude(env, home, platform);
+  if (file === null) return null;
+  if (platform === 'win32' && file.toLowerCase().endsWith('.cmd')) {
+    const resolved = resolveNpmShim(file, env);
+    return resolved === null ? null : { file: resolved.node, args: [resolved.script] };
+  }
+  return { file, args: [] };
 }
 
 // Where the emerald mod is (M9 fix 725): packages/cli/mod from the

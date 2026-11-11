@@ -223,3 +223,37 @@ test("the renderer counts leave out Electron's Invalid guestInstanceId, old form
   assert.ok(report.includes('1 errors and 0 warnings, 0 lines dropped by the cap.'), report);
   assert.ok(!report.includes('guestInstanceId'), report);
 });
+
+test('M9 fix 1132: a split from the split menu taken back within 3 s is friction, and its names are listed under Pane menu while unused', async () => {
+  const home = mkTemp('emerald-usage-report-');
+  const t = NOW - 60 * 60 * 1000;
+  write(
+    path.join(home, 'logs', 'usage.jsonl'),
+    jsonl([
+      { at: t, ev: 'action', name: 'split-with-claude', from: 'menu' },
+      { at: t + 1000, ev: 'action', name: 'pane-hide', from: 'menu' },
+    ]),
+  );
+  const report = await buildUsageReport(home, NOW, 30);
+  assert.ok(report.includes('- A split closed within 3 s: 1 (split-with-claude 1)'), report);
+  const seeded = await buildUsageReport(seededHome(), NOW, 30);
+  const never = seeded.slice(seeded.indexOf('## Never used'), seeded.indexOf('## Friction'));
+  const pane = never.slice(never.indexOf('**Pane menu**'));
+  assert.ok(never.includes('**Pane menu**') && pane.includes('- `set-split-kind`: Pick what a split gives'), never);
+});
+
+test('M9 fix 1133: a replaced close is not a quick close, and its time still counts', async () => {
+  const home = mkTemp('emerald-usage-report-');
+  const t = NOW - 60 * 60 * 1000;
+  write(
+    path.join(home, 'logs', 'usage.jsonl'),
+    jsonl([
+      { at: t, ev: 'view-open', view: 'file-tab' },
+      { at: t + 300, ev: 'view-close', view: 'file-tab', ms: 300, replaced: true },
+      { at: t + 1100, ev: 'view-close', view: 'file-tab', ms: 800 },
+    ]),
+  );
+  const report = await buildUsageReport(home, NOW, 30);
+  assert.ok(report.includes('- Views closed within 3 s: 1 (file-tab 1)'), report);
+  assert.ok(report.includes('| file-tab | 1 | 2 |'), report);
+});

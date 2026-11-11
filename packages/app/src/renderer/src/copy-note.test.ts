@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copiedNote, noteIn } from './copy-note.ts';
+import { actionIn, copiedNote, noteIn } from './copy-note.ts';
 
 test('copiedNote: a text within one line is counted in characters, by code point (M9 fix 806)', () => {
   assert.equal(copiedNote('abc'), 'Copied 3 characters');
@@ -26,4 +26,14 @@ test("noteIn: a copy's note in its own pane, a window's note in the corner alone
   assert.equal(noteIn(windowNote, null), 'Nothing is waiting');
   assert.equal(noteIn(windowNote, 'p1'), null);
   assert.equal(noteIn(null, null), null);
+});
+
+test("actionIn gives a held note's action where noteIn gives its text, and null for a note without one (M9 fix 1124)", () => {
+  const cancel = { label: 'Cancel', run: () => {} };
+  const held = { text: 'Copying 1.0 MB of 72.0 MB into x', paneId: null, action: cancel };
+  assert.equal(actionIn(held, null), cancel);
+  assert.equal(actionIn(held, 'p1'), null);
+  assert.equal(actionIn({ text: 'Nothing is waiting', paneId: null }, null), null);
+  assert.equal(actionIn({ text: 'Copied 3 characters', paneId: 'p1' }, 'p1'), null);
+  assert.equal(actionIn(null, null), null);
 });

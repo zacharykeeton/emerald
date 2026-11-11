@@ -147,6 +147,10 @@ export const SCREEN_READ_MS = 1000;
 export const BTW_OPEN_MS = 5000;
 export const SIDE_CLOSE_MS = 2000;
 export const SIDE_STILL_OPEN = 'The side question is still open in the session';
+// M9 fix 1134: whether closing the side strip sends Claude Code's panel its Escape: when the newest read draws the panel, and also when no read ever drew it and the session is not working, since a panel the reader missed (a footer it could not match) is still up and takes the next keys; an Escape to a working Claude would stop its turn, so a panel never read over a working turn is left as before.
+export function sideCloseSends(drawn: boolean, seen: boolean, working: boolean): boolean {
+  return drawn || (!seen && !working);
+}
 
 // M9 fix 780: the two commands whose argument skips their dialog (a model
 // or an effort level picked by name); every other one keeps the bar.
@@ -305,15 +309,18 @@ export async function stepModeTo(
 // model this list does not name gets a ticked row of its own (M9 fix 786,
 // modelItems below), so the list going stale costs a missing pick, never
 // a wrong tick.
+//
+// M9 fix 1100: no `[1m]` rows, read off Claude Code 2.1.319. Opus 5.5,
+// Sonnet 5.5 and Fable 5.1 each have a native 1M window, and a
+// `/model fable[1m]` answers "Set model to Fable 5.1": the status line
+// names a 1M pick by its plain name, so a `[1m]` row could never tick.
+// `/model` still takes the three aliases when typed by hand.
 export const MODEL_CHOICES: readonly { alias: string; name: string; line: string }[] = [
   { alias: 'default', name: 'Default', line: 'Use the default model' },
   { alias: 'opus', name: 'Opus 5.5', line: 'Best for everyday, complex tasks' },
-  { alias: 'opus[1m]', name: 'Opus 5.5 (1M context)', line: 'Opus 5.5 with 1M context' },
   { alias: 'sonnet', name: 'Sonnet 5.5', line: 'Efficient for routine tasks' },
-  { alias: 'sonnet[1m]', name: 'Sonnet 5.5 (1M context)', line: 'Sonnet 5.5 with 1M context' },
   { alias: 'haiku', name: 'Haiku 5.5', line: 'Fastest for quick answers' },
   { alias: 'fable', name: 'Fable 5.1', line: 'Most capable for your hardest and longest-running tasks' },
-  { alias: 'fable[1m]', name: 'Fable 5.1 (1M context)', line: 'Fable 5.1 with 1M context' },
   { alias: 'opusplan', name: 'Opus Plan', line: 'Opus in plan mode, else Sonnet' },
 ];
 
@@ -863,6 +870,62 @@ export function freshImage(rows: readonly string[], held: ReadonlySet<number | n
   return fresh.length > 0 ? Math.max(...fresh) : null;
 }
 
+export interface PastedMarker {
+  n: number;
+  lines: number | null;
+  truncated: boolean;
+}
+
+// M9 fix 1136: Claude Code's marker for a pasted text (2.1.322): its id, and the line breaks it counts as lines, none for a single-line paste; the truncated form always counts.
+const PASTE_MARKER = /\[(?:Pasted text #(\d+)(?: \+(\d+) lines)?|\.\.\.Truncated text #(\d+) \+(\d+) lines\.\.\.)\]/g;
+
+export function pastedMarkers(rows: readonly string[]): PastedMarker[] {
+  const out: PastedMarker[] = [];
+  for (const row of rows) {
+    for (const m of row.matchAll(PASTE_MARKER)) {
+      const truncated = m[3] !== undefined;
+      const lines = truncated ? m[4] : m[2];
+      out.push({ n: Number(truncated ? m[3] : m[1]), lines: lines === undefined ? null : Number(lines), truncated });
+    }
+  }
+  return out;
+}
+
+export function promptRowPastes(rows: readonly string[]): PastedMarker[] {
+  const row = promptRow(rows);
+  return row === null ? [] : pastedMarkers([row]);
+}
+
+// The prompt-row paste of highest id that no chip holds yet, else null.
+export function freshPaste(rows: readonly string[], held: ReadonlySet<number | null>): PastedMarker | null {
+  const fresh = promptRowPastes(rows).filter((m) => !held.has(m.n));
+  return fresh.length > 0 ? fresh.reduce((a, b) => (b.n > a.n ? b : a)) : null;
+}
+
+export function promptRowMarked(rows: readonly string[]): boolean {
+  return promptRowImages(rows).length > 0 || promptRowPastes(rows).length > 0;
+}
+
+export function pasteChipLabel(m: PastedMarker): string {
+  const head = `${m.truncated ? 'Truncated text' : 'Pasted text'} #${m.n}`;
+  return m.lines === null ? head : `${head} · ${m.lines} ${m.lines === 1 ? 'line' : 'lines'}`;
+}
+
+// The paste markers of an input that holds nothing else, else null: words
+// or an image beside a marker, a second input row, or an empty input all
+// answer null (M9 fix 1136).
+export function pastesOnly(rows: readonly string[]): PastedMarker[] | null {
+  const y = promptRowAt(rows);
+  if (y < 0) return null;
+  const text = rows[y]!.replace(CARRY_FRAME, ' ').trimStart().replace(/^❯/, '');
+  if (text.replace(PASTE_MARKER, '').trim() !== '') return null;
+  const marks = promptRowPastes(rows);
+  if (marks.length === 0) return null;
+  const next = rows[y + 1];
+  if (next !== undefined && next.replace(CARRY_FRAME, '').trim() !== '') return null;
+  return marks;
+}
+
 // M9 fix 754: the text in Claude Code's input, after the `❯`, trimmed;
 // null with no prompt row.
 export function promptRowText(rows: readonly string[]): string | null {
@@ -900,7 +963,8 @@ export const CARRY_MS = 2000;
 export const CARRY_POLL_MS = 250;
 const PLACEHOLDERS = [/Try ".*"$/, /Press up to .*$/, /Press Enter to edit .*$/, /Message @.*$/];
 const CARRY_FRAME = /[─-╿▀-▟]/g;
-const CARRY_MARKER = /\[Image #|\[Pasted text #/;
+// Every marker Claude Code draws (2.1.322's matcher), the truncated paste and the team guide among them since M9 fix 1136.
+const CARRY_MARKER = /\[(?:Image #|Pasted text #|\u2726 Team setup guide #|\.\.\.Truncated text #)/;
 export function carryRead(
   screen: { rows: readonly string[]; cursor: { x: number; y: number }; ghost?: { y: number; x: number; text: string } | null },
   expect: string | null = null,
@@ -1014,6 +1078,16 @@ export interface PendingItem {
   at: number;
   seen: number;
   refusal: string | null;
+  // M9 fix 1136: a send typed after a pasted chip; its prompt line holds the pasted block before the words (the transcript fold has already taken the tags off), so it is matched by the words at the end of a landed key.
+  tail?: boolean;
+}
+
+// How many landed messages answer a pending key: the exact key, and for a send after a pasted chip any key that ends with its words after a space.
+function landedFor(counts: ReadonlyMap<string, number>, key: string, tail: boolean | undefined): number {
+  if (tail !== true || key === '') return counts.get(key) ?? 0;
+  let n = 0;
+  for (const [k, c] of counts) if (k === key || k.endsWith(` ${key}`)) n += c;
+  return n;
 }
 
 // M9 fix 782: a sent message with no prompt line this long after the session last went quiet reads Not seen yet.
@@ -1067,15 +1141,15 @@ export function landedCounts(turns: readonly StepTurn[], queued: readonly { text
 // The items still pending: one is matched, and goes, once its key's count
 // has grown past its `seen`.
 export function pendingAfter(items: readonly PendingItem[], counts: ReadonlyMap<string, number>): PendingItem[] {
-  return items.filter((item) => (counts.get(item.key) ?? 0) <= item.seen);
+  return items.filter((item) => landedFor(counts, item.key, item.tail) <= item.seen);
 }
 
 // A new pending item for a send: its `seen` counts the landed messages and
 // the items already pending with the same key.
-export function pendingItem(id: number, text: string, at: number, items: readonly PendingItem[], counts: ReadonlyMap<string, number>): PendingItem {
+export function pendingItem(id: number, text: string, at: number, items: readonly PendingItem[], counts: ReadonlyMap<string, number>, tail = false): PendingItem {
   const key = pendingKey(text);
-  const seen = (counts.get(key) ?? 0) + items.filter((p) => p.key === key).length;
-  return { id, text, key, at, seen, refusal: null };
+  const seen = landedFor(counts, key, tail) + items.filter((p) => p.key === key).length;
+  return tail ? { id, text, key, at, seen, refusal: null, tail } : { id, text, key, at, seen, refusal: null };
 }
 
 // The bubble's mark: the refusal's own words; Not seen yet once the session

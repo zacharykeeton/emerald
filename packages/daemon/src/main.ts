@@ -12,6 +12,7 @@ import { feedHostSettings, startFeedHost } from './feed-host.ts';
 import type { FeedHost } from './feed-host.ts';
 import { hideConsoleListAgent } from './hidden-console-agent.ts';
 import { HookSink } from './hook-sink.ts';
+import { ModPoll } from './mod-poll.ts';
 import { guardSelfKill, readProcessLine } from './kill-guard.ts';
 import { resolveClaudeModDir } from './launchers/claude.ts';
 import { createFileLogger, rotateLogAtStart } from './log.ts';
@@ -132,6 +133,9 @@ async function main(): Promise<void> {
   // their own so the log's lines carry a transition and the view draws
   // its spans.
   const unhosted = new UnhostedSessions(log);
+  // The mod's prompt channel (M9 fix 1125), the sink's /channel route and
+  // the pipe's sends sharing one record of who is up.
+  const modPoll = new ModPoll();
   const hooks = await HookSink.listen(
     (sessionId, payload, at, isUnhosted) => {
       const result = isUnhosted ? unhosted.apply(sessionId, payload, at) : (manager?.applyHook(sessionId, payload, at) ?? { outcome: 'unknown-session' });
@@ -147,6 +151,7 @@ async function main(): Promise<void> {
       // The mod's word on a submit, to the send waiting for it (M9 fix 781);
       // the server is built below, before any session can have a mod.
       onModSubmit: (id, submitId, entered, drop, queued) => server.modSubmitAnswered(id, submitId, entered, drop, queued),
+      modPoll,
     },
   );
   // The live rotation (M9 fix 429): the load rotates only at the start,
@@ -290,6 +295,7 @@ async function main(): Promise<void> {
     onUsage: usage,
     hookTestArrived: (testId) => hooks.testArrived(testId),
     modSeen: (id) => hooks.modSeenFor(id),
+    modPoll,
     // daemon.stop has kept the screens already (M9 fix 159).
     onStop: () => shutdown('daemon.stop', true),
     ...(spawnEnv === null ? {} : { spawnEnv: () => spawnEnv.read() }),

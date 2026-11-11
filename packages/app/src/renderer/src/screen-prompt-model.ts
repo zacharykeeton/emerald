@@ -551,20 +551,37 @@ function btwJoin(text: readonly string[]): string {
 const BTW_FOOTER = /(^|·\s*)esc(ape)?\s+to\s+close\b/i;
 // How far above its footer the panel's question row may sit.
 const BTW_REACH = 40;
+// M9 fix 1134: how many rows the panel's footer may wrap over in a narrow pane (three at 28 columns).
+const BTW_FOOTER_ROWS = 4;
+
+function indentOf(row: string): number {
+  const s = row.replace(FRAME, ' ');
+  return s.length - s.trimStart().length;
+}
+
+// M9 fix 1134: the footer's rows: the bottom run whose join (a space between rows) matches BTW_FOOTER and needs its last row for the match, grown up over the rows above it that hold a · at the footer's own indent.
+function btwFooter(rows: readonly string[], b: readonly string[]): { first: number; last: number } | null {
+  for (let last = b.length - 1; last >= 0; last -= 1) {
+    for (let k = 1; k <= BTW_FOOTER_ROWS && last - k + 1 >= 0; k += 1) {
+      let first = last - k + 1;
+      if (!BTW_FOOTER.test(b.slice(first, last + 1).join(' '))) continue;
+      if (BTW_FOOTER.test(b.slice(first, last).join(' '))) break;
+      const lead = indentOf(rows[first]!);
+      while (first > 0 && last - first + 1 < BTW_FOOTER_ROWS && b[first - 1]!.includes('·') && indentOf(rows[first - 1]!) === lead) first -= 1;
+      return { first, last };
+    }
+  }
+  return null;
+}
 
 export function btwPanel(rows: readonly string[]): BtwPanel | null {
   const b = rows.map(bare);
-  let footer = -1;
-  for (let i = b.length - 1; i >= 0; i -= 1) {
-    if (BTW_FOOTER.test(b[i]!)) {
-      footer = i;
-      break;
-    }
-  }
-  if (footer < 0) return null;
+  const foot = btwFooter(rows, b);
+  if (foot === null) return null;
+  const footer = foot.first;
   // The panel takes the prompt box's place, so an input row under it means
   // the rows are a reply quoting a panel, not the panel.
-  if (b.slice(footer + 1).some((r) => /^[❯>](\s|$)/.test(r))) return null;
+  if (b.slice(foot.last + 1).some((r) => /^[❯>](\s|$)/.test(r))) return null;
   let at = -1;
   for (let i = footer - 1; i >= Math.max(0, footer - BTW_REACH); i -= 1) {
     if (b[i]!.startsWith('/btw ')) {

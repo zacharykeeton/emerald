@@ -48,7 +48,7 @@ process.env['EMERALD_PICK_FOLDER'] = pickedDir;
 // M9 fix 1035: the light scheme the fix 1035 block writes, and until then
 // no Windows Terminal schemes, so the run no longer lists the person's own.
 process.env['EMERALD_WT_SETTINGS'] = path.join(process.env['EMERALD_HOME'], 'wt-settings-1035.json');
-const { blockRunner, CTRL, SHIFT, daemonPid, daemonRecord, expect, focusedPaneIs, freshPort, getLayout, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
+const { blockRunner, CTRL, SHIFT, daemonPid, daemonRecord, expect, focusedPaneIs, freshPort, getLayout, getTabs, hoverForCard: hoverForCardIn, killTree, launch, leaves, profileOf, railAtOldWidth, repoRoot, setInput, shotsDir, sleep, splitWithShell, startFromEmpty, startSession, startShellByKey, step, stopDaemon, zreq } =
   await import('./cdp.mjs');
 
 // M9 fix 605: the steps after the prelude are blocks, each a closure a
@@ -77,7 +77,7 @@ const BLOCKS = [
   { name: 'm38', fixes: ['m38', 'fix-43', 'fix-22', 'fix-23', 'fix-24', 'fix-19', 'fix-20', 'fix-21', 'fix-57', 'fix-36', 'fix-37'], needs: ['m32'] },
   { name: 'm43', fixes: ['m43', 'fix-88', 'm73', 'fix-91', 'fix-578', 'fix-95'], needs: [] },
   { name: 'fix-93', fixes: ['fix-93', 'fix-143', 'fix-146', 'fix-154', 'fix-221', 'fix-155', 'fix-153', 'fix-156'], needs: [] },
-  { name: 'fix-204', fixes: ['fix-204', 'fix-355', 'fix-356'], needs: [] },
+  { name: 'fix-204', fixes: ['fix-204', 'fix-355', 'fix-1128', 'fix-356'], needs: [] },
   { name: 'fix-547', fixes: ['fix-547', 'fix-577', 'fix-575', 'fix-705'], needs: [] },
   { name: 'fix-676', fixes: ['fix-676', 'fix-677', 'fix-699'], needs: [] },
   { name: 'fix-738', fixes: ['fix-738'], needs: [] },
@@ -85,6 +85,7 @@ const BLOCKS = [
   { name: 'fix-899', fixes: ['fix-899', 'fix-902'], needs: [] },
   { name: 'fix-900', fixes: ['fix-900'], needs: [] },
   { name: 'fix-1035', fixes: ['fix-1035'], needs: [] },
+  { name: 'fix-1130', fixes: ['fix-1130'], needs: [] },
   // Restarts the daemon and crashes the new one, ending every session it
   // held: it stays the last block whatever lands after it (M9 fix 815).
   { name: 'fix-815', fixes: ['fix-815'], needs: [] },
@@ -341,14 +342,21 @@ try {
   await s.waitFor(`document.querySelector('.pane[data-view="commits"][data-pane-id=${JSON.stringify(viewPane)}]') !== null`, 'the fifth pane shows a commits view');
   await s.waitFor(focusedPaneIs(viewPane), 'the view pane still focused');
   await s.key('N', 'KeyN', 78, CTRL | SHIFT);
-  await s.waitFor(`document.querySelectorAll('.pane').length === 6`, 'a sixth pane beside the view');
+  // M9 fix 1129: the empty split meets a count of six panes before the shell
+  // lands in it; panes 1 to 4 and the new one each draw a terminal host and
+  // the view pane draws none, so five hosts means the new pane has its shell.
+  await s.waitFor(`document.querySelectorAll('.pane').length === 6 && document.querySelectorAll('.term-host').length === 5`, 'a sixth pane beside the view, with a shell of its own');
   await sleep(300);
   layout = await getLayout(s);
   const besideView = layout.focusedPaneId;
   expect(besideView !== viewPane, 'Ctrl+Shift+N put the new shell beside the view, not over it');
   expect(leaves(layout).some((l) => l.id === viewPane && l.view?.kind === 'commits'), 'the view pane is still on the page');
   expect((await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(viewPane)}]')?.dataset.view`)) === 'commits', 'and still carries data-view="commits"');
-  info = await sessionOf(s, besideView);
+  // M9 fix 1129: the session is read once it is listed with its folder.
+  for (const end = Date.now() + 5000; ; await sleep(100)) {
+    info = await sessionOf(s, besideView);
+    if ((info !== null && typeof info.spawnCwd === 'string') || Date.now() > end) break;
+  }
   expect(info?.kind === 'shell' && info.spawnCwd === repoRoot, `the new pane is a shell in the view's own repository, got ${info?.spawnCwd}`);
   await s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(besideView)}] .pane-hide').click()`);
   await s.waitFor(`document.querySelectorAll('.pane').length === 5`, 'that pane hidden, the view pane alone again');
@@ -2593,8 +2601,11 @@ try {
     // xterm's black, so any spare band is invisible. No column split is
     // left on screen by now, so the focused pane is split down first.
     const hostsBefore = await s.evalJs(`document.querySelectorAll('.term-host').length`);
+    const panesBefore20 = new Set(leaves(await getLayout(s)).map((p) => p.id));
     await splitWithShell(s, `${holderSel} .pane-split-down`);
     await s.waitFor(`document.querySelectorAll('.term-host').length === ${hostsBefore + 1} && !!document.querySelector('.gutter-column')`, 'a column split under the focused pane');
+    const shell20Pane = leaves(await getLayout(s)).find((p) => !panesBefore20.has(p.id))?.id ?? null;
+    expect(shell20Pane !== null, 'fix 20 split a pane off the holder');
     await sleep(600);
     const termFit = () =>
       s.evalJs(
@@ -2759,10 +2770,11 @@ try {
     // the fix its pty.detach took the new pane's attachment with it, so
     // the moved session's output stopped. Two sessions swap panes here,
     // and after the park timer both still receive what they print.
+    // The partner is the shell fix 20 split off the holder, so the swap reads only what this block made; the first other pane with a session, its partner until M9 fix 1108, held whatever the earlier blocks left there, and the swap failed after m46 whenever m39 was skipped.
     layout = await getLayout(s);
     const holderSession = leaves(layout).find((p) => p.id === addedPane).sessionId;
-    const other = leaves(layout).find((p) => p.id !== addedPane && p.sessionId !== null);
-    expect(holderSession !== null && other !== undefined, 'a second pane with a session to swap with');
+    const other = leaves(layout).find((p) => p.id === shell20Pane);
+    expect(holderSession !== null && other !== undefined && other.sessionId !== null && other.sessionId !== holderSession, 'the shell fix 20 split off the holder, to swap with');
     const swapped = (node) =>
       node.kind === 'pane'
         ? node.id === addedPane
@@ -3459,6 +3471,22 @@ try {
     expect(probeLine() !== undefined, 'a renderer warning is in the main log within a second');
     expect(/renderer: warning \[emerald\] probe 355 \(.*:\d+\)$/.test(probeLine().trim()), `the line ends with the source and its line, got ${probeLine()}`);
     step('M9 fix 355: the inspect port yields to the command line and says so, and a renderer warning reaches the main log');
+
+    // M9 fix 1128: two throws of one stack from the window's own code; each
+    // writes Chromium's Uncaught error line as before, and the first alone
+    // writes its stack after it as a note, the second's being the same.
+    await s.evalJs('(() => { const boom1128 = () => { throw new TypeError("probe 1128"); }; setTimeout(boom1128, 0); setTimeout(boom1128, 20); return true; })()');
+    const lines1128 = () => s.logs.join('').split('\n');
+    const errors1128 = () => lines1128().filter((l) => l.includes('renderer: error [lib] Uncaught TypeError: probe 1128'));
+    const at1128 = Date.now();
+    while (errors1128().length < 2 && Date.now() - at1128 < 2000) await sleep(50);
+    expect(errors1128().length === 2, `two Uncaught lines in the main log for the two throws, got ${errors1128().length}`);
+    // The stack line may come a moment after its error line.
+    const stacks1128 = () => lines1128().filter((l) => l.includes('renderer: note [emerald] uncaught stack: TypeError: probe 1128 | at '));
+    while (stacks1128().length < 1 && Date.now() - at1128 < 3000) await sleep(50);
+    expect(stacks1128().length === 1, `one stack line for the two throws of one stack, got ${stacks1128().length}: ${stacks1128().join(' || ') || '(none)'}`);
+    expect(!s.logs.join('').includes('renderer: error [emerald] uncaught stack:'), 'no stack line was written as an error');
+    step('M9 fix 1128: an uncaught error in the window leaves its stack in the main log once, as a note');
 
     // M9 fix 356: the links pane's WebGL context lost through the canvas
     // (the recipe the diagnosis driver used): the addon waits 3 s for a
@@ -4423,6 +4451,94 @@ Double-click to start here`, `row 2's title is the path then the hint, got ${JSO
       expect((await s.evalJs(`localStorage.getItem('emerald.scheme')`)) === null, 'fix 1035: the window left on its default scheme with no stored pick');
       if (P !== null) await s.evalJs(`document.querySelector(${JSON.stringify(pane1035(P) + ' .pane-close')})?.click()`);
       await s.waitFor(`!document.querySelector(${JSON.stringify(row1035(shell1035.id))})`, "fix 1035's row gone", 15_000);
+    }
+  });
+  await block('fix-1130', async () => {
+    // M9 fix 1130: twenty shells on five new tabs of four, beside the tab the
+    // run already has. Every layout tab is mounted, so before the fix each
+    // pane held a WebGL context and Chromium dropped the oldest past
+    // sixteen; now a hidden pane gives its context up once more than
+    // WEBGL_LIVE_MARK (12) are live and takes one back when its tab is
+    // shown. The daemon of this run is at level 1, under TABS_LEVEL, so the
+    // app's own tab edits are left unmade; the tabs are switched by a
+    // layout.set of the whole layout, which the daemon takes and pushes, and
+    // the layout found is put back the same way at the end.
+    const full1130 = await getTabs(s);
+    expect(full1130.windows === undefined && full1130.tabs.length === 1, `fix 1130: one window and one tab to start from, got ${full1130.tabs.length} tabs and windows ${JSON.stringify(full1130.windows)}`);
+    expect(await s.evalJs(`!document.querySelector('.panes-view[data-hidden]')`), 'fix 1130: no file tab over the panes to start from');
+    const hostsBefore1130 = await s.evalJs(`document.querySelectorAll('.term-host').length`);
+    const logFrom1130 = s.logs.join('').length;
+    const dir1130 = path.join(os.tmpdir(), 'emerald-verify', 'm9-1130');
+    fs.mkdirSync(dir1130, { recursive: true });
+    const ids1130 = [];
+    const tabs1130 = [];
+    const paneIds1130 = [];
+    const pane1130 = (sessionId) => ({ kind: 'pane', id: crypto.randomUUID(), sessionId, view: null });
+    const split1130 = (direction, first, second) => ({ kind: 'split', id: crypto.randomUUID(), direction, ratio: 0.5, first, second });
+    const termsOf1130 = (tabId) => `document.querySelectorAll(${JSON.stringify(`.layout-tab[data-tab-id=${JSON.stringify(tabId)}] .term-host`)})`;
+    const front1130 = async (currentTabId, tabs) => {
+      const fresh = await getTabs(s);
+      const res = await zreq(s, 'layout.set', { layout: { ...full1130, revision: fresh.revision, tabs, currentTabId } });
+      expect(res?.error === undefined, `fix 1130: layout.set took the layout: ${JSON.stringify(res?.error)}`);
+    };
+    try {
+      for (let i = 0; i < 20; i++) {
+        const { session } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: dir1130, cols: 100, rows: 30 });
+        ids1130.push(session.id);
+      }
+      for (let k = 0; k < 5; k++) {
+        const ps = ids1130.slice(k * 4, k * 4 + 4).map(pane1130);
+        paneIds1130.push(...ps.map((p) => p.id));
+        const root = split1130('row', split1130('column', ps[0], ps[2]), split1130('column', ps[1], ps[3]));
+        tabs1130.push({ ...full1130.tabs[0], id: crypto.randomUUID(), name: `w1130-${k + 1}`, root, focusedPaneId: ps[0].id });
+      }
+      const all1130 = [...full1130.tabs, ...tabs1130];
+      await front1130(tabs1130[0].id, all1130);
+      await s.waitFor(`document.querySelectorAll('.term-host').length === ${hostsBefore1130 + 20}`, 'fix 1130: twenty more terminals mounted', 20_000);
+
+      // Every session writes now. A terminal on a hidden tab has no size, so
+      // the feed attaches it only once its tab is shown (terminal-feed.ts's
+      // decide waits on a fit); each pane's output is read after its tab
+      // comes to the front, from the replay.
+      for (let i = 0; i < 20; i++) {
+        await s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(ids1130[i])}, data: 'Write-Host w1130-${i}' + String.fromCharCode(13) })`);
+      }
+      const hostOf1130 = (i) => `document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(paneIds1130[i])}] .term-host`)})`;
+      const tookOutput1130 = (i) => s.waitFor(`(() => { const t = ${hostOf1130(i)}?.emeraldTerm; if (!t) return false; const b = t.buffer.active; for (let j = 0; j < b.length; j++) { const l = b.getLine(j)?.translateToString(true) ?? ''; if (l.includes('w1130-${i}') && !l.includes('Write-Host')) return true; } return false; })()`, `fix 1130: pane ${i + 1} took its output`, 30_000);
+
+      for (let k = 0; k < 5; k++) {
+        const tab = tabs1130[k];
+        const tabSel = `.layout-tab[data-tab-id=${JSON.stringify(tab.id)}]`;
+        await s.evalJs(`(() => { const r = { at: performance.now(), first: null, subs: [] }; for (const h of document.querySelectorAll(${JSON.stringify(tabSel + ' .term-host')})) { const t = h.emeraldTerm; if (t) r.subs.push(t.onRender(() => { if (r.first === null) r.first = performance.now(); })); } window.__r1130 = r; return r.subs.length; })()`);
+        const switched = Date.now();
+        await front1130(tab.id, all1130);
+        await s.waitFor(`(() => { const t = document.querySelector(${JSON.stringify(tabSel)}); if (t === null || t.hidden) return false; const hs = ${termsOf1130(tab.id)}; return hs.length === 4 && [...hs].every((h) => h.dataset.renderer === 'webgl'); })()`, `fix 1130 tab ${k + 1}: in front with every pane on WebGL`, 5000);
+        const onWebgl = Date.now() - switched;
+        // WEBGL_LIVE_MARK, webgl-budget.ts: twelve live contexts at most.
+        const live = await s.evalJs(`document.querySelectorAll('.term-host[data-renderer="webgl"]').length`);
+        expect(live <= 12, `fix 1130 tab ${k + 1}: ${live} live contexts, at most the mark of 12`);
+        let first = null;
+        for (const end = Date.now() + 2000; Date.now() < end; await sleep(50)) {
+          first = await s.evalJs(`window.__r1130.first === null ? null : Math.round(window.__r1130.first - window.__r1130.at)`);
+          if (first !== null) break;
+        }
+        await s.evalJs(`(() => { for (const d of window.__r1130.subs) d.dispose(); delete window.__r1130; return true; })()`);
+        for (let i = k * 4; i < k * 4 + 4; i++) await tookOutput1130(i);
+        console.log(`[verify] note: fix 1130 tab ${k + 1}: every pane on WebGL ${onWebgl} ms after the switch, ${first === null ? 'no render within 2000 ms' : `first render ${first} ms`}, ${live} live`);
+      }
+
+      const lines1130 = s.logs.join('').slice(logFrom1130).split('\n');
+      const lost1130 = lines1130.filter((l) => l.includes('retries spent') || l.includes('terminal renderer: dom (context lost'));
+      expect(lost1130.length === 0, `fix 1130: no pane lost its context on the way through five tabs: ${lost1130.join(' | ')}`);
+      expect(lines1130.some((l) => l.includes('renderer: note [emerald] terminal webgl: released')), `fix 1130: the budget's note is in the main log as a note: ${lines1130.filter((l) => l.includes('terminal webgl')).join(' | ') || '(none)'}`);
+      step('M9 fix 1130: twenty panes on five tabs, each tab in front on WebGL in turn, never more than twelve contexts live, none lost');
+    } finally {
+      const fresh = await getTabs(s);
+      await zreq(s, 'layout.set', { layout: { ...full1130, revision: fresh.revision } });
+      const firstTab = `.layout-tab[data-tab-id=${JSON.stringify(full1130.tabs[0].id)}] .term-host`;
+      await s.waitFor(`document.querySelectorAll('.term-host').length === ${hostsBefore1130} && [...document.querySelectorAll(${JSON.stringify(firstTab)})].every((h) => h.dataset.renderer === 'webgl')`, "fix 1130: the run's own tab back in front on WebGL, the twenty gone", 15_000);
+      for (const id of ids1130) await zreq(s, 'session.kill', { sessionId: id, remove: true });
+      for (const id of ids1130) await s.waitFor(`!document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(id)}]`)})`, "fix 1130's rows gone", 15_000);
     }
   });
   await block('fix-815', async () => {

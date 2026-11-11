@@ -235,6 +235,8 @@ export function Sidebar() {
         }}
       />
   );
+  // M9 fix 1096: a remote group's folder is on its host, and these read this PC's git and stats.
+  const addLocal = addMenu !== null && addMenu.host === '';
   return (
     <div className="sidebar" style={{ width: sidebarWidth }}>
       <div
@@ -338,7 +340,7 @@ export function Sidebar() {
               : []),
             // The folder's commits as a pane (M52), where the shell would go;
             // an older daemon drops the view from the layout, so no offer.
-            ...(viewsSupported(daemon)
+            ...(addLocal && viewsSupported(daemon)
               ? [
                   {
                     label: 'Commits in a pane',
@@ -354,17 +356,21 @@ export function Sidebar() {
               : []),
             // The folder's graph as a document tab in the strip (M61), the
             // renderer's own, so any daemon will do.
-            {
-              label: 'Commits in a tab',
-              title: `The commit graph of ${addMenu.folder} as a tab in the strip`,
-              onClick: () => {
-                setAddMenu(null);
-                openFileTab(commitsPath(addMenu.folder, commitsQuery(readRailCommits())));
-              },
-            },
+            ...(addLocal
+              ? [
+                  {
+                    label: 'Commits in a tab',
+                    title: `The commit graph of ${addMenu.folder} as a tab in the strip`,
+                    onClick: () => {
+                      setAddMenu(null);
+                      openFileTab(commitsPath(addMenu.folder, commitsQuery(readRailCommits())));
+                    },
+                  },
+                ]
+              : []),
             // The folder's statistics as a tab (M9 fix 837), once the
             // daemon folds its totals.
-            ...(statsSupported(daemon)
+            ...(addLocal && statsSupported(daemon)
               ? [
                   {
                     label: 'Statistics in a tab',
@@ -607,22 +613,29 @@ function GroupMenu({ x, y, group, onRename, onClose }: { x: number; y: number; g
           // tabs' menu offers (TabStrip.tsx), through the main process's
           // clipboard (preload/api.ts) rather than navigator.clipboard,
           // which asks a permission this menu's click does not carry.
+          // M9 fix 1096: the folder alone, the host's own path for a remote
+          // group (its key joins the host's name and the folder by a NUL).
           {
             label: 'Copy path',
-            title: group.key,
+            title: group.folder,
             onClick: () => {
               onClose();
-              void window.emerald.clipboard.write(group.key).catch(warn('copy'));
+              void window.emerald.clipboard.write(group.folder).catch(warn('copy'));
             },
           },
-          {
-            label: 'Reveal in Explorer',
-            title: group.key,
-            onClick: () => {
-              onClose();
-              void window.emerald.files.reveal(group.key).catch(warn('reveal'));
-            },
-          },
+          // M9 fix 1096: a remote folder has nothing to reveal here.
+          ...(group.host === ''
+            ? [
+                {
+                  label: 'Reveal in Explorer',
+                  title: group.key,
+                  onClick: () => {
+                    onClose();
+                    void window.emerald.files.reveal(group.key).catch(warn('reveal'));
+                  },
+                },
+              ]
+            : []),
           ...(['close', 'kill', 'remove'] as const).map((mode, i) => ({
             label: sweepLabel(mode, counts),
             title: sweepTitle(mode, counts),

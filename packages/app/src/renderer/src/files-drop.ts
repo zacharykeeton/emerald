@@ -3,6 +3,7 @@ import type { FileClash, MoveOutcome } from '../../preload/api.ts';
 import { folderName, refusalWords, renamedPath, sessionInFolder } from './files-model.ts';
 import { copyingNote, modeFor, moveNote } from './files-drop-model.ts';
 import type { DropKeys } from './files-drop-model.ts';
+import type { CornerAction } from './copy-note.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { endHandover, renameModels } from './monaco.ts';
@@ -79,10 +80,23 @@ export async function dropIntoFolder(paths: readonly string[], dir: string, keys
   // that lands after the answer is never drawn over the final note.
   let held: string | null = null;
   let settled = false;
+  // The note's Cancel (M9 fix 1124): main stops this window's copies into
+  // dir, the note says so with no button, and later pushes are not drawn.
+  let cancelling = false;
+  const cancel: CornerAction = {
+    label: 'Cancel',
+    run: () => {
+      if (cancelling || settled) return;
+      cancelling = true;
+      held = `Cancelling the copy into ${folderName(dir)}`;
+      holdCornerNote(held);
+      void window.emerald.files.cancel(dir).catch((err: unknown) => console.warn('[emerald] cancelling the copy failed', err));
+    },
+  };
   const off = window.emerald.files.onProgress((p) => {
-    if (settled || p.dir !== dir) return;
-    held = copyingNote(p.done, p.total, folderName(dir));
-    holdCornerNote(held);
+    if (settled || cancelling || p.dir !== dir) return;
+    held = copyingNote(p.done, p.total, folderName(dir), p.bytesDone, p.bytesTotal);
+    holdCornerNote(held, cancel);
   });
   try {
     const mode = modeFor(keys);

@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import type { ContextBreakdown, ContextCategory, ContextMcpTool, SessionInfo } from '@emerald/shared';
 import {
   CONTEXT_ASK_MS,
+  CONTEXT_FRESH_TEXT,
   agentRows,
   agentSource,
   asOfText,
+  awaitsFirstReply,
   compactLine,
   contextParts,
   contextState,
@@ -320,6 +322,17 @@ test('a transcript lists its names, less the removed and the built-in (M9 fix 10
   assert.deepEqual(transcriptNames(text), { memoryFiles: ['C:\\a\\CLAUDE.md'], mcpServers: ['claude-in-chrome'], skills: ['ado', 'batch'], agents: ['claude', 'emerald-batch-dev'] });
 });
 
+test('awaitsFirstReply: no reply, or the last one before this conversation\'s span began (M9 fix 1102)', () => {
+  const span = (conversation: string, startedAt: number) => [{ conversation, remoteSessionId: null, startedAt, endedAt: null, startHead: null }];
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1' }), true);
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1', lastReplyAt: null }), true);
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1', lastReplyAt: 500 }), false);
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1', lastReplyAt: 500, spans: span('c1', 800) }), true);
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1', lastReplyAt: 500, spans: span('c1', 500) }), false);
+  assert.equal(awaitsFirstReply({ claudeSessionId: 'c1', lastReplyAt: 500, spans: span('c0', 800) }), false);
+  assert.equal(CONTEXT_FRESH_TEXT, 'A new conversation; the breakdown comes with its first reply');
+});
+
 test('the tab state, first match wins (M9 fix 1038)', () => {
   const claude = { id: 's1', kind: 'claude', claudeSessionId: 'c1' } as unknown as SessionInfo;
   const loaded = { ...claude, context: FIXTURE } as SessionInfo;
@@ -333,7 +346,13 @@ test('the tab state, first match wins (M9 fix 1038)', () => {
   assert.equal(st(loaded, { asked: false, mod: false }), 'loaded', 'a breakdown wins over the reply');
   assert.equal(st(claude, { asked: false, mod: false }), 'outside');
   assert.equal(st(claude, { asked: true, mod: true }, CONTEXT_ASK_MS - 1000), 'reading');
-  assert.equal(st(claude, { asked: true, mod: true }, CONTEXT_ASK_MS), 'outside');
+  assert.equal(st(claude, { asked: true, mod: true }, CONTEXT_ASK_MS), 'fresh', 'a conversation with no reply yet (M9 fix 1102)');
+  const replied = { ...claude, lastReplyAt: 500 } as SessionInfo;
+  assert.equal(st(replied, { asked: true, mod: true }, CONTEXT_ASK_MS), 'reading', 'a mod asked on a conversation that has replied waits for its next measure');
+  const span = (conversation: string) => [{ conversation, remoteSessionId: null, startedAt: 800, endedAt: null, startHead: null }];
+  assert.equal(st({ ...replied, spans: span('c1') } as SessionInfo, { asked: true, mod: true }, CONTEXT_ASK_MS), 'fresh', 'a /clear after the last reply');
+  assert.equal(st({ ...replied, spans: span('c0') } as SessionInfo, { asked: true, mod: true }, CONTEXT_ASK_MS), 'reading', 'a span of another conversation leaves the reply counting');
+  assert.equal(st(claude, { asked: true, mod: false }, CONTEXT_ASK_MS), 'outside');
   assert.equal(st(claude, { asked: false, mod: true }, CONTEXT_ASK_MS * 5), 'reading', 'a Claude in a shell waits for its next Measure');
   assert.equal(st(claude, null), 'reading');
 });

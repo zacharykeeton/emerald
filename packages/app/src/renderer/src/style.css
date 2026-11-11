@@ -15843,3 +15843,62 @@ div.rail-context-head-row:hover {
   margin-left: 8px;
   margin-right: auto;
 }
+
+/* M9 fix 1099: a path in the prompt bubble is a link, as in a reply. */
+.chat-prompt .chat-path {
+  color: var(--path);
+  cursor: pointer;
+}
+
+.chat-prompt .chat-path:hover {
+  text-decoration: underline;
+}
+
+/* M9 fix 1124: the corner note's Cancel, the one part of the note that takes the pointer. */
+.corner-note-action {
+  pointer-events: auto;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* M9 fix 1131: the dialog's Close "<old name>" box, the radios' accent; its working line takes .dialog-field > span's muted 12px. */
+.dialog input[type="checkbox"] {
+  accent-color: var(--focus);
+}
+
+.dialog-close-old label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* M9 fix 1132: the one-time offer under the Start row. */
+.empty-split-offer {
+  gap: 8px;
+  align-items: center;
+}
+
+.empty-split-offer-close {
+  background: none;
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+/* M9 fix 1136: a pasted text's chip, beside the image chips, its label Claude Code's marker. */
+.chat-paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}

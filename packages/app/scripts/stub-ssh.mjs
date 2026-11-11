@@ -15,7 +15,7 @@
 //   nokit       a relay whose node is not there: PowerShell's line, exit 1
 //   linux       answers the sh probe as a Linux host
 // Every command it runs gets the stub home as USERPROFILE, HOME and
-// HOMEPATH, and a Claude config under it, so the kit's hooks install never
+// HOMEPATH, an SSH_CONNECTION as sshd's, and a Claude config under it, so the kit's hooks install never
 // writes the harness's settings or the person's; EMERALD_HOME and
 // EMERALD_PIPE are removed, as on a real host.
 import { spawn } from 'node:child_process';
@@ -37,6 +37,8 @@ if (H === '') {
   process.exit(2);
 }
 fs.mkdirSync(H, { recursive: true });
+// PowerShell 5.1 keeps its module analysis cache under LocalApplicationData, which answers an empty string, and so the working folder, while USERPROFILE has no AppData\Local (M9 fix 1120).
+fs.mkdirSync(path.join(H, 'AppData', 'Local'), { recursive: true });
 fs.appendFileSync(path.join(H, 'stub-ssh.log'), `${new Date().toISOString()} ${JSON.stringify(argv)}\n`);
 
 function modeOf() {
@@ -54,7 +56,7 @@ function modeOf() {
   return 'powershell';
 }
 
-const env = { ...process.env, USERPROFILE: H, HOME: H, HOMEPATH: H, CLAUDE_CONFIG_DIR: path.join(H, '.claude'), CLAUDE_SETTINGS: path.join(H, '.claude', 'settings.json') };
+const env = { ...process.env, USERPROFILE: H, HOME: H, HOMEPATH: H, SSH_CONNECTION: '127.0.0.1 50022 127.0.0.1 22', CLAUDE_CONFIG_DIR: path.join(H, '.claude'), CLAUDE_SETTINGS: path.join(H, '.claude', 'settings.json') };
 delete env['EMERALD_HOME'];
 delete env['EMERALD_PIPE'];
 

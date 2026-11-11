@@ -22,12 +22,19 @@ import path from 'node:path';
 // seconds is far inside the window in which a pid can be reused.
 export const START_TOLERANCE_MS = 2000;
 
+const PS_TIMEOUT_MS = 5000;
+const POWERSHELL_TIMEOUT_MS = 10_000;
+
+// A start time, `null` when the read ran and found no process, `'unknown'`
+// when it timed out or failed (M9 fix 1109).
+export type StartRead = number | null | 'unknown';
+
 export interface ReaperProbes {
   alive(pid: number): boolean;
-  startedAt(pid: number): number | null;
+  startedAt(pid: number): StartRead;
 }
 
-export type ProcessIdentity = 'same' | 'gone' | 'other';
+export type ProcessIdentity = 'same' | 'gone' | 'other' | 'unknown';
 
 // Whether `pid` is still the process that started at `startedAt`: false
 // when it has gone, which is the ordinary case, and false when its start
@@ -36,16 +43,19 @@ export function isSameProcess(pid: number, startedAt: number, probes: ReaperProb
   return processIdentity(pid, startedAt, probes) === 'same';
 }
 
-// The same read with the two ways of not being the same kept apart, so a
-// caller can say which: `gone` when nothing holds the pid or its start
-// time cannot be read, `other` when something else holds it now.
+// The same read with the ways of not being the same kept apart, so a
+// caller can say which: `gone` when nothing holds the pid or the read found
+// no process there, `other` when something else holds it now, `unknown`
+// when the read timed out or failed (M9 fix 1109): under load PowerShell can
+// take past its 10 s, and that is not a process gone; no caller kills on it.
 export function processIdentity(pid: number, startedAt: number, probes: ReaperProbes = systemProbes): ProcessIdentity {
   if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(startedAt)) return 'gone';
   if (!probes.alive(pid)) return 'gone';
   return judge(probes.startedAt(pid), startedAt);
 }
 
-function judge(actual: number | null, startedAt: number): ProcessIdentity {
+function judge(actual: StartRead, startedAt: number): ProcessIdentity {
+  if (actual === 'unknown') return 'unknown';
   if (actual === null) return 'gone';
   return Math.abs(actual - startedAt) <= START_TOLERANCE_MS ? 'same' : 'other';
 }
@@ -107,19 +117,38 @@ function elapsedArgs(pid: number): string[] {
   return ['-o', 'etime=', '-p', String(pid)];
 }
 
-// The epoch milliseconds the system reports for a pid's creation, or null
-// when the process has gone or the read failed.
-export function readStartedAt(pid: number, platform: NodeJS.Platform = process.platform): number | null {
+// What a read's output means (M9 fix 1109): `unknown` when the read failed
+// or printed something that is not a time, `null` when it printed nothing
+// (no such process), else the time. The exit status is not read: `ps -p`
+// exits 1 for a missing pid, and an empty PowerShell output with exit 0 is
+// a pid nobody holds.
+export function startFrom(out: string, failed: boolean, platform: NodeJS.Platform = process.platform): StartRead {
+  if (failed) return 'unknown';
+  if (out.trim() === '') return null;
+  const read = platform === 'win32' ? parseStart(out) : startFromElapsed(out);
+  return read === null ? 'unknown' : read;
+}
+
+// The epoch milliseconds the system reports for a pid's creation, `null`
+// when the read found no process, `'unknown'` when it timed out or failed.
+export function readStartTime(pid: number, platform: NodeJS.Platform = process.platform): StartRead {
   try {
     if (platform !== 'win32') {
-      const ps = spawnSync('ps', elapsedArgs(pid), { encoding: 'utf8', timeout: 5000, env: PS_ENV() });
-      return startFromElapsed(ps.stdout ?? '');
+      const ps = spawnSync('ps', elapsedArgs(pid), { encoding: 'utf8', timeout: PS_TIMEOUT_MS, env: PS_ENV() });
+      return startFrom(ps.stdout ?? '', ps.error !== undefined, platform);
     }
-    const out = spawnSync('powershell.exe', scriptArgs(startScript(), pid), { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
-    return parseStart(out.stdout ?? '');
+    const out = spawnSync('powershell.exe', scriptArgs(startScript(), pid), { encoding: 'utf8', windowsHide: true, timeout: POWERSHELL_TIMEOUT_MS });
+    return startFrom(out.stdout ?? '', out.error !== undefined, platform);
   } catch {
-    return null;
+    return 'unknown';
   }
+}
+
+// readStartTime with the unknown folded into null, for callers that only
+// want a time.
+export function readStartedAt(pid: number, platform: NodeJS.Platform = process.platform): number | null {
+  const r = readStartTime(pid, platform);
+  return typeof r === 'number' ? r : null;
 }
 
 // One row per line of `ps -A -o pid=,ppid=` (M9 fix 1016); a line that is
@@ -194,63 +223,52 @@ function alive(pid: number): boolean {
   }
 }
 
-export const systemProbes: ReaperProbes = { alive, startedAt: readStartedAt };
+export const systemProbes: ReaperProbes = { alive, startedAt: readStartTime };
 
-// processIdentity through an async spawn, for the app's main process,
-// which must not block its event loop on a PowerShell (or, off Windows,
-// a `ps`, M9 fix 1016).
-export function processIdentityAsync(pid: number, startedAt: number, platform: NodeJS.Platform = process.platform): Promise<ProcessIdentity> {
-  if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(startedAt) || !alive(pid)) return Promise.resolve('gone');
-  if (platform !== 'win32') {
-    return new Promise((resolve) => {
-      let out = '';
-      let settled = false;
-      const done = (value: ProcessIdentity) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      };
-      let child;
-      try {
-        child = spawn('ps', elapsedArgs(pid), { stdio: ['ignore', 'pipe', 'ignore'], env: PS_ENV() });
-      } catch {
-        resolve('gone');
-        return;
-      }
-      const timer = setTimeout(() => {
-        child.kill();
-        done('gone');
-      }, 5000);
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => (out += chunk));
-      child.on('error', () => done('gone'));
-      child.on('close', () => done(judge(startFromElapsed(out), startedAt)));
-    });
-  }
+// One async start-time read (M9 fix 1109): the child's output through
+// startFrom, `unknown` on a spawn that throws, an error event or the timer.
+// The first settle wins.
+export function readStartAsync(command: string, args: string[], platform: NodeJS.Platform, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<StartRead> {
   return new Promise((resolve) => {
     let out = '';
     let settled = false;
-    const done = (value: ProcessIdentity) => {
+    let timer: NodeJS.Timeout | undefined;
+    const done = (value: StartRead) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       resolve(value);
     };
     let child;
     try {
-      child = spawn('powershell.exe', scriptArgs(startScript(), pid), { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], ...(env === undefined ? {} : { env }) });
     } catch {
-      resolve('gone');
+      done('unknown');
       return;
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill();
-      done('gone');
-    }, 10_000);
+      done('unknown');
+    }, timeoutMs);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => (out += chunk));
-    child.on('error', () => done('gone'));
-    child.on('close', () => done(judge(parseStart(out), startedAt)));
+    child.on('error', () => done('unknown'));
+    child.on('close', () => done(startFrom(out, false, platform)));
   });
+}
+
+// processIdentity through an async spawn, for the app's main process,
+// which must not block its event loop on a PowerShell (or, off Windows,
+// a `ps`, M9 fix 1016).
+export async function processIdentityAsync(pid: number, startedAt: number, platform: NodeJS.Platform = process.platform): Promise<ProcessIdentity> {
+  if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(startedAt) || !alive(pid)) return 'gone';
+  try {
+    const read =
+      platform !== 'win32'
+        ? await readStartAsync('ps', elapsedArgs(pid), platform, PS_TIMEOUT_MS, PS_ENV())
+        : await readStartAsync('powershell.exe', scriptArgs(startScript(), pid), platform, POWERSHELL_TIMEOUT_MS);
+    return judge(read, startedAt);
+  } catch {
+    return 'unknown';
+  }
 }

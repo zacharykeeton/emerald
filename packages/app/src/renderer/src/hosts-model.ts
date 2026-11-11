@@ -108,6 +108,19 @@ export function applyHostChanged(
   return out;
 }
 
+// A forgotten host's sessions out of a session map (M9 fix 1097); the same
+// map back when it held none, since the store's listeners compare by
+// reference.
+export function dropHostSessions(sessions: ReadonlyMap<string, SessionInfo>, host: string): ReadonlyMap<string, SessionInfo> {
+  let out: Map<string, SessionInfo> | null = null;
+  for (const [id, info] of sessions) {
+    if ((info as SessionInfo & { host?: string }).host !== host) continue;
+    out ??= new Map(sessions);
+    out.delete(id);
+  }
+  return out ?? sessions;
+}
+
 // main's host.setup: a running phase is the setup state, done hands over to
 // the connect (an up that came first stays up), failed keeps its line and
 // leaves the host idle.

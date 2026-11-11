@@ -1,5 +1,6 @@
 import type { FileTabView } from './tabs-model.ts';
 import { isImage } from './tabs-model.ts';
+import { editKey } from './keys-model.ts';
 
 // The file body's right-click menu as facts (M9 fix 270), the way
 // pane-menu-model.ts lists the pane menu: one list for the editor, the
@@ -50,7 +51,7 @@ export interface FileMenuFacts {
   schemes: readonly FileMenuScheme[];
   scheme: string | null;
   // The view shows a picture now (M9 fix 1007), and whether its kind is
-  // one main can decode and copy (COPYABLE_IMAGE).
+  // one Copy image takes (COPYABLE_IMAGE).
   image: boolean;
   imageCopyable: boolean;
 }
@@ -61,12 +62,13 @@ export interface FileMenuScheme {
   source: 'shipped' | 'windows-terminal';
 }
 
-// The picture kinds Copy image takes (M9 fix 1007): main decodes the file
-// with nativeImage.createFromPath, which on Windows reads PNG, JPEG and
-// ICO and returns an empty image for GIF, WebP, BMP and SVG (the fix's
-// probe on Electron's own build). A kind outside the set gets the item
-// disabled with a reason rather than a copy that puts nothing there.
-export const COPYABLE_IMAGE = /\.(png|jpe?g|ico)$/i;
+// The picture kinds Copy image takes (M9 fix 1007): main decodes PNG and
+// JPEG itself (createFromPath); the other five are drawn by the renderer
+// from a data: URL main reads for it (M9 fix 1111), since main decodes GIF,
+// WebP, BMP and SVG as empty and an ICO at 256 by 256 whatever its entries
+// (fix 1007's probe). A kind outside the set gets the item disabled with a
+// reason rather than a copy that puts nothing there.
+export const COPYABLE_IMAGE = /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i;
 export const COPY_IMAGE_REFUSED = "This kind of picture can't be copied";
 
 export function copyableImage(path: string): boolean {
@@ -78,9 +80,9 @@ export function fileMenu({ view, editable, selected, wrap, json, schemes, scheme
   // A picture's first item is its copy (M9 fix 1007).
   if (image) items.push({ run: 'copy-image', label: 'Copy image', disabled: !imageCopyable, title: imageCopyable ? 'Copy the picture to the clipboard, as a PNG' : COPY_IMAGE_REFUSED });
   items.push(
-    { run: 'copy', label: 'Copy', hint: 'Ctrl+C', disabled: !selected, title: selected ? 'Copy the selection' : 'Nothing selected' },
-    { run: 'select-all', label: 'Select all', hint: 'Ctrl+A' },
-    { run: 'find', label: 'Find', hint: 'Ctrl+F', title: 'Find in this file' },
+    { run: 'copy', label: 'Copy', hint: editKey('KeyC'), disabled: !selected, title: selected ? 'Copy the selection' : 'Nothing selected' },
+    { run: 'select-all', label: 'Select all', hint: editKey('KeyA') },
+    { run: 'find', label: 'Find', hint: editKey('KeyF'), title: 'Find in this file' },
   );
   // The wrap is the editor's setting; the rendered views have no long
   // lines to wrap, so the item shows where it does something (the Raw
@@ -88,7 +90,7 @@ export function fileMenu({ view, editable, selected, wrap, json, schemes, scheme
   if (view === 'raw' || view === 'pretty') items.push({ run: 'wrap', label: 'Wrap long lines', hint: 'Alt+Z', checked: wrap, title: 'Wrap long lines at the width, in every file editor of this window' });
   // A transcript's Raw view is read-only (Claude Code owns the file) and
   // the rendered views take no typing, so Paste only shows where it lands.
-  if (view === 'raw' && editable) items.push({ run: 'paste', label: 'Paste', hint: 'Ctrl+V', title: 'Paste the clipboard at the cursor' });
+  if (view === 'raw' && editable) items.push({ run: 'paste', label: 'Paste', hint: editKey('KeyV'), title: 'Paste the clipboard at the cursor' });
   if (view === 'raw' && editable && json) {
     items.push({ run: 'format', label: 'Format JSON', title: 'Format the JSON in place, in its own indent (one undo step)' });
     // M9 fix 420: the range formatter the JSON language already had was

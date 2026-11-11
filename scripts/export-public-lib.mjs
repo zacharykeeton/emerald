@@ -82,6 +82,33 @@ export function isExcluded(patterns, file) {
   return p !== null && !p.negate;
 }
 
+// The paths of `git status --porcelain -z --untracked-files=no` whose change
+// the export would copy, or alters the copied set (M9 fix 1114). The copy is
+// taken from the working tree, so a change to a file the list leaves out (the
+// inbox's uncommitted line) can never reach the public tree and stops
+// nothing; a change to a mapped source still does, since its copy is
+// written under the export name. Entries are `XY <path>` each ended by a
+// NUL; a rename or copy is followed by its original path as one more field,
+// and both are read, so a kept file renamed into a left-out path, and a
+// deleted one (gone from the kept list, but in the HEAD the commit message
+// names), still count.
+export function copiedChanges(patterns, statusZ) {
+  const fields = statusZ.split(String.fromCharCode(0));
+  const out = [];
+  const take = (p) => {
+    if (p === '' || out.includes(p)) return;
+    if (isExcluded(patterns, p) && !MAPPED.some((m) => m.from === p)) return;
+    out.push(p);
+  };
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    take(entry.slice(3));
+    if (/[RC]/.test(entry.slice(0, 2))) take(fields[++i] ?? '');
+  }
+  return out;
+}
+
 // Files the export writes under another name (M9 fix 661): the source is
 // left out by the list and its copy lands at `to`.
 export const MAPPED = [{ from: 'scripts/public/CLAUDE.md', to: 'CLAUDE.md' }];

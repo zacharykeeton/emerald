@@ -73,6 +73,9 @@ export class PromptsStore {
   }
 
   private persist(): void {
+    // A store with no file (a server under test) lives in memory; writing
+    // '' would leave a temp file in the working folder.
+    if (this.filePath === '') return;
     // Write to a sibling, flush and rename so a crash mid-write cannot
     // leave a half-written file behind, as the other stores do.
     try {

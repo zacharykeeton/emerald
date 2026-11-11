@@ -49,6 +49,7 @@ import { editLayout, editTab, getState, subscribe, whenSynced } from './store.ts
 import { daemonFor, hostOfPane, splitPaneOnHost } from './hosts-model.ts';
 import { PANES } from './tabs-model.ts';
 import { layoutTabKey, nextLayoutTab } from './tab-order.ts';
+import { noteEmptySplit } from './ui.ts';
 import { clearZoom, closePicker, cycleStripTab, getUiState, inheritFontSize, loadClaudeOpensOn, markStalled, openFileTab, pinFileTab, placeNewTab, setChatFace, setDropping, setRemoval, setSplitFolder, showTab, tabOrderFor } from './ui.ts';
 import { fontSizeFor, setChatMode, setFontSize } from './ui.ts';
 import { openFolder } from './folder-open-model.ts';
@@ -1044,6 +1045,23 @@ export function closeSessionHere(paneId: string): void {
   void closeSession(paneId).catch(warn('close'));
 }
 
+// M9 fix 1131: the session New Claude session here replaced, closed as the
+// pane's Close closes one, minus the closePane: its Exited row counts down,
+// and a Resume during the count puts it back to the right of the pane that
+// replaced it, beside the focused pane when that pane is gone. armRemoval
+// first, so installExitToShell drops nothing to a shell.
+export async function retireReplaced(sessionId: string, paneId: string): Promise<void> {
+  const layout = getState().layout;
+  const tab = layout === null ? null : tabHolding(layout, paneId);
+  armRemoval(sessionId, tab === null ? null : { tabId: tab.id, paneId, siblingId: paneId, direction: 'row', place: 'after', ratio: 0.5 });
+  try {
+    await killSessionUnrecorded(sessionId, false);
+  } catch (err) {
+    clearRemoval(sessionId);
+    throw err;
+  }
+}
+
 const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
 
 // Where the session in the pane is now, the folder a commits view is
@@ -1268,6 +1286,7 @@ export async function splitWith(paneId: string, direction: SplitDirection, kind:
     const after = await editTab((t) => splitPaneOnHost(t, paneId, direction, host), paneId);
     inheritFontSize(paneId, after.focusedPaneId);
     rememberSplitSource(after.focusedPaneId, paneId);
+    noteEmptySplit(after.focusedPaneId);
     return;
   }
   const folder = await folderFor(paneId);

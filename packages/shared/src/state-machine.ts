@@ -51,7 +51,8 @@ export interface HookPayload {
   trigger?: string;
   // Notification: permission_prompt, idle_prompt, elicitation_dialog, ...
   notification_type?: string;
-  // StopFailure.
+  // StopFailure: Claude Code sends error (2.1.319); error_type is the name M3 read, kept for a Claude Code that sent it.
+  error?: string;
   error_type?: string;
   // CwdChanged puts the new directory in `cwd` and the old one here.
   previous_cwd?: string;
@@ -571,6 +572,12 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     if ((next.endReason ?? null) !== null) next = { ...next, endReason: null };
     // A compact restarts the session object mid-turn; Claude is still working.
     if ((payload.source ?? payload.session_start_type) === 'compact') return next;
+    // M9 fix 1101: the cache was the last conversation's, and Claude
+    // Code's first status line after a clear, a resume or a start carries
+    // no prompt_cache block, which readCache reads as "keep the last"; so
+    // the countdown goes until the new conversation's first reply brings
+    // its own. A compact returned above: its own request brings one.
+    if ((next.cache ?? null) !== null) next = { ...next, cache: null };
     // M9 fix 1043: a /clear opens an empty conversation, so the dial reads
     // 0 and the window's counts start over with its size kept. Claude
     // Code's first status line after it carries a null percent and no
@@ -690,7 +697,7 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
     }
     case 'StopFailure':
       if (next.turn && !next.turn.stopped) next = { ...next, turn: { ...next.turn, stopped: true } };
-      return { ...transition(next, 'errored', at, null), errorType: payload.error_type ?? 'unknown' };
+      return { ...transition(next, 'errored', at, null), errorType: payload.error ?? payload.error_type ?? 'unknown' };
     case 'SessionEnd':
       // Claude left (leave says what goes with it and what stays). A
       // shell whose prompt already reported the leaving (M9 fix 360) is

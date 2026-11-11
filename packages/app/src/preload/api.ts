@@ -36,7 +36,7 @@ export type RendererPush =
   // to a state; since is when it entered it (a lost line's drop time,
   // kept across the retries of one outage), retryIn the seconds to the
   // next try while lost.
-  // idle: the host was forgotten (hostForget), so the next pick contacts it afresh.
+  // idle: the host was forgotten (hostForget): its sessions leave the window, a config host stays listed and the next pick contacts it afresh, and an added one leaves the list.
   | { type: 'host.changed'; host: string; state: 'idle' | 'connecting' | 'up' | 'lost' | 'refused'; daemon: DaemonInfo | null; since: number; retryIn: number | null; refusal: { kind: 'hostkey' | 'ssh' | 'nokit'; line: string } | null }
   | { type: 'hosts.changed'; hosts: HostRecord[] }     // the local daemon's push, relayed as it is
   // the kit's (C4), declared here by remote-cut so remote-kit only fills it in main:
@@ -287,7 +287,9 @@ export type MoveResult = 'moved' | 'copied' | 'here' | 'inside' | 'skipped' | 'r
 // `replaced` when it went over a name the person chose to replace;
 // `sourceKept` on a `copied` that was a move across drives whose original
 // could not be removed; `busy` on EBUSY or EPERM; `why` the words of a
-// `refused` or `inside`, and of a `sourceKept`.
+// `refused` or `inside`, and of a `sourceKept`; `cancelled` on an entry a
+// Cancel stopped (M9 fix 1124): `refused` with why `Cancelled` for the one
+// being copied, `skipped` for those not started.
 export interface MoveOutcome {
   from: string;
   to: string;
@@ -296,6 +298,7 @@ export interface MoveOutcome {
   sourceKept?: true;
   busy?: true;
   why?: string;
+  cancelled?: true;
 }
 
 // The first pass's clashes, every entry's outcome, or the folder refused.
@@ -355,6 +358,8 @@ export interface FilesApi {
   // Fires while a drop's copy runs (M9 fix 1008), at most every 100 ms and
   // once at the end; never for a move on one drive, which is a rename.
   onProgress(handler: (p: FilesProgress) => void): () => void;
+  // Stops this window's running copies into dir (M9 fix 1124), as the corner note's Cancel; a copy already ended is not touched.
+  cancel(dir: string): Promise<void>;
   // The program Windows has for the file; rejects with the shell's reason.
   open(path: string): Promise<void>;
   reveal(path: string): Promise<void>;
@@ -864,7 +869,7 @@ export interface UpdateApi {
 // navigator.clipboard in the renderer does not; image says whether an
 // image sits there, for the keystroke Claude Code reads one on.
 export interface ClipboardApi {
-  read(): Promise<{ text: string | null; image: boolean }>;
+  read(): Promise<{ text: string | null; image: boolean; size?: { width: number; height: number } }>;
   write(text: string): Promise<void>;
   // A data: URL onto the clipboard as an image; the verify scripts' way
   // to put one there.
@@ -872,6 +877,11 @@ export interface ClipboardApi {
   // A picture file onto the clipboard as a PNG (M9 fix 1007); false when
   // Electron decodes nothing from it.
   writeImageFile(path: string): Promise<boolean>;
+  // A GIF, WebP, BMP, ICO or SVG as a data: URL for Copy image to draw (M9
+  // fix 1111), with the size the file declares (an SVG's width and height or
+  // viewBox, an ICO's largest entry), null for any other path, a network one
+  // or one over 8 MB.
+  imageData(path: string): Promise<{ dataUrl: string; size: { w: number; h: number } | null } | null>;
   // The clipboard's image for the chat box (M9 fix 721): a 48 px high
   // thumbnail, and the path of the PNG written for Claude Code to read,
   // null when the key route is asked for and the clipboard is the real
@@ -963,7 +973,13 @@ export type DragPayload = { kind: 'session'; sessionId: string } | { kind: 'view
 
 // A drag carried across windows (M9 fix 927): a pane's (a title, a row or
 // a view; fromPaneId is the pane a title drag picked up) or a layout tab's.
-export type WindowDrag = { kind: 'pane'; payload: DragPayload; fromPaneId: string | null } | { kind: 'tab'; tabId: string };
+// files is what the OS takes when the pointer leaves every window (M9 fix
+// 1122): the rail's file, its picked set or its folder, absolute paths on
+// this PC; a drag of kind files is a folder or a set, which reaches no pane.
+export type WindowDrag =
+  | { kind: 'pane'; payload: DragPayload; fromPaneId: string | null; files?: readonly string[] }
+  | { kind: 'tab'; tabId: string }
+  | { kind: 'files'; files: readonly string[] };
 
 // How a release past the window's edge ended: on another window, which
 // makes the drop, or outside every window at a screen point.
@@ -992,6 +1008,8 @@ export interface WindowDragApi {
   // release, so the lift's own layout write (window.front, on its focus)
   // cannot take the revision the drop's edit was based on (M9 fix 947).
   landed(): void;
+  // M9 fix 1122: main handed this window's drag to the OS as a file drag; the drag ends here with no drop.
+  onHandedOut(handler: () => void): () => void;
 }
 
 // The window's page zoom (M9 fix 900), through webFrame in this preload, so main is not involved.
@@ -1097,7 +1115,7 @@ export interface EmeraldApi {
   hostStates(): Promise<Array<Omit<Extract<RendererPush, { type: 'host.changed' }>, 'type'>>>;
   hostConnect(name: string): Promise<void>;                                // make the client, contact the host (the kit's first contact when it has none)
   hostTryNow(name: string): void;                                          // cut a lost client's wait
-  hostForget(name: string): Promise<void>;                                 // stop the client, hosts.remove when it was added by hand
+  hostForget(name: string): Promise<void>;                                 // stop the client and drop its sessions from the window; a config host stays listed and is contacted afresh on its next pick, an added one is removed (hosts.remove)
   hostAdd(destination: string): Promise<RemoteHost>;                       // hosts.set with name = destination's host part, then hostConnect
   // Kills the setup's running scp or ssh (M9 fix 1084, A5's Cancel); the
   // setup ends failed with the line cancelled.

@@ -2,11 +2,12 @@ import { useSyncExternalStore } from 'react';
 import { isShellId, isSidebarOrder } from '@emerald/shared';
 import type { DesignNote, PaneView, SessionState, ShellId, SidebarOrder } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
+import { SPLIT_OFFER_WITHIN_MS, offerDue, pairAfterStart, parsePairs } from './split-offer-model.ts';
 import type { EmptyKind } from './empty-pane-model.ts';
 import { acknowledge, emptyAttention, hushAll, isAttentionSound, markUnread, nextSound, observe, setHushed } from './attention-model.ts';
 import type { AttentionModel, AttentionSound } from './attention-model.ts';
 import type { DropZone, TabDropTarget } from './drop-zone-model.ts';
-import type { CornerNote } from './copy-note.ts';
+import type { CornerAction, CornerNote } from './copy-note.ts';
 import type { HooksBannerState } from './path-banner-model.ts';
 import { emptyFocusHistory, recordFocus, stepFocus } from './focus-history-model.ts';
 import type { FocusEntry, FocusHistory } from './focus-history-model.ts';
@@ -54,6 +55,8 @@ export interface UiState {
   // + (M32): that folder, and a split beside the pane on Start rather
   // than the pane itself. null when opened from a pane.
   newSessionPreset: NewSessionPreset | null;
+  // M9 fix 1131: the dialog was opened from a pane's own menu over what that pane shows, so its Start replaces it and may close it.
+  newSessionReplace: boolean;
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   // How the sidebar orders its rows (M32): as created, or by state. The
@@ -219,6 +222,8 @@ export interface UiState {
   // Claude. The chords and the palette's Split keys always give an empty
   // pane. Kept in localStorage.
   splitKind: SplitKind;
+  // M9 fix 1132: the one empty pane showing the split offer, null when none does.
+  splitOfferPaneId: string | null;
   // The folder a pane was split from (M9 fix 546), for the empty pane's
   // first row. Not persisted; an entry goes once its pane holds a session
   // or a view, or closes.
@@ -336,6 +341,13 @@ const CLAUDE_OPENS_ON_KEY = 'emerald.claudeOpensOn';
 const SHADE_AFTER_KEY = 'emerald.shadeAfter';
 const COPY_ON_SELECT_KEY = 'emerald.copyOnSelect';
 const SPLIT_KIND_KEY = 'emerald.splitKind';
+const CLOSE_REPLACED_KEY = 'emerald.closeReplaced';
+// M9 fix 1132: the day's count of empty splits followed by a Claude start
+// ({"day":"2026-11-10","count":2}), and 'shown' once the offer has been on a
+// pane, once per profile since every window of it shares this storage. Both
+// are read at each use with no cache, so a script's clear takes effect.
+const SPLIT_PAIRS_KEY = 'emerald.splitClaudePairs';
+const SPLIT_OFFER_KEY = 'emerald.splitClaudeOffer';
 const EMPTY_PANE_KIND_KEY = 'emerald.emptyPaneKind';
 const EMPTY_PANE_SHELL_KEY = 'emerald.emptyPaneShell';
 const WRAP_LINES_KEY = 'emerald.wrapLines';
@@ -353,6 +365,7 @@ let state: UiState = {
   pickerActions: false,
   newSessionPaneId: null,
   newSessionPreset: null,
+  newSessionReplace: false,
   zoomedPaneId: null,
   focusHistory: emptyFocusHistory(),
   prefixArmed: false,
@@ -396,6 +409,7 @@ let state: UiState = {
   shadeAfter: loadShadeAfter(),
   copyOnSelect: loadCopyOnSelect(),
   splitKind: loadSplitKind(),
+  splitOfferPaneId: null,
   splitFolder: new Map(),
   wrapLines: loadWrapLines(),
   plan: loadPlan(),
@@ -437,12 +451,12 @@ export function closePicker(): void {
   if (state.pickerPaneId !== null) setState({ ...state, pickerPaneId: null, pickerActions: false });
 }
 
-export function openNewSession(paneId: string, preset: NewSessionPreset | null = null): void {
-  setState({ ...state, newSessionPaneId: paneId, newSessionPreset: preset, pickerPaneId: null });
+export function openNewSession(paneId: string, preset: NewSessionPreset | null = null, replace = false): void {
+  setState({ ...state, newSessionPaneId: paneId, newSessionPreset: preset, newSessionReplace: replace, pickerPaneId: null });
 }
 
 export function closeNewSession(): void {
-  if (state.newSessionPaneId !== null) setState({ ...state, newSessionPaneId: null, newSessionPreset: null });
+  if (state.newSessionPaneId !== null) setState({ ...state, newSessionPaneId: null, newSessionPreset: null, newSessionReplace: false });
 }
 
 export function toggleZoom(paneId: string): void {
@@ -486,11 +500,12 @@ export function flashCornerNote(text: string, paneId: string | null = null): voi
 }
 
 // A note that stays until the next one (M9 fix 1008: a copy's progress),
-// with no clock of its own; the window's corner, never a pane's.
-export function holdCornerNote(text: string): void {
+// with no clock of its own; the window's corner, never a pane's. An action
+// draws a button beside the text (M9 fix 1124: the copy's Cancel).
+export function holdCornerNote(text: string, action?: CornerAction): void {
   if (cornerTimer !== null) clearTimeout(cornerTimer);
   cornerTimer = null;
-  setState({ ...state, cornerNote: { text, paneId: null } });
+  setState({ ...state, cornerNote: { text, paneId: null, ...(action !== undefined ? { action } : {}) } });
 }
 
 // Starts the usual clock on a held note that still shows text, so a copy
@@ -864,6 +879,41 @@ export function setSplitKind(kind: SplitKind): void {
   }
 }
 
+// M9 fix 1132: when each pane was split empty, this window's own; an entry
+// pairs with a Claude start in that pane within SPLIT_OFFER_WITHIN_MS.
+const emptySplitAt = new Map<string, number>();
+
+// An empty split, and the offer on its pane when the day's pairs are due.
+// Storage that throws counts nothing and offers nothing.
+export function noteEmptySplit(paneId: string, now = Date.now()): void {
+  for (const [id, at] of emptySplitAt) if (now - at > SPLIT_OFFER_WITHIN_MS) emptySplitAt.delete(id);
+  emptySplitAt.set(paneId, now);
+  try {
+    if (!offerDue(parsePairs(localStorage.getItem(SPLIT_PAIRS_KEY)), localStorage.getItem(SPLIT_OFFER_KEY) === 'shown', state.splitKind, now)) return;
+    localStorage.setItem(SPLIT_OFFER_KEY, 'shown');
+  } catch {
+    return;
+  }
+  setState({ ...state, splitOfferPaneId: paneId });
+}
+
+// A Claude started in the pane: one pair more for the day when the pane was
+// split empty moments ago.
+export function noteClaudeStart(paneId: string, now = Date.now()): void {
+  const splitAt = emptySplitAt.get(paneId);
+  emptySplitAt.delete(paneId);
+  try {
+    const next = pairAfterStart(parsePairs(localStorage.getItem(SPLIT_PAIRS_KEY)), splitAt, now);
+    if (next !== null) localStorage.setItem(SPLIT_PAIRS_KEY, JSON.stringify(next));
+  } catch {
+    // Nothing counted.
+  }
+}
+
+export function closeSplitOffer(): void {
+  if (state.splitOfferPaneId !== null) setState({ ...state, splitOfferPaneId: null });
+}
+
 function loadSplitKind(): SplitKind {
   try {
     const v = localStorage.getItem(SPLIT_KIND_KEY);
@@ -889,6 +939,24 @@ export function rememberEmptyPaneKind(kind: EmptyKind): void {
     localStorage.setItem(EMPTY_PANE_KIND_KEY, kind);
   } catch {
     // A failed write just means the default does not follow.
+  }
+}
+
+// M9 fix 1131: whether New Claude session here closes the live Claude it
+// replaces, the dialog's Close box's last state; ticked unless unticked.
+export function loadCloseReplaced(): boolean {
+  try {
+    return localStorage.getItem(CLOSE_REPLACED_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+export function rememberCloseReplaced(on: boolean): void {
+  try {
+    localStorage.setItem(CLOSE_REPLACED_KEY, on ? '1' : '0');
+  } catch {
+    // The tick just will not follow.
   }
 }
 

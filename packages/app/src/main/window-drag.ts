@@ -3,7 +3,7 @@ import type { WebContents } from 'electron';
 import { windowsOf } from '@emerald/shared';
 import type { Layout } from '@emerald/shared';
 import type { WindowDrag, WindowDragEnd, WindowDragTarget } from '../preload/api.ts';
-import { dropWindowBounds, toClient, toScreen, windowAt } from './window-drag-model.ts';
+import { dropWindowBounds, handOut, toClient, toScreen, windowAt } from './window-drag-model.ts';
 import type { Point } from './window-drag-model.ts';
 import type { Rect } from './window-plan.ts';
 
@@ -31,6 +31,8 @@ export interface WindowDragOptions {
   layout(): Layout | null;
   kept(): boolean;
   openTab(tabId: string): Promise<string>;
+  // M9 fix 1122: the OS file drag (file-drag-out.ts), answering the paths it took, none when every one is gone.
+  dragOut(contents: WebContents, files: readonly string[]): string[];
 }
 
 interface Flight {
@@ -50,12 +52,16 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
   // settled (M9 fix 947): lifted at the release, a window's focus wrote
   // window.front and took the revision its drop was based on.
   const lifts = new Set<number>();
+  // The webContents ids whose drag main handed out to the OS. Moves a
+  // window sent before it heard of its hand-over are dropped (M9 fix
+  // 1122): its back, sent once on the push, clears it.
+  const handed = new Set<number>();
   const live = (w: BrowserWindow | null): w is BrowserWindow => w !== null && !w.isDestroyed();
   const send = (w: BrowserWindow | null, msg: WindowDragTarget) => {
     if (live(w)) w.webContents.send('emerald:window-drag-target', msg);
   };
   const nameOf = (w: BrowserWindow) => (live(w) ? opts.idOf(w.webContents) : null) ?? 'startup';
-  const what = (drag: WindowDrag) => (drag.kind === 'tab' ? 'a tab' : 'a pane');
+  const what = (drag: WindowDrag) => (drag.kind === 'tab' ? 'a tab' : drag.kind === 'files' ? 'a set' : 'a pane');
 
   // The sender's window, when it is one of ours.
   const sourceOf = (contents: WebContents): BrowserWindow | null => {
@@ -79,17 +85,37 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
   };
 
   ipcMain.on('emerald:window-drag-move', (e, drag: WindowDrag, x: number, y: number) => {
+    if (handed.has(e.sender.id)) return;
     const source = sourceOf(e.sender);
     if (source === null) return;
     if (flight !== null && flight.source !== source) end();
     const { point, target } = locate(source, x, y);
+    // M9 fix 1122: a drag carrying files with no window of ours under the
+    // point leaves for the OS. The push goes before the OS drag starts,
+    // since dragOut awaits the file's icon first. With no path left on
+    // disk the move goes on as before and the release opens fix 928's
+    // window.
+    const files = handOut(drag, target === null ? null : target.webContents.id);
+    if (files !== null) {
+      const took = opts.dragOut(source.webContents, files);
+      if (took.length > 0) {
+        if (flight !== null) send(flight.target, { type: 'leave' });
+        flight = null;
+        handed.add(e.sender.id);
+        source.webContents.send('emerald:file-drag-out');
+        opts.log(`window drag: ${took.length === 1 ? 'a file' : `${took.length} files`} from window ${nameOf(source)} handed to the OS at ${Math.round(point.x)},${Math.round(point.y)}`);
+        return;
+      }
+    }
     const prev = flight?.target ?? null;
     if (prev !== target) send(prev, { type: 'leave' });
     flight = { source, drag, target };
-    if (target !== null) send(target, { type: 'over', drag, ...clientOf(target, point) });
+    // A folder or a set reaches no pane, so the window under it draws no zones.
+    if (target !== null && drag.kind !== 'files') send(target, { type: 'over', drag, ...clientOf(target, point) });
   });
 
   ipcMain.on('emerald:window-drag-back', (e) => {
+    handed.delete(e.sender.id);
     if (flight !== null && sourceOf(e.sender) === flight.source) end();
   });
 
@@ -159,6 +185,7 @@ export function wireWindowDrag(opts: WindowDragOptions): { attach(win: BrowserWi
       win.on('closed', () => {
         focusedAt.delete(key);
         lifts.delete(key);
+        handed.delete(key);
         if (flight !== null && (flight.source === win || flight.target === win)) {
           if (flight.target === win) flight.target = null;
           end();

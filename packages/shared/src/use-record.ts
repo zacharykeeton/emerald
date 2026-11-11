@@ -47,7 +47,7 @@ export interface UseFeature {
 // (a renderer test fails when a binding has no row here, so a new chord
 // adds its row in the same commit); the pane-menu rows are `pane-` plus
 // each PaneMenuRun with the menu's own wording; the clicks rows are the
-// recorded functions of actions.ts and a few buttons.
+// recorded functions of actions.ts and a few buttons; the split button's menu rows (M9 fix 1132) are its items' own words.
 export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'split-vertical', label: 'Split right', group: 'keys' },
   { name: 'split-horizontal', label: 'Split down', group: 'keys' },
@@ -105,6 +105,10 @@ export const USE_FEATURES: readonly UseFeature[] = [
   { name: 'pane-toggle-chrome', label: 'Hide the chrome', group: 'pane-menu' },
   { name: 'pane-toggle-toolbar', label: 'Hide browser chrome', group: 'pane-menu' },
   { name: 'pane-set-folder', label: 'Set folder…', group: 'pane-menu' },
+  { name: 'split-empty', label: 'Split empty', group: 'pane-menu' },
+  { name: 'split-with-shell', label: 'Split with shell', group: 'pane-menu' },
+  { name: 'split-with-claude', label: 'Split with Claude', group: 'pane-menu' },
+  { name: 'set-split-kind', label: 'Pick what a split gives', group: 'pane-menu' },
   { name: 'show-beside', label: 'Show a session beside', group: 'clicks' },
   { name: 'show-in-new-tab', label: 'Show a session in a new layout tab', group: 'clicks' },
   { name: 'drop-session', label: 'Drop a session on a pane', group: 'clicks' },
@@ -162,7 +166,8 @@ export const USE_FRICTION_MS = 3000;
 export type UseLineIn =
   | { ev: 'action'; name: string; from: UseFrom; view?: UseView }
   | { ev: 'view-open'; view: UseView }
-  | { ev: 'view-close'; view: UseView; ms: number }
+  // M9 fix 1133: replaced is set when a view of the same kind opened under another key in the same look (a preview tab stepping to the next file); the report leaves it out of the quick closes, and an older report reads past it.
+  | { ev: 'view-close'; view: UseView; ms: number; replaced?: true }
   // M9 fix 699: the switch's own line, so the report knows when the record was on.
   | { ev: 'switch'; on: boolean };
 
@@ -195,7 +200,7 @@ export function useLineOf(raw: unknown): UseLineIn | null {
     if (!isView(r.view)) return null;
     const ms = r.ms;
     if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > 2 ** 31) return null;
-    return { ev: 'view-close', view: r.view, ms };
+    return { ev: 'view-close', view: r.view, ms, ...(r.replaced === true ? { replaced: true as const } : {}) };
   }
   if (r.ev === 'switch') {
     if (typeof r.on !== 'boolean') return null;

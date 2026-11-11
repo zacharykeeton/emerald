@@ -61,6 +61,9 @@ export interface Sweep {
   // own cpu time so far in ms, and the sweep's wall time in ms.
   childCpuMs: number;
   wallMs: number;
+  // The child's own private bytes after the sweep (M9 fix 1126), absent
+  // on a line that does not carry it (the Unix child, a test's line).
+  childPrivateBytes?: number;
 }
 
 export interface TreeReading {
@@ -168,11 +171,16 @@ export function sweepScript(tickMs: number, method: SweepMethod): string {
       '    if ($pp -ge 0 -or -not $native) { try { $cpu = [long][math]::Round($p.TotalProcessorTime.TotalMilliseconds) } catch {}; try { $st = [long]([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() } catch {} }',
       "    $name = $p.ProcessName.Replace('\"', '_').Replace('\\', '_')",
       "    [void]$sb.Append('[').Append($p.Id).Append(',').Append($pp).Append(',').Append($cpu).Append(',').Append($p.WorkingSet64).Append(',\"').Append($name).Append('\",').Append($st).Append('],')",
+      // Each Process object keeps the handle its cpu and start reads
+      // opened until a finalizer runs; disposed here, after the row's
+      // reads, the child stays near its start's 70 MB instead of settling
+      // at 90 to 105 (M9 fix 1126's hour-long bench).
+      '    $p.Dispose()',
       '  }',
       "  $rows = $sb.ToString().TrimEnd(',')",
       '  $at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()',
       '  $me.Refresh()',
-      '  [Console]::Out.WriteLine("{`"at`":$at,`"c`":$([long][math]::Round($me.TotalProcessorTime.TotalMilliseconds)),`"w`":$($sw.ElapsedMilliseconds),`"p`":[$rows]}")',
+      '  [Console]::Out.WriteLine("{`"at`":$at,`"c`":$([long][math]::Round($me.TotalProcessorTime.TotalMilliseconds)),`"w`":$($sw.ElapsedMilliseconds),`"m`":$($me.PrivateMemorySize64),`"p`":[$rows]}")',
       '  [Console]::Out.Flush()',
       '  $rest = $tick - $sw.ElapsedMilliseconds',
       '  if ($rest -gt 0) { Start-Sleep -Milliseconds $rest }',
@@ -190,7 +198,7 @@ export function sweepScript(tickMs: number, method: SweepMethod): string {
       '  }',
       '  $at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()',
       '  $me.Refresh()',
-      '  [Console]::Out.WriteLine("{`"at`":$at,`"c`":$([long][math]::Round($me.TotalProcessorTime.TotalMilliseconds)),`"w`":$($sw.ElapsedMilliseconds),`"p`":[$($rows -join \',\')]}")',
+      '  [Console]::Out.WriteLine("{`"at`":$at,`"c`":$([long][math]::Round($me.TotalProcessorTime.TotalMilliseconds)),`"w`":$($sw.ElapsedMilliseconds),`"m`":$($me.PrivateMemorySize64),`"p`":[$($rows -join \',\')]}")',
       '  [Console]::Out.Flush()',
       '  $rest = $tick - $sw.ElapsedMilliseconds',
       '  if ($rest -gt 0) { Start-Sleep -Milliseconds $rest }',
@@ -272,7 +280,9 @@ export function parseSweepLine(line: string): Sweep | null {
     // A five-element row (a child from before M9 fix 514) has no start.
     rows.push({ pid, ppid, cpuMs, rss, name, startMs: typeof start === 'number' ? start : -1 });
   }
-  return { at: r['at'], rows, childCpuMs: typeof r['c'] === 'number' ? r['c'] : 0, wallMs: typeof r['w'] === 'number' ? r['w'] : 0 };
+  const sweep: Sweep = { at: r['at'], rows, childCpuMs: typeof r['c'] === 'number' ? r['c'] : 0, wallMs: typeof r['w'] === 'number' ? r['w'] : 0 };
+  if (typeof r['m'] === 'number') sweep.childPrivateBytes = r['m'];
+  return sweep;
 }
 
 // A sweep indexed once for every tree read off it (M9 fix 516): the rows
@@ -596,7 +606,14 @@ export class LoadSampler {
     this.prevIndex = cur;
     // The first sweep's cost, once per child, so the log says what the
     // box paid for it.
-    if (prev === null) this.opts.log.info('load sampler: first sweep', { processes: sweep.rows.length, wallMs: sweep.wallMs, childCpuMs: sweep.childCpuMs });
+    if (prev === null) {
+      this.opts.log.info('load sampler: first sweep', {
+        processes: sweep.rows.length,
+        wallMs: sweep.wallMs,
+        childCpuMs: sweep.childCpuMs,
+        ...(sweep.childPrivateBytes !== undefined ? { childPrivateMB: Math.round(sweep.childPrivateBytes / 1048576) } : {}),
+      });
+    }
     const readings = new Map<string, TreeReading>();
     for (const t of this.opts.targets()) {
       const reading = readTree(prev, cur, t.pid);

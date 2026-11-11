@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, shellChoice, setupFigure, shellSub, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, shellChoice, setupFigure, shellSub, startLabel, tileTitle, wantsAuthRead } from './empty-pane-model.ts';
 
 test('tileTitle: the folder by name, the whole folder for a drive root, none with no row (M9 fix 705)', () => {
   assert.equal(tileTitle('C:\\code\\emerald'), 'Double-click to start in emerald');
@@ -212,6 +212,23 @@ test('hostSub, setupFigure and hostWaiting (M9 fix 1088)', () => {
   assert.equal(setupFigure(35651584, 1000, 13500), '34.0 MB, 12 s');
   assert.equal(setupFigure(0, 1000, 4200), '3 s');
   assert.equal(setupFigure(1048576, 5000, 4000), '1.0 MB, 0 s');
-  for (const s of ['connecting', 'setup', 'refused']) assert.equal(hostWaiting(s), true);
-  for (const s of ['idle', 'up', 'lost']) assert.equal(hostWaiting(s), false);
+  for (const s of ['connecting', 'setup', 'refused', 'lost']) assert.equal(hostWaiting(s), true);
+  for (const s of ['idle', 'up']) assert.equal(hostWaiting(s), false);
+});
+
+test('hostSub reads a host\'s sign-in after its line, and wantsAuthRead asks only for kind Claude on an up host at level 81 (M9 fix 1094)', () => {
+  assert.equal(hostSub('up', 'wfs-db', { signedIn: false, expiresAt: null }, 1000), 'not signed in on wfs-db');
+  assert.equal(hostSub('up', 'wfs-db', { signedIn: true, expiresAt: 1000 }, 1000), 'login expired on wfs-db');
+  assert.equal(hostSub('up', 'wfs-db', { signedIn: false, expiresAt: 500 }, 1000), 'login expired on wfs-db');
+  assert.equal(hostSub('up', 'wfs-db', { signedIn: true, expiresAt: 2000 }, 1000), null);
+  assert.equal(hostSub('up', 'wfs-db', { signedIn: true, expiresAt: null }, 1000), null);
+  assert.equal(hostSub('up', 'wfs-db', null, 1000), null);
+  assert.equal(hostSub('lost', 'wfs-db', { signedIn: false, expiresAt: null }, 1000), 'unreachable');
+  assert.equal(hostSub('setup', 'wfs-db', { signedIn: false, expiresAt: null }, 1000), 'setting up');
+  assert.equal(wantsAuthRead('claude', null, 'up', 81), true);
+  assert.equal(wantsAuthRead('claude', null, 'up', 80), false);
+  assert.equal(wantsAuthRead('claude', null, 'up', null), false);
+  assert.equal(wantsAuthRead('shell', null, 'up', 81), false);
+  assert.equal(wantsAuthRead('claude', 'file', 'up', 81), false);
+  assert.equal(wantsAuthRead('claude', null, 'lost', 81), false);
 });

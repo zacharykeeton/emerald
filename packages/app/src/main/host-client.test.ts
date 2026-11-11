@@ -191,3 +191,29 @@ test('sshCommand: unset is ssh, a script runs under node, anything else is the e
   assert.match(script.exe, /node(\.exe)?$|electron|emerald/i);
   assert.deepEqual(sshCommand('C:\\x\\ssh.exe', 'node'), { exe: 'C:\\x\\ssh.exe', prefix: [], env: { ...process.env } });
 });
+
+test('a request on a lost client cuts the wait and rejects at the next failed try, not at 10 s (M9 fix 1095)', async () => {
+  const h = harness([(c) => daemon(c, 10), (c) => refuse(c, ['ssh: connect to host stub port 22: Connection refused'], 255)]);
+  await h.client.connect();
+  const lost = next(h.client, 'lost');
+  h.children[0]!.exit(0);
+  await lost;
+  const t0 = Date.now();
+  await assert.rejects(h.client.request('session.list', {}), { message: 'stub is unreachable' });
+  assert.ok(Date.now() - t0 < 1000, `settled in ${Date.now() - t0} ms`);
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.events, ['up 10', 'lost 2', 'lost 4']);
+  h.client.stop();
+});
+
+test('a request on a lost client goes through on the reconnect it starts (M9 fix 1095)', async () => {
+  const h = harness([(c) => daemon(c, 10), (c) => daemon(c, 11)]);
+  await h.client.connect();
+  const lost = next(h.client, 'lost');
+  h.children[0]!.exit(0);
+  await lost;
+  assert.deepEqual(await h.client.request('session.list', {}), { sessions: [] });
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.client.state, 'up');
+  h.client.stop();
+});

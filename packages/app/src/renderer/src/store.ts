@@ -6,7 +6,7 @@ import type { DaemonCrash, DaemonInfo, RendererPush } from '../../preload/api.ts
 import { withPreview } from './color-preview-model.ts';
 import type { ColorPreview } from './color-preview-model.ts';
 import { conflictsSupported, folderLabelsSupported, keptSupported, layoutForWire, normalizeLayout, normalizeSession } from './daemon-model.ts';
-import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, withPaneHosts } from './hosts-model.ts';
+import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, dropHostSessions, withPaneHosts } from './hosts-model.ts';
 import type { HostState } from './hosts-model.ts';
 import { dropRate, resetRates, setRate } from './rates-store.ts';
 import { RATE_FEATURE_LEVEL } from './session-mark-model.ts';
@@ -355,6 +355,11 @@ export function onPush(msg: RendererPush): void {
       // A reattach's sessions reach the store as main's stamped pushes, so
       // this asks nothing.
       const { type: _t, ...push } = msg;
+      // M9 fix 1097: a forgotten host's sessions leave the window; a later contact pushes them again.
+      if (push.state === 'idle') {
+        setState({ hosts: applyHostChanged(state.hosts, state.remoteHosts, push, Date.now()), sessions: dropHostSessions(state.sessions, push.host), removed: dropHostSessions(state.removed, push.host) });
+        return;
+      }
       setState({ hosts: applyHostChanged(state.hosts, state.remoteHosts, push, Date.now()) });
       return;
     }

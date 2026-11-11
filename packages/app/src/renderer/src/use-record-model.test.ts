@@ -101,3 +101,34 @@ test('every binding has a USE_FEATURES keys row with the same name and label', (
 test('every pane menu run records under a known name', () => {
   for (const name of Object.values(PANE_USE)) assert.ok(USE_NAMES.has(name), name);
 });
+
+test('viewDiff marks a close replaced when its kind opens under another key in the same look, one for one (M9 fix 1133)', () => {
+  const stepped = viewDiff(new Map([['tab:a', 'file-tab' as const]]), new Map([['tab:b', 'file-tab' as const]]), new Map([['tab:a', 1000]]), 1400);
+  assert.deepEqual(stepped.lines, [
+    { ev: 'view-close', view: 'file-tab', ms: 400, replaced: true },
+    { ev: 'view-open', view: 'file-tab' },
+  ]);
+  const two = viewDiff(
+    new Map([
+      ['tab:a', 'file-tab' as const],
+      ['tab:b', 'file-tab' as const],
+    ]),
+    new Map([['tab:c', 'file-tab' as const]]),
+    new Map([
+      ['tab:a', 1000],
+      ['tab:b', 1000],
+    ]),
+    1400,
+  );
+  assert.deepEqual(two.lines, [
+    { ev: 'view-close', view: 'file-tab', ms: 400, replaced: true },
+    { ev: 'view-close', view: 'file-tab', ms: 400 },
+    { ev: 'view-open', view: 'file-tab' },
+  ]);
+  const other = viewDiff(new Map([['tab:a', 'file-tab' as const]]), new Map([['tab:b', 'activity-tab' as const]]), new Map([['tab:a', 1000]]), 1400);
+  assert.ok(!('replaced' in other.lines[0]!), JSON.stringify(other.lines));
+  assert.deepEqual(other.lines, [
+    { ev: 'view-close', view: 'file-tab', ms: 400 },
+    { ev: 'view-open', view: 'activity-tab' },
+  ]);
+});

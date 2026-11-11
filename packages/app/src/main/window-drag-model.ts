@@ -1,4 +1,5 @@
 import type { Rect } from './window-plan.ts';
+import type { WindowDrag } from '../preload/api.ts';
 
 // Where a drag that has left its window is (M9 fix 927): which window is
 // under a screen point, and a page's client point in screen terms and
@@ -55,4 +56,14 @@ export function dropWindowBounds(p: Point, size: { width: number; height: number
   const x = Math.max(workArea.x, Math.min(p.x - DROP_GRAB_X, workArea.x + workArea.width - size.width));
   const y = Math.max(workArea.y, Math.min(p.y - DROP_GRAB_Y, workArea.y + workArea.height - size.height));
   return { x, y, width: size.width, height: size.height };
+}
+
+// The paths a drag past its window's edge hands to the OS (M9 fix 1122):
+// only a drag that carries files, and only with no Emerald window under
+// the point, which keeps fix 927's zones for a file crossing another
+// window and fix 928's new window for everything else.
+export function handOut(drag: WindowDrag, target: number | null): readonly string[] | null {
+  if (target !== null || drag.kind === 'tab') return null;
+  const files = drag.files;
+  return files !== undefined && files.length > 0 ? files : null;
 }

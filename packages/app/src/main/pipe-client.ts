@@ -213,6 +213,10 @@ export class PipeClient extends EventEmitter {
     }
     const identity = await processIdentityAsync(pid, startedAt);
     if (identity === 'gone') return false;
+    if (identity === 'unknown') {
+      this.opts.log(`not killing pid ${pid}: its start time could not be read`);
+      return false;
+    }
     if (identity === 'other') {
       this.opts.log(`not killing pid ${pid}: it is not the daemon that was started at ${new Date(startedAt).toISOString()}`);
       return false;

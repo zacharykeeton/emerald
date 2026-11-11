@@ -157,6 +157,11 @@ export function describeState(session: SessionInfo, now: number = Date.now()): S
     case 'working':
       return session.stale ? { text: quietText(session, now), detail: quietDetail(session, now), tone: 'stale' } : { text: 'working', detail: null, tone: 'working' };
     case 'errored':
+      // M9 fix 1092: authentication_failed is a login missing or expired,
+      // which a retry never mends; the label says what does.
+      if (session.errorType === 'authentication_failed') {
+        return { text: 'signed out: run /login', detail: "Claude Code's login is missing or expired where this session runs. Run /login in the pane, then send the prompt again.", tone: 'errored' };
+      }
       return { text: `errored: ${session.errorType ?? 'unknown'}`, detail: 'The last turn ended with an API error. Send a new prompt to retry.', tone: 'errored' };
     case 'exited':
       return { text: exitLabel(session.exitCode), detail: exitDetail(session.exitCode), tone: 'exited' };

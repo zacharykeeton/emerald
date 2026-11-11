@@ -204,7 +204,8 @@ test("the group's button and the note after a change (fix 1042)", () => {
   const names = ['ado', 'adopt-batch-routine', 'qa-story-refinement', 'docs'];
   assert.deepEqual(othersToTurnOff(names, boards), ['qa-story-refinement', 'docs']);
   assert.deepEqual(othersToTurnOff(names, null), names);
-  assert.equal(turnOffLabel(2), 'Turn off the other 2 ▾');
+  assert.equal(turnOffLabel(['ado']), 'Turn off ado ▾');
+  assert.equal(turnOffLabel(['ado', 'docs']), 'Turn off these 2 ▾');
   const one = (value: SkillListing | null) => [{ name: 'ado', value }];
   const two = (value: SkillListing | null) => [{ name: 'ado', value }, { name: 'docs', value }];
   assert.equal(changeNote(one('off'), 'local'), `ado off in this folder; ${LISTING_NOTE_TAIL_OFF} it`);

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeLauncher, SHIM_NOTE, findClaude, resolveClaudeModDir } from './launchers/claude.ts';
+import { ClaudeLauncher, SHIM_NOTE, claudeRun, findClaude, resolveClaudeModDir } from './launchers/claude.ts';
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-501-')));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -119,10 +119,10 @@ test('with the mod, --plugin-dir comes before the session arguments on the nativ
   const dir = shimFolder({ script: true, node: true });
   const shim = new ClaudeLauncher({ env: { PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' }, home: emptyHome, modDir: 'C:\\m', platform: 'win32' }).command(['--resume', 'x']);
   assert.deepEqual(shim.args, [path.join(dir, SCRIPT_REL), '--plugin-dir', 'C:\\m', '--resume', 'x']);
-  // M9 fix 741: the mod's channel command rides the launch's own env.
-  const channel = { EMERALD_MOD_CHANNEL: JSON.stringify([process.execPath, path.resolve('C:\\m', '..', 'dist', 'main.js'), 'mod-channel']) };
-  assert.deepEqual(native.env, channel);
-  assert.deepEqual(shim.env, channel);
+  // M9 fix 1125: the mod's channel is the sink's poll, so a launch sets no
+  // variable for it.
+  assert.equal(native.env, undefined);
+  assert.equal(shim.env, undefined);
 });
 
 // M9 fix 1019: off Windows claude is the native installer's ~/.local/bin
@@ -176,4 +176,16 @@ test("findClaude takes .local\\bin's claude.exe over the PATH's, then the PATH's
   fs.writeFileSync(path.join(home, '.local', 'bin', 'claude.exe'), '');
   assert.equal(findClaude(env, home, 'win32'), path.join(home, '.local', 'bin', 'claude.exe'));
   assert.equal(findClaude({ PATH: folder(), PATHEXT: '.EXE' }, emptyHome, 'win32'), null);
+});
+
+test('claudeRun resolves npm\'s shim to node on its script and answers null for a shim it cannot read (M9 fix 1094)', windowsOnly, () => {
+  const env = (dir: string) => ({ PATH: dir, PATHEXT: '.EXE;.CMD;.BAT' });
+  const good = shimFolder({ script: true, node: true });
+  assert.deepEqual(claudeRun(env(good), emptyHome, 'win32'), { file: path.join(good, 'node.exe'), args: [path.join(good, SCRIPT_REL)] });
+  const noScript = shimFolder({ script: false, node: true });
+  assert.equal(claudeRun(env(noScript), emptyHome, 'win32'), null);
+  const exe = folder();
+  fs.writeFileSync(path.join(exe, 'claude.exe'), '');
+  assert.deepEqual(claudeRun(env(exe), emptyHome, 'win32'), { file: path.join(exe, 'claude.exe'), args: [] });
+  assert.equal(claudeRun(env(folder()), emptyHome, 'win32'), null);
 });

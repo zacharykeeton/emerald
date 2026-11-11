@@ -268,77 +268,93 @@ function shortInput(input) {
 // M9 fix 741: a prompt the daemon routes here (emmer send --enter, emmer
 // prompt) is submitted by the mod rather than typed into the pty, where
 // Claude Code's paste detection turns an Enter that arrives too soon into
-// a newline (M5 gotcha 4). The daemon launches the session with the
-// channel's command in EMERALD_MOD_CHANNEL; the child prints one JSON line
-// per prompt and lives as long as the session. A submit waits for the
-// turn in flight, as a typed line would queue behind it. A channel that
-// dies leaves the session on the typed path, since the daemon drops it
-// when its pipe closes.
+// a newline (M5 gotcha 4). Since M9 fix 1125 the channel is a long poll on
+// the hook sink: one request held per session, answered with the lines
+// queued for it or with none after 20 s, and asked again at once, so the
+// mod needs no process of its own (each emmer mod-channel held 24 MB). A
+// submit waits for the turn in flight, as a typed line would queue behind
+// it. A poll the daemon refuses ends the loop and leaves the session on
+// the typed path.
+// A poll that throws (the daemon restarting its sink, a fetch past its
+// 30 s) is asked again after CHANNEL_RETRY_MS, and the loop ends after
+// CHANNEL_RETRIES in a row.
+const CHANNEL_RETRY_MS = 2000;
+const CHANNEL_RETRIES = 5;
+// One loop a process: a /clear's second session.start finds it running.
+let channelOpen = false;
+
 async function openPromptChannel($, e) {
   // A -p run has no prompt to queue into.
   if (!e.isInteractive) return;
-  const channel = await $.env.get('EMERALD_MOD_CHANNEL');
   const sessionId = await $.env.get('EMERALD_SESSION_ID');
-  if (!channel || !sessionId) return;
-  let argv;
-  try {
-    argv = JSON.parse(channel);
-  } catch {
-    return;
-  }
-  if (!Array.isArray(argv) || argv.length === 0) return;
-  void streamPrompts($, [...argv, sessionId]);
+  const port = await $.env.get('EMERALD_HOOK_PORT');
+  const token = await $.env.get('EMERALD_HOOK_TOKEN');
+  if (!sessionId || !port || !token || channelOpen) return;
+  channelOpen = true;
+  const headers = { 'Content-Type': 'application/json', 'X-Emerald-Token': token, 'X-Emerald-Session': sessionId, 'X-Emerald-Hook': 'emerald-mod' };
+  // A sleep or a fetch aborted as the environment unloads rejects; caught,
+  // so it is never an unhandled rejection.
+  void pollPrompts($, `http://127.0.0.1:${port}/channel`, headers)
+    .catch(() => undefined)
+    .finally(() => {
+      channelOpen = false;
+    });
 }
 
-async function streamPrompts($, argv) {
+async function pollPrompts($, url, headers) {
   // One chain, so prompts go in in the order they came.
   let chain = Promise.resolve();
-  let buffer = '';
-  try {
-    // ELECTRON_RUN_AS_NODE for an installed daemon's Emerald.exe, which the
-    // pty's environment strips; plain node ignores it.
-    const child = $.process.spawn({ argv, env: { ELECTRON_RUN_AS_NODE: '1' } });
-    for await (const piece of child) {
-      if (piece.stream !== 'stdout') continue;
-      buffer += piece.text;
-      let end;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        let parsed;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (parsed === null || typeof parsed !== 'object') continue;
-        // M9 fix 1036: an ask for the context breakdown, never put on the
-        // submit chain.
-        if (parsed.context === 'summary' || parsed.context === 'full') {
-          void postContext($, parsed.context).catch(() => undefined);
-          continue;
-        }
-        const { text, submitId } = parsed;
-        if (typeof text !== 'string' || text === '') continue;
-        // M9 fix 995: a plugin's prompt runs once the session is idle, so
-        // one that arrives mid-turn, or behind another still out, says so
-        // at once; entered: true so an older daemon answers mod, which is
-        // right for a prompt that will enter. The final word follows.
-        if (typeof submitId === 'string' && (mainTurn !== null || submitsOut > 0)) {
-          void postTurnEvent($, { hook_event_name: 'ModSubmit', submit_id: submitId, entered: true, queued: true }).catch(() => undefined);
-        }
-        submitsOut += 1;
-        chain = chain
-          .then(() => submitAndSay($, text, submitId))
-          .catch(() => undefined)
-          .finally(() => {
-            submitsOut -= 1;
-          });
-      }
+  let failures = 0;
+  for (;;) {
+    let reply;
+    try {
+      reply = await $.http.fetch(url, { method: 'POST', headers, body: '{}' });
+    } catch {
+      failures += 1;
+      if (failures >= CHANNEL_RETRIES) return;
+      await $.clock.sleep(CHANNEL_RETRY_MS);
+      continue;
     }
-  } catch {
-    // The channel could not start or died; the typed path stays.
+    failures = 0;
+    // 409 a newer poll took over, 404 a sink without the route, 401 a
+    // token the daemon no longer holds.
+    if (reply.status !== 200) return;
+    let lines;
+    try {
+      lines = JSON.parse(reply.text).lines;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(lines)) return;
+    for (const parsed of lines) chain = takeLine($, parsed, chain);
   }
+}
+
+// One line off the poll, and the submit chain as it stands after it.
+function takeLine($, parsed, chain) {
+  if (parsed === null || typeof parsed !== 'object') return chain;
+  // M9 fix 1036: an ask for the context breakdown, never put on the
+  // submit chain.
+  if (parsed.context === 'summary' || parsed.context === 'full') {
+    void postContext($, parsed.context).catch(() => undefined);
+    return chain;
+  }
+  const { text, submitId } = parsed;
+  if (typeof text !== 'string' || text === '') return chain;
+  // M9 fix 995: a plugin's prompt runs once the session is idle, so
+  // one that arrives mid-turn, or behind another still out, says so
+  // at once; entered: true so an older daemon answers mod, which is
+  // right for a prompt that will enter. The final word follows.
+  if (typeof submitId === 'string' && (mainTurn !== null || submitsOut > 0)) {
+    void postTurnEvent($, { hook_event_name: 'ModSubmit', submit_id: submitId, entered: true, queued: true }).catch(() => undefined);
+  }
+  submitsOut += 1;
+  return chain
+    .then(() => submitAndSay($, text, submitId))
+    .catch(() => undefined)
+    .finally(() => {
+      submitsOut -= 1;
+    });
 }
 
 // M9 fix 781: one submit, and the daemon told what it answered, under the

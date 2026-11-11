@@ -3,7 +3,7 @@ import { addressShown, addressUrl, isLocalPageUrl } from '@emerald/shared';
 import type { DesignNote } from '@emerald/shared';
 import { browserPage, registerBrowserSlot, toolbarShown, useBrowserPage } from './browser-layer.ts';
 import { designTargetOf, sendDesign } from './design.ts';
-import { plainKeyFor } from './keys-model.ts';
+import { editKey, isCtrlOrCmd, plainKeyFor } from './keys-model.ts';
 import { addNote, deleteNote, editNote, noteTitle, removeSent } from './design-model.ts';
 import { getUiState, setDesignNotes, setDesignPane, setDesignTray, useUi } from './ui.ts';
 import { useStore } from './store.ts';
@@ -27,7 +27,7 @@ const BAD_ADDRESS = 'Only http and https pages open here; type an address such a
 // hint is short and its full sentence is the span's title.
 const PAGE_HINT = 'Hover and press C to copy, S for screenshot, or click to select';
 const TRAY_HINT = 'Note · Esc back to the page';
-const TRAY_TITLE = `Typing a note. Click the page to pick again, or press C or S there; Esc or Ctrl+Enter hands the keys back to the page, and ${plainKeyFor('design-mode')} ends the mode`;
+const TRAY_TITLE = `Typing a note. Click the page to pick again, or press C or S there; Esc or ${editKey('Enter')} hands the keys back to the page, and ${plainKeyFor('design-mode')} ends the mode`;
 
 // The browser pane's body (M9 fix 659): a toolbar over a <webview>. The
 // address bar takes an http or https URL, a host or host:port, or words
@@ -329,7 +329,7 @@ export function BrowserView({ paneId, url, onUrl, toolbar }: Props) {
                     // keyboard back rather than acting on them itself; the
                     // mode, the grab and the comment stay as they are.
                     onKeyDown={(ev) => {
-                      if (ev.key === 'Escape' || (ev.key === 'Enter' && ev.ctrlKey)) {
+                      if (ev.key === 'Escape' || (ev.key === 'Enter' && isCtrlOrCmd(ev))) {
                         ev.preventDefault();
                         ev.stopPropagation();
                         ready()?.focus();

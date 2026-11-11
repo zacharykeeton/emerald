@@ -92,3 +92,18 @@ test('a file that is not JSON or not a list is set aside before the store starts
     assert.equal(fs.readFileSync(path.join(path.dirname(file), aside[0]!), 'utf8'), contents, `${contents}: the save leaves it be`);
   }
 });
+
+test('a store with no file keeps a set in memory and writes nothing to the working folder (M9 fix 1104)', () => {
+  const scratch = mkTemp('emerald-folders-nofile-');
+  const started = process.cwd();
+  process.chdir(scratch);
+  try {
+    const store = new FoldersStore('', silentLogger);
+    const dir = realDir();
+    assert.equal(store.set(dir, 'Work'), true);
+    assert.deepEqual(store.list(), [{ folder: dir, label: 'Work' }]);
+    assert.deepEqual(fs.readdirSync(scratch), []);
+  } finally {
+    process.chdir(started);
+  }
+});

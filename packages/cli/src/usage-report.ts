@@ -219,13 +219,13 @@ function neverUsedSection(lines: UseLine[]): string[] {
 }
 
 const UNDO_DROP = new Set(['close-pane', 'pane-hide', 'hide-pane']);
-const SPLITS = new Set(['split-vertical', 'split-horizontal', 'split-here', 'pane-split-right', 'pane-split-down', 'pull-pane']);
+const SPLITS = new Set(['split-vertical', 'split-horizontal', 'split-here', 'pane-split-right', 'pane-split-down', 'pull-pane', 'split-empty', 'split-with-shell', 'split-with-claude']);
 
 function frictionSection(lines: UseLine[]): string[] {
   const quick = new Map<string, number>();
   let quickN = 0;
   for (const l of lines) {
-    if (l.ev === 'view-close' && l.ms < USE_FRICTION_MS) {
+    if (l.ev === 'view-close' && l.ms < USE_FRICTION_MS && l.replaced !== true) {
       quickN++;
       bump(quick, l.view);
     }

@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { hidePaneHere, openFileFromOutside, paneFolder, placeSession, setSessionScheme, splitHere, startClaudeIn, startShellHere, startShellIn, typeInto } from './actions.ts';
 import type { DropZone } from './drop-zone-model.ts';
-import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, setupFigure, shellChoice, shellSub, startHead, startLabel, tileTitle } from './empty-pane-model.ts';
+import { cleanPath, defaultKind, emptyKey, escapeStep, folderRows, hostRecent, hostRefusal, hostSub, hostTail, hostWaiting, nextTile, onRowShown, resolvePath, parentLabel, setupFigure, shellChoice, shellSub, startHead, startLabel, tileTitle, wantsAuthRead } from './empty-pane-model.ts';
 import { paneHost } from './hosts-model.ts';
 import { installedShells } from './daemon-model.ts';
 import type { EmptyKind, EmptyTile } from './empty-pane-model.ts';
 import { currentPrefix, runAction } from './keys.ts';
 import { recordUse } from './use-record.ts';
-import { formatChord, plainKeyFor } from './keys-model.ts';
+import { editKey, formatChord, isCtrlOrCmd, plainKeyFor } from './keys-model.ts';
 import { currentTab, describeState, findPane, focusPane, folderName, groupSessions, hasState, setPaneSession, setPaneView } from '@emerald/shared';
-import type { SessionInfo, ShellId } from '@emerald/shared';
+import type { ClaudeAuth, SessionInfo, ShellId } from '@emerald/shared';
 import { normalizeFolder } from './new-session-model.ts';
 import { Menu, menuOpen } from './Menu.tsx';
 import { HostChip } from './HostChip.tsx';
@@ -24,6 +24,7 @@ import type { Shown } from './shown-sessions.ts';
 import { useSkin } from './skin.ts';
 import { browserViewSupported, fileViewSupported } from './daemon-model.ts';
 import { editTab, getState, useDaemonFor, useStore } from './store.ts';
+import { closeSplitOffer, noteClaudeStart, setSplitKind } from './ui.ts';
 import { getUiState, loadClaudeOpensOn, loadEmptyPaneKind, loadEmptyPaneShell, openNewSession, rememberClaudeOpensOn, rememberEmptyPaneKind, rememberEmptyPaneShell, useUi } from './ui.ts';
 
 interface Props {
@@ -43,7 +44,7 @@ interface Props {
 // The filter box's placeholder in three lengths (M9 fix 223): the whole
 // thing, one without the chord hints, and the shortest that still says
 // the two things a person can type. The CSS picks by the box's width.
-export const PLACEHOLDER_LONG = 'Type to filter: name, folder, branch, last prompt. Enter shows it here, Shift+Enter beside, Ctrl+Enter below. > for actions.';
+export const PLACEHOLDER_LONG = `Type to filter: name, folder, branch, last prompt. Enter shows it here, Shift+Enter beside, ${editKey('Enter')} below. > for actions.`;
 export const PLACEHOLDER_MID = 'Type to filter: name, folder, branch, last prompt. > for actions.';
 export const PLACEHOLDER_SHORT = 'Type to filter · > for actions';
 // With nothing running there is nothing to filter (M9 fix 545).
@@ -60,7 +61,14 @@ export const PLACEHOLDER_NONE = 'Type > for actions';
 export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false }: Props) {
   const { sessions, layout, daemon, remoteHosts, hosts } = useStore('sessions', 'layout', 'daemon', 'remoteHosts', 'hosts');
   const schemeState = useScheme();
-  const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId } = useUi();
+  const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId, splitOfferPaneId } = useUi();
+  // M9 fix 1132: a pane that starts something or closes takes the split offer with it.
+  useEffect(
+    () => () => {
+      if (getUiState().splitOfferPaneId === paneId) closeSplitOffer();
+    },
+    [paneId],
+  );
   const skin = useSkin();
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -241,7 +249,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       .catch((err: unknown) => console.warn('[emerald] show failed', err));
   };
   // Shift splits side by side, Ctrl stacked, neither shows it here.
-  const zoneFor = (ev: { shiftKey: boolean; ctrlKey: boolean }): DropZone | null => (ev.shiftKey ? 'right' : ev.ctrlKey ? 'bottom' : null);
+  const zoneFor = (ev: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }): DropZone | null => (ev.shiftKey ? 'right' : isCtrlOrCmd(ev) ? 'bottom' : null);
 
   // The sidebar's order, exited group last, so the palette and the sidebar
   // agree on what comes first; the sessions waiting for a person ahead of
@@ -378,6 +386,26 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
       .catch((err: unknown) => setHostNote(`Could not add ${text}: ${err instanceof Error ? err.message : String(err)}`));
   };
   const onRow = showSplits && onRowShown(remoteHosts.length, hostBox, tilePick);
+  // M9 fix 1094: the sign-in of the host last read, asked when a host is picked with kind Claude and kept until the next answer, so a re-pick shows the last read until the new one lands.
+  const [auth, setAuth] = useState<{ host: string; read: ClaudeAuth | null } | null>(null);
+  const authWanted = onRow && remote !== undefined && wantsAuthRead(kind, tilePick, pickedState?.state ?? 'idle', pickedState?.daemon?.featureLevel ?? null);
+  const authDaemonPid = pickedState?.daemon?.pid;
+  useEffect(() => {
+    if (!authWanted || remote === undefined) return;
+    let live = true;
+    window.emerald
+      .request('claude.auth', {}, remote)
+      .then((r) => {
+        if (live) setAuth({ host: remote, read: r.auth });
+      })
+      .catch((err: unknown) => {
+        console.warn('[emerald] claude.auth failed', err);
+        if (live) setAuth({ host: remote, read: null });
+      });
+    return () => {
+      live = false;
+    };
+  }, [authWanted, remote, authDaemonPid]);
   const selectKind = (k: EmptyKind) => {
     setKind(k);
     setTilePick(null);
@@ -450,6 +478,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   };
   const start = (k: EmptyKind, folder: string) => {
     recordUse(k === 'shell' ? 'empty-start-shell' : 'empty-start-claude');
+    if (k === 'claude') noteClaudeStart(paneId);
     if (starting) return;
     setStarting(true);
     setError(null);
@@ -694,12 +723,15 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
               <span className="empty-on-keys">← → switch</span>
             </div>
             <div className="empty-on-row">
-              {[{ name: '', destination: '' }, ...remoteHosts].map((h) => (
-                <button key={h.name} className="secondary empty-host" data-host={h.name} aria-pressed={h.name === pickedHost} title={h.destination === '' ? undefined : h.destination} onMouseDown={keepFocus} onClick={() => pickHost(h.name)}>
-                  <span className="empty-host-name">{h.name === '' ? 'This PC' : h.name}</span>
-                  {h.name !== '' && hostSub(hosts.get(h.name)?.state ?? 'idle') !== null && <span className="empty-host-sub">{hostSub(hosts.get(h.name)?.state ?? 'idle')}</span>}
-                </button>
-              ))}
+              {[{ name: '', destination: '' }, ...remoteHosts].map((h) => {
+                const sub = h.name === '' ? null : hostSub(hosts.get(h.name)?.state ?? 'idle', h.name, kind === 'claude' && tilePick === null && auth?.host === h.name ? auth.read : null, Date.now());
+                return (
+                  <button key={h.name} className="secondary empty-host" data-host={h.name} aria-pressed={h.name === pickedHost} title={h.destination === '' ? undefined : h.destination} onMouseDown={keepFocus} onClick={() => pickHost(h.name)}>
+                    <span className="empty-host-name">{h.name === '' ? 'This PC' : h.name}</span>
+                    {sub !== null && <span className="empty-host-sub">{sub}</span>}
+                  </button>
+                );
+              })}
               {hostBox ? (
                 <>
                   <input
@@ -759,6 +791,7 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
                 spellCheck={false}
                 placeholder="Paste a file's path. Enter opens it here, Shift+Enter in a tab."
                 value={pathText}
+                title={pathText === '' ? undefined : pathText}
                 onChange={(ev) => {
                   setPathText(ev.target.value);
                   setPathNote(null);
@@ -887,6 +920,26 @@ Double-click to start here`}
               </span>
             )}
           </div>
+          {/* M9 fix 1132: the one-time offer after three splits a day each followed by a Claude start; Yes sets the split default and starts nothing here. */}
+          {splitOfferPaneId === paneId && (
+            <div className="empty-row empty-split-offer">
+              <span className="muted empty-split-offer-text">Always start a Claude on a split?</span>
+              <button
+                className="secondary empty-split-offer-yes"
+                onMouseDown={keepFocus}
+                onClick={() => {
+                  recordUse('set-split-kind');
+                  setSplitKind('claude');
+                  closeSplitOffer();
+                }}
+              >
+                Yes
+              </button>
+              <button className="empty-split-offer-close" title="Keep splits empty" aria-label="Close" onMouseDown={keepFocus} onClick={closeSplitOffer}>
+                ×
+              </button>
+            </div>
+          )}
           {setupRunning && pickedState?.setup != null && (
             <div className="empty-setup">
               <div className="empty-setup-line">{`Setting up ${remote ?? ''}: copying emerald's daemon ${appVersion} there, the first time only`}</div>

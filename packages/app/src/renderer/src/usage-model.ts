@@ -1,5 +1,18 @@
 import type { CSSProperties } from 'react';
-import type { UsageResult, UsageWindow } from '../../preload/api.ts';
+import type { UsageAsk, UsageResult, UsageWindow } from '../../preload/api.ts';
+
+// The main log's line for one reading (M9 fix 1112): every window with its
+// percent and its reset in UTC, so the log shows what the strip showed. The
+// count's word stays "windows" for one, since the verify script reads that
+// text; a reset past Date's range is written as the bare number.
+export function usageReadLine(windows: readonly UsageWindow[], ask: UsageAsk): string {
+  const each = windows.map((w) => {
+    const d = new Date(w.resetsAt);
+    return `${w.key} ${w.percent}% to ${Number.isNaN(d.getTime()) ? String(w.resetsAt) : d.toISOString()}`;
+  });
+  const detail = each.length > 0 ? ` (${each.join(', ')})` : '';
+  return `usage read: ${windows.length} windows${detail}, asked on ${ask}`;
+}
 
 // The pure part of the usage strip: the reply from the usage endpoint
 // turned into windows, and the countdown text for a reset time. The main

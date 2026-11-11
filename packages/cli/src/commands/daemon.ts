@@ -126,6 +126,7 @@ function killIfSame(pid: number, startedAt: number | null): void {
   if (startedAt === null) throw new CliError(`not killing pid ${pid}: emmerd did not say when it started; stop it by hand`);
   const identity = processIdentity(pid, startedAt);
   if (identity === 'other') throw new CliError(`not killing pid ${pid}: it is not the daemon that was started at ${new Date(startedAt).toISOString()}`);
+  if (identity === 'unknown') throw new CliError(`not killing pid ${pid}: its start time could not be read; stop it by hand`);
   if (identity === 'same') killProcessTree(pid);
 }
 
@@ -180,26 +181,43 @@ async function start(json: boolean, daemonPath: string | undefined): Promise<num
   return EXIT.ok;
 }
 
+// M9 fix 1093: a daemon.json is litter only when it names the pipe found down
+// or a daemon that has gone; a stop on the wrong pipe (a stray EMERALD_PIPE,
+// verify:remote's stub pipe beside the kit's own) used to delete a live
+// daemon's record. Only 'gone' removes it: 'other' is a recycled pid's new
+// owner, and 'unknown' (a start-time read that timed out) is no proof of
+// anything, so both leave the file. Since M9 fix 1138 it answers which of the
+// three it did, for daemon stop --json.
+function litterRecord(): { record: 'none' | 'removed' | 'left'; pid?: number; pipe?: string } {
+  const info = readDaemonInfo();
+  if (info === null) return { record: 'none' };
+  if (info.pipe === pipePath() || processIdentity(info.pid, info.startedAt) === 'gone') {
+    removeDaemonInfo();
+    return { record: 'removed' };
+  }
+  return { record: 'left', pid: info.pid, pipe: info.pipe };
+}
+
+function notRunning(json: boolean): number {
+  const { record, pid, pipe } = litterRecord();
+  if (json) printJson({ stopped: false, pid: null, record, ...(record === 'left' ? { recordPid: pid, recordPipe: pipe } : {}) });
+  else {
+    println('emmerd is not running');
+    if (record === 'left') println(`daemon.json names pid ${pid} on ${pipe}, not this pipe; left in place`);
+  }
+  return EXIT.ok;
+}
+
 async function stop(json: boolean): Promise<number> {
   const up = await pipeIsUp();
-  if (!up) {
-    // Nothing owns the pipe; a leftover daemon.json is just litter.
-    removeDaemonInfo();
-    if (json) printJson({ stopped: false, pid: null });
-    else println('emmerd is not running');
-    return EXIT.ok;
-  }
+  // Nothing owns the pipe; a leftover daemon.json for it is just litter.
+  if (!up) return notRunning(json);
   // Asked first (M9 fix 159), so the daemon keeps every live session's
   // screen and exits on its own; a daemon from before the request, or one
   // that does not go, is killed as before.
   const asked = await askStop();
-  if (asked === null) {
-    // The pipe went between the two looks.
-    removeDaemonInfo();
-    if (json) printJson({ stopped: false, pid: null });
-    else println('emmerd is not running');
-    return EXIT.ok;
-  }
+  // The pipe went between the two looks.
+  if (asked === null) return notRunning(json);
   const { kept, pid } = asked;
   if (kept === null || !(await waitForPipe(false, 5000))) {
     killIfSame(pid, asked.startedAt);

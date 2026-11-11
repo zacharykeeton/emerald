@@ -20,7 +20,13 @@
 //
 // emmer hooks status reads the version below and counts an older one as
 // stale, so the banner offers the reinstall that lands this file.
-const STATUS_LINE_VERSION = 4;
+//
+// A previous command that is another emerald's wrapper, naming this one as
+// its own previous, would run the two without end; each wrapper adds its
+// folder to EMERALD_STATUSLINE_CHAIN for the command it starts and stops at
+// once when its folder is already there (M9 fix 1103).
+const STATUS_LINE_VERSION = 5;
+const CHAIN_ENV = 'EMERALD_STATUSLINE_CHAIN';
 
 const fs = require('node:fs');
 const http = require('node:http');
@@ -34,8 +40,11 @@ process.stdin.on('end', () => main(Buffer.concat(chunks)));
 process.stdin.on('error', () => main(Buffer.concat(chunks)));
 
 function main(body) {
+  const chain = (process.env[CHAIN_ENV] || '').split(path.delimiter).filter((s) => s !== '');
+  const self = __dirname.replace(/\\/g, '/').toLowerCase();
+  if (chain.includes(self)) process.exit(0);
   post(body)
-    .then(() => passThrough(body))
+    .then(() => passThrough(body, [...chain, self].join(path.delimiter)))
     .then((code) => process.exit(code));
 }
 
@@ -162,7 +171,7 @@ function findBash() {
 
 // Resolves with the exit code Claude Code should see: the previous
 // command's, or 0 when there was none or it could not run.
-function passThrough(body) {
+function passThrough(body, chain) {
   return new Promise((resolve) => {
     let previous = null;
     try {
@@ -185,6 +194,7 @@ function passThrough(body) {
     let child;
     try {
       child = spawn(shell.exe, shell.args, {
+        env: { ...process.env, [CHAIN_ENV]: chain },
         stdio: ['pipe', 'inherit', 'inherit'],
         windowsHide: true,
         windowsVerbatimArguments: shell.verbatim,

@@ -940,6 +940,10 @@ try {
   expect(line429 !== undefined && line429.includes('x-should-retry=true') && line429.includes('rate_limit_error'), `main.log holds the 429 with its headers and body: ${line429}`);
   expect(mainLog.includes('usage read: 3 windows') && mainLog.includes('usage read: 1 windows'), 'main.log holds a line per reading (fix 163), so the cadence can be read beside the 429s');
   expect(mainLog.includes('background window at'), 'main.log has the placement line too');
+  // M9 fix 1112: the read line names each window with its percent and reset.
+  const read1112 = mainLog.split(/\r?\n/).filter((l) => l.includes('usage read: 3 windows ('));
+  expect(read1112.some((l) => /usage read: 3 windows \(five_hour 17% to \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z, seven_day 5% to /.test(l) && l.includes(`seven_day 5% to ${firstWeeklyReset}, seven_day_fable 8% to ${firstWeeklyReset}), asked on `)), `fix 1112: a read line names the first reading's three windows with their percents and resets, got ${JSON.stringify(read1112.slice(0, 3))}`);
+  step('M9 fix 1112: the read line carries each window with its percent and its reset in UTC');
   step('fix 99: a 429 shows its wait, and main.log under the home holds the answer');
 
   // M9 fix 100: inside the hold the button is dim and fetches nothing,

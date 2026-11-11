@@ -832,3 +832,11 @@ test('spinnerOf: the turn\'s word above a /btw panel, never its Answering row (M
   assert.equal(aboveBtwPanel(rows).length, 2);
   assert.equal(spinnerOf(['✻ Churning…', '❯ '])?.word, 'Churning');
 });
+
+test('btwPanel: a footer wrapped over three rows in a 28-column pane, and a · row of the answer kept (M9 fix 1134)', () => {
+  const narrow = ['  say what a git worktree', '  is and why someone would', '  use one.', '  /btw In two short paragr…', '    A git worktree is an', '    extra working directory', '    tied to the same', '    repository as your main', '    checkout.', '  ↑/↓ to scroll · c to copy', '  · f to fork · Esc to', '  close'];
+  assert.deepEqual(btwPanel(narrow), { question: 'In two short paragr…', answer: 'A git worktree is an extra working directory tied to the same repository as your main checkout.', at: 3 });
+  const dotted = [...narrow.slice(0, 9), '    a · b', ...narrow.slice(9)];
+  assert.match(btwPanel(dotted)?.answer ?? '', /checkout\. a · b$/, 'an answer row at another indent is never taken for the footer');
+  assert.equal(btwPanel([...narrow, '', '❯ ']), null);
+});

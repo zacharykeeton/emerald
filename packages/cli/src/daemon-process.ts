@@ -98,13 +98,17 @@ export function spawnDaemon(daemonMain: string): void {
 // wfs-db, 2026-11-05). Create passes no environment, so the home and the
 // pipe go on the daemon's command line; ShowWindow 0 keeps its console off
 // a desktop host's screen. Off Windows the detached spawn is a setsid,
-// which a closing session does not reach.
-export function startDaemonDetachedFromSession(daemonMain: string, home: string, pipe: string): Promise<void> {
+// which a closing session does not reach. The relay's SSH_CONNECTION rides
+// along too (M9 fix 1091), so a host session's Claude copies through OSC 52
+// onto the clipboard of the PC it is shown on; a value holding a double
+// quote (none that sshd writes) is left off rather than quoted.
+export function startDaemonDetachedFromSession(daemonMain: string, home: string, pipe: string, sshConnection: string | undefined): Promise<void> {
   if (!fs.existsSync(daemonMain)) {
     return Promise.reject(new Error(`emmerd is not built: ${daemonMain} is missing`));
   }
+  const ssh = sshConnection !== undefined && sshConnection !== '' && !sshConnection.includes('"') ? sshConnection : null;
   if (process.platform !== 'win32') {
-    const child = spawn(process.execPath, [daemonMain, '--home', home, '--pipe', pipe], {
+    const child = spawn(process.execPath, [daemonMain, '--home', home, '--pipe', pipe, ...(ssh === null ? [] : ['--ssh-connection', ssh])], {
       detached: true,
       stdio: 'ignore',
       env: { ...process.env },
@@ -112,7 +116,7 @@ export function startDaemonDetachedFromSession(daemonMain: string, home: string,
     child.unref();
     return Promise.resolve();
   }
-  const line = `"${process.execPath}" "${daemonMain}" --home "${home}" --pipe "${pipe}"`.replace(/'/g, "''");
+  const line = `"${process.execPath}" "${daemonMain}" --home "${home}" --pipe "${pipe}"${ssh === null ? '' : ` --ssh-connection "${ssh}"`}`.replace(/'/g, "''");
   const script =
     `$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; ` +
     `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${line}'; ProcessStartupInformation = $si }; ` +

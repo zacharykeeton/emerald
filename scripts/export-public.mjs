@@ -20,14 +20,16 @@
 //                                  [--verbose]            list the reported-only findings' lines too
 //
 // It runs from any folder of the checkout. The copy is taken from the
-// working tree, so it refuses a tree with changes to tracked files; only
+// working tree, so it refuses a tree with changes to tracked files it copies;
+// a change to a file the list leaves out (the inbox's uncommitted line) is
+// never read, so it stops nothing; only
 // `git ls-files` paths are read, so untracked and ignored files never
 // matter. The pattern matcher in export-public-lib.mjs is checked against
 // git's own reading of the list on every run.
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { FINDINGS, MAPPED, batchInFlight, decide, isBinary, parsePatterns, scanText } from './export-public-lib.mjs';
+import { FINDINGS, MAPPED, batchInFlight, copiedChanges, decide, isBinary, parsePatterns, scanText } from './export-public-lib.mjs';
 import { buildNotices } from './third-party-notices.mjs';
 
 const USAGE =
@@ -179,8 +181,10 @@ function run() {
     process.exit(0);
   }
 
-  if (git(['status', '--porcelain', '--untracked-files=no'], root).trim() !== '') {
-    fail('the tree has changes to tracked files; commit or stash them first');
+  const changed = copiedChanges(patterns, git(['status', '--porcelain', '-z', '--untracked-files=no'], root));
+  if (changed.length > 0) {
+    const more = changed.length > 1 ? ` and ${changed.length - 1} more` : '';
+    fail(`the tree has changes to tracked files the export copies (${changed[0]}${more}); commit or stash them first`);
   }
 
   // The version in package.json is the last batch's until its docs commit

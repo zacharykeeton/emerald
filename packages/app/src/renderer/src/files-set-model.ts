@@ -31,3 +31,12 @@ export function setCopy(paths: readonly string[], root: string, relative: boolea
     text: paths.map((p) => (relative ? relativePath(root, p) : p)).join('\n'),
   };
 }
+
+// M9 fix 1122: what the OS takes when a drag from the Files tab leaves
+// every window: the tree's paths when the press read any (a folder, a
+// picked set, a file), else the one file a search hit or a Changed row
+// drags, else nothing.
+export function dragOutFiles(path: string | null, treePaths: readonly string[]): readonly string[] | null {
+  if (treePaths.length > 0) return treePaths;
+  return path === null ? null : [path];
+}

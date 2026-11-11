@@ -119,4 +119,14 @@ export const Limits = {
   // is never refused, since a person at a terminal is not a loop.
   hookInstallsPerWindow: 3,
   hookInstallWindowMs: 60 * 1000,
+  // The emerald mod's prompt channel (M9 fix 1125), a long poll on the
+  // hook sink: a poll is held this long and then answered with no lines,
+  // under the 30000 ms in which Claude Code's $.http.fetch aborts a
+  // request with no complete answer (read on 2.1.319 and 2.1.322), so the
+  // mod asks again before its own fetch gives up.
+  modPollHoldMs: 20 * 1000,
+  // How long after a poll's answer the mod has to ask again before its
+  // channel reads down; the mod asks again within milliseconds of an
+  // answer.
+  modPollGraceMs: 10 * 1000,
 } as const;

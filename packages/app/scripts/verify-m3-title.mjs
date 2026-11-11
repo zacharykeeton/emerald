@@ -164,7 +164,7 @@ try {
   step('done on the focused pane went straight to idle');
 
   await post({ hook_event_name: 'UserPromptSubmit' });
-  await post({ hook_event_name: 'StopFailure', error_type: 'rate_limit' });
+  await post({ hook_event_name: 'StopFailure', error: 'rate_limit' });
   await waitTitle(s, p1.id, 'errored: rate_limit', 'errored title');
   await post({ hook_event_name: 'CwdChanged', cwd: 'C:/sim/sub', previous_cwd: 'C:/sim' });
   await s.waitFor(`document.querySelector('[data-pane-id=${JSON.stringify(p1.id)}] .pane-cwd')?.textContent === 'C:/sim/sub'`, 'cwd in the title');

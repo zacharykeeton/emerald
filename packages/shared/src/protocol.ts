@@ -132,11 +132,16 @@ export const PROTOCOL_VERSION = 1;
 //  80: M9 fix 1080, hosts.list, hosts.set, hosts.remove and the hosts.changed push, the remote hosts added by hand with what first contact read of each
 //  80: M9 fix 1081, host on a layout pane, the remote host its session runs on, which a daemon before 80 drops
 //  80: M9 fix 1084, claude on the hello, whether the daemon finds a claude (~/.local/bin, then PATH) at its start and again at each app hello on the registry's PATH, by which the empty pane refuses a Claude session on a host without one
-export const DAEMON_FEATURE_LEVEL = 80;
+//  81: M9 fix 1094, claude.auth, whether the daemon's claude is signed in and when its stored claude.ai sign-in ends, off claude auth status --json, for the empty pane's sign-in line on a remote host
+//  82: M9 fix 1125, the mod's prompt channel a long poll on the hook sink (POST /channel) in place of emmer mod-channel, whose mod.channel request this daemon refuses as unknown
+export const DAEMON_FEATURE_LEVEL = 82;
 
 // The level at which the daemon keeps the remote hosts record and pushes
 // hosts.changed (M9 fix 1080).
 export const HOSTS_LEVEL = 80;
+
+// The level at which the daemon answers claude.auth (M9 fix 1094).
+export const CLAUDE_AUTH_LEVEL = 81;
 
 // One remote host the person added by hand, or a Host of ~/.ssh/config
 // that first contact read facts about (M9 fix 1080), kept in hosts.json
@@ -151,6 +156,14 @@ export interface HostRecord {
   nodeVersion?: string;               // the kit's Node on the host, once copied
   kitVersion?: string;                // the emerald version on the host, once copied
   addedAt: number;                    // epoch ms, when added by hand or first contacted
+}
+
+// Whether a daemon's claude is signed in (M9 fix 1094), off claude auth
+// status --json: expiresAt is when its stored claude.ai sign-in ends, epoch
+// ms, or null when the answer names none.
+export interface ClaudeAuth {
+  signedIn: boolean;
+  expiresAt: number | null;
 }
 
 // One rate-limit window as the mod's measure gives it (M9 fix 739): its
@@ -399,10 +412,6 @@ export interface Requests {
   // read on a minute's poll and after every credited commit. Every
   // change goes out as conflicts.changed on the sessions topic.
   'conflicts.get':  { req: {};                                                             res: ConflictReport };
-  // The emerald mod's prompt channel (M9 fix 741): `emmer mod-channel`,
-  // which the mod starts inside a hosted Claude, asks this and the
-  // connection takes that session's mod.submit pushes until it closes.
-  'mod.channel':    { req: { sessionId: string };                                  res: {} };
   // A prompt for a Claude session (M9 fix 741): with its mod's channel
   // up the daemon pushes mod.submit to it and answers 'mod'; with none it
   // does nothing and answers 'typed', and the caller types the text.
@@ -416,6 +425,8 @@ export interface Requests {
   // says whether the session's mod has posted at all, so a caller tells a
   // Claude with no mod from one typed into a shell, which has no channel.
   'session.context': { req: { sessionId: string; detail: 'summary' | 'full' };    res: { asked: boolean; mod: boolean } };
+  // Whether the daemon's claude is signed in (M9 fix 1094), read off claude auth status --json when asked, never on the hello's path; auth is null with no claude found or output that is not JSON.
+  'claude.auth':     { req: {};                                                       res: { auth: ClaudeAuth | null } };
 }
 
 // A session's last screen (M9 fix 159): the rows and the cursor the
@@ -487,11 +498,4 @@ export type ServerMessage =
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.
-  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }
-  // A prompt for the emerald mod to submit (M9 fix 741), to the session's
-  // mod.channel connection alone. The mod posts ModSubmit with the
-  // submitId and whether the prompt entered (M9 fix 781).
-  | { type: 'mod.submit'; sessionId: string; text: string; submitId?: string }
-  // An ask for the session's context breakdown (M9 fix 1036), to the
-  // session's mod.channel connection alone; the mod posts Context.
-  | { type: 'mod.context'; sessionId: string; detail: 'summary' | 'full' };
+  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter };

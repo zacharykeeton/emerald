@@ -19,6 +19,7 @@ import {
 import type { RemoteRunner, RunOutcome, SetupDeps, SetupPush } from './host-setup.ts';
 import type { DaemonInfo } from './pipe-client.ts';
 import type { AssembledKit } from './remote-kit.ts';
+import { KIT_NODE_VERSION } from './remote-kit.ts';
 
 // M9 fix 1084: first contact and setup, every ssh and scp through a fake
 // runner that records each call and answers from a script.
@@ -154,24 +155,24 @@ test("a first contact on wfs-db's shape probes twice, copies both archives, unpa
     ssh('uname -sm; echo $HOME'),
     ssh('$env:PROCESSOR_ARCHITECTURE; $HOME'),
     ssh(`New-Item -ItemType Directory -Force -Path "${R}" | Out-Null`),
-    ssh(`Test-Path -LiteralPath "${R}\\node-24.20.0\\node.exe"`),
+    ssh(`Test-Path -LiteralPath "${R}\\node-${KIT_NODE_VERSION}\\node.exe"`),
     { tool: 'scp', args: [...o, nodeName, `wfs-db:.emerald-remote/${nodeName}`], cwd: path.dirname(kit.nodeArchive) },
     { tool: 'scp', args: [...o, emName, `wfs-db:.emerald-remote/${emName}`], cwd: path.dirname(kit.emeraldArchive) },
-    ssh(`New-Item -ItemType Directory -Force -Path "${R}\\node-24.20.0" | Out-Null`),
-    ssh(`tar -xzf "${R}\\${nodeName}" -C "${R}\\node-24.20.0"`),
+    ssh(`New-Item -ItemType Directory -Force -Path "${R}\\node-${KIT_NODE_VERSION}" | Out-Null`),
+    ssh(`tar -xzf "${R}\\${nodeName}" -C "${R}\\node-${KIT_NODE_VERSION}"`),
     ssh(`New-Item -ItemType Directory -Force -Path "${R}\\${V}" | Out-Null`),
     ssh(`tar -xzf "${R}\\${emName}" -C "${R}\\${V}"`),
     ssh(`Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path "${R}\\${nodeName}"`),
     ssh(`Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path "${R}\\${emName}"`),
-    ssh(`& "${R}\\node-24.20.0\\node.exe" "${R}\\${V}\\cli\\dist\\main.js" hooks install --home "${R}"`),
+    ssh(`& "${R}\\node-${KIT_NODE_VERSION}\\node.exe" "${R}\\${V}\\cli\\dist\\main.js" hooks install --home "${R}"`),
   ]);
   assert.deepEqual(pushes.map((p) => p.phase), ['probing', 'copying', 'copying', 'unpacking', 'starting', 'done']);
   assert.equal(new Set(pushes.map((p) => p.startedAt)).size, 1);
   assert.deepEqual(pushes.map((p) => p.bytes), [0, 0, 4000, 4000, 4000, 4000]);
   assert.ok(pushes.every((p) => p.host === 'wfs-db' && p.line === null));
   const probed = { name: 'wfs-db', destination: 'zacha@192.0.2.7', addedAt: 0, os: 'win32', arch: 'x64', shell: 'powershell', home: WFS_HOME };
-  assert.deepEqual(records, [probed, { ...probed, kitVersion: V, nodeVersion: '24.20.0' }]);
-  assert.deepEqual(connected, [{ ...probed, kitVersion: V, nodeVersion: '24.20.0' }]);
+  assert.deepEqual(records, [probed, { ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION }]);
+  assert.deepEqual(connected, [{ ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION }]);
 });
 
 test('an added host is reached by its destination, and a second run with Node there copies the emerald archive alone', async () => {

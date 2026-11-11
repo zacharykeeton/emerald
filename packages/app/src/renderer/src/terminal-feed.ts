@@ -31,7 +31,8 @@ import { getState, subscribe } from './store.ts';
 export interface FeedTerminal {
   readonly cols: number;
   readonly rows: number;
-  write(data: string | Uint8Array): void;
+  // The callback runs once xterm has parsed the data (M9 fix 1091's replay mark).
+  write(data: string | Uint8Array, callback?: () => void): void;
   reset(): void;
   resize(cols: number, rows: number): void;
   readonly element?: HTMLElement | undefined;
@@ -52,6 +53,12 @@ export interface FeedHandle {
   // null while it has no size (hidden by zoom).
   report(fit: Fit | null): void;
   close(): void;
+  // M9 fix 1091: whether a program's OSC 52 write parsed now should reach
+  // the clipboard. Only the attachment's first handle copies, so a session
+  // shown in two panes copies once; and nothing copies while a replay is
+  // being parsed, since the daemon's ring replays raw bytes and every
+  // reattach, reload and late mirror would copy an old write again.
+  copies(): boolean;
 }
 
 export interface FeedDeps {
@@ -69,6 +76,8 @@ interface Handle {
   paneId: () => string;
   host: (() => HTMLElement) | null;
   fit: Fit | null;
+  // Replay writes not yet parsed (M9 fix 1091).
+  replays: number;
 }
 
 interface Attachment {
@@ -138,7 +147,7 @@ export class TerminalFeed {
       clearTimeout(a.detachTimer);
       a.detachTimer = null;
     }
-    const handle: Handle = { term, paneId: opts.paneId, host: opts.host ?? null, fit: opts.fit ?? null };
+    const handle: Handle = { term, paneId: opts.paneId, host: opts.host ?? null, fit: opts.fit ?? null, replays: 0 };
     const late = a.attached;
     a.handles.push(handle);
     this.decide(a);
@@ -156,7 +165,7 @@ export class TerminalFeed {
         // Resized to the chosen size first: a TUI replayed at another width
         // does not redraw when the size changes afterwards.
         if (a.chosen !== null) term.resize(a.chosen.fit.cols, a.chosen.fit.rows);
-        if (a.ring.size > 0) term.write(a.ring.readAll());
+        if (a.ring.size > 0) writeReplay(handle, a.ring.readAll());
       }
       this.scale(a, handle);
     }
@@ -169,6 +178,10 @@ export class TerminalFeed {
         this.scale(held, handle);
       },
       close: () => this.close(sessionId, handle),
+      copies: () => {
+        const held = this.attachments.get(sessionId);
+        return held !== undefined && held.handles[0] === handle && handle.replays === 0;
+      },
     };
   }
 
@@ -246,14 +259,17 @@ export class TerminalFeed {
       () => undefined,
       (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        this.broadcast(a, encoder.encode(`\r\n\x1b[31m[cannot attach: ${message}]\x1b[0m\r\n`));
+        this.broadcast(a, encoder.encode(`\r\n\x1b[31m[cannot attach: ${message}]\x1b[0m\r\n`), false);
       },
     );
   }
 
-  private broadcast(a: Attachment, data: Uint8Array): void {
+  private broadcast(a: Attachment, data: Uint8Array, replay: boolean): void {
     a.ring.write(data);
-    for (const h of a.handles) h.term.write(data);
+    for (const h of a.handles) {
+      if (replay) writeReplay(h, data);
+      else h.term.write(data);
+    }
   }
 
   private onPush(msg: RendererPush): void {
@@ -271,12 +287,12 @@ export class TerminalFeed {
         }
         a.awaitingReplay = false;
       }
-      this.broadcast(a, msg.data);
+      this.broadcast(a, msg.data, msg.replay === true);
     } else if (msg.type === 'pty.exit') {
       const a = this.attachments.get(msg.sessionId);
       if (a === undefined) return;
       const note = msg.exitCode === KILLED_EXIT_CODE ? 'killed from emerald' : `process exited with code ${msg.exitCode}`;
-      this.broadcast(a, encoder.encode(`\r\n\x1b[90m[${note}]\x1b[0m\r\n`));
+      this.broadcast(a, encoder.encode(`\r\n\x1b[90m[${note}]\x1b[0m\r\n`), false);
     } else if (msg.type === 'daemon.connected') {
       // The new pipe connection has no attachments.
       for (const sessionId of this.attachments.keys()) this.reattach(sessionId);
@@ -309,6 +325,15 @@ export class TerminalFeed {
     if (next === '') delete host.dataset['mirrorScale'];
     else host.dataset['mirrorScale'] = s.toFixed(3);
   }
+}
+
+// A replay's bytes, counted on the handle until xterm has parsed them, so
+// copies() answers false meanwhile (M9 fix 1091).
+function writeReplay(h: Handle, data: Uint8Array): void {
+  h.replays += 1;
+  h.term.write(data, () => {
+    h.replays -= 1;
+  });
 }
 
 function termPixels(term: FeedTerminal, screen: HTMLElement | null): { width: number; height: number } {

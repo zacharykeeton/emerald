@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, LOOK_FIRST_ACTIONS, enterSequence, formatChord, guestChords, hostPlatform, isCopyKey, isCtrlOrCmdKey, isModifierKey, isPasteKey, layoutSwitchKeys, matchPlain, matchPrefixed, panePastes, parseKeySpec, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
+import { BINDINGS, CTRL_V, DEFAULT_PREFIX, KITTY_SHIFT_ENTER, LOOK_FIRST_ACTIONS, enterSequence, formatChord, guestChords, hostPlatform, isCopyKey, editKey, isCtrlOrCmd, isCtrlOrCmdKey, isModifierKey, isPasteKey, layoutSwitchKeys, matchPlain, matchPrefixed, panePastes, parseKeySpec, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
 import type { KeyLike } from './keys-model.ts';
 
 const key = (code: string, mods: Partial<Omit<KeyLike, 'code'>> = {}): KeyLike => ({
@@ -253,4 +253,18 @@ test('on darwin the Cmd chords work beside the Ctrl ones and the hints say Cmd (
   assert.equal(panePastes(key('KeyV', { ctrlKey: true }), 'darwin'), false);
   assert.equal(panePastes(key('KeyV', { ctrlKey: true }), 'win32'), true);
   assert.equal(hostPlatform(), 'win32');
+});
+
+test('the edit keys print Cmd on a Mac and Ctrl elsewhere, and Cmd+Enter answers beside Ctrl+Enter there (M9 fix 1106)', () => {
+  assert.equal(editKey('KeyS', 'darwin'), 'Cmd+S');
+  assert.equal(editKey('KeyS', 'win32'), 'Ctrl+S');
+  assert.equal(editKey('KeyW'), 'Ctrl+W');
+  assert.equal(editKey('KeyC', 'darwin'), 'Cmd+C');
+  assert.equal(editKey('Enter', 'darwin'), 'Cmd+Enter');
+  assert.equal(editKey('Enter', 'win32'), 'Ctrl+Enter');
+  assert.equal(isCtrlOrCmd({ ctrlKey: true, metaKey: false }, 'win32'), true);
+  assert.equal(isCtrlOrCmd({ ctrlKey: true, metaKey: false }, 'darwin'), true);
+  assert.equal(isCtrlOrCmd({ ctrlKey: false, metaKey: true }, 'darwin'), true);
+  assert.equal(isCtrlOrCmd({ ctrlKey: false, metaKey: true }, 'win32'), false);
+  assert.equal(isCtrlOrCmd({ ctrlKey: false, metaKey: false }, 'darwin'), false);
 });

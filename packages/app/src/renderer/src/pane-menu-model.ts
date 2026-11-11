@@ -1,5 +1,5 @@
 import type { SessionInfo, ShellId, ShellOption } from '@emerald/shared';
-import { plainKeyFor } from './keys-model.ts';
+import { hostPlatform, plainKeyFor } from './keys-model.ts';
 import type { Action } from './keys-model.ts';
 
 // The pane menu's items as facts (M9 fix 202): one list the right-click
@@ -211,8 +211,9 @@ export function zoomTitle(zoomed: boolean): string {
 
 // M9 fix 1047: the pane menu's Copy row. The hint is isCopyKey's chord, a
 // terminal key with no BINDINGS entry, so it is written out.
-export function copyRow(selection: string): { label: string; hint: string; disabled: boolean; title: string } {
-  return { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: selection === '', title: selection === '' ? 'Nothing selected' : 'Copy the selection' };
+// On a Mac the hint is the Edit menu's Cmd+C (fix 1106); the key is unchanged.
+export function copyRow(selection: string, platform: string = hostPlatform()): { label: string; hint: string; disabled: boolean; title: string } {
+  return { label: 'Copy', hint: platform === 'darwin' ? 'Cmd+C' : 'Ctrl+Shift+C', disabled: selection === '', title: selection === '' ? 'Nothing selected' : 'Copy the selection' };
 }
 
 // M9 fix 126: a view pane has no session to keep running, so its hide

@@ -102,7 +102,7 @@ const rows: Row[] = [
   { label: 'Stop with a running subagent', event: hook('Stop', { background_tasks: [{ id: 'a1', type: 'subagent', status: 'running', description: 'M30' }] }), to: 'waiting', reason: null },
   { label: 'Stop with a running shell', event: hook('Stop', { background_tasks: [{ id: 's1', type: 'shell', status: 'completed' }, { id: 's2', type: 'shell', status: 'running' }] }), to: 'waiting', reason: null },
   { label: 'Stop with a malformed background_tasks', event: hook('Stop', { background_tasks: 'running' }), to: 'done', reason: null },
-  { label: 'StopFailure', event: hook('StopFailure', { error_type: 'rate_limit' }), to: 'errored', reason: null },
+  { label: 'StopFailure', event: hook('StopFailure', { error: 'rate_limit' }), to: 'errored', reason: null },
   { label: 'SessionEnd', event: hook('SessionEnd'), to: 'idle', reason: null },
   { label: 'CwdChanged', event: hook('CwdChanged', { cwd: 'C:\\elsewhere', previous_cwd: 'C:\\repo' }), to: null },
   { label: 'unknown hook name', event: hook('SomethingNew'), to: null },
@@ -514,10 +514,12 @@ test('needs-input is cleared by the next working event', () => {
   assert.equal(resumed.needsInputReason, null);
 });
 
-test('StopFailure records error_type and the next prompt clears it', () => {
-  const failed = reduce(session({ state: 'working' }), hook('StopFailure', { error_type: 'server_error' }));
+test('StopFailure records error, else error_type, and the next prompt clears it', () => {
+  const failed = reduce(session({ state: 'working' }), hook('StopFailure', { error: 'server_error' }));
   assert.equal(failed.state, 'errored');
   assert.equal(failed.errorType, 'server_error');
+  assert.equal(reduce(session({ state: 'working' }), hook('StopFailure', { error_type: 'server_error' })).errorType, 'server_error', 'error_type alone still reads');
+  assert.equal(reduce(session({ state: 'working' }), hook('StopFailure', { error: 'rate_limit', error_type: 'server_error' })).errorType, 'rate_limit', 'error wins over error_type');
   assert.equal(reduce(session({ state: 'working' }), hook('StopFailure')).errorType, 'unknown');
   const retried = reduce(failed, hook('UserPromptSubmit'));
   assert.equal(retried.state, 'working');
@@ -999,6 +1001,21 @@ test('StatusLine keeps the prompt cache\'s TTL, expiry and warmth (M9 fix 772), 
   assert.equal(reduce(shell, hook('SessionEnd', { reason: 'exit' })).cache, null);
 });
 
+test('SessionStart drops the prompt cache on a /clear, a resume and a startup and keeps it on a compact, and a status line with no block after it brings none back (M9 fix 1101)', () => {
+  const warm = reduce(session({ state: 'done', lastEventAt: T0 }), hook('StatusLine', { prompt_cache: { warm: true, ttl: '1h', expires_at: 1792090000, requests: 3 } }));
+  assert.deepEqual(warm.cache, { ttl: '1h', expiresAt: 1792090000000, warm: true });
+  const cleared = reduce(reduce(warm, hook('SessionEnd', { reason: 'clear' })), hook('SessionStart', { source: 'clear', session_id: 'claude-session-2' }));
+  assert.equal(cleared.cache, null);
+  const bare = reduce(cleared, hook('StatusLine', { session_id: 'claude-session-2', context_window: { used_percentage: 0 } }));
+  assert.equal(bare.cache, null, 'a line without the block keeps none');
+  assert.deepEqual(reduce(bare, hook('StatusLine', { session_id: 'claude-session-2', prompt_cache: { warm: true, ttl: '1h', expires_at: 1792093600 } })).cache, { ttl: '1h', expiresAt: 1792093600000, warm: true });
+  assert.equal(reduce(warm, hook('SessionStart', { source: 'resume' })).cache, null);
+  assert.equal(reduce(warm, hook('SessionStart', { source: 'startup' })).cache, null);
+  assert.equal(reduce(reduce(warm, hook('SessionEnd', { reason: 'clear' })), hook('SessionStart', { session_start_type: 'clear', session_id: 'claude-session-3' })).cache, null);
+  assert.equal(reduce(warm, hook('SessionStart', { source: 'compact' })).cache, warm.cache);
+  assert.equal('cache' in reduce(session(), hook('SessionStart', { source: 'startup' })), false);
+});
+
 test('StatusLine sets the effort off effort.level (M9 fix 799): a line with a model and no effort clears it, a line with no model block and a Measure keep it, a shell\'s exit clears it', () => {
   const opus = { id: 'claude-opus-5-5', display_name: 'Opus 5.5' };
   const start = session({ state: 'done', lastEventAt: T0 });
@@ -1194,7 +1211,7 @@ test('liveReply is cleared by a prompt and by the turn ending, and kept by a per
   assert.equal(done.liveReply, null);
   assert.equal(done.lastReply, 'Read it.');
   assert.equal(reduce(working, hook('Stop', { background_tasks: [{ status: 'running', type: 'shell', command: 'npm test' }] })).liveReply, null, 'a pause ends the turn too');
-  assert.equal(reduce(working, hook('StopFailure', { error_type: 'rate_limit' })).liveReply, null);
+  assert.equal(reduce(working, hook('StopFailure', { error: 'rate_limit' })).liveReply, null);
   assert.equal(reduce(working, { type: 'pty.exit', exitCode: 0, at: T0 + 9000 }).liveReply, null);
   // A stale flag is not a state change, so the text stays.
   assert.equal(reduce(working, { type: 'stale-check', at: T0 + 20 * 60_000, staleAfterMs: 1000 }).liveReply, 'Reading the log.');
@@ -1241,7 +1258,7 @@ test('liveTool: a PreToolUse takes the agent line as a verb phrase until text, a
   const done = reduce(bash, hook('Stop', { last_assistant_message: 'Read it.' }));
   assert.equal(done.liveTool, null);
   assert.equal(done.lastReply, 'Read it.');
-  assert.equal(reduce(bash, hook('StopFailure', { error_type: 'rate_limit' })).liveTool, null);
+  assert.equal(reduce(bash, hook('StopFailure', { error: 'rate_limit' })).liveTool, null);
   assert.equal(reduce(bash, { type: 'pty.exit', exitCode: 0, at: T0 + 9000 }).liveTool, null);
   assert.equal(reduce(bash, { type: 'stale-check', at: T0 + 20 * 60_000, staleAfterMs: 1000 }).liveTool, 'Reading the backlog file');
 });
@@ -1864,7 +1881,7 @@ test('an Escape (TurnStart and its own TurnComplete, no Stop) still puts the row
 test('a StopFailure ends its turn for TurnComplete as a Stop does (M9 fix 830)', () => {
   let s = reduce(session({ state: 'idle' }), hook('UserPromptSubmit', { prompt: 'one' }, T0 + 10));
   s = reduce(s, hook('TurnStart', { turn_id: 't-1' }, T0 + 11));
-  s = reduce(s, hook('StopFailure', { error_type: 'rate_limit' }, T0 + 20));
+  s = reduce(s, hook('StopFailure', { error: 'rate_limit' }, T0 + 20));
   s = reduce(s, hook('UserPromptSubmit', { prompt: 'two' }, T0 + 30));
   s = reduce(s, hook('TurnComplete', { turn_id: 't-1', is_aborted: false }, T0 + 31));
   assert.equal(s.state, 'working');

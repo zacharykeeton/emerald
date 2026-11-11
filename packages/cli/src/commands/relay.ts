@@ -108,7 +108,10 @@ async function reachDaemon(): Promise<{ socket: net.Socket; token: string | unde
   } catch (err) {
     if (!isNoDaemon((err as NodeJS.ErrnoException).code)) throw new NoDaemon((err as Error).message);
     try {
-      await startDaemonDetachedFromSession(resolveDaemonMain(), emeraldHome(), pipe);
+      // The ssh session's SSH_CONNECTION goes to the daemon (M9 fix 1091), so
+      // its sessions see ssh as a real login's do; none passes nothing, and
+      // nothing is written to stderr, which main reads as a refusal's text.
+      await startDaemonDetachedFromSession(resolveDaemonMain(), emeraldHome(), pipe, process.env['SSH_CONNECTION']);
     } catch (startErr) {
       throw new NoDaemon((startErr as Error).message);
     }

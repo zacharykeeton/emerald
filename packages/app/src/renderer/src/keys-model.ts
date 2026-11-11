@@ -254,6 +254,17 @@ export function isCtrlOrCmdKey(ev: KeyLike, code: string, platform: string = hos
   return platform === 'darwin' && ev.metaKey && !ev.ctrlKey;
 }
 
+// M9 fix 1106: an edit key's hint, Cmd on a Mac and Ctrl elsewhere, the key isCtrlOrCmdKey (and on a Mac the Edit menu) takes.
+export function editKey(code: string, platform: string = hostPlatform()): string {
+  return formatChord({ code, ctrl: platform !== 'darwin', shift: false, alt: false, meta: platform === 'darwin' }, platform);
+}
+
+// M9 fix 1106: the modifier test of a key a hint names as Ctrl+Enter; Ctrl is
+// kept on a Mac beside Cmd, as every fix 1063 chord is.
+export function isCtrlOrCmd(ev: { ctrlKey: boolean; metaKey: boolean }, platform: string = hostPlatform()): boolean {
+  return ev.ctrlKey || (platform === 'darwin' && ev.metaKey);
+}
+
 // The key after the prefix.
 export function matchPrefixed(ev: KeyLike): Action | null {
   for (const b of BINDINGS) {

@@ -5,9 +5,13 @@
 // carries into the log. A message with no such prefix is marked [lib]
 // instead, the source and line kept on both. Imports nothing, so a test
 // runs it under node --test with no electron, the read-cap.ts shape.
+// Lines of ours that are records, not faults: written as notes, so the usage report counts neither (M9 fix 1128).
+const NOTE_PREFIXES = ['[emerald] uncaught stack: ', '[emerald] terminal webgl: '];
+
 export function rendererLogLine(level: string, message: string, sourceId: string, lineNumber: number): string {
   const body = message.startsWith('[emerald] ') ? message : `[lib] ${message}`;
   // Electron's <webview> teardown asks main about a guest it has already let go at each browser pane's close (M9 fix 694); nothing of ours to fix, and an error per closed page was noise in every report.
-  const shown = level === 'error' && /^Uncaught Error: Invalid guestInstanceId: \d+$/.test(message) && sourceId.startsWith('node:electron/js2c/isolated_bundle') ? 'note' : level;
+  const guest = level === 'error' && /^Uncaught Error: Invalid guestInstanceId: \d+$/.test(message) && sourceId.startsWith('node:electron/js2c/isolated_bundle');
+  const shown = guest || NOTE_PREFIXES.some((p) => message.startsWith(p)) ? 'note' : level;
   return `renderer: ${shown} ${body} (${sourceId}:${lineNumber})`;
 }

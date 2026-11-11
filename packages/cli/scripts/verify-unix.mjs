@@ -1,9 +1,17 @@
 // M9 fix 1017: verify:unix, the node-only smoke of the daemon and the CLI on
 // macOS and Linux. No window: the daemon on its Unix socket in a private
-// home, then a shell session driven through the CLI (start, idle, a typed
-// line read back, exit, rm), then the stop and a read that nothing of the
-// daemon's tree is left. Every line is `PASS <step>` or `FAIL <step>: <why>`;
-// the first FAIL prints the daemon log's tail, cleans up and exits 1.
+// home (the socket path under the 100 bytes a socket takes, the status
+// naming it), its feed off (a daemon of its own logs why, fix 1069, and
+// `feed serve` with no --dir is a usage error), the socket a socket of mode
+// 600 and ls answering; then a shell session driven through the CLI (start,
+// idle, a typed line read back, exit, rm); then a bash row and, with zsh on
+// the PATH, a zsh row (fix 1068: each reports its folder, reads running
+// while `sleep 3` runs and then ok, follows `cd /tmp`, exits and is
+// removed; a bash below 4.4, as a Mac's own 3.2 is, reads no command, as
+// cmd does); then the stop and a read that the socket, daemon.json and
+// the daemon's tree are gone. Every line is `PASS <step>` or
+// `FAIL <step>: <why>`; the first FAIL prints the daemon log's tail,
+// cleans up and exits 1.
 //
 // Two modes, read off a first `daemon status --json`: with the caller's
 // EMERALD_HOME naming a running daemon the script is attached (the macOS

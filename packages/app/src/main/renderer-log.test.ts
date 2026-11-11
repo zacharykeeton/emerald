@@ -16,6 +16,25 @@ test('a line with no emerald prefix is marked [lib], the source and line kept th
   );
 });
 
+test('an uncaught stack line of ours is a note, at either level (M9 fix 1128)', () => {
+  const src = 'file:///C:/app/out/renderer/assets/index.js';
+  const want = 'renderer: note [emerald] uncaught stack: TypeError: x | at f (a.js:1:2) (file:///C:/app/out/renderer/assets/index.js:7)';
+  assert.equal(rendererLogLine('error', '[emerald] uncaught stack: TypeError: x | at f (a.js:1:2)', src, 7), want);
+  assert.equal(rendererLogLine('warning', '[emerald] uncaught stack: TypeError: x | at f (a.js:1:2)', src, 7), want);
+  assert.equal(rendererLogLine('error', '[emerald] uncaught stacks are here', src, 7), `renderer: error [emerald] uncaught stacks are here (${src}:7)`);
+});
+
+test("the WebGL budget's note is a note; a renderer change stays a warning (M9 fix 1130)", () => {
+  assert.equal(
+    rendererLogLine('warning', '[emerald] terminal webgl: released 4 hidden, took 4 shown, 12 live (mark 12)', 'x.js', 1),
+    'renderer: note [emerald] terminal webgl: released 4 hidden, took 4 shown, 12 live (mark 12) (x.js:1)',
+  );
+  assert.equal(
+    rendererLogLine('warning', '[emerald] terminal renderer: dom (context lost, retry 1 of 3 in 1000 ms)', 'x.js', 1),
+    'renderer: warning [emerald] terminal renderer: dom (context lost, retry 1 of 3 in 1000 ms) (x.js:1)',
+  );
+});
+
 // M9 fix 694: Electron's own line at each browser pane's close is a note.
 test("Electron's Invalid guestInstanceId at a webview's teardown is a note; the same words elsewhere stay an error", () => {
   assert.equal(

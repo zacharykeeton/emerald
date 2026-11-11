@@ -9,6 +9,7 @@ import { contextSupported } from './daemon-model.ts';
 import {
   CONTEXT_ASK_MS,
   CONTEXT_FOOTER,
+  CONTEXT_FRESH_TEXT,
   RECOUNT_MS,
   agentRows,
   asOfText,
@@ -41,6 +42,8 @@ import { openFileTab } from './ui.ts';
 // one lighting its part, and the states: a session still being read, a
 // Claude emerald did not start (the status line's bar and the names its
 // transcript lists), no session, a plain shell.
+// M9 fix 1102: a conversation with no reply yet reads fresh, with words of
+// its own, once the mod was asked and has said nothing.
 
 export const CONTEXT_OLD_TEXT = 'The context breakdown needs emmerd at level 79 or later; restart it from the banner.';
 
@@ -202,7 +205,7 @@ function ContextBody({ session, used, onOpenPane }: { session: SessionInfo; used
     );
   }
   return (
-    <div className="rail-context" data-state="reading">
+    <div className="rail-context" data-state={state === 'fresh' ? 'fresh' : 'reading'}>
       <div className="rail-context-scroll">
         <div className="rail-context-body">
           <div className="rail-context-head">
@@ -213,7 +216,7 @@ function ContextBody({ session, used, onOpenPane }: { session: SessionInfo; used
           {plain}
         </div>
         <div className="rail-context-sections">
-          <div className="files-empty">reading the context</div>
+          <div className="files-empty">{state === 'fresh' ? CONTEXT_FRESH_TEXT : 'reading the context'}</div>
         </div>
       </div>
     </div>

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FINDINGS, MAPPED, batchInFlight, decide, isBinary, isExcluded, parsePatterns, scanText } from './export-public-lib.mjs';
+import { FINDINGS, MAPPED, batchInFlight, copiedChanges, decide, isBinary, isExcluded, parsePatterns, scanText } from './export-public-lib.mjs';
 import { BUNDLED_DEV, allowedUnder, renderNotices } from './third-party-notices-lib.mjs';
 import { buildNotices } from './third-party-notices.mjs';
 
@@ -85,6 +85,48 @@ function exportIn(cwd, ...args) {
   const r = spawnSync(process.execPath, [path.join(here, 'export-public.mjs'), ...args], { cwd, encoding: 'utf8' });
   return { status: r.status, out: r.stdout ?? '', err: r.stderr ?? '' };
 }
+
+test('copiedChanges keeps a change the export copies and drops one it leaves out (M9 fix 1114)', () => {
+  const NUL = String.fromCharCode(0);
+  const z = (...entries) => entries.map((e) => e + NUL).join('');
+  const patterns = parsePatterns('/docs/BACKLOG-INBOX.md\n/scripts/public/\n');
+  assert.deepEqual(copiedChanges(patterns, z(' M docs/BACKLOG-INBOX.md')), []);
+  assert.deepEqual(copiedChanges(patterns, z(' M docs/BACKLOG-INBOX.md', ' M README.md')), ['README.md']);
+  // A mapped source is left out by the list and still copied, under its export name.
+  assert.deepEqual(copiedChanges(patterns, z(' M scripts/public/CLAUDE.md')), ['scripts/public/CLAUDE.md']);
+  assert.deepEqual(copiedChanges(patterns, z('D  old.md')), ['old.md']);
+  // A kept file renamed into a left-out path: the status names the new path first, then the original.
+  assert.deepEqual(copiedChanges(patterns, z('R  docs/BACKLOG-INBOX.md', 'README.md')), ['README.md']);
+  assert.deepEqual(copiedChanges(patterns, ''), []);
+});
+
+test('the export copies past a change to a file it leaves out, and refuses one it copies (M9 fix 1114)', () => {
+  const repo = fixtureRepo({ 'README.md': 'x\n', 'secret-notes.md': 'kept back\n' });
+  const append = (name) => fs.appendFileSync(path.join(repo, name), 'more\n');
+  append('secret-notes.md');
+  const out1 = path.join(tempDir('out'), 'export');
+  const first = exportIn(repo, '--out', out1, '--version', '0.1.1');
+  assert.equal(first.status, 0, first.err);
+  assert.equal(fs.existsSync(path.join(out1, 'secret-notes.md')), false);
+
+  append('README.md');
+  const out2 = path.join(tempDir('out'), 'export');
+  const second = exportIn(repo, '--out', out2, '--version', '0.1.1');
+  assert.equal(second.status, 1);
+  assert.match(second.err, /export-public: the tree has changes to tracked files the export copies \(README\.md\); commit or stash them first/);
+  assert.equal(fs.existsSync(out2), false);
+
+  execFileSync('git', ['checkout', '--', 'README.md'], { cwd: repo });
+  append('scripts/public/CLAUDE.md');
+  const third = exportIn(repo, '--out', path.join(tempDir('out'), 'export'), '--version', '0.1.1');
+  assert.equal(third.status, 1);
+  assert.match(third.err, /copies \(scripts\/public\/CLAUDE\.md\); commit/);
+
+  append('README.md');
+  const fourth = exportIn(repo, '--out', path.join(tempDir('out'), 'export'), '--version', '0.1.1');
+  assert.equal(fourth.status, 1);
+  assert.match(fourth.err, /copies \(README\.md and 1 more\); commit/);
+});
 
 test('batchInFlight reads the plan heading of a batch in flight and nothing else', () => {
   const plan = '# Plan\n\n## M9 tasks, fixes 620 to 644, the export and the trash (each is one sitting unless said)\n\n### fix 620: x\n';

@@ -949,7 +949,7 @@ try {
     }
   };
   await s.evalJs(
-    `(() => { window.__notes1008 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane)')?.textContent ?? null; if (t !== null && window.__notes1008.at(-1) !== t) window.__notes1008.push(t); }; window.__obs1008 = new MutationObserver(read); window.__obs1008.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
+    `(() => { window.__notes1008 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane) .corner-note-text')?.textContent ?? null; if (t !== null && window.__notes1008.at(-1) !== t) window.__notes1008.push(t); }; window.__obs1008 = new MutationObserver(read); window.__obs1008.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
   );
   await setDropFiles(s, [many1008]);
   const spot1008 = await centerOf(s, rowSel953(into953));
@@ -959,8 +959,16 @@ try {
   // The frame for the user: the note mid-copy, taken the moment it shows.
   await s.waitFor(`/^Copying /.test(document.querySelector('.corner-note')?.textContent ?? '')`, 'a progress note in the corner', 10000);
   await s.screenshot('m12-drop-copying-1008.png');
+  // M9 fix 1124: a progress note carries the Cancel, the final note none.
+  // The note and its button read in one go, so a copy that ended since the
+  // screenshot is not read as a missing button.
+  const cancelRead = () =>
+    s.evalJs(`({ text: document.querySelector('.corner-note .corner-note-text')?.textContent ?? null, action: document.querySelector('.corner-note .corner-note-action')?.textContent ?? null })`);
+  const mid1008 = await cancelRead();
+  expect(!/^Copying /.test(mid1008.text ?? '') || mid1008.action === 'Cancel', `fix 1124: the progress note carries a Cancel, got ${JSON.stringify(mid1008)}`);
   await waitDisk953(() => filesIn1008(path.join(into953, 'many1008')) === 400 && filesIn1008(many1008) === 400, 'many1008 copied whole into into953, its source kept', 15000);
   await noteIs953('Copied many1008 into into953', 'the final note says the folder was copied');
+  expect((await cancelRead()).action === null, 'fix 1124: the final note of 1008 has no Cancel');
   const notes1008 = await s.evalJs(`(() => { window.__obs1008.disconnect(); return window.__notes1008; })()`);
   const counts1008 = notes1008.map((t) => /^Copying (\d+) of 400 files into into953$/.exec(t)).filter((m) => m !== null).map((m) => Number(m[1]));
   const lastProgress1008 = notes1008.findLastIndex((t) => t.startsWith('Copying '));
@@ -975,6 +983,108 @@ try {
   expect(mainLog1008.includes(`files-move into ${into953} (copy): many1008 copied`), 'main.log has the copy line');
   await s.waitFor(`!document.querySelector('.corner-note')`, 'the note goes after its usual moment, the progress not held', 3500);
   step('fix 1008: a copy of 400 files dropped with Ctrl shows its progress in the corner note, updating, before the final note, and the note goes after its usual moment');
+
+  // M9 fix 1123: one 72 MB file dropped with Ctrl on into953 is copied by stream, 2 ms after each 64 KB chunk under the pace, so the note counts bytes and moves inside the one file before the final note.
+  // The 2 ms pace sleeps about 14 ms a chunk under Windows' timer, so the
+  // one file takes about 16 s and the waits below are sized for that.
+  const MB72 = 72 * 1024 * 1024;
+  const stamp1123 = new Date('2024-01-02T03:04:05Z');
+  const big1123 = path.join(src953, 'big1123.bin');
+  // A truncate, so the fixture costs no write.
+  fs.closeSync(fs.openSync(big1123, 'w'));
+  fs.truncateSync(big1123, MB72);
+  fs.utimesSync(big1123, stamp1123, stamp1123);
+  const sizeOf = (p) => {
+    try {
+      return fs.statSync(p).size;
+    } catch {
+      return -1;
+    }
+  };
+  await s.evalJs(
+    `(() => { window.__notes1123 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane) .corner-note-text')?.textContent ?? null; if (t !== null && window.__notes1123.at(-1) !== t) window.__notes1123.push(t); }; window.__obs1123 = new MutationObserver(read); window.__obs1123.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
+  );
+  await setDropFiles(s, [big1123]);
+  const spot1123 = await centerOf(s, rowSel953(into953));
+  await hover(s, spot1123, { ctrl: true });
+  expect((await drop953()).effect === 'copy', 'Ctrl shows copy over into953 for big1123');
+  await drag(s, 'drop', spot1123, { ctrl: true });
+  await s.waitFor(`/^Copying .* of 72\\.0 MB into into953$/.test(document.querySelector('.corner-note .corner-note-text')?.textContent ?? '')`, 'a byte note in the corner', 10000);
+  await s.screenshot('m12-drop-bytes-1123.png');
+  const mid1123 = await cancelRead();
+  expect(!/^Copying /.test(mid1123.text ?? '') || mid1123.action === 'Cancel', `fix 1124: the byte note carries a Cancel, got ${JSON.stringify(mid1123)}`);
+  await waitDisk953(() => sizeOf(path.join(into953, 'big1123.bin')) === MB72 && sizeOf(big1123) === MB72, 'big1123.bin copied whole into into953, its source kept', 45000);
+  await noteIs953('Copied big1123.bin into into953', 'the final note says the big file was copied');
+  expect((await cancelRead()).action === null, 'fix 1124: the final note of 1123 has no Cancel');
+  const notes1123 = await s.evalJs(`(() => { window.__obs1123.disconnect(); return window.__notes1123; })()`);
+  const perMB = { bytes: 1048576, KB: 1024, MB: 1 };
+  const mbs1123 = notes1123
+    .map((t) => /^Copying ([\d.]+) (bytes|KB|MB) of 72\.0 MB into into953$/.exec(t))
+    .filter((m) => m !== null)
+    .map((m) => Number(m[1]) / perMB[m[2]]);
+  // The last chunk's push can read 72.0 of 72.0 MB before the file counts
+  // as done, so a note at the whole size is allowed; two must come before it.
+  const lastProgress1123 = notes1123.findLastIndex((t) => t.startsWith('Copying '));
+  expect(
+    mbs1123.length >= 2 &&
+      mbs1123.every((n, i) => n <= 72 && (i === 0 || n > mbs1123[i - 1])) &&
+      mbs1123.filter((n) => n < 72).length >= 2 &&
+      !notes1123.some((t) => t.includes('files into')) &&
+      lastProgress1123 < notes1123.length - 1 &&
+      notes1123.at(-1) === 'Copied big1123.bin into into953',
+    `fix 1123: the byte notes rise inside the one file to the final note, got ${JSON.stringify(notes1123)}`,
+  );
+  const mtime1123 = fs.statSync(path.join(into953, 'big1123.bin')).mtimeMs;
+  expect(Math.abs(mtime1123 - fs.statSync(big1123).mtimeMs) <= 2, `fix 1123: the streamed copy keeps its modified time, got ${mtime1123} against ${fs.statSync(big1123).mtimeMs}`);
+  const mainLog1123 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  expect(mainLog1123.includes(`files-move into ${into953} (copy): big1123.bin copied`), 'fix 1123: main.log has the copy line');
+  await s.waitFor(`!document.querySelector('.corner-note')`, 'the byte note goes after its usual moment', 3500);
+  step('fix 1123: a 72 MB file dropped with Ctrl counts its copy in bytes in the corner note, moving inside the one file, before the final note, its modified time kept');
+
+  // M9 fix 1124: three 72 MB files dropped with Ctrl on into953, and the corner note's Cancel clicked while the second copies: the first stays whole, the second is taken back, the third never starts.
+  const c1124 = [1, 2, 3].map((i) => path.join(src953, `c1124-${i}.bin`));
+  for (const p of c1124) {
+    fs.closeSync(fs.openSync(p, 'w'));
+    fs.truncateSync(p, MB72);
+  }
+  await s.evalJs(
+    `(() => { window.__notes1124 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane) .corner-note-text')?.textContent ?? null; if (t !== null && window.__notes1124.at(-1) !== t) window.__notes1124.push(t); }; window.__obs1124 = new MutationObserver(read); window.__obs1124.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
+  );
+  await setDropFiles(s, c1124);
+  const spot1124 = await centerOf(s, rowSel953(into953));
+  await hover(s, spot1124, { ctrl: true });
+  expect((await drop953()).effect === 'copy', 'Ctrl shows copy over into953 for the three c1124 files');
+  await drag(s, 'drop', spot1124, { ctrl: true });
+  // The second file well under way, so the click never lands on the
+  // first file's last chunk.
+  await s.waitFor(
+    `(() => { const m = /^Copying ([\\d.]+) MB of 216\\.0 MB into into953$/.exec(document.querySelector('.corner-note .corner-note-text')?.textContent ?? ''); return m !== null && Number(m[1]) >= 80 && Number(m[1]) <= 136; })()`,
+    'the byte note inside the second of three files',
+    60000,
+  );
+  expect((await cancelRead()).action === 'Cancel', 'fix 1124: the note mid-copy carries a Cancel');
+  await s.screenshot('m12-drop-cancel-1124.png');
+  // A real click: an evalJs .click() would pass under pointer-events none.
+  const cancelSpot1124 = await centerOf(s, '.corner-note .corner-note-action');
+  await s.click(cancelSpot1124.x, cancelSpot1124.y);
+  await noteIs953('Copied c1124-1.bin into into953; cancelled, 2 not copied', 'the final note says what the Cancel left out');
+  const notes1124 = await s.evalJs(`(() => { window.__obs1124.disconnect(); return window.__notes1124; })()`);
+  expect(sizeOf(path.join(into953, 'c1124-1.bin')) === MB72, `fix 1124: the first file stays whole, got ${sizeOf(path.join(into953, 'c1124-1.bin'))}`);
+  expect(sizeOf(path.join(into953, 'c1124-2.bin')) === -1 && sizeOf(path.join(into953, 'c1124-3.bin')) === -1, 'fix 1124: the second is taken back and the third never lands');
+  expect(c1124.every((p) => sizeOf(p) === MB72), 'fix 1124: the three sources are whole');
+  const mainLog1124 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  expect(mainLog1124.includes(`files-cancel into ${into953}: 1 running`), 'fix 1124: main.log has the cancel line');
+  expect(
+    mainLog1124.includes(`files-move into ${into953} (copy): c1124-1.bin copied, c1124-2.bin refused cancelled, c1124-3.bin skipped cancelled`),
+    'fix 1124: main.log has the cancelled copy line',
+  );
+  const cancelAt1124 = notes1124.indexOf('Cancelling the copy into into953');
+  expect(
+    notes1124.at(-1) === 'Copied c1124-1.bin into into953; cancelled, 2 not copied' && (cancelAt1124 === -1 || !notes1124.slice(cancelAt1124 + 1).some((t) => t.startsWith('Copying '))),
+    `fix 1124: no progress note after the Cancel, the final note last, got ${JSON.stringify(notes1124)}`,
+  );
+  await s.waitFor(`!document.querySelector('.corner-note')`, 'the cancelled note goes after its usual moment', 3500);
+  step("fix 1124: the corner note's Cancel, clicked while the second of three 72 MB files copies, keeps the first whole, takes the second back and leaves the third, the note saying so");
 
   step('PASS');
 } catch (err) {

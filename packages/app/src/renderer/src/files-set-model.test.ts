@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FOLDER_REFUSED_NOTE, refusalNote, SET_REFUSED_NOTE, setCopy, treeRefusal } from './files-set-model.ts';
+import { dragOutFiles, FOLDER_REFUSED_NOTE, refusalNote, SET_REFUSED_NOTE, setCopy, treeRefusal } from './files-set-model.ts';
+
+test('dragOutFiles takes the tree\'s paths, else the one file, else nothing (M9 fix 1122)', () => {
+  assert.deepEqual(dragOutFiles(null, ['C:\\r\\d']), ['C:\\r\\d']);
+  assert.deepEqual(dragOutFiles('C:\\r\\a', []), ['C:\\r\\a']);
+  assert.deepEqual(dragOutFiles('C:\\r\\a', ['C:\\r\\a', 'C:\\r\\b']), ['C:\\r\\a', 'C:\\r\\b']);
+  assert.equal(dragOutFiles(null, []), null);
+});
 
 // M9 fix 1006: a set or a folder dragged onto a pane says it cannot land.
 

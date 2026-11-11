@@ -25,7 +25,7 @@ import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.t
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, readTail, revealPath, statPath } from './files.ts';
 import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
-import { copyPaceMs, createFile, makeFolder, heldTrash, moveEntries, renameEntry, trashEntry, writeFileText } from './file-write.ts';
+import { CopyRuns, copyPaceMs, createFile, makeFolder, heldTrash, moveEntries, renameEntry, trashEntry, writeFileText } from './file-write.ts';
 import { folderIcon, folderIconForget } from './folder-icon.ts';
 import { GitLogWatcher, gitChanges, gitGraph, gitInit, gitLog, gitProjectCounts, gitReview, gitRevert, gitShow, gitStatus } from './git-status.ts';
 import type { Runner } from './node-runner.ts';
@@ -35,6 +35,7 @@ import { rendererLogLine } from './renderer-log.ts';
 import { awayAfterMs, IDLE_POLL_MS, PresenceTracker } from './presence.ts';
 import { createTaskbar } from './taskbar.ts';
 import { wireWindowDrag } from './window-drag.ts';
+import { fileDragOut } from './file-drag-out.ts';
 import { encodeRequestError } from './request-error.ts';
 import { createUseRecord } from './use-record.ts';
 import { applySkin, applyTheme, chromeOf, currentSkin, initSkin, TITLE_BAR_HEIGHT } from './skin.ts';
@@ -64,6 +65,8 @@ import { startLoopDelayLog } from './loop-delay.ts';
 import { rotateLogAtStart } from './log-rotate.ts';
 import { setGitRunnerLog } from './git-runner.ts';
 import { fetchUsage } from './usage.ts';
+import { CANVAS_COPY_IMAGE, declaredImageSize, imageMime } from './copy-image-read.ts';
+import { READ_CAP, readCapped } from './read-cap.ts';
 import { cappedEdges, cappedNow, usageByKey } from './usage-edges.ts';
 import { autoUpdater } from 'electron-updater';
 import { createUpdater, releasePageUrl, updateFeedSpec } from './updater.ts';
@@ -706,6 +709,7 @@ async function hostForget(name: string): Promise<void> {
   hostClients.delete(name);
   hostSessions.delete(name);
   hostLast.delete(name);
+  // M9 fix 1097: the broker keeps the host's holders, so a pane still showing one of its sessions is attached again by the next contact's connected handler.
   // The renderer would otherwise keep the host's last state (up, say), and
   // the on row's pick would contact nothing; idle makes the next pick
   // connect afresh. Not kept in hostLast, so a reload starts with no entry.
@@ -1134,9 +1138,13 @@ const trasher = trashHeld
 ipcMain.handle('emerald:files-trash', (_event, p: string) => trashEntry(p, trasher, log));
 // M9 fix 953: a drop from Explorer on the Files rail, the replaced entries
 // through the same trasher as Delete, and a copy's progress pushed back to
-// the window that dropped (M9 fix 1008).
-ipcMain.handle('emerald:files-move', (event, paths: unknown, dir: string, mode: MoveMode, replace: unknown) =>
-  moveEntries(
+// the window that dropped (M9 fix 1008). Each run is stoppable by the
+// corner note's Cancel through copyRuns (M9 fix 1124).
+const copyRuns = new CopyRuns();
+ipcMain.handle('emerald:files-move', (event, paths: unknown, dir: string, mode: MoveMode, replace: unknown) => {
+  const owner = event.sender.id;
+  const signal = copyRuns.begin(owner, dir);
+  return moveEntries(
     Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : [],
     dir,
     mode === 'move' || mode === 'copy' ? mode : 'auto',
@@ -1145,12 +1153,18 @@ ipcMain.handle('emerald:files-move', (event, paths: unknown, dir: string, mode: 
       trash: trasher,
       log,
       pace: copyPaceMs(process.env['EMERALD_COPY_PACE_MS']),
+      signal,
       progress: (p) => {
         if (!event.sender.isDestroyed()) event.sender.send('emerald:files-progress', { dir, ...p });
       },
     },
-  ),
-);
+  ).finally(() => copyRuns.end(owner, dir, signal));
+});
+// M9 fix 1124: the corner note's Cancel, for this window's copies into dir.
+ipcMain.handle('emerald:files-cancel', (event, dir: string) => {
+  const n = copyRuns.cancel(event.sender.id, dir);
+  log(`files-cancel into ${dir}: ${n} running`);
+});
 // One running search per window (M9 fix 519): a newer search aborts the
 // one before it, and the rail's stop aborts whatever is running, so a
 // walk the rail no longer wants ends at its next folder or file.
@@ -1332,7 +1346,9 @@ ipcMain.handle('emerald:skill-overrides-undo', (_event, id: number) => undoSkill
 // box's paste under a harness reads the image the script wrote.
 const heldClipboard: { text: string; image: boolean; png: Buffer | null } | null = process.env['EMERALD_HOME'] === undefined ? null : { text: '', image: false, png: null };
 ipcMain.handle('emerald:clipboard-read', async () => {
-  if (heldClipboard !== null) return heldClipboard.text !== '' ? { text: heldClipboard.text, image: false } : { text: null, image: heldClipboard.image };
+  // The held image's size (M9 fix 1111), so a script reads what a copy
+  // wrote; the real clipboard's read never carries it.
+  if (heldClipboard !== null) return heldClipboard.text !== '' ? { text: heldClipboard.text, image: false } : { text: null, image: heldClipboard.image, ...(heldClipboard.png !== null && heldClipboard.png.length > 0 ? { size: nativeImage.createFromBuffer(heldClipboard.png).getSize() } : {}) };
   const text = await clipboard.readText();
   if (text !== '') return { text, image: false };
   return { text: null, image: await clipboard.has('image/png') };
@@ -1375,6 +1391,27 @@ ipcMain.handle('emerald:clipboard-write-image-file', async (_event, file: string
   }
   await writeClipboardPng(img.toPNG());
   return true;
+});
+// Copy image for the kinds main cannot decode, and the ICO it decodes at the
+// wrong size (M9 fix 1111): the file as a data: URL the renderer draws on a
+// canvas (a data: picture never taints it, and the page's CSP allows data:,
+// not blob:), with the size the file itself declares.
+ipcMain.handle('emerald:clipboard-image-data', async (_event, file: string) => {
+  // Never a network path, for fix 478's reason; and only the canvas kinds,
+  // so this is no general way to read a file's bytes.
+  if (typeof file !== 'string' || /^[\\/]{2}/.test(file) || !path.isAbsolute(file) || !CANVAS_COPY_IMAGE.test(file)) return null;
+  try {
+    const st = await fs.promises.stat(file);
+    const buf = st.isFile() ? await readCapped(file, st.size) : null;
+    if (buf === null) {
+      log(`copy image: ${file} is over ${READ_CAP / 1024 / 1024} MB or not a file`);
+      return null;
+    }
+    return { dataUrl: `data:${imageMime(file)};base64,${buf.toString('base64')}`, size: declaredImageSize(file, buf) };
+  } catch (err) {
+    log(`copy image: could not read ${file}: ${String(err)}`);
+    return null;
+  }
 });
 // The chat box's image paste (M9 fix 721): the clipboard's PNG (the held
 // one under a private home) as a thumbnail, and as a file Claude Code is
@@ -1772,6 +1809,7 @@ const designMode = wireDesignMode({
 // window there, as openNewWindow opens one.
 const windowDrag = wireWindowDrag({
   log,
+  dragOut: (contents, files) => fileDragOut(contents, files, log),
   windows: allWindows,
   idOf: windowIdOf,
   lift: liftWindow,

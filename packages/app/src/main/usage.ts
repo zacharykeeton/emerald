@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { UsageAsk, UsageResult } from '../preload/api.ts';
 import { claudeHome, claudeHomeExists } from './claude-home.ts';
-import { parseRetryAfter, parseUsageReply } from '../renderer/src/usage-model.ts';
+import { parseRetryAfter, parseUsageReply, usageReadLine } from '../renderer/src/usage-model.ts';
 
 // The account's Claude usage, read the way Claude Code's /usage reads it:
 // the OAuth token Claude Code keeps in ~/.claude/.credentials.json, sent
@@ -103,6 +103,6 @@ export async function fetchUsage(log: UsageLog, ask: UsageAsk = 'mount'): Promis
   // One line per reading (M9 fix 163), so the log shows the true cadence
   // of the asks beside the 429s; the log has no levels, and a dozen
   // lines an hour is the cost of knowing.
-  log(`usage read: ${windows.length} windows, asked on ${ask}`);
+  log(usageReadLine(windows, ask));
   return { windows };
 }

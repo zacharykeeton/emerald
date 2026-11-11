@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EMPTY_CONFLICTS, findPane, splitPane } from '@emerald/shared';
 import type { Layout, LayoutNode, RemoteHost } from '@emerald/shared';
 import type { DaemonInfo } from '../../preload/api.ts';
-import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, effectiveState, focusedHost, hostOfPane, hostState, paneHost, splitPaneOnHost, withPaneHosts } from './hosts-model.ts';
+import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, dropHostSessions, effectiveState, focusedHost, hostOfPane, hostState, paneHost, splitPaneOnHost, withPaneHosts } from './hosts-model.ts';
 import type { HostState } from './hosts-model.ts';
 import type { State } from './store.ts';
 import { aSession } from './test-support.ts';
@@ -220,4 +220,16 @@ test("withPaneHosts sets a remote session's host, removes a local one's and a vi
   assert.equal(withPaneHosts(out, hostOf), out, 'the same layout when nothing moves');
   const allLocal = layoutOf({ kind: 'pane', id: 'p', sessionId: 'l', view: null }, 'p');
   assert.equal(withPaneHosts(allLocal, hostOf), allLocal);
+});
+
+test('dropHostSessions leaves out one host\'s sessions and answers the same map when it has none (M9 fix 1097)', () => {
+  const map = new Map([
+    ['local', aSession({ id: 'local' })],
+    ['w1', aSession({ id: 'w1', host: 'wfs-db' })],
+    ['w2', aSession({ id: 'w2', host: 'wfs-db' })],
+    ['o1', aSession({ id: 'o1', host: 'other' })],
+  ]);
+  assert.deepEqual([...dropHostSessions(map, 'wfs-db').keys()], ['local', 'o1']);
+  assert.equal(dropHostSessions(map, 'nowhere'), map);
+  assert.equal(map.size, 4, 'the map handed in is left as it was');
 });

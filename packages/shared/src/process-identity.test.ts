@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { START_TOLERANCE_MS, killTree, parseElapsed, parsePsTable, processIdentity, processIdentityAsync, treeOf } from './process-identity.ts';
-import type { ReaperProbes } from './process-identity.ts';
+import { START_TOLERANCE_MS, killTree, parseElapsed, parsePsTable, processIdentity, processIdentityAsync, readStartAsync, startFrom, treeOf } from './process-identity.ts';
+import type { ReaperProbes, StartRead } from './process-identity.ts';
 
-const probes = (alive: boolean, startedAt: number | null): ReaperProbes => ({ alive: () => alive, startedAt: () => startedAt });
+const probes = (alive: boolean, startedAt: StartRead): ReaperProbes => ({ alive: () => alive, startedAt: () => startedAt });
 
 test('a pid is the same process, gone, or somebody else (M9 fix 494)', () => {
   const started = 1_700_000_000_000;
@@ -14,8 +14,32 @@ test('a pid is the same process, gone, or somebody else (M9 fix 494)', () => {
   assert.equal(processIdentity(1234, started, probes(true, started + 60_000)), 'other', 'a reused pid, the new process younger');
   assert.equal(processIdentity(1234, started, probes(true, started - 60_000)), 'other', 'a reused pid, the new process older');
   assert.equal(processIdentity(1234, started, probes(false, started)), 'gone', 'nothing holds the pid');
-  assert.equal(processIdentity(1234, started, probes(true, null)), 'gone', 'the start time could not be read');
+  assert.equal(processIdentity(1234, started, probes(true, null)), 'gone', 'the read found no process');
+  assert.equal(processIdentity(1234, started, probes(true, 'unknown')), 'unknown', 'the read timed out or failed');
   assert.equal(processIdentity(Number.NaN, started, probes(true, started)), 'gone', 'a pid that is not a number');
+});
+
+test('a start-time read that times out or fails is unknown, not gone (M9 fix 1109)', () => {
+  assert.equal(startFrom('', true, 'win32'), 'unknown');
+  assert.equal(startFrom('1700000000000', true, 'win32'), 'unknown', 'a failed read is never trusted');
+  assert.equal(startFrom('', false, 'win32'), null);
+  assert.equal(startFrom(' \r\n', false, 'win32'), null);
+  assert.equal(startFrom('1700000000000\r\n', false, 'win32'), 1_700_000_000_000);
+  assert.equal(startFrom('Get-CimInstance : Access denied', false, 'win32'), 'unknown');
+  assert.equal(startFrom('', false, 'linux'), null);
+  assert.equal(startFrom('soon', false, 'darwin'), 'unknown');
+  const r = startFrom('01:57\n', false, 'linux');
+  assert.equal(typeof r, 'number');
+  assert.ok(Math.abs((r as number) - (Date.now() - 117_500)) < 1000);
+});
+
+test('readStartAsync: a probe that never answers is unknown at its timeout (M9 fix 1109)', async () => {
+  const t0 = Date.now();
+  assert.equal(await readStartAsync(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], 'win32', 300), 'unknown');
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0} ms`);
+  assert.equal(await readStartAsync('emerald-no-such-command-1109', [], 'win32', 2000), 'unknown');
+  assert.equal(await readStartAsync(process.execPath, ['-e', 'process.stdout.write("1700000000000")'], 'win32', 10_000), 1_700_000_000_000);
+  assert.equal(await readStartAsync(process.execPath, ['-e', ''], 'win32', 10_000), null);
 });
 
 test('this process reads as itself, through the real probes, sync and async (M9 fix 494)', async () => {

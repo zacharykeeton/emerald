@@ -196,8 +196,9 @@ export function othersToTurnOff(names: readonly string[], read: SkillOverridesRe
   return names.filter((n) => effectiveListing(scopeValues(read, n)).value !== 'off');
 }
 
-export function turnOffLabel(n: number): string {
-  return `Turn off the other ${n} ▾`;
+// M9 fix 1105: one skill by its name, more as "these N"; a group whose every row is never used has no "other".
+export function turnOffLabel(names: readonly string[]): string {
+  return names.length === 1 ? `Turn off ${names[0]} ▾` : `Turn off these ${names.length} ▾`;
 }
 
 // The note under the group after a change. One change is one scope and

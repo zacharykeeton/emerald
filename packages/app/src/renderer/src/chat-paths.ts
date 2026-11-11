@@ -1,4 +1,5 @@
 import { normalizePath } from './files-model.ts';
+import { pathLinkParts, pathLinksIn } from './path-links.ts';
 
 // M9 fix 716: the paths the chat view links, with no DOM so node:test
 // can cover it. An inline code span in a reply is a path candidate when
@@ -6,7 +7,13 @@ import { normalizePath } from './files-model.ts';
 // glob or shell characters), with an optional :line or :line:column
 // tail; it is linked only when it resolves inside the session's folder
 // and a stat says it is a file there. A picture's path is linked wherever
-// it resolves, in a code span or bare in the text (M9 fix 864).
+// it resolves, in a code span or bare in the text (M9 fix 864). Since M9
+// fix 1099 an absolute drive path that stats as a file links wherever it
+// appears too: a code span, bare text, a fenced block and the prompt
+// bubble; since M9 fix 1135 the prompt bubble links a relative path or an
+// @ mention too, resolved in the session's folder as a reply's code span
+// is; elsewhere a relative path keeps the rules above, and a UNC path stays
+// plain (resolveIn refuses one).
 
 // The stat answers are kept for the window's life, so a reply re-read on
 // every transcript change never stats the same path twice; the map is
@@ -91,4 +98,58 @@ export function insideFolder(cwd: string, abs: string): boolean {
 export function folderPath(cwd: string, rel: string): string | null {
   const abs = resolveIn(cwd, rel);
   return abs !== null && insideFolder(cwd, abs) ? abs : null;
+}
+
+// M9 fix 1099: a path that names its drive, which links wherever it
+// appears once a stat says it is a file.
+export function isDrivePath(p: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(p);
+}
+
+export interface DrivePathLink {
+  start: number;
+  end: number;
+  text: string;
+  abs: string;
+  line: number | null;
+}
+
+// Every drive path in a run of text, found by the terminal's own rule
+// (path-links.ts), with its :N line when it has one.
+export function drivePathsIn(text: string): DrivePathLink[] {
+  const out: DrivePathLink[] = [];
+  for (const link of pathLinksIn(text)) {
+    const parts = pathLinkParts(link.text);
+    if (!isDrivePath(parts.path)) continue;
+    const abs = resolveIn('', parts.path);
+    if (abs === null) continue;
+    out.push({ start: link.start, end: link.end, text: link.text, abs, line: parts.line ?? null });
+  }
+  return out;
+}
+
+export type PromptPart = { text: string; path: string | null; line: number | null };
+
+// The prompt bubble's text split into plain runs and the paths `known` says
+// are files: a drive path wherever it points, a relative one or an @ mention
+// (its @ dropped to resolve, kept in the link's text) inside cwd (M9 fix
+// 1135); each path not yet statted is asked once.
+export function promptParts(text: string, cwd: string, known: (abs: string) => 'file' | 'other' | undefined): { parts: PromptPart[]; ask: string[] } {
+  const parts: PromptPart[] = [];
+  const ask: string[] = [];
+  let at = 0;
+  for (const link of pathLinksIn(text)) {
+    const bare = link.text.startsWith('@') ? link.text.slice(1) : link.text;
+    const lp = pathLinkParts(bare);
+    const abs = isDrivePath(lp.path) ? resolveIn('', lp.path) : folderPath(cwd, lp.path);
+    if (abs === null) continue;
+    const kind = known(abs);
+    if (kind === undefined && !ask.includes(abs)) ask.push(abs);
+    if (kind !== 'file') continue;
+    if (link.start > at) parts.push({ text: text.slice(at, link.start), path: null, line: null });
+    parts.push({ text: link.text, path: abs, line: lp.line ?? null });
+    at = link.end;
+  }
+  if (at < text.length || parts.length === 0) parts.push({ text: text.slice(at), path: null, line: null });
+  return { parts, ask };
 }

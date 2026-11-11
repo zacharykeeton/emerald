@@ -81,6 +81,14 @@ git('config', 'user.email', 'verify@example.invalid');
 git('config', 'commit.gpgsign', 'false');
 git('add', '.');
 git('commit', '-q', '-m', 'seed');
+// M9 fix 1121: a repository whose only icon is src/app/favicon.ico, found by
+// the repository search (a real image, so the img does not fall back).
+const seedNextShort = path.join(os.tmpdir(), 'emerald-verify', `m4-icon-next-${process.pid}`);
+fs.rmSync(seedNextShort, { recursive: true, force: true });
+fs.mkdirSync(path.join(seedNextShort, 'src', 'app'), { recursive: true });
+fs.copyFileSync(path.join(repoRoot, 'packages', 'app', 'build', 'icon.ico'), path.join(seedNextShort, 'src', 'app', 'favicon.ico'));
+const seedNext = fs.realpathSync.native(seedNextShort);
+execFileSync('git', ['init', '-q'], { cwd: seedNext, stdio: 'ignore' });
 const s = await launch(freshPort(), { freshState: true });
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
@@ -751,6 +759,20 @@ try {
   expect((await headingUnshown())?.count === homeOrphans && (await chipUnshown()) === `Unshown ${orphansBefore.length}`, 'the heading and the chip are back down');
   await s.screenshot('m4-sidebar-unshown.png');
   step(`M9 fix 249: hiding M's pane turned its word to "on no pane" (italic, the name --muted, data-place none, data-shown off), the home heading's count went ${homeOrphans} to ${homeOrphans + 1} and the Unshown chip ${orphansBefore.length} to ${orphansBefore.length + 1}, the chip listed M with the orphans and Close all under it read the filtered count; showing M again put them back`);
+  // M9 fix 1121: the repository search. A heading whose only icon is
+  // src/app/favicon.ico draws it, and the checkout's own heading draws
+  // packages/app/build/icon.ico (the root has no icon at a fixed place).
+  await zreq(s, 'session.spawn', { kind: 'shell', cwd: seedNext, cols: 80, rows: 24 });
+  await zreq(s, 'session.spawn', { kind: 'shell', cwd: repoRoot, cols: 80, rows: 24 });
+  await s.waitFor(`[...document.querySelectorAll('.sidebar-group')].some(g => g.dataset.group === ${JSON.stringify(seedNext)} && g.querySelector('img.sidebar-group-icon'))`, 'the src/app heading has an img icon', 8000);
+  const nextIcon = await headingIcon(seedNext);
+  const nextSrc = 'file:///' + path.join(seedNext, 'src', 'app', 'favicon.ico').replace(/\\/g, '/');
+  expect(nextIcon.tag === 'img' && nextIcon.src === nextSrc, `the src/app heading's img src is the searched icon, got ${JSON.stringify(nextIcon)} wanted ${nextSrc}`);
+  const repoLower = JSON.stringify(fs.realpathSync.native(repoRoot).toLowerCase());
+  await s.waitFor(`[...document.querySelectorAll('.sidebar-group')].some(g => g.dataset.group.toLowerCase() === ${repoLower} && g.querySelector('img.sidebar-group-icon'))`, 'the checkout heading has an img icon', 8000);
+  const checkoutSrc = await s.evalJs(`[...document.querySelectorAll('.sidebar-group')].find(g => g.dataset.group.toLowerCase() === ${repoLower}).querySelector('img.sidebar-group-icon').getAttribute('src')`);
+  expect(checkoutSrc.toLowerCase().endsWith('/packages/app/build/icon.ico'), `the checkout heading draws packages/app/build/icon.ico, got ${checkoutSrc}`);
+  step("M9 fix 1121: a heading whose only icon is src/app/favicon.ico draws it, found by the repository search, and the checkout's own heading draws packages/app/build/icon.ico");
   await s.screenshot('m4-sidebar-final.png');
   step('PASS');
 } catch (err) {

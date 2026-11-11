@@ -313,6 +313,8 @@ try {
   // M9 fix 1007: Copy image, first on the picture's own menu, then on its
   // rail row after the copy items; the clipboard is the held one.
   const heldImage = `window.emerald.clipboard.read().then(r => r.text === null && r.image === true)`;
+  // M9 fix 1111: the held read carries the image's size.
+  const heldSized = (w, h) => `window.emerald.clipboard.read().then(r => r.text === null && r.image === true && r.size?.width === ${w} && r.size?.height === ${h})`;
   const rightClick = (sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}); const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); })()`);
   await s.evalJs(`window.emerald.clipboard.write('before 1007')`);
   await rightClick('img.file-image');
@@ -322,6 +324,7 @@ try {
   await s.evalJs(`document.querySelector('.file-menu .menu-item').click()`);
   await s.waitFor(`!document.querySelector('.file-menu')`, 'the PNG menu closed', 3000);
   await s.waitFor(heldImage, 'fix 1007: Copy image put the PNG on the clipboard', 3000);
+  await s.waitFor(heldSized(2, 1), 'fix 1111: the held read says the PNG is 2 by 1', 3000);
   await s.evalJs(`window.emerald.clipboard.write('before 1007')`);
   await rightClick(rowSel(pic));
   await s.waitFor(`document.querySelector('.files-menu')?.dataset.path === ${JSON.stringify(pic)}`, "the PNG row's menu", 3000);
@@ -386,15 +389,17 @@ try {
   expect((await s.evalJs(`document.querySelector('.file-view').dataset.view`)) === 'raw', 'the SVG is on Raw');
   await s.evalJs(`document.querySelector('.file-view-switch [data-view="rendered"]').click()`);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'image'`, 'Rendered is the picture again');
-  // M9 fix 1007: Electron decodes no SVG, so its Copy image is there,
-  // disabled, with the reason.
+  // M9 fix 1111: the SVG copies at the 3000 by 40 it declares, drawn by the
+  // renderer.
+  await s.evalJs(`window.emerald.clipboard.write('before 1111')`);
   await rightClick('img.file-image');
   await s.waitFor(`!!document.querySelector('.file-menu')`, 'the SVG menu', 3000);
   const svgFirst = await s.evalJs(`(() => { const b = document.querySelector('.file-menu .menu-item'); return { label: b.querySelector('.menu-label').textContent, disabled: b.disabled, title: b.title }; })()`);
-  expect(svgFirst.label === 'Copy image' && svgFirst.disabled === true && svgFirst.title === "This kind of picture can't be copied", `fix 1007: the SVG menu opens with Copy image disabled with the reason, got ${JSON.stringify(svgFirst)}`);
-  await s.key('Escape', 'Escape', 27);
+  expect(svgFirst.label === 'Copy image' && svgFirst.disabled === false, `fix 1111: the SVG menu opens with Copy image, enabled, got ${JSON.stringify(svgFirst)}`);
+  await s.evalJs(`document.querySelector('.file-menu .menu-item').click()`);
   await s.waitFor(`!document.querySelector('.file-menu')`, 'the SVG menu closed', 3000);
-  step('fix 1007: Copy image puts the PNG on the clipboard from its tab and its rail row, and the SVG lists it disabled with the reason');
+  await s.waitFor(heldSized(3000, 40), 'fix 1111: Copy image put the SVG on the clipboard at 3000 by 40', 3000);
+  step('fix 1007 and 1111: Copy image puts the PNG on the clipboard from its tab and its rail row, and the SVG at the 3000 by 40 it declares');
   step('fix 615: an SVG opens on Rendered as the picture fitted to the pane, a click shows it at actual size with scrolling and a second fits it again, and Raw is the editor');
   // M9 fix 638: a GIF has a Pause button. anim.gif is a looping 3 by 2 GIF
   // of two frames, red then a green row over a blue one.
@@ -407,10 +412,23 @@ try {
   expect(gif1.label === 'Pause' && !gif1.canvas && gif1.size === '3 \u00d7 2', `the GIF has a Pause button, no canvas, and says its size, got ${JSON.stringify(gif1)}`);
   const gifCursor = await s.evalJs(`({ cursor: document.querySelector('.file-view').dataset.cursor ?? null, css: getComputedStyle(document.querySelector('img.file-image')).cursor })`);
   expect(gifCursor.cursor === null && gifCursor.css !== 'zoom-in', `fix 820: the 3 by 2 GIF at fit has no magnifier, got ${JSON.stringify(gifCursor)}`);
+  // M9 fix 1111: Copy image from a picture's own menu, then the held size.
+  const copyFromMenu = async (sel, menuName, w, h, message) => {
+    await s.evalJs(`window.emerald.clipboard.write('before 1111')`);
+    await rightClick(sel);
+    await s.waitFor(`!!document.querySelector('.file-menu')`, `the ${menuName} menu`, 3000);
+    const first = await s.evalJs(`(() => { const b = document.querySelector('.file-menu .menu-item'); return { label: b.querySelector('.menu-label').textContent, disabled: b.disabled }; })()`);
+    expect(first.label === 'Copy image' && first.disabled === false, `fix 1111: the ${menuName} menu opens with Copy image, enabled, got ${JSON.stringify(first)}`);
+    await s.evalJs(`document.querySelector('.file-menu .menu-item').click()`);
+    await s.waitFor(`!document.querySelector('.file-menu')`, `the ${menuName} menu closed`, 3000);
+    await s.waitFor(heldSized(w, h), message, 3000);
+  };
+  await copyFromMenu('img.file-image', 'GIF', 3, 2, 'fix 1111: Copy image put the GIF on the clipboard at 3 by 2');
   await s.evalJs(`document.querySelector('.file-image-pause').click()`);
   await s.waitFor(`document.querySelector('canvas.file-image')?.width === 3 && document.querySelector('canvas.file-image')?.height === 2 && document.querySelector('img.file-image').hidden === true && document.querySelector('.file-image-pause').textContent === 'Play'`, 'Pause shows a still canvas and the button reads Play');
   console.log('fix 638 paused pixel r,g,b,a', JSON.stringify(await s.evalJs(`Array.from(document.querySelector('canvas.file-image').getContext('2d').getImageData(0, 0, 1, 1).data)`)));
   await s.screenshot('m11-gif-paused.png');
+  await copyFromMenu('canvas.file-image', 'paused GIF', 3, 2, 'fix 1111: Copy image on the paused GIF put its frame on the clipboard at 3 by 2');
   await s.evalJs(`document.querySelector('canvas.file-image').click()`);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'actual'`, 'a click on the paused picture shows actual size');
   await s.evalJs(`document.querySelector('canvas.file-image').click()`);
@@ -418,6 +436,7 @@ try {
   await s.evalJs(`document.querySelector('.file-image-pause').click()`);
   await s.waitFor(`!document.querySelector('canvas.file-image') && document.querySelector('img.file-image').hidden === false && document.querySelector('.file-image-pause').textContent === 'Pause'`, 'Play shows the running picture again');
   step('fix 638: a GIF has a Pause button in its header; Pause holds a still frame the click to zoom still works on, and Play runs the picture again');
+  step('fix 1111: Copy image puts the GIF on the clipboard at 3 by 2, running and paused');
   // M9 fix 820: the 3 by 2 GIF fits at scale 1, so = twice steps it
   // through 125 to 150 percent.
   await s.evalJs(`document.querySelector('.file-image-host').focus()`);
@@ -429,6 +448,26 @@ try {
   await s.key('0', 'Digit0', 48);
   await s.waitFor(`document.querySelector('.file-view').dataset.zoom === 'fit'`, '0 goes back to fit', 4000);
   step('fix 820: a small picture has no magnifier at fit, steps to 150 percent by = and shows its pixels there');
+  // M9 fix 1111: an icon copies at its own size. icon.ico wraps the first
+  // pic.png in one directory entry; main decoded it at 256 by 256 (fix
+  // 1007's probe).
+  const icoPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==', 'base64');
+  const icoHead = Buffer.alloc(22);
+  icoHead.writeUInt16LE(1, 2);
+  icoHead.writeUInt16LE(1, 4);
+  icoHead[6] = 1;
+  icoHead[7] = 1;
+  icoHead.writeUInt16LE(1, 10);
+  icoHead.writeUInt16LE(32, 12);
+  icoHead.writeUInt32LE(icoPng.length, 14);
+  icoHead.writeUInt32LE(22, 18);
+  const ico = path.join(seed, 'icon.ico');
+  fs.writeFileSync(ico, Buffer.concat([icoHead, icoPng]));
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(rowSel(ico))})`, 'icon.ico listed');
+  await clickRow(s, ico);
+  await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'image' && document.querySelector('img.file-image')?.complete && document.querySelector('img.file-image')?.naturalWidth > 0`, 'the ICO shown as a picture');
+  await copyFromMenu('img.file-image', 'ICO', 1, 1, 'fix 1111: Copy image put the ICO on the clipboard at its own 1 by 1');
+  step('fix 1111: an ICO copies at the 1 by 1 of its one entry, not 256 by 256');
   await clickRow(s, blob);
   await s.waitFor(`document.querySelector('.file-view')?.dataset.state === 'binary'`, 'the binary file back in front');
   expect((await tabs(s)).join(',') === 'panes,blob.bin*', `the strip is back to the one file tab, blob.bin: ${await tabs(s)}`);
@@ -1242,6 +1281,7 @@ try {
     'fix 1010: Escape cleared the path box, File still picked, the box with the keyboard',
     3000,
   );
+  expect((await s.evalJs(`document.querySelector(${JSON.stringify(pathBox990)})?.hasAttribute('title') === false`)) === true, 'fix 1107: an empty path box has no title');
   await s.key('Escape', 'Escape', 27);
   await sleep(300);
   expect(
@@ -1252,6 +1292,8 @@ try {
   );
   await s.evalJs(`document.querySelector('.layout-tab:not([hidden]) .empty-pane .empty-browse').click()`);
   await s.waitFor(`document.querySelector(${JSON.stringify(pathBox990)})?.value === ${JSON.stringify(notes)} && document.activeElement === document.querySelector(${JSON.stringify(pathBox990)})`, 'Browse… put the chooser’s pick in the box, which has the keyboard', 5000);
+  const title1107 = await s.evalJs(`document.querySelector(${JSON.stringify(pathBox990)})?.title ?? null`);
+  expect(title1107 === notes, `fix 1107: the path box's title is the whole path, got ${JSON.stringify(title1107)}`);
   expect((await s.evalJs(`document.querySelectorAll('.tab-file').length`)) === tabsBefore341.length, 'Browse… filled the box and opened nothing');
   await pathEnter990(`"${index}"`);
   await s.waitFor(`!!document.querySelector('.layout-tab:not([hidden]) .pane[data-view="file"]')`, 'Enter filled the pane with the file view', 5000);
@@ -1265,7 +1307,7 @@ try {
     await s.evalJs(`[...document.querySelectorAll('.tab-file')].find((t) => t.dataset.tab === ${JSON.stringify(front990)})?.click()`);
     await s.waitFor(`document.querySelector('.tab-strip').dataset.activeTab === ${JSON.stringify(front990)}`, 'the tab in front at the start back in front', 5000);
   }
-  step('fix 990: the File tile refuses a folder and a missing path on its line, Shift+Enter and In a tab open a pinned tab (fix 1009), Escape clears the box before it closes (fix 1010), Browse… fills the box, and Enter fills the pane with the file; the + brings the panes forward (fix 1011)');
+  step('fix 990: the File tile refuses a folder and a missing path on its line, Shift+Enter and In a tab open a pinned tab (fix 1009), Escape clears the box before it closes (fix 1010), Browse… fills the box, its title the whole path (fix 1107), and Enter fills the pane with the file; the + brings the panes forward (fix 1011)');
 
   // M9 fix 527: an `emmer open` sent while the window reloads is held by
   // the main process until the new page says it listens, then opened.
@@ -2139,9 +2181,11 @@ try {
   expect(await s.evalJs(windowCount867(4)), 'still four windows');
   expect(JSON.stringify((await getTabs(s)).windows) === before928, 'the layout unchanged by the refused drop');
   step("fix 928: a layout tab dropped outside every window opens a window holding it, and a window's only tab stays");
-  // M9 fix 948: a contents hit from the second window's rail, released
-  // below both windows, opens a fifth window holding the file at the hit's
-  // line, lit; the reveal goes across in storage, one shot.
+  // M9 fix 948 and 1122: a contents hit from the second window's rail,
+  // released below both windows, leaves as its file, an OS drag (fix 1122)
+  // held to main.log under the harness, and opens no window; its line
+  // cannot ride an OS drag, so fix 948's fifth window at the hit's line is
+  // reached now only when the file is gone from disk.
   fs.mkdirSync(path.join(seed, 'src'), { recursive: true });
   const file948 = path.join(seed, 'src', 'reveal-948.txt');
   const lines948 = [];
@@ -2163,26 +2207,18 @@ try {
   await move927(s2_927, { x: hit948.x + 10, y: hit948.y });
   await move927(s2_927, out928);
   await release927(s2_927, out928);
-  await s.waitFor(windowCount867(5), 'a fifth window opened by the hit dropped outside', 5000);
-  L867 = await getTabs(s);
-  const W5 = L867.windows[4].id;
-  const w5Root948 = L867.windows[4].tabIds.length === 1 ? rootOf927(L867, L867.windows[4].tabIds[0]) : null;
-  expect(w5Root948?.kind === 'pane' && w5Root948.view?.kind === 'file' && w5Root948.view.path.toLowerCase() === file948.toLowerCase(), `the fifth window holds one tab with the file's pane, got ${JSON.stringify(w5Root948)}`);
-  const s5_948 = await windowPage(s.port, W5);
-  const pane948 = `document.querySelector(${JSON.stringify(paneSel927(w5Root948.id))})`;
-  await s5_948.waitFor(`${pane948}?.querySelector('.file-view')?.dataset.state === 'text'`, 'the file read into the new window', 10000);
-  const paneEd948 = `${pane948}.querySelector('.file-editor').emeraldEditor`;
-  await s5_948.waitFor(`${paneEd948}.getPosition()?.lineNumber === 30`, "the new window's file pane on the hit's line", 5000);
-  const landed948 = await s5_948.evalJs(
-    `(() => { const e = ${paneEd948}; return { visible: e.getVisibleRanges().some((r) => r.startLineNumber <= 30 && r.endLineNumber >= 30), flashed: e.getModel().getAllDecorations().some((d) => d.options.className === 'file-line-flash' && d.range.startLineNumber === 30) }; })()`,
-  );
-  expect(landed948.visible, `the hit's line is in the new window's visible range (${JSON.stringify(landed948)})`);
-  expect(landed948.flashed, `the hit's line is lit in the new window (${JSON.stringify(landed948)})`);
-  expect(await s5_948.evalJs(`localStorage.getItem('emerald.revealHandoff') === null`), 'the hand-off was taken once');
-  step('fix 948: a contents hit dropped outside every window opens a window holding the file at its line, lit');
-  // The fifth, fourth, third and second windows closed; the script ends in
-  // one window as (g) left it.
-  for (const w of [s5_948, s4_928, s3_928, s2_927]) {
+  const held948 = `drag-out held under a private EMERALD_HOME: ${file948}`.toLowerCase();
+  await until867(async () => {
+    const log = mainLog867().toLowerCase();
+    return log.includes(held948) && log.includes(`window drag: a file from window ${W2} handed to the os at`.toLowerCase());
+  }, 'main.log says the hit went to the OS as its file, held under the harness', 5000);
+  await sleep(1000);
+  expect(await s.evalJs(windowCount867(4)), 'still four windows: the hit opened none');
+  expect(await s2_927.evalJs(`localStorage.getItem('emerald.revealHandoff') === null`), 'no reveal was handed to a new window');
+  step('fix 948 and 1122: a contents hit released outside every window goes to the OS as its file, held to main.log under the harness, and opens no window');
+  // The fourth, third and second windows closed; the script ends in one
+  // window as (g) left it.
+  for (const w of [s4_928, s3_928, s2_927]) {
     await w.send('Page.close').catch(() => {});
     w.close();
   }

@@ -111,6 +111,7 @@ test('the close, hide and zoom tooltips (fix 1046)', () => {
 
 test('copyRow: enabled on a selection, Nothing selected without one (fix 1047)', () => {
   assert.deepEqual(copyRow('abc'), { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: false, title: 'Copy the selection' });
+  assert.deepEqual(copyRow('abc', 'darwin'), { label: 'Copy', hint: 'Cmd+C', disabled: false, title: 'Copy the selection' });
   assert.deepEqual(copyRow(''), { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: true, title: 'Nothing selected' });
 });
 

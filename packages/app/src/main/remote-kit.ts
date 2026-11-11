@@ -16,8 +16,9 @@ import zlib from 'node:zlib';
 // the app.
 
 // The one copy of the kit's Node version: stage.mjs cannot import this file,
-// and two copies of the number would drift.
-export const KIT_NODE_VERSION = '24.20.0';
+// and two copies of the number would drift. The tests and verify:remote read
+// it from here (M9 fix 1118), so a move is this one line.
+export const KIT_NODE_VERSION = '24.22.2';
 
 export type KitOs = 'win32' | 'darwin';
 export type KitArch = 'x64' | 'arm64';

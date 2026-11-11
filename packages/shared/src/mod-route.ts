@@ -4,7 +4,9 @@
 // soon into a newline (docs/PLAN.md, M5 gotcha 4). Shared since M9 fix 781,
 // when the app's chat box began to route its sends the same way.
 
-// The level of the daemon's session.submit and mod.channel.
+// The level of the daemon's session.submit (M9 fix 741), what a caller
+// asks; the channel behind it is the hook sink's long poll since M9 fix
+// 1125, which no caller sees.
 export const MOD_CHANNEL_LEVEL = 65;
 
 // Whether a text can go through the mod. A slash command, bash mode (`!`)

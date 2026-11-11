@@ -3,7 +3,7 @@ import type { LayoutTab, SessionInfo } from '@emerald/shared';
 import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
 import { closeLayoutTab, moveTabToNewWindow, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
 import { shadeablePanes } from './shade-model.ts';
-import { layoutSwitchKeys, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
+import { editKey, layoutSwitchKeys, plainKeyFor, prefixedKeyFor } from './keys-model.ts';
 import { usePrefixText } from './keys.ts';
 import { Menu } from './Menu.tsx';
 import { RenameBox } from './RenameBox.tsx';
@@ -318,14 +318,14 @@ export function TabStrip() {
           <FileIcon />
         )}
         {mark !== null && (
-          <span className="tab-dirty" title="Unsaved edits (Ctrl+S saves)">
+          <span className="tab-dirty" title={`Unsaved edits (${editKey('KeyS')} saves)`}>
             {mark}
           </span>
         )}
         <span className="tab-name">{name}</span>
         <button
           className="tab-close"
-          title="Close (Ctrl+W)"
+          title={`Close (${editKey('KeyW')})`}
           onClick={(ev) => {
             ev.stopPropagation();
             closeFileTab(path);
@@ -480,7 +480,7 @@ function TabMenu({ path, x, y, onClose }: { path: string; x: number; y: number; 
       className="tab-menu"
       data={{ path }}
       items={[
-        { label: 'Close', hint: 'Ctrl+W', onClick: done(() => closeFileTab(path)) },
+        { label: 'Close', hint: editKey('KeyW'), onClick: done(() => closeFileTab(path)) },
         { label: 'Close others', onClick: done(() => closeOtherTabs(path)) },
         { label: 'Close all', onClick: done(closeAllTabs) },
         { label: 'Reveal in Explorer', disabled: isDocument(path), onClick: done(() => void window.emerald.files.reveal(path).catch(warn('reveal'))), separator: true },

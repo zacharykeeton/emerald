@@ -76,3 +76,17 @@ test('a file that is not a list, or has an entry that is not a prompt, keeps wha
   again.load();
   assert.deepEqual(again.list(), [{ name: 'good', text: 'kept' }]);
 });
+
+test('a store with no file keeps a set in memory and writes nothing to the working folder (M9 fix 1104)', () => {
+  const scratch = mkTemp('emerald-prompts-nofile-');
+  const started = process.cwd();
+  process.chdir(scratch);
+  try {
+    const store = new PromptsStore('', silentLogger);
+    assert.equal(store.set('tests', 'run the tests'), true);
+    assert.deepEqual(store.list(), [{ name: 'tests', text: 'run the tests' }]);
+    assert.deepEqual(fs.readdirSync(scratch), []);
+  } finally {
+    process.chdir(started);
+  }
+});

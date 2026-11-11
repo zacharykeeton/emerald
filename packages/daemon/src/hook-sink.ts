@@ -6,6 +6,7 @@ import { MOD_APPEND, MOD_CONTEXT, MOD_HOOK_NAME, MOD_SUBMIT } from '@emerald/sha
 import { promptCacheKept } from '@emerald/shared/hook-log';
 import type { HookOutcome, HookPayload, SessionState } from '@emerald/shared';
 import { rotateHookLog, trimGenerations } from './activity.ts';
+import type { ModPoll } from './mod-poll.ts';
 import type { Logger } from './log.ts';
 
 // Where Claude Code hooks report in. claude-hook.cmd (installed by emmer hooks install)
@@ -249,6 +250,9 @@ export interface HookSinkOptions {
   // ModSubmit post): handed on, and no hooks.jsonl line is written. M9 fix
   // 995: queued is the mod's early word on a prompt that waits for a turn.
   onModSubmit?: (sessionId: string, submitId: string, entered: boolean, drop: string | null, queued: boolean) => void;
+  // The emerald mod's prompt channel (M9 fix 1125, POST /channel): a sink
+  // without one answers the route 404.
+  modPoll?: ModPoll;
 }
 
 // The body of a /compact ask is `{ trigger }` and no more (M9 fix 773).
@@ -268,6 +272,7 @@ export class HookSink {
   private expectsMod: (sessionId: string) => boolean = () => false;
   private compactAsk: (sessionId: string, trigger: string) => string | null = () => null;
   private onModSubmit: (sessionId: string, submitId: string, entered: boolean, drop: string | null, queued: boolean) => void = () => undefined;
+  private modPoll: ModPoll | null = null;
   private readonly modSeen = new Set<string>();
   private readonly modWarned = new Set<string>();
   // The lines that arrive while a rotation has the file closed, written
@@ -313,6 +318,7 @@ export class HookSink {
     if (opts.expectsMod) sink.expectsMod = opts.expectsMod;
     if (opts.compactAsk) sink.compactAsk = opts.compactAsk;
     if (opts.onModSubmit) sink.onModSubmit = opts.onModSubmit;
+    if (opts.modPoll) sink.modPoll = opts.modPoll;
     return sink;
   }
 
@@ -406,6 +412,10 @@ export class HookSink {
   }
 
   private onRequest(req: http.IncomingMessage, res: http.ServerResponse, handler: HookHandler, maxBody: number): void {
+    if (req.method === 'POST' && req.url === '/channel') {
+      this.onChannel(req, res);
+      return;
+    }
     if (req.method === 'POST' && req.url === '/compact') {
       this.onCompact(req, res);
       return;
@@ -522,6 +532,38 @@ export class HookSink {
       setImmediate(() => this.accept(sessionId, payload as HookPayload, at, unhosted, handler, hook));
     });
     req.on('error', (err) => this.log.warn('hook request error', err));
+  }
+
+  // The mod's long poll (M9 fix 1125): the same token and session checks
+  // as /hook, a body that is never read, and the next lines queued for the
+  // session, or none at the hold; a newer poll for the session answers
+  // this one 409, a sink without a ModPoll 404.
+  private onChannel(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!this.tokenMatches(header(req, 'x-emerald-token'))) {
+      this.log.warn('mod poll rejected: bad token', { from: req.socket.remoteAddress });
+      res.writeHead(401).end();
+      req.resume();
+      return;
+    }
+    const sessionId = header(req, 'x-emerald-session');
+    if (sessionId === '') {
+      res.writeHead(400).end('missing X-Emerald-Session');
+      req.resume();
+      return;
+    }
+    if (this.modPoll === null) {
+      res.writeHead(404).end();
+      req.resume();
+      return;
+    }
+    req.resume();
+    const { answer, gone } = this.modPoll.poll(sessionId);
+    res.on('close', gone);
+    void answer.then((a) => {
+      if (res.destroyed || res.writableEnded) return;
+      if ('replaced' in a) res.writeHead(409).end();
+      else res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ lines: a.lines }));
+    });
   }
 
   // The emerald mod's question before a compaction (M9 fix 773): the

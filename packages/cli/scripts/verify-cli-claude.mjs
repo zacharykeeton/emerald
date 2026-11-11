@@ -280,6 +280,27 @@ try {
   const answered = j.json?.sessions.find((s) => s.id === first.id);
   expect(answered?.lastPrompt === text741 && (answered.lastReply ?? '').includes('mod-741'), `the submitted prompt landed as one line and was answered (${JSON.stringify({ lastPrompt: answered?.lastPrompt, lastReply: answered?.lastReply })})`);
   expect(hookLines(first.id).filter((e) => e.event === 'UserPromptSubmit').length === 1, 'one UserPromptSubmit for the submitted prompt');
+  // M9 fix 1125 (1): the mod's channel is a long poll on the hook sink.
+  // Past Limits.modPollHoldMs (20 s), so first's poll was answered empty
+  // and asked again at least once.
+  await new Promise((r) => setTimeout(r, 25000));
+  expect(!fs.readFileSync(path.join(home, 'logs', 'emmerd.log'), 'utf8').includes(`mod channel down for ${first.id.slice(0, 8)}`), 'the poll held past its 20 s and was asked again, no down');
+  const text1125 = 'Reply with the single word poll-1125 and nothing else.';
+  sentAt = Date.now();
+  r = emerald('send', 'first', text1125, '--enter');
+  const elapsed1125 = Date.now() - sentAt;
+  expect(r.code === 0 && /through the emerald mod$/m.test(r.out) && elapsed1125 < 1500, `send --enter after a held poll went in through the mod (${elapsed1125} ms: ${r.out.trim()})`);
+  r = emerald('wait', 'first', '--for', 'done', '--timeout', '90000');
+  expect(r.code === 0, `first answered the prompt routed after the held poll (${r.out.trim()})`);
+  j = emeraldJson('ls', '--json');
+  const answered1125 = j.json?.sessions.find((s) => s.id === first.id);
+  expect(answered1125?.lastPrompt === text1125 && (answered1125.lastReply ?? '').includes('poll-1125'), `the prompt after the held poll landed and was answered (${JSON.stringify({ lastPrompt: answered1125?.lastPrompt, lastReply: answered1125?.lastReply })})`);
+  // M9 fix 1125 (2): no mod-channel process from this checkout's CLI (the
+  // person's installed emerald, whose Claudes may still run its own
+  // resources\cli\dist\main.js mod-channel, is never counted).
+  const ps1125 = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mod-channel*' -and $_.CommandLine -like '*${main}*' }).Count`], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  expect(ps1125.stdout.trim() === '0', `no mod-channel process from this checkout (${JSON.stringify(ps1125.stdout.trim())})`);
+  log("M9 fix 1125: a prompt routed through first's mod after its poll was held past 20 s and asked again, and no mod-channel process from this checkout");
   j = emeraldJson('new', repoRoot, '--name', 'safe', '--json', '--', '--safe-mode');
   const safe = j.json?.session;
   expect(j.code === 0 && safe?.kind === 'claude', 'new: a --safe-mode Claude session');

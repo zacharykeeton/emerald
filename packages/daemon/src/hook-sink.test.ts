@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { HookPayload, SessionInfo } from '@emerald/shared';
 import { HookSink, canonicalJson, readHeadFields, trimPayload, type HookHandler } from './hook-sink.ts';
 import { silentLogger } from './log.ts';
+import { ModPoll } from './mod-poll.ts';
 import { SessionManager } from './session-manager.ts';
 
 const TOKEN = 'test-token-0123456789';
@@ -713,5 +714,63 @@ test("the mod's ModSubmit goes to onModSubmit alone, never the handler or the lo
     assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '', '', 'no hooks.jsonl line');
   } finally {
     await own.close();
+  }
+});
+
+test('POST /channel answers a held poll with the lines pushed, none at the hold, 409 to a poll replaced, 401 to a bad token, 400 with no session and 404 with no ModPoll (M9 fix 1125)', async () => {
+  const dir = mkTemp('emerald-channel-');
+  const modPoll = new ModPoll({ holdMs: 300, graceMs: 300 });
+  const withPoll = await HookSink.listen(handler, { preferredPort: 0, token: TOKEN, eventLogPath: path.join(dir, 'a.jsonl'), log: silentLogger, modPoll });
+  const channel = (s: HookSink, headers: Record<string, string> = {}, signal?: AbortSignal) =>
+    fetch(`http://127.0.0.1:${s.port}/channel`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emerald-Token': TOKEN, 'X-Emerald-Session': 'emerald-1', 'X-Emerald-Hook': 'emerald-mod', ...headers }, body: '{}', ...(signal === undefined ? {} : { signal }) });
+  const upSoon = async (want: boolean): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (modPoll.isUp('emerald-1') !== want && Date.now() < deadline) await sleep(10);
+  };
+  try {
+    // A push answers the held poll.
+    const held = channel(withPoll);
+    await upSoon(true);
+    assert.equal(modPoll.push('emerald-1', { text: 'hi', submitId: 's-1' }), true);
+    const res = await held;
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), '{"lines":[{"text":"hi","submitId":"s-1"}]}');
+    // Nothing pushed: none at the hold.
+    const t = Date.now();
+    const empty = await channel(withPoll);
+    assert.equal(empty.status, 200);
+    assert.equal(await empty.text(), '{"lines":[]}');
+    assert.ok(Date.now() - t >= 290, `answered at the hold, took ${Date.now() - t} ms`);
+    // A second poll while one is held answers the first 409.
+    const first = channel(withPoll);
+    await sleep(50);
+    const second = channel(withPoll);
+    assert.equal((await first).status, 409);
+    modPoll.push('emerald-1', { context: 'full' });
+    assert.equal(await (await second).text(), '{"lines":[{"context":"full"}]}');
+    // The refusals.
+    assert.equal((await channel(withPoll, { 'X-Emerald-Token': 'wrong' })).status, 401);
+    const noSession = await channel(withPoll, { 'X-Emerald-Session': '' });
+    assert.equal(noSession.status, 400);
+    assert.equal(await noSession.text(), 'missing X-Emerald-Session');
+    assert.equal((await channel(sink)).status, 404, 'a sink without a ModPoll');
+    // A held poll whose request is aborted reads down (the close handler).
+    const abort = new AbortController();
+    const gone = channel(withPoll, { 'X-Emerald-Session': 'emerald-2' }, abort.signal).catch(() => undefined);
+    const deadline = Date.now() + 2000;
+    while (!modPoll.isUp('emerald-2') && Date.now() < deadline) await sleep(10);
+    assert.equal(modPoll.isUp('emerald-2'), true);
+    abort.abort();
+    const t2 = Date.now();
+    while (modPoll.isUp('emerald-2') && Date.now() - t2 < 1000) await sleep(10);
+    assert.ok(Date.now() - t2 < 200, `down after the abort, took ${Date.now() - t2} ms`);
+    assert.equal(modPoll.isUp('emerald-2'), false);
+    await gone;
+    // No poll writes a hooks.jsonl line.
+    assert.equal(fs.existsSync(path.join(dir, 'a.jsonl')) ? fs.readFileSync(path.join(dir, 'a.jsonl'), 'utf8') : '', '');
+  } finally {
+    modPoll.end('emerald-1');
+    modPoll.end('emerald-2');
+    await withPoll.close();
   }
 });

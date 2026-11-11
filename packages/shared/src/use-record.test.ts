@@ -55,3 +55,17 @@ test('M9 fix 727: a drop on the strip or the rail and a drop on a session pane a
 test('USE_FEATURES names are unique', () => {
   assert.equal(USE_NAMES.size, USE_FEATURES.length);
 });
+
+test('M9 fix 1132: the split menu items are known pane menu actions', () => {
+  for (const name of ['split-empty', 'split-with-shell', 'split-with-claude', 'set-split-kind']) {
+    assert.notEqual(useLineOf({ ev: 'action', name, from: 'menu' }), null, name);
+    assert.equal(USE_FEATURES.find((f) => f.name === name)?.group, 'pane-menu', name);
+  }
+});
+
+test('M9 fix 1133: useLineOf keeps replaced on a close only when it is true', () => {
+  assert.deepEqual(useLineOf({ ev: 'view-close', view: 'file-tab', ms: 5, replaced: true }), { ev: 'view-close', view: 'file-tab', ms: 5, replaced: true });
+  const odd = useLineOf({ ev: 'view-close', view: 'file-tab', ms: 5, replaced: 'yes' });
+  assert.notEqual(odd, null);
+  assert.deepEqual(Object.keys(odd!).sort(), ['ev', 'ms', 'view']);
+});

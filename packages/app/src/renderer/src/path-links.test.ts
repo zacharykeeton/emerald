@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isAbsolutePath, joinWrappedRows, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, urlLinkTitle } from './path-links.ts';
+import { continuedLinkHolds, isAbsolutePath, joinContinuedRows, joinWrappedRows, linkPressKept, pathLinkAction, pathLinkParts, pathLinkTitle, pathLinksIn, resolvePathLink, seamIn, urlLinkTitle, WRAP_ROW_CAP } from './path-links.ts';
 import type { WrapBuffer, WrapLine } from './path-links.ts';
 
 const texts = (line: string) => pathLinksIn(line).map((l) => l.text);
@@ -93,6 +93,56 @@ test('joinWrappedRows joins a path xterm wrapped at the pane edge, a row apiece 
   assert.deepEqual(joinWrappedRows(plain, 0), { text: 'just one line', cellOf: [...'just one line'].map((_, x) => ({ y: 0, x })) });
 });
 
+test('joinContinuedRows joins a path a program broke with an indent, from either row (M9 fix 1099)', () => {
+  // The first row padded with blanks, as xterm's rows are; no row wrapped.
+  const rows = ['Read C:\\tmp\\scratchpad\\handoff-plan-batch      ', '  -test-shield.md and do what it says.'];
+  const buffer = fakeBuffer(rows, new Set());
+  const joined = joinContinuedRows(buffer, 0);
+  assert.equal(joined.text, 'Read C:\\tmp\\scratchpad\\handoff-plan-batch-test-shield.md and do what it says.');
+  assert.deepEqual(joined.seams, [41]);
+  assert.deepEqual(joined.cellOf[41], { y: 1, x: 2 });
+  assert.deepEqual(joinContinuedRows(buffer, 1), joined);
+  const link = pathLinksIn(joined.text).find((l) => l.text.startsWith('C:'));
+  assert.equal(link?.text, 'C:\\tmp\\scratchpad\\handoff-plan-batch-test-shield.md');
+  assert.equal(seamIn(link!, joined.seams), 41);
+  // Today's walk joins nothing here: the first row alone.
+  assert.equal(joinWrappedRows(buffer, 0).text, rows[0]);
+});
+
+test('joinContinuedRows joins nothing past a row that ends in no path, or into a row that is not indented or is blank (M9 fix 1099)', () => {
+  for (const rows of [
+    ['see C:\\a\\b', 'next'],
+    ['see C:\\a\\b.', '  c.md'],
+    ['done', '  -x.md'],
+    ['see C:\\a\\b', '   '],
+  ]) {
+    const joined = joinContinuedRows(fakeBuffer(rows, new Set()), 0);
+    assert.deepEqual(joined.seams, [], JSON.stringify(rows));
+    assert.equal(joined.text, rows[0], JSON.stringify(rows));
+  }
+});
+
+test("joinContinuedRows walks through xterm's wrap and an indent together, capped at WRAP_ROW_CAP rows each way (M9 fix 1099)", () => {
+  const mixed = joinContinuedRows(fakeBuffer(['see C:\\a\\long-fo', 'lder\\b-', '  c.md'], new Set([1])), 0);
+  assert.equal(mixed.text, 'see C:\\a\\long-folder\\b-c.md');
+  assert.deepEqual(mixed.seams, [23]);
+  const six = joinContinuedRows(fakeBuffer(['x C:\\a\\b', '  c\\d', '  e\\f', '  g\\h', '  i\\j', '  k\\l'], new Set()), 0);
+  assert.equal(WRAP_ROW_CAP, 4);
+  assert.equal(six.text, 'x C:\\a\\bc\\de\\fg\\hi\\j');
+  assert.equal(six.seams.length, 4);
+});
+
+test('seamIn and continuedLinkHolds: a token across a seam holds when the whole is a file and the first row part is not (M9 fix 1099)', () => {
+  const link = { text: 'abcdef', start: 10, end: 16 };
+  assert.equal(seamIn(link, [5, 13]), 13);
+  assert.equal(seamIn(link, [10, 16]), null, 'a seam at an end is no seam inside');
+  assert.equal(continuedLinkHolds({ kind: 'file' }, { error: 'x' }), true);
+  assert.equal(continuedLinkHolds({ kind: 'file' }, { kind: 'dir' }), true);
+  assert.equal(continuedLinkHolds({ kind: 'file' }, { kind: 'file' }), false);
+  assert.equal(continuedLinkHolds({ error: 'x' }, { error: 'x' }), false);
+  assert.equal(continuedLinkHolds({ kind: 'dir' }, { error: 'x' }), false);
+});
+
 test('pathLinkTitle: a folder opens in Explorer, a file says beside when a file pane can take it (M9 fixes 653 and 864)', () => {
   assert.equal(pathLinkTitle('C:\\repo\\f653\\in', 'dir', true), 'Ctrl+click opens C:\\repo\\f653\\in in Explorer');
   assert.equal(pathLinkTitle('C:\\repo\\f653\\in', 'dir', false), 'Ctrl+click opens C:\\repo\\f653\\in in Explorer');
@@ -103,6 +153,17 @@ test('pathLinkTitle: a folder opens in Explorer, a file says beside when a file 
 test('urlLinkTitle: a URL says beside when a browser pane can take it, and the fix 204 text when not (M9 fix 863)', () => {
   assert.equal(urlLinkTitle('https://ex.io/204', true), 'Ctrl+click opens https://ex.io/204 in a pane beside');
   assert.equal(urlLinkTitle('https://ex.io/204', false), 'Ctrl+click opens https://ex.io/204');
+});
+
+test('linkPressKept: a Ctrl press on a shown link is kept from a program that tracks the mouse, and nothing else is (M9 fix 1098)', () => {
+  const ctrl = { button: 0, ctrlKey: true };
+  assert.equal(linkPressKept(ctrl, 'vt200', true), true);
+  assert.equal(linkPressKept(ctrl, 'any', true), true);
+  assert.equal(linkPressKept(ctrl, 'drag', true), true);
+  assert.equal(linkPressKept(ctrl, 'none', true), false, 'a plain shell tracks no mouse');
+  assert.equal(linkPressKept({ button: 0, ctrlKey: false }, 'vt200', true), false, "a plain click is the program's");
+  assert.equal(linkPressKept({ button: 2, ctrlKey: true }, 'vt200', true), false, "the right button is fix 538's route");
+  assert.equal(linkPressKept(ctrl, 'vt200', false), false, 'no link shown');
 });
 
 test('pathLinkAction: Ctrl takes the link, Shift turns a file into a reveal, a folder opens either way (M9 fix 653)', () => {

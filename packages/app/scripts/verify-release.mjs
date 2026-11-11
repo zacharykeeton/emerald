@@ -7,7 +7,7 @@
 // command; then three broken copies must be refused with their exact
 // lines: an installer whose bytes changed, a stale version and a build
 // that still points the updater at the local feed.
-// Logs to %TEMP%\emerald-verify\release.log. Build first (npm run build).
+// Logs to release.log under EMERALD_HOME when set (a seat's or the close-out's pair), else under %TEMP%\emerald-verify. Build first (npm run build).
 // Run: npm run verify:release -w @emerald/app
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -21,7 +21,8 @@ import { installerName, mergeLatestYml } from '@emerald/shared/release';
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(appDir, '..', '..');
 const version = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version;
-const verifyDir = path.join(os.tmpdir(), 'emerald-verify');
+// M9 fix 1116: under the run's own EMERALD_HOME when one is set, so two seats running this at once write apart and the files go when the home is wiped; a plain run from a terminal keeps the shared folder.
+const verifyDir = process.env['EMERALD_HOME'] ?? path.join(os.tmpdir(), 'emerald-verify');
 const dryDir = path.join(verifyDir, 'release-dry');
 const logFile = path.join(verifyDir, 'release.log');
 const t0 = Date.now();
@@ -84,8 +85,8 @@ function fixtures(label) {
   return { arm64: writeBuild(root, 'arm64'), x64: writeBuild(root, 'x64') };
 }
 
-function dryRun(dirs) {
-  const r = spawnSync(process.execPath, ['scripts/release.mjs', '--dry-run', '--arm64-dir', dirs.arm64, '--x64-dir', dirs.x64], {
+function dryRun(dirs, extra = []) {
+  const r = spawnSync(process.execPath, ['scripts/release.mjs', '--dry-run', '--arm64-dir', dirs.arm64, '--x64-dir', dirs.x64, ...extra], {
     cwd: appDir,
     encoding: 'utf8',
     windowsHide: true,
@@ -137,6 +138,63 @@ const expectedAssets = [
 expect(rest.length === 6 && rest[0].endsWith('notes.md'), 'the notes file comes first, then five assets');
 expect(expectedAssets.every((p, i) => rest[i + 1] === p) && rest[5].endsWith('latest.yml') && !rest[5].startsWith(good.arm64), 'the assets are the two installers and blockmaps in order, then the merged latest.yml');
 
+// M9 fix 1113: the dry run's line on whether the tree has moved past the
+// version's bump, read in scratch repositories through --tree. The tree sits
+// beside dryDir, not under it: git writes its objects read-only, which
+// Windows refuses to delete, so removeTree makes every file writable first.
+function removeTree(dir) {
+  if (!fs.existsSync(dir)) return;
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else fs.chmodSync(p, 0o666);
+    }
+  };
+  walk(dir);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+function git(cwd, ...args) {
+  const g = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+  if (g.status !== 0) {
+    log(`FAIL: git ${args.join(' ')} in ${cwd}: ${g.stderr}`);
+    process.exit(1);
+  }
+  return (g.stdout ?? '').trim();
+}
+function commitFile(cwd, rel, content, message) {
+  fs.mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
+  fs.writeFileSync(path.join(cwd, rel), content);
+  git(cwd, 'add', rel);
+  git(cwd, '-c', 'user.name=verify', '-c', 'user.email=verify@example.test', 'commit', '-q', '-m', message);
+}
+const treeDir = path.join(verifyDir, 'release-tree');
+removeTree(treeDir);
+const tree = path.join(treeDir, 'tree');
+fs.mkdirSync(tree, { recursive: true });
+git(tree, 'init', '-q', '-b', 'main');
+commitFile(tree, 'packages/app/package.json', JSON.stringify({ name: '@emerald/app', version }, null, 2) + '\n', 'bump');
+const bump = git(tree, 'rev-parse', 'HEAD').slice(0, 8);
+const bumpLine = (rest) => `--- main ${rest} past ${bump}, the version's bump`;
+let t = dryRun(good, ['--tree', tree]);
+expect(t.code === 0 && t.out.includes(`--- main is at the version's code: nothing under packages past ${bump}, the version's bump\n`), "a tree at the bump says it is at the version's code");
+commitFile(tree, 'packages/shared/a.txt', 'a\n', 'shared');
+t = dryRun(good, ['--tree', tree]);
+expect(t.code === 0 && t.out.includes(`${bumpLine('has 1 commit under packages')}; export from a detached worktree of it\n`), 'one commit under packages past the bump is counted');
+commitFile(tree, 'docs/a.md', 'a\n', 'docs only');
+t = dryRun(good, ['--tree', tree]);
+expect(t.code === 0 && t.out.includes(`${bumpLine('has 1 commit under packages')}; export from a detached worktree of it\n`), 'a docs-only commit does not count');
+commitFile(tree, 'packages/cli/b.txt', 'b\n', 'cli');
+t = dryRun(good, ['--tree', tree]);
+expect(t.code === 0 && t.out.includes(`${bumpLine('has 2 commits under packages')}; export from a detached worktree of it\n`), 'two commits under packages are counted in the plural');
+const treeOld = path.join(treeDir, 'tree-old');
+fs.mkdirSync(treeOld, { recursive: true });
+git(treeOld, 'init', '-q', '-b', 'main');
+commitFile(treeOld, 'packages/app/package.json', JSON.stringify({ name: '@emerald/app', version: '0.1.450' }, null, 2) + '\n', 'old');
+t = dryRun(good, ['--tree', treeOld]);
+expect(t.code === 0 && t.out.includes(`--- no commit sets packages/app/package.json to ${version}; commit the bump before the export\n`), 'a tree with no commit at the version says so');
+removeTree(treeDir);
+
 // The refusals, each on a fresh copy.
 function refused(label, breakIt, line) {
   const dirs = fixtures(label);
@@ -165,4 +223,5 @@ refused(
 );
 
 fs.rmSync(dryDir, { recursive: true, force: true });
+removeTree(treeDir);
 log('PASS');

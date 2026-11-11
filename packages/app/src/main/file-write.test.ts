@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { COPY_PROGRESS_MS, copyPaceMs, createFile, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, progressDue, renameEntry, requireAbsolute, sameVolume, trashEntry, walkTree, writeFileText } from './file-write.ts';
+import { COPY_PROGRESS_MS, CopyRuns, copyOneFile, copyPaceMs, createFile, STREAM_COPY_MIN_BYTES, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, progressDue, renameEntry, requireAbsolute, sameVolume, trashEntry, walkTree, writeFileText } from './file-write.ts';
 
 const BOM = String.fromCharCode(0xfeff);
 // Any stamp, for a save refused before the stat.
@@ -717,6 +717,149 @@ test('copyPaceMs takes a whole number of milliseconds up to 1000 and nothing els
   assert.equal(copyPaceMs('-1'), 0);
   assert.equal(copyPaceMs('2.5'), 0);
   assert.equal(copyPaceMs('5000'), 1000);
+});
+
+test('copyOneFile streams a file over its threshold in chunks, counting every byte, and keeps its modified time; a file at or under it goes by cp and counts nothing (M9 fix 1123)', async () => {
+  const dir = tempDir();
+  try {
+    const from = path.join(dir, 'big.bin');
+    const bytes = Buffer.alloc(10240);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    fs.writeFileSync(from, bytes);
+    const when = new Date('2024-01-02T03:04:05Z');
+    fs.utimesSync(from, when, when);
+    const counts: number[] = [];
+    const to = path.join(dir, 'streamed.bin');
+    await copyOneFile(from, to, { size: 10240, onBytes: (n) => counts.push(n), signal: null, pace: 0, streamAt: 1024, chunk: 1024 });
+    assert.deepEqual(counts, Array(10).fill(1024));
+    assert.ok(fs.readFileSync(to).equals(bytes));
+    assert.equal(fs.statSync(to).mtimeMs, fs.statSync(from).mtimeMs);
+    const native: number[] = [];
+    const to2 = path.join(dir, 'native.bin');
+    await copyOneFile(from, to2, { size: 10240, onBytes: (n) => native.push(n), signal: null, pace: 0, streamAt: 20000, chunk: 1024 });
+    assert.deepEqual(native, []);
+    assert.ok(fs.readFileSync(to2).equals(bytes));
+    await assert.rejects(copyOneFile(from, to, { size: 10240, onBytes: () => {}, signal: null, pace: 0, streamAt: 1024, chunk: 1024 }), (err: NodeJS.ErrnoException) => err.code === 'EEXIST');
+    assert.equal(STREAM_COPY_MIN_BYTES, 64 * 1024 * 1024);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries pushes bytes inside one file through copyFile\'s onBytes, done still counting the file at its end (M9 fix 1123)', async () => {
+  const dir = tempDir();
+  try {
+    const src = path.join(dir, 'one.bin');
+    fs.writeFileSync(src, Buffer.alloc(1000, 7));
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    let t = 0;
+    const pushes: Omit<Push, 'at'>[] = [];
+    const copyFile = async (from: string, to: string, o: { onBytes: (n: number) => void }) => {
+      for (let i = 0; i < 10; i++) {
+        t += 40;
+        o.onBytes(100);
+      }
+      await fs.promises.cp(from, to, { errorOnExist: true, force: false, preserveTimestamps: true });
+    };
+    const answer = await moveEntries([src], into, 'copy', null, { trash: fakeTrash(dir).trash, now: () => t, progress: (p) => pushes.push(p), copyFile });
+    assert.deepEqual(answer, { done: [{ from: src, to: path.join(into, 'one.bin'), result: 'copied' }] });
+    const inside = pushes.filter((p) => p.done === 0);
+    assert.ok(inside.length >= 3, `pushes inside the file ${inside.length}`);
+    for (let i = 1; i < inside.length; i++) assert.ok(inside[i]!.bytesDone > inside[i - 1]!.bytesDone, `push ${i} did not rise`);
+    for (const p of pushes) assert.equal(p.bytesTotal, 1000);
+    assert.deepEqual(pushes.at(-1), { done: 1, total: 1, bytesDone: 1000, bytesTotal: 1000 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries cancelled inside a streamed file takes that file back, keeps the file before it and skips the one after (M9 fix 1124)', async () => {
+  const dir = tempDir();
+  try {
+    const make = (name: string, size: number) => {
+      const p = path.join(dir, name);
+      const b = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) b[i] = (i * 7) % 253;
+      fs.writeFileSync(p, b);
+      return { p, b };
+    };
+    const a = make('a.bin', 10240);
+    const b = make('b.bin', 102400);
+    const c = make('c.bin', 10240);
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const controller = new AbortController();
+    let t = 0;
+    let bChunks = 0;
+    const pushes: Omit<Push, 'at'>[] = [];
+    const copyFile = (from: string, to: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null }) =>
+      copyOneFile(from, to, {
+        ...o,
+        onBytes: (n) => {
+          t += 50;
+          if (from.endsWith('b.bin') && ++bChunks === 3) controller.abort();
+          o.onBytes(n);
+        },
+        pace: 0,
+        streamAt: 1024,
+        chunk: 1024,
+      });
+    const answer = await moveEntries([a.p, b.p, c.p], into, 'copy', null, { trash: fakeTrash(dir).trash, now: () => t, progress: (p) => pushes.push(p), copyFile, signal: controller.signal });
+    assert.deepEqual(answer, {
+      done: [
+        { from: a.p, to: path.join(into, 'a.bin'), result: 'copied' },
+        { from: b.p, to: path.join(into, 'b.bin'), result: 'refused', why: 'Cancelled', cancelled: true },
+        { from: c.p, to: path.join(into, 'c.bin'), result: 'skipped', cancelled: true },
+      ],
+    });
+    assert.deepEqual(fs.readdirSync(into), ['a.bin']);
+    assert.ok(fs.readFileSync(path.join(into, 'a.bin')).equals(a.b));
+    for (const s of [a, b, c]) assert.ok(fs.readFileSync(s.p).equals(s.b));
+    assert.deepEqual(pushes.at(-1), { done: 1, total: 1, bytesDone: 10240, bytesTotal: 10240 });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('moveEntries cancelled before it starts copies nothing and marks every entry skipped (M9 fix 1124)', async () => {
+  const dir = tempDir();
+  try {
+    const x = path.join(dir, 'x.txt');
+    const y = path.join(dir, 'y.txt');
+    fs.writeFileSync(x, 'x');
+    fs.writeFileSync(y, 'y');
+    const into = path.join(dir, 'into');
+    fs.mkdirSync(into);
+    const controller = new AbortController();
+    controller.abort();
+    const answer = await moveEntries([x, y], into, 'copy', null, { trash: fakeTrash(dir).trash, signal: controller.signal });
+    assert.deepEqual(answer, {
+      done: [
+        { from: x, to: path.join(into, 'x.txt'), result: 'skipped', cancelled: true },
+        { from: y, to: path.join(into, 'y.txt'), result: 'skipped', cancelled: true },
+      ],
+    });
+    assert.deepEqual(fs.readdirSync(into), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CopyRuns aborts one window\'s copies into one folder, leaves the rest, and forgets a run that ended (M9 fix 1124)', () => {
+  const runs = new CopyRuns();
+  const d1 = runs.begin(1, 'D');
+  const d2 = runs.begin(1, 'D');
+  const e1 = runs.begin(1, 'E');
+  const other = runs.begin(2, 'D');
+  assert.equal(runs.cancel(1, 'D'), 2);
+  assert.equal(d1.aborted, true);
+  assert.equal(d2.aborted, true);
+  assert.equal(e1.aborted, false);
+  assert.equal(other.aborted, false);
+  runs.end(1, 'E', e1);
+  assert.equal(runs.cancel(1, 'E'), 0);
+  assert.equal(e1.aborted, false);
 });
 
 // M9 fix 1025: off Windows a case-only rename goes through when both

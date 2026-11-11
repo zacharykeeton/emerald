@@ -7,6 +7,7 @@ import { startWindowZoom } from './window-zoom.ts';
 import { startOtherWindowWrites } from './other-window.ts';
 import { startWindowDropTarget } from './window-drop.ts';
 import { platformMark } from './mac-window-model.ts';
+import { startErrorStacks } from './error-stack.ts';
 import './style.css';
 
 // M9 fix 1023: a Mac window's <html> says so before the first paint, so
@@ -14,6 +15,8 @@ import './style.css';
 // no new attribute.
 const mark = platformMark(window.emerald.platform);
 if (mark !== null) document.documentElement.dataset['platform'] = mark;
+// M9 fix 1128: an uncaught error's stack reaches main.log as one note line, so the next xterm loadCell burst names its frame.
+startErrorStacks();
 // M9 fix 569: the skin is on <html> and main has heard it before React
 // renders, so an Emerald window never paints a Classic frame.
 setSkin(loadSkin());

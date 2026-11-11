@@ -13,10 +13,24 @@ const ENGINE_SPINNER = 'the engine spinner';
 
 type Posted ={ url: string; headers: Record<string, string>; body: string };
 
-function recordFetches(on: On, fail = false): Posted[] {
+// M9 fix 1125: a poll of the mod's channel (a URL ending /channel) is
+// answered with the next of polls, a batch of JSON lines, a status, or
+// 'throw'; past the last it is answered 404, so every test's loop ends
+// before the test does (channelOpen is the module's own state).
+type PollAnswer = string[] | number | 'throw';
+
+function recordFetches(on: On, fail = false, polls: PollAnswer[] = []): Posted[] {
   const posted: Posted[] = [];
+  const left = [...polls];
   on('http.fetch', ($, e) => {
     posted.push({ url: e.url, headers: e.init?.headers ?? {}, body: e.init?.body ?? '' });
+    if (e.url.endsWith('/channel')) {
+      const next = left.shift();
+      if (next === 'throw') throw new Error('connection refused');
+      if (typeof next === 'number') return { value: { status: next, ok: false, headers: {}, text: '' } };
+      if (next === undefined) return { value: { status: 404, ok: false, headers: {}, text: '' } };
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ lines: next.map((l) => JSON.parse(l)) }) } };
+    }
     if (fail) throw new Error('connection refused');
     return { value: { status: 204, ok: true, headers: {}, text: '' } };
   });
@@ -61,48 +75,82 @@ test('a Bash call, which raises PreToolUse, posts nothing', async ($, on) => {
   expect(posted.length).toBe(0);
 });
 
-// M9 fix 741: the prompt channel. The test's process.spawn hook stands in
-// for `emmer mod-channel`, streaming one prompt line.
-function channel(on: On): { argvs: string[][]; submitted: { text: string; origin: unknown }[] } {
-  const argvs: string[][] = [];
+// M9 fix 741: the prompt channel, a long poll on the hook sink since M9
+// fix 1125. The test's http.fetch hook answers the first poll with one
+// prompt line and the next 404, which ends the loop.
+const polled = (posted: Posted[]) => posted.filter((p) => p.url.endsWith('/channel'));
+
+function channel(on: On): { posted: Posted[]; submitted: { text: string; origin: unknown }[] } {
   const submitted: { text: string; origin: unknown }[] = [];
+  const posted = recordFetches(on, false, [['{"text":"hi"}']]);
   on('session.start', ($, e) => ({ cwd: e.cwd }));
-  on('process.spawn', async function* ($, e) {
-    argvs.push([...e.argv]);
-    yield { stream: 'stdout' as const, text: '{"text":"hi"}\n' };
-    // A test's process.spawn beneath answers its end in { value }, as
-    // env.get and http.fetch do; prompt.submit answers its own shape.
-    return { value: { code: 0, signal: null } };
-  });
   on('prompt.submit', ($, e) => {
     submitted.push({ text: e.text, origin: e.origin });
     return { text: e.text };
   });
-  return { argvs, submitted };
+  return { posted, submitted };
 }
 
-const CHANNEL = { ...VARS, EMERALD_MOD_CHANNEL: JSON.stringify(['node', 'main.js', 'mod-channel']) };
-
-test('an interactive session.start opens the channel and a streamed line is submitted as the person (M9 fix 741)', async ($, on) => {
-  mock.env(on, CHANNEL);
+test('an interactive session.start polls the channel and a line it answers is submitted as the person (M9 fixes 741 and 1125)', async ($, on) => {
+  mock.env(on, VARS);
   const clock = mock.clock(on);
   const seen = channel(on);
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
-  expect(seen.argvs).toEqual([['node', 'main.js', 'mod-channel', 'sess-725']]);
+  const polls = polled(seen.posted);
+  expect(polls.length).toBe(2);
+  expect(polls[0]!.url).toBe('http://127.0.0.1:7419/channel');
+  expect(polls[0]!.headers).toEqual({ 'Content-Type': 'application/json', 'X-Emerald-Token': 'tok', 'X-Emerald-Session': 'sess-725', 'X-Emerald-Hook': 'emerald-mod' });
+  expect(polls[0]!.body).toBe('{}');
   expect(seen.submitted.length).toBe(1);
   expect(seen.submitted[0]!.text).toBe('hi');
   expect(seen.submitted[0]!.origin).toEqual(expect.objectContaining({ kind: 'plugin', asUser: true }));
 });
 
-test('a -p session.start opens no channel (M9 fix 741)', async ($, on) => {
-  mock.env(on, CHANNEL);
+test('a -p session.start polls no channel (M9 fix 741)', async ($, on) => {
+  mock.env(on, VARS);
   const clock = mock.clock(on);
   const seen = channel(on);
   await $.session.start({ cwd: 'C:\\w', surface: null, isInteractive: false });
   await clock.settle();
-  expect(seen.argvs).toEqual([]);
+  expect(polled(seen.posted)).toEqual([]);
   expect(seen.submitted).toEqual([]);
+});
+
+test('a poll answered 409 asks no more (M9 fix 1125)', async ($, on) => {
+  mock.env(on, VARS);
+  const clock = mock.clock(on);
+  const posted = recordFetches(on, false, [409]);
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  await clock.settle();
+  expect(polled(posted).length).toBe(1);
+});
+
+// A hook that throws is skipped by the kit, which sends the call on past
+// it to the network the test refuses, which throws to the mod. The kit's
+// own clock sleeps the whole 2 s, so the test's clock.sleep hook answers
+// each at once: five polls in a row that throw, four sleeps between them,
+// and the sixth answer, a line, never asked for.
+test('a poll that throws is asked again, five times in a row and then no more (M9 fix 1125)', async ($, on) => {
+  mock.env(on, VARS);
+  const posted = recordFetches(on, false, ['throw', 'throw', 'throw', 'throw', 'throw', ['{"text":"never"}']]);
+  const sleeps: number[] = [];
+  on('clock.sleep', (_$, e) => {
+    sleeps.push(e.ms);
+    return { value: undefined };
+  });
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  const submitted: string[] = [];
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text);
+    return { text: e.text };
+  });
+  await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
+  for (let i = 0; i < 10; i++) await settle();
+  expect(polled(posted).length).toBe(5);
+  expect(sleeps).toEqual([2000, 2000, 2000, 2000]);
+  expect(submitted).toEqual([]);
 });
 
 // M9 fix 781: the mod's word on each submit. The engine refuses a plugin's
@@ -110,13 +158,11 @@ test('a -p session.start opens no channel (M9 fix 741)', async ($, on) => {
 // ModSubmit with the push's submitId so the daemon has the sender type it.
 const STOP_STANDS = 'the session was stopped and nobody has sent input since';
 
-function answeringChannel(on: On, lines: string[], answer: (text: string) => { text: string } | { drop: string }): string[] {
+// The lines are the first poll's batch, passed to the caller's own
+// recordFetches (the kit refuses a second http.fetch hook).
+function answeringChannel(on: On, answer: (text: string) => { text: string } | { drop: string }): string[] {
   const submitted: string[] = [];
   on('session.start', ($, e) => ({ cwd: e.cwd }));
-  on('process.spawn', async function* () {
-    for (const line of lines) yield { stream: 'stdout' as const, text: line + '\n' };
-    return { value: { code: 0, signal: null } };
-  });
   on('prompt.submit', ($, e) => {
     submitted.push(e.text);
     return answer(e.text);
@@ -127,14 +173,17 @@ function answeringChannel(on: On, lines: string[], answer: (text: string) => { t
 const words = (posted: Posted[]) => posted.map((p) => JSON.parse(p.body)).filter((b) => b.hook_event_name === 'ModSubmit');
 
 test('a dropped submit posts ModSubmit not entered with the engine\'s reason, and the next submit still goes in (M9 fix 781)', async ($, on) => {
-  mock.env(on, CHANNEL);
+  mock.env(on, VARS);
   const clock = mock.clock(on);
-  const posted = recordFetches(on);
-  const submitted = answeringChannel(on, ['{"text":"after the stop","submitId":"s1-1"}', '{"text":"and again","submitId":"s1-2"}'], (text) => (text === 'after the stop' ? { drop: STOP_STANDS } : { text }));
+  const posted = recordFetches(on, false, [['{"text":"after the stop","submitId":"s1-1"}', '{"text":"and again","submitId":"s1-2"}']]);
+  const submitted = answeringChannel(on, (text) => (text === 'after the stop' ? { drop: STOP_STANDS } : { text }));
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
   expect(submitted).toEqual(['after the stop', 'and again']);
-  expect(words(posted)).toEqual([
+  // M9 fix 1125: both lines come in one poll, so the second meets the
+  // first still out and says queued at once (fix 995); the final words are
+  // what this test reads.
+  expect(words(posted).filter((w) => w.queued !== true)).toEqual([
     expect.objectContaining({ submit_id: 's1-1', entered: false, drop: STOP_STANDS }),
     expect.objectContaining({ submit_id: 's1-2', entered: true }),
   ]);
@@ -144,11 +193,11 @@ test('a dropped submit posts ModSubmit not entered with the engine\'s reason, an
 // waits for the turn's end; with no turn and nothing chained only the
 // final word goes; a subagent's turn is not the row's.
 test('a line streamed during a main turn posts queued before its final word (M9 fix 995)', async ($, on) => {
-  mock.env(on, CHANNEL);
+  mock.env(on, VARS);
   const clock = mock.clock(on);
-  const posted = recordFetches(on);
+  const posted = recordFetches(on, false, [['{"text":"mid-turn","submitId":"s9-1"}']]);
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
-  answeringChannel(on, ['{"text":"mid-turn","submitId":"s9-1"}'], (text) => ({ text }));
+  answeringChannel(on, (text) => ({ text }));
   await $.turn.start({ text: 'a long turn', turnId: 't-995' });
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
@@ -162,11 +211,11 @@ test('a line streamed during a main turn posts queued before its final word (M9 
 });
 
 test('a line streamed with no turn running, or during a subagent turn, posts only its final word (M9 fix 995)', async ($, on) => {
-  mock.env(on, CHANNEL);
+  mock.env(on, VARS);
   const clock = mock.clock(on);
-  const posted = recordFetches(on);
+  const posted = recordFetches(on, false, [['{"text":"at rest","submitId":"s9-2"}']]);
   on('turn.start', (_$, e) => ({ turnId: e.turnId }));
-  answeringChannel(on, ['{"text":"at rest","submitId":"s9-2"}'], (text) => ({ text }));
+  answeringChannel(on, (text) => ({ text }));
   await $.turn.start({ text: 'a subagent', turnId: 't-agent', agentId: 'agent-1' });
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
@@ -175,10 +224,10 @@ test('a line streamed with no turn running, or during a subagent turn, posts onl
 });
 
 test('a submit with no submitId (an older daemon) posts no word (M9 fix 781)', async ($, on) => {
-  mock.env(on, CHANNEL);
+  mock.env(on, VARS);
   const clock = mock.clock(on);
-  const posted = recordFetches(on);
-  const submitted = answeringChannel(on, ['{"text":"hi"}'], () => ({ drop: STOP_STANDS }));
+  const posted = recordFetches(on, false, [['{"text":"hi"}']]);
+  const submitted = answeringChannel(on, () => ({ drop: STOP_STANDS }));
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
   expect(submitted).toEqual(['hi']);
@@ -384,11 +433,11 @@ test('a limits-only measure posts no Context (M9 fix 1036)', async ($, on) => {
 });
 
 test('a channel line asking a full count posts one full Context and submits nothing (M9 fix 1036)', async ($, on) => {
-  mock.env(on, CHANNEL);
+  mock.env(on, VARS);
   const clock = mock.clock(on);
-  const posted = recordFetches(on);
+  const posted = recordFetches(on, false, [['{"context":"full"}']]);
   const asked = answerUsage(on);
-  const submitted = answeringChannel(on, ['{"context":"full"}'], (text) => ({ text }));
+  const submitted = answeringChannel(on, (text) => ({ text }));
   await $.session.start({ cwd: 'C:\\w', surface: 'terminal', isInteractive: true });
   await clock.settle();
   await settle();

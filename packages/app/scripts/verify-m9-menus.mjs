@@ -12,12 +12,13 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
-import { CTRL, SHIFT, expect, freshPort, getLayout, killTree, launch, leaves, sleep, splitWithShell, startSessionByKey, startShellByKey, step, stopDaemon, zreq } from './cdp.mjs';
+import path from 'node:path';
+import { CTRL, SHIFT, emeraldHome, expect, freshPort, getLayout, killTree, launch, leaves, sleep, splitWithShell, startSessionByKey, startShellByKey, step, stopDaemon, zreq } from './cdp.mjs';
 
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 240 s');
+  console.error('[verify] WATCHDOG: run exceeded 300 s');
   process.exit(3);
-}, 240000);
+}, 300000);
 
 const read = async (s, id) => Buffer.from((await zreq(s, 'session.read', { sessionId: id })).data, 'base64').toString();
 
@@ -565,6 +566,219 @@ try {
   await zreq(s, 'session.kill', { sessionId: soloSessionId, remove: true });
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start') && document.querySelectorAll('.pane').length === 1`, 'back to the empty pane the run started from');
   step('M9 fix 343 and 537: the split menu offers an empty pane, a shell or a Claude for one split and picks the default among the three');
+
+  // M9 fix 1131: New Claude session here over a live Claude closes the one
+  // it replaces, through a ticked Close "<name>" box in the dialog. Each
+  // Claude is a real claude at the trust dialog of a fresh folder, which
+  // makes no request (fix 787's stub). Every session the block starts is
+  // removed before the sidebar menus below count one folder heading.
+  const dir1131 = fs.mkdtempSync(path.join(os.tmpdir(), 'm9-1131-'));
+  const pane1131 = (id) => `[data-pane-id=${JSON.stringify(id)}]`;
+  const row1131 = (id) => `.sidebar-row[data-session-id=${JSON.stringify(id)}]`;
+  const listed1131 = async () => (await zreq(s, 'session.list', {})).sessions;
+  const paneSession1131 = async (paneId) => leaves(await getLayout(s)).find((p) => p.id === paneId)?.sessionId ?? null;
+  const waitNewSession1131 = async (paneId, notId, what) => {
+    let id = null;
+    for (const end = Date.now() + 15_000; Date.now() < end; await sleep(250)) {
+      id = await paneSession1131(paneId);
+      if (id !== null && id !== notId) return id;
+    }
+    throw new Error(`expected ${what}, the pane still holds ${id}`);
+  };
+  const openReplace1131 = async () => {
+    await openMenuOn(s, soloPaneId);
+    await chooseMenu(s, 'New Claude session here');
+    await s.waitFor(`!!document.querySelector('.dialog.new-session')`, 'the new session dialog');
+    await s.waitFor(`(document.querySelector('.dialog input[name=cwd]')?.value ?? '') !== ''`, 'the dialog folder box');
+  };
+  const box1131 = () =>
+    s.evalJs(`(() => { const box = document.querySelector('.dialog-close-old'); if (box === null) return null; const input = box.querySelector('input[name=closeOld]'); return { checked: input?.checked ?? null, label: box.querySelector('label').textContent.trim(), busy: box.querySelector('.dialog-close-old-busy')?.textContent ?? null }; })()`);
+  const startDialog1131 = async () => {
+    await s.evalJs(`[...document.querySelectorAll('.dialog button')].find(b => b.textContent === 'Start').click()`);
+    await s.waitFor(`!document.querySelector('.dialog')`, 'the dialog closed after Start');
+  };
+  const escapeDialog1131 = async () => {
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.dialog')`, 'Escape closed the dialog');
+  };
+  const nameOf1131 = async (id) => (await listed1131()).find((x) => x.id === id)?.name ?? null;
+  const faceOf1131 = () => s.evalJs(`document.querySelector(${JSON.stringify('.pane' + pane1131(soloPaneId))})?.dataset.face ?? null`);
+  // A hook post on the sink, daemon.json read per post.
+  const post1131 = async (id, event) => {
+    const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
+    const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
+      method: 'POST',
+      headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': id },
+      body: JSON.stringify({ session_id: 'sim-' + id.slice(0, 8), cwd: dir1131, hook_event_name: event, ...(event === 'SessionStart' ? { source: 'startup' } : {}) }),
+    });
+    expect(res.status === 204, `fix 1131: the hook sink answered 204 to ${event}, got ${res.status}`);
+  };
+  // Each Claude here sits at the folder trust dialog, which the daemon reads
+  // as needs-input (fix 808) a moment after the start, and an asking Claude
+  // reads the box unticked whatever is remembered; when that read lands
+  // raced the box reads. A SessionStart puts the row at idle, and a trust
+  // read after it moves nothing, so the remembered tick is what each read
+  // sees.
+  const settle1131 = async (id) => {
+    await post1131(id, 'SessionStart');
+    await s.waitFor(`document.querySelector(${JSON.stringify(row1131(id))})?.dataset.state === 'idle'`, 'the Claude idle past its trust dialog', 8000);
+  };
+
+  await startSessionByKey(s, { kind: 'claude', cwd: dir1131 });
+  const a1131 = await waitNewSession1131(soloPaneId, null, 'Claude A in the solo pane');
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(pane1131(soloPaneId) + ' .pane-face-toggle')})`, 'the face button on Claude A');
+  await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(soloPaneId) + ' .pane-face-toggle')}).click()`);
+  await s.waitFor(`document.querySelector(${JSON.stringify('.pane' + pane1131(soloPaneId))})?.dataset.face === 'chat'`, 'Claude A on the chat face');
+
+  // (1) The box is ticked by default and names A; Start closes A.
+  const aName1131 = await nameOf1131(a1131);
+  await settle1131(a1131);
+  await openReplace1131();
+  let box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === true && box1131now.label === `Close "${aName1131}"` && box1131now.busy === null, `fix 1131 (1): the box reads Close "${aName1131}" ticked with no working line, got ${JSON.stringify(box1131now)}`);
+  await startDialog1131();
+  const b1131 = await waitNewSession1131(soloPaneId, a1131, 'Claude B in the solo pane');
+  // The face follows the session id, so it is read once B has its own entry.
+  await s.waitFor(`document.querySelector(${JSON.stringify('.pane' + pane1131(soloPaneId))})?.dataset.face === 'chat'`, 'B on the chat face', 5000).catch(() => {});
+  expect((await faceOf1131()) === 'chat', 'fix 1131 (1): the new Claude opens on the chat face the replaced one was on');
+  await s.waitFor(
+    `(() => { const r = document.querySelector(${JSON.stringify('.sidebar-group[data-group="exited"] ' + row1131(a1131))}); const t = r?.querySelector('.sidebar-row-removal')?.textContent ?? ''; return !!r && r.dataset.removing !== undefined && /^removing in (10|[1-9])s$/.test(t); })()`,
+    "A's Exited row counting down",
+    8000,
+  );
+  await s.evalJs(`document.querySelector(${JSON.stringify(row1131(a1131) + ' .sidebar-row-resume')}).click()`);
+  let back1131 = null;
+  let backOk1131 = false;
+  for (const end = Date.now() + 15_000; !backOk1131 && Date.now() < end; await sleep(250)) {
+    const ls = leaves(await getLayout(s));
+    const aState = (await listed1131()).find((x) => x.id === a1131)?.state;
+    back1131 = { leaves: ls.map((p) => ({ id: p.id, sessionId: p.sessionId })), aState };
+    backOk1131 = ls.length === 2 && ls[0].id === soloPaneId && ls[0].sessionId === b1131 && ls[1].sessionId === a1131 && aState !== undefined && aState !== 'exited';
+  }
+  expect(backOk1131, `fix 1131 (1): Resume puts A back to the right of B, got ${JSON.stringify(back1131)}`);
+  const second1131 = leaves(await getLayout(s))[1].id;
+  step("fix 1131 (1): New Claude session here over a live Claude closes it, ticked by default, on the pane's chat face; its row counts removing in Ns and Resume puts it back to the right of the new one");
+
+  // (2) The tick is remembered; with it off the replaced session stays.
+  await settle1131(b1131);
+  await openReplace1131();
+  box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === true, `fix 1131 (2): the box remembered ticked, got ${JSON.stringify(box1131now)}`);
+  await s.evalJs(`document.querySelector('.dialog-close-old input[name=closeOld]').click()`);
+  await s.waitFor(`document.querySelector('.dialog-close-old input[name=closeOld]')?.checked === false`, 'the box unticked');
+  await startDialog1131();
+  const c1131 = await waitNewSession1131(soloPaneId, b1131, 'Claude C in the solo pane');
+  await sleep(1000);
+  const bAfter1131 = (await listed1131()).find((x) => x.id === b1131);
+  const bShown1131 = leaves(await getLayout(s)).some((p) => p.sessionId === b1131);
+  const bCounting1131 = await s.evalJs(`document.querySelector(${JSON.stringify(row1131(b1131))})?.dataset.removing !== undefined`);
+  expect(bAfter1131 !== undefined && bAfter1131.state !== 'exited' && !bShown1131 && !bCounting1131, `fix 1131 (2): B live, unshown and not counting, got ${JSON.stringify({ state: bAfter1131?.state, bShown1131, bCounting1131 })}`);
+  step('fix 1131 (2): with the tick off the replaced session stays live and unshown');
+
+  // (3) The untick is remembered; a working Claude reads the box off with
+  // its line whatever is remembered.
+  await settle1131(c1131);
+  await openReplace1131();
+  box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === false && box1131now.busy === null, `fix 1131 (3): the box remembered unticked, got ${JSON.stringify(box1131now)}`);
+  await escapeDialog1131();
+  await s.evalJs(`localStorage.setItem('emerald.closeReplaced', '1')`);
+  await post1131(c1131, 'UserPromptSubmit');
+  await s.waitFor(`document.querySelector(${JSON.stringify(row1131(c1131))})?.dataset.state === 'working'`, "C's row working", 8000);
+  const cName1131 = await nameOf1131(c1131);
+  await openReplace1131();
+  box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === false && box1131now.busy === `"${cName1131}" is working`, `fix 1131 (3): a working Claude's box reads unticked with its line, got ${JSON.stringify(box1131now)}`);
+  await escapeDialog1131();
+  step('fix 1131 (3): the untick is remembered, and a working Claude reads the box off with its line whatever is remembered');
+
+  // (4) A session also shown in another pane is offered no box.
+  const mirror1131 = await getLayout(s);
+  const withMirror1131 = (node) =>
+    node.kind === 'pane' ? (node.id === second1131 ? { ...node, sessionId: c1131, view: null } : node) : { ...node, first: withMirror1131(node.first), second: withMirror1131(node.second) };
+  await zreq(s, 'layout.set', { layout: { ...mirror1131, root: withMirror1131(mirror1131.root), focusedPaneId: soloPaneId } });
+  for (const end = Date.now() + 8000; Date.now() < end && (await paneSession1131(second1131)) !== c1131; ) await sleep(200);
+  await openReplace1131();
+  expect((await box1131()) === null, 'fix 1131 (4): no Close box over a session shown in another pane');
+  await escapeDialog1131();
+  step('fix 1131 (4): a session shown in another pane is offered no box');
+
+  // Clean-up: every session of the block removed, back to one empty pane.
+  for (const id of [a1131, b1131, c1131]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
+  for (const id of [a1131, b1131, c1131]) await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(id))})`, "the block's rows gone", 8000);
+  await s.waitFor(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}) !== null`, 'the second pane empties');
+  await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}).click()`);
+  await s.waitFor(`document.querySelectorAll('.pane').length === 1 && !!document.querySelector('.empty-pane')`, 'one empty pane after fix 1131');
+
+  // M9 fix 1132: three empty splits in a day, each followed within 10 s by
+  // a Claude start in the new pane, and the next split's empty pane offers
+  // Always start a Claude on a split? once per profile. The Claudes sit at
+  // the trust dialog of their folder and make no request.
+  const kind1132 = await s.evalJs(`localStorage.getItem('emerald.emptyPaneKind')`);
+  await s.evalJs(`(() => { localStorage.removeItem('emerald.splitClaudePairs'); localStorage.removeItem('emerald.splitClaudeOffer'); })()`);
+  const today1132 = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+  const split1132 = async () => {
+    await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(soloPaneId) + ' .empty-split-right')}).click()`);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 2`, 'two panes after the empty split');
+    const l = await getLayout(s);
+    const extra = leaves(l).find((p) => p.id !== soloPaneId);
+    expect(extra !== undefined && l.focusedPaneId === extra.id, `fix 1132: the new leaf is focused, got ${JSON.stringify(l.focusedPaneId)}`);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(pane1131(extra.id) + ' .empty-pane')})`, 'the new leaf is an empty pane');
+    return extra.id;
+  };
+  const closeLeaf1132 = async (leafId) => {
+    await s.waitFor(`document.querySelector(${JSON.stringify(pane1131(leafId) + ' .empty-close')}) !== null`, 'the leaf empties');
+    await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(leafId) + ' .empty-close')}).click()`);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'back to the one pane');
+  };
+  const offerCount1132 = () => s.evalJs(`document.querySelectorAll('.empty-split-offer').length`);
+  for (let i = 0; i < 3; i++) {
+    const leaf = await split1132();
+    const tile = pane1131(leaf) + ' .empty-pane .empty-kind[data-kind="claude"]';
+    const start = pane1131(leaf) + ' .empty-pane .empty-start';
+    await s.evalJs(`document.querySelector(${JSON.stringify(tile)}).click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(start)})?.disabled === false && document.querySelector(${JSON.stringify(tile)})?.getAttribute('aria-pressed') === 'true'`, 'the empty pane ready to start a Claude');
+    await s.evalJs(`document.querySelector(${JSON.stringify(start)}).click()`);
+    const id = await waitNewSession1131(leaf, null, `the Claude of split ${i + 1}`);
+    await zreq(s, 'session.kill', { sessionId: id, remove: true });
+    await closeLeaf1132(leaf);
+  }
+  const pairs1132 = JSON.parse((await s.evalJs(`localStorage.getItem('emerald.splitClaudePairs')`)) ?? 'null');
+  expect(pairs1132?.day === today1132 && pairs1132?.count === 3, `fix 1132 (1): three pairs for ${today1132}, got ${JSON.stringify(pairs1132)}`);
+  expect((await offerCount1132()) === 0, 'fix 1132 (1): no offer before the fourth split');
+  const fourth1132 = await split1132();
+  await s.waitFor(`document.querySelectorAll('.empty-split-offer').length === 1 && !!document.querySelector(${JSON.stringify(pane1131(fourth1132) + ' .empty-split-offer')})`, 'the offer on the fourth split', 5000);
+  const offerText1132 = await s.evalJs(`document.querySelector('.empty-split-offer .empty-split-offer-text')?.textContent ?? null`);
+  const offerKey1132 = await s.evalJs(`localStorage.getItem('emerald.splitClaudeOffer')`);
+  expect(offerText1132 === 'Always start a Claude on a split?' && offerKey1132 === 'shown', `fix 1132 (1): the offer reads its question and is marked shown, got ${JSON.stringify({ offerText1132, offerKey1132 })}`);
+  await s.evalJs(`document.querySelector('.empty-split-offer .empty-split-offer-yes').click()`);
+  await s.waitFor(`document.querySelectorAll('.empty-split-offer').length === 0`, 'the offer gone after Yes');
+  expect((await s.evalJs(`localStorage.getItem('emerald.splitKind')`)) === 'claude', 'fix 1132 (1): Yes sets the split default to Claude');
+  await closeLeaf1132(fourth1132);
+  step('fix 1132 (1): three splits each followed by a Claude start count three for the day, the fourth split\'s empty pane offers Always start a Claude on a split? and Yes sets the default');
+
+  // (2) Shown once per profile: back on the empty default, a split with
+  // the count still at three offers nothing.
+  await startShellByKey(s);
+  const shell1132 = await paneSession1131(soloPaneId);
+  await openSplitMenuHere('the split menu for the empty default');
+  await chooseSplitMenu('Empty pane');
+  await s.key('Escape', 'Escape', 27);
+  await s.waitFor(`!document.querySelector('.split-menu')`, 'the menu closes, the default back on the empty pane');
+  await s.evalJs(`document.querySelector(${JSON.stringify(rightSel)}).click()`);
+  await s.waitFor(`document.querySelectorAll('.pane').length === 2`, 'a second pane from the plain button');
+  const again1132 = leaves(await getLayout(s)).find((p) => p.id !== soloPaneId).id;
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(pane1131(again1132) + ' .empty-pane')})`, 'the plain split is an empty pane');
+  await sleep(500);
+  expect((await offerCount1132()) === 0, 'fix 1132 (2): no offer on a split once it has been shown');
+  await closeEmptyExtra();
+  await zreq(s, 'session.kill', { sessionId: shell1132, remove: true });
+  await s.waitFor(`document.querySelectorAll('.pane').length === 1 && !!document.querySelector('.empty-pane .empty-start')`, 'one empty pane after fix 1132');
+  await s.evalJs(kind1132 === null ? `localStorage.removeItem('emerald.emptyPaneKind')` : `localStorage.setItem('emerald.emptyPaneKind', ${JSON.stringify(kind1132)})`);
+  step('fix 1132 (2): the offer shows once per profile');
 
   // The sidebar's own menus (M32): a right click on the heading offers
   // the two orders with the current one marked, and a right click on a

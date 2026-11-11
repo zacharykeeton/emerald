@@ -90,7 +90,9 @@ export function openViews(layout: Layout | null, tabs: TabsModel, cheatSheetOpen
 
 // The lines between two looks and the open times after them. A null
 // `before` is the baseline: nothing is sent, every view starts its clock.
-// A key whose kind changed is a close and an open.
+// A key whose kind changed is a close and an open. M9 fix 1133: a close is
+// replaced when a view of its kind opens under another key in the same look,
+// one open for one close.
 export function viewDiff(
   before: ReadonlyMap<string, UseView> | null,
   after: ReadonlyMap<string, UseView>,
@@ -103,13 +105,18 @@ export function viewDiff(
     for (const key of after.keys()) next.set(key, now);
     return { lines, openedAt: next };
   }
-  const close = (key: string, view: UseView) => {
+  const opening = new Map<UseView, number>();
+  for (const [key, view] of after) if (before.get(key) !== view) opening.set(view, (opening.get(view) ?? 0) + 1);
+  const close = (key: string, view: UseView, replaced: boolean) => {
     const at = openedAt.get(key) ?? now;
-    lines.push({ ev: 'view-close', view, ms: Math.max(0, Math.round(now - at)) });
+    lines.push({ ev: 'view-close', view, ms: Math.max(0, Math.round(now - at)), ...(replaced ? { replaced: true as const } : {}) });
   };
   for (const [key, view] of before) {
     const still = after.get(key);
-    if (still === undefined || still !== view) close(key, view);
+    if (still !== undefined && still === view) continue;
+    const left = opening.get(view) ?? 0;
+    if (left > 0) opening.set(view, left - 1);
+    close(key, view, left > 0);
   }
   for (const [key, view] of after) {
     const was = before.get(key);

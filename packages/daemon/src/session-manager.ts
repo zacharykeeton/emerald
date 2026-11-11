@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { HEAD_TOOLS, Limits, MOD_APPEND, MOD_TOOL_RUNNING, appendTouched, autoNameFor, classifyHook, commandDir, folderName, initialState, isForeignHook, isKnownAgent, isSessionId, namesUnknownTask, pickSessionColor, pushSample, reduce, runningKind, staleThresholdMs, toolPhrase, touchedPath } from '@emerald/shared';
-import type { HookOutcome, HookPayload, KeptScreen, ModRow, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
+import type { ClaudeAuth, HookOutcome, HookPayload, KeptScreen, ModRow, LoadSample, UsageLimit, SessionInfo, SessionKind, SessionPhase, SessionTask, ShellId, ShellOption, TeamMember } from '@emerald/shared';
 import type { HookResult } from './hook-sink.ts';
 import { RequestError } from './errors.ts';
 import { findGitDir, onReftableBranch, readBranch, repoKey } from './git-branch.ts';
@@ -19,7 +19,8 @@ import { SpinnerScanner } from './spinner-word.ts';
 import { PtySession, stampEnv } from './pty-session.ts';
 import { withRegistry } from './spawn-path.ts';
 import { TranscriptTail } from './transcript-tail.ts';
-import { ClaudeLauncher, findClaude } from './launchers/claude.ts';
+import { ClaudeLauncher, claudeRun, findClaude } from './launchers/claude.ts';
+import { readClaudeAuth } from './claude-auth.ts';
 import { BASH_RC, ShellLauncher, ZSH_FILES, bashRc, zshDirFor } from './launchers/shell.ts';
 import { findShells } from './shells.ts';
 import type { SessionLauncher } from './launchers/types.ts';
@@ -169,6 +170,10 @@ export interface SessionManagerOptions {
   // Absent means a folder of its own under the temp folder, made at the
   // first such launch, so no test writes under a home.
   bashrcPath?: string;
+  // Reads whether a claude is signed in on an environment (M9 fix 1094,
+  // claude auth status --json); a test hands in a stub, and absent runs
+  // the claude findClaude finds on that environment.
+  readClaudeAuth?: (env: Record<string, string>) => Promise<ClaudeAuth | null>;
 }
 
 // Kept as its own class so a stack trace says where the error came from.
@@ -230,6 +235,9 @@ export class SessionManager extends EventEmitter {
   // Whether a claude is found (M9 fix 1084), read at the start and again
   // with the shells at each app hello, as the hello reports it.
   private claude: boolean;
+  // The claude.auth read in flight (M9 fix 1094), handed to every ask until
+  // it settles, so a burst of picks starts one claude.
+  private authRead: Promise<ClaudeAuth | null> | null = null;
 
   constructor(log: Logger, opts: SessionManagerOptions = {}) {
     super();
@@ -318,6 +326,19 @@ export class SessionManager extends EventEmitter {
   // Whether a claude is found (M9 fix 1084), as the hello reports it.
   claudeInstalled(): boolean {
     return this.claude;
+  }
+
+  // Whether the claude is signed in (M9 fix 1094), read on the environment
+  // refreshShells finds claude on; one read at a time, its promise shared.
+  claudeAuth(registry: Record<string, string> | null): Promise<ClaudeAuth | null> {
+    if (this.authRead !== null) return this.authRead;
+    const env = withRegistry(process.env, registry ?? {});
+    const reader = this.opts.readClaudeAuth ?? ((e: Record<string, string>) => readClaudeAuth(claudeRun(e, os.homedir(), process.platform), e));
+    const read = reader(env).catch(() => null).finally(() => {
+      if (this.authRead === read) this.authRead = null;
+    });
+    this.authRead = read;
+    return read;
   }
 
   // The shell a spawn asked for, among the installed ones; none asked is

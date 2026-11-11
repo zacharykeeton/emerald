@@ -404,3 +404,20 @@ test('an edit that puts a remote session in a pane sends the pane with its host 
     push({ type: 'session.removed', sessionId: 'local-1086' });
   }
 });
+
+test('an idle host.changed drops that host\'s sessions and removed ones, and a later session.changed brings one back (M9 fix 1097)', () => {
+  push(hostChanged('up'));
+  push({ type: 'session.changed', session: aSession({ id: 'remote-1097', host: 'wfs-db', state: 'idle' }) });
+  push({ type: 'session.changed', session: aSession({ id: 'gone-1097', host: 'wfs-db', state: 'exited' }) });
+  push({ type: 'session.removed', sessionId: 'gone-1097' });
+  push({ type: 'session.changed', session: aSession({ id: 'local-1097', state: 'idle' }) });
+  assert.ok(getState().removed.has('gone-1097'), 'the removed one is kept as removed before the forget');
+  push(hostChanged('idle'));
+  assert.equal(getState().sessions.has('remote-1097'), false);
+  assert.ok(getState().sessions.has('local-1097'), 'the local session stays');
+  assert.equal([...getState().removed.values()].some((s) => s.host === 'wfs-db'), false, 'no removed wfs-db session');
+  push({ type: 'session.changed', session: aSession({ id: 'remote-1097', host: 'wfs-db', state: 'idle' }) });
+  assert.ok(getState().sessions.has('remote-1097'), 'a later push lists it again');
+  push({ type: 'session.removed', sessionId: 'remote-1097' });
+  push({ type: 'session.removed', sessionId: 'local-1097' });
+});

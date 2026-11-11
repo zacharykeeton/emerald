@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { FileRead } from '../../preload/api.ts';
 import { normalizePath, parentPath } from './files-model.ts';
 import { fileUrl } from './markdown-url.ts';
+import { copyImage } from './copy-image.ts';
 import { MarkdownView } from './MarkdownView.tsx';
 import { useEditState } from './file-edits.ts';
 import { copyableImage, fileMenu } from './file-menu-model.ts';
@@ -20,7 +21,7 @@ import { ViewFindBar } from './ViewFindBar.tsx';
 import { askBeforeClose, clearReveal, closeFileTab, FONT_SIZE_DEFAULT, getUiState, revealInFiles, setFileTabView, toggleWrapLines, useUi } from './ui.ts';
 import { fileTextKey, paneScaled, paneTextVars } from './pane-text.ts';
 import { usePaneWheel } from './pane-wheel.ts';
-import { isCtrlOrCmdKey } from './keys-model.ts';
+import { editKey, isCtrlOrCmdKey } from './keys-model.ts';
 import { focusPane } from '@emerald/shared';
 import { holdKeysInTree, treeKeepsKeys } from './focus.ts';
 import { editTab, useStore } from './store.ts';
@@ -688,8 +689,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
         // A heading has no click.
         return;
       case 'copy-image':
-        void window.emerald.clipboard
-          .writeImageFile(path)
+        void copyImage(path, { frame: paused ? canvasRef.current : null, box: shownBox(imgRef.current) })
           .then((ok) => {
             if (!ok) console.warn('[emerald] copy image decoded nothing from', path);
           })
@@ -746,7 +746,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
     >
       <div className="file-header" ref={headerRef}>
         {edit.dirty && (
-          <span className="file-dirty" title="Unsaved edits (Ctrl+S saves)">
+          <span className="file-dirty" title={`Unsaved edits (${editKey('KeyS')} saves)`}>
             {DIRTY_MARK}
           </span>
         )}
@@ -766,7 +766,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
           </button>
         )}
         {edit.dirty && (
-          <button className="files-button file-save" title="Save (Ctrl+S)" onClick={() => void saveFile(path).catch(warn('save'))}>
+          <button className="files-button file-save" title={`Save (${editKey('KeyS')})`} onClick={() => void saveFile(path).catch(warn('save'))}>
             Save
           </button>
         )}
@@ -801,7 +801,7 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
         <button className="files-button file-reveal" title="Reveal in Explorer" onClick={() => void window.emerald.files.reveal(path).catch(warn('reveal'))}>
           Reveal
         </button>
-        <button className="files-button file-close" title={inPane ? 'Close pane' : 'Close (Ctrl+W)'} onClick={close}>
+        <button className="files-button file-close" title={inPane ? 'Close pane' : `Close (${editKey('KeyW')})`} onClick={close}>
           ×
         </button>
       </div>
@@ -917,6 +917,14 @@ export function FileView({ path, view: viewProp, onView, onClose, inPane = false
 
 // How long a revealed line stays lit.
 const FLASH_MS = 1500;
+
+// The picture as the view draws it at its zoom (M9 fix 1111), the size an SVG
+// with no width, height or viewBox is copied at; null for a hidden picture.
+function shownBox(img: HTMLImageElement | null): { w: number; h: number } | null {
+  if (img === null || img.hidden) return null;
+  const r = img.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 ? { w: r.width, h: r.height } : null;
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} bytes`;

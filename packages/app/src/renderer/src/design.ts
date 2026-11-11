@@ -69,5 +69,7 @@ export function sendDesign(paneId: string, notes: DesignNote[], numbered: boolea
     return false;
   }
   typeInto(target, bracketedPaste(block));
+  // M9 fix 1136: the chat view showing the target, if one is up, chips the paste off Claude Code's marker.
+  window.dispatchEvent(new CustomEvent('emerald:chat-paste', { detail: { sessionId: target } }));
   return true;
 }

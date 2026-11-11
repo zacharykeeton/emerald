@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { NO_SCHEDULE, STRIP_BAR_PX, USAGE_FLOOR_MS, breakFor, breakText, dialPercent, dialStyle, errorText, fitForm, holdText, labelFor, nextSchedule, overlayLimits, paceBar, parseRetryAfter, parseUsageReply, refreshTitle, resetText, resetWhen, runway, runwayText, segmentLabel, segmentRest, segmentText, shortLabelFor, shouldPoll, staleText, stripNeeds, stripRunway, stripText, windowElapsed, windowLengthMs, windowName } from './usage-model.ts';
 import { USAGE_DISMISS_SLACK_MS, USAGE_WARN_AT, usageWarning } from './usage-model.ts';
 import type { StripWindowNeed, UsageDismissal } from './usage-model.ts';
+import { usageReadLine } from './usage-model.ts';
+
+test('usageReadLine names each window with its percent and its reset in UTC and still ends with the ask (M9 fix 1112)', () => {
+  const w = (key: string, percent: number, resetsAt: number) => ({ key, label: key, kind: 'time' as const, percent, resetsAt });
+  const a = Date.UTC(2026, 9, 31, 21);
+  const b = Date.UTC(2026, 10, 3, 9);
+  assert.equal(usageReadLine([w('five_hour', 17, a), w('seven_day', 61, b), w('seven_day_opus', 12, b)], 'timer'),
+    'usage read: 3 windows (five_hour 17% to 2026-10-31T21:00:00.000Z, seven_day 61% to 2026-11-03T09:00:00.000Z, seven_day_opus 12% to 2026-11-03T09:00:00.000Z), asked on timer');
+  assert.equal(usageReadLine([w('five_hour', 17, a)], 'mount'), 'usage read: 1 windows (five_hour 17% to 2026-10-31T21:00:00.000Z), asked on mount');
+  assert.equal(usageReadLine([], 'focus'), 'usage read: 0 windows, asked on focus');
+  assert.equal(usageReadLine([w('five_hour', 1, 1e20)], 'button'), 'usage read: 1 windows (five_hour 1% to 100000000000000000000), asked on button');
+});
 
 const NOW = Date.parse('2026-09-11T12:00:00Z');
 const at = (ms: number) => new Date(NOW + ms).toISOString();

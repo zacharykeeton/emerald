@@ -191,19 +191,39 @@ export const CONTEXT_ASK_MS = 10_000;
 export const CONTEXT_FOOTER = 'context: what a part puts in every request. uses and last used: every session on this machine; unused: not called in this one. each skill is switched in its listing column; plugins in /plugin, synced skills on claude.ai.';
 
 export type ContextAsk = { asked: boolean; mod: boolean };
-export type ContextState = 'old' | 'none' | 'shell' | 'loaded' | 'outside' | 'reading';
+export type ContextState = 'old' | 'none' | 'shell' | 'loaded' | 'outside' | 'fresh' | 'reading';
+
+// M9 fix 1102: words for a conversation with no reply yet, which has no
+// breakdown to show and is not a Claude emerald failed to start.
+export const CONTEXT_FRESH_TEXT = 'A new conversation; the breakdown comes with its first reply';
+
+// True while the session's current conversation has had no reply: none on
+// the record (a fresh start), or the last one came before the current
+// conversation's span began (a /clear opens a span after the old reply).
+// A span of another conversation says nothing about this one.
+export function awaitsFirstReply(session: Pick<SessionInfo, 'claudeSessionId' | 'lastReplyAt' | 'spans'>): boolean {
+  const reply = session.lastReplyAt ?? null;
+  if (reply === null) return true;
+  const span = session.spans?.at(-1);
+  return span !== undefined && span.conversation === session.claudeSessionId && reply < span.startedAt;
+}
 
 // First match wins: the daemon's level, no session, a plain shell (one
 // with Claude typed in it has a claudeSessionId and is a Claude here, the
 // rule of Sidebar.tsx), a breakdown whatever the reply said, a mod nobody
-// can ask or one that never answered, and otherwise still reading.
+// can ask (outside), a mod that never answered on a conversation with no
+// reply yet (fresh, M9 fix 1102) or one that has replied (reading), and
+// otherwise still reading.
 export function contextState({ session, supported, reply, askedAt, now }: { session: SessionInfo | null; supported: boolean; reply: ContextAsk | null; askedAt: number | null; now: number }): ContextState {
   if (!supported) return 'old';
   if (session === null) return 'none';
   if (session.kind === 'shell' && session.claudeSessionId === null) return 'shell';
   if (session.context !== undefined) return 'loaded';
   if (reply !== null && !reply.asked && !reply.mod) return 'outside';
-  if (reply !== null && reply.asked && askedAt !== null && now - askedAt >= CONTEXT_ASK_MS) return 'outside';
+  if (reply !== null && reply.asked && askedAt !== null && now - askedAt >= CONTEXT_ASK_MS) {
+    if (!reply.mod) return 'outside';
+    return awaitsFirstReply(session) ? 'fresh' : 'reading';
+  }
   return 'reading';
 }
 

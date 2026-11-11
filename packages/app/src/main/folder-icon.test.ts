@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
-import { FOLDER_ICON_TTL_MS, fileUrl, findFolderIcon, folderIcon, folderIconCacheSize, folderIconForget, iconLinkHref } from './folder-icon.ts';
+import { execFileSync } from 'node:child_process';
+import { FOLDER_ICON_SEARCH_TTL_MS, FOLDER_ICON_TTL_MS, fileUrl, findFolderIcon, folderIcon, folderIconCacheSize, folderIconForget, iconLinkHref, rankIconMatches } from './folder-icon.ts';
+import type { GitOptions } from './git-runner.ts';
 
 // A fresh tree per test so one case's files cannot answer another's.
 function tree(files: Record<string, string>): string {
@@ -64,6 +66,19 @@ test('the html link: a UNC path in any spelling and a ../ href answer nothing', 
   assert.equal(await findFolderIcon(plain), path.join(plain, 'img', 'mark.png'), 'a plain href beside the html still answers');
 });
 
+test('the html link: a site-root href in a root index.html also tries public, the html folder first (M9 fix 1121)', async () => {
+  const pub = tree({ 'index.html': '<link rel="icon" href="/icon-192.png">', 'public/icon-192.png': 'p' });
+  assert.equal(await findFolderIcon(pub), path.join(pub, 'public', 'icon-192.png'));
+  const both = tree({ 'index.html': '<link rel="icon" href="/icon-192.png">', 'public/icon-192.png': 'p', 'icon-192.png': 'r' });
+  assert.equal(await findFolderIcon(both), path.join(both, 'icon-192.png'));
+  const relative = tree({ 'index.html': '<link rel="icon" href="icon-192.png">', 'public/icon-192.png': 'p' });
+  assert.equal(await findFolderIcon(relative), null);
+  for (const href of ['/\\\\evil.example\\share\\x.ico', '/\\evil.example/share/x.ico', '/\\/evil.example/share/x.ico']) {
+    const unc = tree({ 'index.html': `<link rel="icon" href="${href}">` });
+    assert.equal(await findFolderIcon(unc), null, href);
+  }
+});
+
 test('a folder inside a repository with none of its own takes the root icon; outside one, nothing', async () => {
   const repo = tree({ '.git/HEAD': 'ref: refs/heads/main', 'public/favicon.svg': 'r', 'packages/app/README.md': 'm' });
   assert.equal(await findFolderIcon(path.join(repo, 'packages', 'app')), path.join(repo, 'public', 'favicon.svg'));
@@ -106,4 +121,114 @@ test('an answer is read again once it is a minute old (M9 fix 521)', async () =>
   fs.rmSync(path.join(dir, 'favicon.svg'));
   assert.equal(await folderIcon(dir, 59_999), url);
   assert.equal(await folderIcon(dir, 60_000), null);
+});
+
+// The repository search (M9 fix 1121, GitHub zacharykeeton/emerald#1). The
+// worker's file is not there under node --test, so these hand in a runner
+// that spawns git here, as git-count-lines.test.ts does.
+type Call = { args: string[] };
+function realGit(calls: Call[]) {
+  return (args: string[], cwd: string, opts?: GitOptions): Promise<string | null> => {
+    calls.push({ args });
+    try {
+      return Promise.resolve(
+        execFileSync('git', args, { cwd, encoding: 'utf8', input: opts?.stdin ?? '', stdio: ['pipe', 'pipe', 'ignore'] }),
+      );
+    } catch {
+      return Promise.resolve(null);
+    }
+  };
+}
+
+// A scratch repository with the files listed by --others (no commit).
+function repo(files: Record<string, string>): string {
+  const root = fs.realpathSync.native(tree(files));
+  execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+  return root;
+}
+
+test("the repository search finds the issue's icons: a Next src/app, Expo's assets/icon.png and build/icon.ico (M9 fix 1121)", async () => {
+  const git = realGit([]);
+  const next = repo({ 'src/app/favicon.ico': 'x' });
+  assert.equal(await findFolderIcon(next, git), path.join(next, 'src', 'app', 'favicon.ico'));
+  const expo = repo({ 'assets/icon.png': 'x' });
+  assert.equal(await findFolderIcon(expo, git), path.join(expo, 'assets', 'icon.png'));
+  const build = repo({ 'packages/app/build/icon.ico': 'x', 'packages/app/build/icon.png': 'y' });
+  assert.equal(await findFolderIcon(build, git), path.join(build, 'packages', 'app', 'build', 'icon.ico'));
+});
+
+test('a monorepo package asking for its own icon gets its own (M9 fix 1121)', async () => {
+  const git = realGit([]);
+  const r = repo({ 'src/apps/web/src/app/favicon.ico': 'w', 'src/apps/admin/src/app/favicon.ico': 'a' });
+  assert.equal(await findFolderIcon(path.join(r, 'src', 'apps', 'web'), git), path.join(r, 'src', 'apps', 'web', 'src', 'app', 'favicon.ico'));
+  assert.equal(await findFolderIcon(path.join(r, 'src', 'apps', 'admin'), git), path.join(r, 'src', 'apps', 'admin', 'src', 'app', 'favicon.ico'));
+  assert.equal(await findFolderIcon(r, git), path.join(r, 'src', 'apps', 'admin', 'src', 'app', 'favicon.ico'));
+});
+
+test('a fixture under test loses to the real icon, and an ignored favicon is not seen (M9 fix 1121)', async () => {
+  const git = realGit([]);
+  const a = repo({ 'test/favicon.ico': 't', 'assets/icon.png': 'i' });
+  assert.equal(await findFolderIcon(a, git), path.join(a, 'assets', 'icon.png'));
+  const b = repo({ '.gitignore': 'node_modules\n', 'node_modules/x/favicon.ico': 'n', 'assets/icon.png': 'i' });
+  assert.equal(await findFolderIcon(b, git), path.join(b, 'assets', 'icon.png'));
+  const c = repo({ 'assets/icon-close.svg': 's' });
+  assert.equal(await findFolderIcon(c, git), null);
+});
+
+test('rankIconMatches orders by the six keys in turn (M9 fix 1121)', () => {
+  assert.deepEqual(rankIconMatches(['docs/favicon.ico', 'a/b/c/icon.svg'], ''), ['a/b/c/icon.svg', 'docs/favicon.ico']);
+  assert.deepEqual(rankIconMatches(['favicon.ico', 'pkg/x/icon.png'], 'pkg'), ['pkg/x/icon.png', 'favicon.ico']);
+  assert.deepEqual(rankIconMatches(['assets/icon.ico', 'assets/favicon.svg'], ''), ['assets/favicon.svg', 'assets/icon.ico']);
+  assert.deepEqual(rankIconMatches(['a/b/favicon.ico', 'a/favicon.png'], ''), ['a/favicon.png', 'a/b/favicon.ico']);
+  assert.deepEqual(rankIconMatches(['x/favicon.svg', 'x/favicon.png', 'x/favicon.ico'], ''), ['x/favicon.ico', 'x/favicon.png', 'x/favicon.svg']);
+  assert.deepEqual(rankIconMatches(['b/favicon.ico', 'a/favicon.ico'], ''), ['a/favicon.ico', 'b/favicon.ico']);
+  assert.deepEqual(rankIconMatches(['Tests/Favicon.ICO', 'z/deep/er/icon.png'], ''), ['z/deep/er/icon.png', 'Tests/Favicon.ICO']);
+});
+
+test('a link anywhere on the path is skipped (M9 fix 1121)', async (t) => {
+  const git = realGit([]);
+  const outside = tree({ 'favicon.ico': 'o' });
+  const r = repo({ 'assets/icon.png': 'i' });
+  fs.symlinkSync(outside, path.join(r, 'linked'), 'junction');
+  assert.equal(await findFolderIcon(r, git), path.join(r, 'assets', 'icon.png'));
+  const r2 = repo({ 'assets/icon.png': 'i' });
+  try {
+    fs.symlinkSync(path.join(outside, 'favicon.ico'), path.join(r2, 'assets', 'favicon.ico'), 'file');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EPERM') return t.skip('no symlink privilege');
+    throw e;
+  }
+  assert.equal(await findFolderIcon(r2, git), path.join(r2, 'assets', 'icon.png'));
+});
+
+test('a folder outside any repository answers null with no git, and a fixed-list hit spawns none (M9 fix 1121)', async () => {
+  const calls: Call[] = [];
+  const git = realGit(calls);
+  const bare = tree({ 'src/app/favicon.ico': 'x' });
+  assert.equal(await findFolderIcon(bare, git), null);
+  assert.equal(calls.length, 0);
+  const r = repo({ 'public/favicon.svg': 's', 'src/app/favicon.ico': 'x' });
+  assert.equal(await findFolderIcon(r, git), path.join(r, 'public', 'favicon.svg'));
+  assert.equal(calls.length, 0);
+});
+
+test('a search answer is kept ten minutes, the fixed places still read every minute, and forget drops it (M9 fix 1121)', async () => {
+  assert.equal(FOLDER_ICON_SEARCH_TTL_MS, 600_000);
+  const calls: Call[] = [];
+  const git = realGit(calls);
+  const dir = repo({ 'src/app/favicon.ico': 'ico' });
+  const searched = fileUrl(path.join(dir, 'src', 'app', 'favicon.ico'));
+  assert.equal(await folderIcon(dir, 0, git), searched);
+  assert.equal(calls.length, 1);
+  assert.equal(await folderIcon(dir, 60_000, git), searched);
+  assert.equal(calls.length, 1);
+  fs.writeFileSync(path.join(dir, 'favicon.ico'), 'root');
+  assert.equal(await folderIcon(dir, 120_000, git), fileUrl(path.join(dir, 'favicon.ico')));
+  assert.equal(calls.length, 1);
+  fs.rmSync(path.join(dir, 'favicon.ico'));
+  assert.equal(await folderIcon(dir, 600_000, git), searched);
+  assert.equal(calls.length, 2);
+  folderIconForget(dir);
+  assert.equal(await folderIcon(dir, 600_001, git), searched);
+  assert.equal(calls.length, 3);
 });

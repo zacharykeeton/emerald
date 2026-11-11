@@ -120,7 +120,7 @@ export function TurnOffOthersButton({ names, folder }: { names: readonly string[
         aria-expanded={menu !== null}
         onClick={(ev) => (menu !== null ? close() : setMenu(below(ev.currentTarget)))}
       >
-        {turnOffLabel(others.length)}
+        {turnOffLabel(others)}
       </button>
       <span className="listing-group-note">here or in every folder</span>
       {menu !== null && (

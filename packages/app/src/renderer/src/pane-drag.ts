@@ -35,7 +35,10 @@ import type { TreeRefusal } from './files-set-model.ts';
 // Past the window's own edge (M9 fix 927) nothing of this window stays
 // lit and each move goes to main, which forwards it to the window under
 // the pointer (window-drag.ts); that window draws its zones and makes the
-// drop on the release (window-drop.ts).
+// drop on the release (window-drop.ts). Past the edge with no window of
+// ours under the pointer, a drag from the Files tab is handed to the OS
+// as a file drag (M9 fix 1122), which main decides and starts; the drag
+// ends here then, with no drop, since the OS loop takes the release.
 
 // Pixels of movement before a press becomes a drag.
 export const DRAG_THRESHOLD = 4;
@@ -68,7 +71,9 @@ export interface TreeDrag {
 
 // payload is null only for a drag that can reach no pane (a tree's folder
 // row, a picked set): it drops on the rail's folders alone (M9 fix 981).
-export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, tree: TreeDrag | null = null): void {
+// files, M9 fix 1122: what the OS takes if the drag leaves every window;
+// null for every drag but the rail's.
+export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, tree: TreeDrag | null = null, files: readonly string[] | null = null): void {
   if (active || press.button !== 0) return;
   active = true;
   const startX = press.clientX;
@@ -80,8 +85,12 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
   // The rail a tree drag has called over on and not yet left (M9 fix 981):
   // every such drag ends with exactly one drop or one leave on it.
   let onRail: RailDrop | null = null;
+  // M9 fix 1122: main's word that the drag went to the OS.
+  let offOut: (() => void) | null = null;
 
   const teardown = () => {
+    offOut?.();
+    offOut = null;
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
     window.removeEventListener('keydown', onKey, { capture: true });
@@ -112,6 +121,15 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     document.body.appendChild(ghost);
     window.addEventListener('keydown', onKey, { capture: true });
     window.addEventListener('blur', cancel);
+    if (files !== null) {
+      // The OS loop takes the release, so the drag ends here with no drop;
+      // the back clears main's mark on this window.
+      offOut = window.emerald.windowDrag.onHandedOut(() => {
+        out = false;
+        teardown();
+        window.emerald.windowDrag.back();
+      });
+    }
   };
 
   // The folder under the point and what a tree drag moves into it, or
@@ -154,6 +172,19 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
       onRail = null;
     }
     if (payload === null) {
+      // M9 fix 1122: a folder or a set past the edge goes to main, which
+      // hands it to the OS once no window of ours is under the pointer.
+      if (files !== null && pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
+        markRefused(null);
+        setSessionDropTarget(null);
+        out = true;
+        window.emerald.windowDrag.move({ kind: 'files', files }, e.clientX, e.clientY);
+        return;
+      }
+      if (out) {
+        window.emerald.windowDrag.back();
+        out = false;
+      }
       setSessionDropTarget(null);
       // Past the edge the cursor is the other window's, so no mark there.
       markRefused(tree?.refusal != null && (targetAt(e.clientX, e.clientY) !== null || tabTargetAt(e.clientX, e.clientY) !== null) ? tree.refusal : null);
@@ -162,7 +193,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     if (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight)) {
       if (!out) setSessionDropTarget(null);
       out = true;
-      window.emerald.windowDrag.move({ kind: 'pane', payload, fromPaneId }, e.clientX, e.clientY);
+      window.emerald.windowDrag.move({ kind: 'pane', payload, fromPaneId, ...(files === null ? {} : { files }) }, e.clientX, e.clientY);
       return;
     }
     if (out) {
@@ -194,6 +225,8 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     out = false;
     teardown();
     if (payload === null) {
+      // Main's flight for a set over another window would otherwise stay.
+      if (handed) window.emerald.windowDrag.back();
       // A release on a pane, a tab, the + or past the edge says why nothing
       // landed; the rail's own release returned above and Escape shows none.
       if (dropped && tree?.refusal != null && (pastEdge({ x: e.clientX, y: e.clientY }, window.innerWidth, window.innerHeight) || targetAt(e.clientX, e.clientY) !== null || tabTargetAt(e.clientX, e.clientY) !== null)) flashCornerNote(refusalNote(tree.refusal));

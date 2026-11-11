@@ -49,6 +49,16 @@ test('describeState: an exited row with no exit code says the code is unknown, e
   assert.equal(got.detail, 'The exit code is unknown: the process gave none, or it ended while emmerd was down. Resume to start it again.');
 });
 
+test('describeState: a signed-out turn says run /login, any other error names itself (M9 fix 1092)', () => {
+  const out = describeState({ ...session('claude', 'errored'), errorType: 'authentication_failed' });
+  assert.equal(out.text, 'signed out: run /login');
+  assert.equal(out.detail, "Claude Code's login is missing or expired where this session runs. Run /login in the pane, then send the prompt again.");
+  assert.equal(out.tone, 'errored');
+  const limited = describeState({ ...session('claude', 'errored'), errorType: 'rate_limit' });
+  assert.equal(limited.text, 'errored: rate_limit');
+  assert.equal(limited.tone, 'errored');
+});
+
 test('hasState: a Claude session always has one, whatever the state', () => {
   for (const state of ALL_STATES) assert.equal(hasState(session('claude', state)), true, state);
 });

@@ -125,14 +125,9 @@ test("a picture's menu opens with Copy image, disabled with a reason on a kind E
   assert.ok(!fileMenu({ ...facts, image: false }).some((i) => i.run === 'copy-image'), 'no Copy image off a picture');
 });
 
-// The kinds the fix's probe read as decoded by nativeImage.createFromPath
-// on Windows: PNG, JPEG and ICO; GIF, WebP, BMP and SVG read empty.
-test('copyableImage takes the kinds main decodes and refuses a network path', () => {
-  assert.equal(copyableImage('C:\\a\\b.png'), true);
-  assert.equal(copyableImage('C:\\a\\b.JPG'), true);
-  assert.equal(copyableImage('C:\\a\\b.jpeg'), true);
-  assert.equal(copyableImage('C:\\a\\b.ico'), true);
+// Main decodes PNG and JPEG; the renderer draws the other five.
+test('copyableImage takes every picture kind and refuses a network path (M9 fix 1111)', () => {
+  for (const f of ['b.png', 'b.JPG', 'b.jpeg', 'b.ico', 'b.gif', 'b.webp', 'b.bmp', 'b.svg']) assert.equal(copyableImage(`C:\\a\\${f}`), true, f);
   assert.equal(copyableImage('C:\\a\\b.txt'), false);
   assert.equal(copyableImage('\\\\host\\share\\b.png'), false);
-  for (const kind of ['gif', 'webp', 'bmp', 'svg']) assert.equal(copyableImage(`C:\\a\\b.${kind}`), false, `${kind} is not decoded`);
 });

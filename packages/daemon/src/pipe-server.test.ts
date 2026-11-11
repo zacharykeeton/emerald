@@ -12,6 +12,8 @@ import { currentTab, replaceTab, splitPane } from '@emerald/shared';
 import { PipeClient } from '@emerald/shared/pipe-client';
 import { ActivityLog, parseActivityLine } from './activity.ts';
 import { LayoutStore } from './layout-store.ts';
+import { ModPoll } from './mod-poll.ts';
+import type { ModLine } from './mod-poll.ts';
 import { silentLogger } from './log.ts';
 import { FILE_OPEN_ANSWER_LEVEL, LIMITS_PUSH_LEVEL, LOAD_PUSH_LEVEL, PipeServer, ROW_PUSH_LEVEL, claimPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
@@ -27,12 +29,14 @@ const PIPE =`\\\\.\\pipe\\emmerd-test-${process.pid}`;
 let server: PipeServer;
 let manager: SessionManager;
 let layouts: LayoutStore;
+// M9 fix 1125: the shared server's mod channel, a poll the tests drive.
+const sharedPoll = new ModPoll({ holdMs: 300, graceMs: 200 });
 
 before(async () => {
   manager = new SessionManager(silentLogger);
   layouts = new LayoutStore(path.join(mkTemp('emerald-pipe-'), 'state.json'), silentLogger);
   layouts.load();
-  server = new PipeServer(manager, layouts, { pipePath: PIPE, daemonVersion: 'test', log: silentLogger });
+  server = new PipeServer(manager, layouts, { pipePath: PIPE, daemonVersion: 'test', log: silentLogger, modPoll: sharedPoll });
   await server.listen();
 });
 
@@ -654,54 +658,100 @@ test('browser.run relays an upload by a CSS selector to a window at level 76 alo
   }
 });
 
-// M9 fix 781: a channel answering each push as the mod does, posting its
-// word on the submit (the hook sink hands it to modSubmitAnswered); a drop
-// says the prompt did not enter. And a push read without its id.
-function answerPushes(channel: PipeClient, srv: PipeServer, drop: string | null = null): void {
-  channel.on('message', (m: ServerMessage) => {
-    if (m.type === 'mod.submit' && m.submitId !== undefined) srv.modSubmitAnswered(m.sessionId, m.submitId, drop === null, drop);
+// M9 fix 1125: the mod's loop over a ModPoll, as register.js runs it over
+// the sink: each answer's lines to onLine and a poll again at once, until
+// stop() (the held poll gone) or an answer replaced.
+function poller(poll: ModPoll, sessionId: string, onLine: (line: ModLine) => void): { stop: () => void; ended: Promise<'replaced' | 'stopped'> } {
+  let stopped = false;
+  let gone: (() => void) | null = null;
+  let stop: () => void = () => undefined;
+  const stopping = new Promise<'stopped'>((resolve) => {
+    stop = () => {
+      stopped = true;
+      gone?.();
+      resolve('stopped');
+    };
   });
-}
-function withoutId(m: ServerMessage): unknown {
-  const { submitId, ...rest } = m as ServerMessage & { submitId?: string };
-  assert.equal(typeof submitId, 'string', 'the push carries a submitId');
-  return rest;
+  const ended = (async (): Promise<'replaced' | 'stopped'> => {
+    while (!stopped) {
+      const held = poll.poll(sessionId);
+      gone = held.gone;
+      const answer = await Promise.race([held.answer, stopping]);
+      if (answer === 'stopped') return 'stopped';
+      if ('replaced' in answer) return 'replaced';
+      for (const line of answer.lines) onLine(line);
+    }
+    return 'stopped';
+  })();
+  return { stop, ended };
 }
 
-test('mod.channel takes a session\'s prompts and session.submit routes through it while it is open (M9 fix 741)', async () => {
+// M9 fix 781: an onLine answering each submit as the mod does, posting its
+// word (the hook sink hands it to modSubmitAnswered); a drop says the
+// prompt did not enter. And a line read without its id.
+function answerLines(srv: PipeServer, sessionId: string, drop: string | null = null, heard: ModLine[] = []): (line: ModLine) => void {
+  return (line) => {
+    heard.push(line);
+    if ('text' in line && line.submitId !== undefined) srv.modSubmitAnswered(sessionId, line.submitId, drop === null, drop);
+  };
+}
+function withoutId(line: ModLine | undefined): unknown {
+  assert.ok(line !== undefined && 'text' in line, 'a submit line came');
+  const { submitId, ...rest } = line;
+  assert.equal(typeof submitId, 'string', 'the line carries a submitId');
+  return rest;
+}
+// The lines a poller takes, awaited one at a time.
+function lineTap(): { onLine: (line: ModLine) => void; next: () => Promise<ModLine> } {
+  const lines: ModLine[] = [];
+  const waiting: Array<(line: ModLine) => void> = [];
+  return {
+    onLine: (line) => {
+      const w = waiting.shift();
+      if (w !== undefined) w(line);
+      else lines.push(line);
+    },
+    next: () => {
+      const line = lines.shift();
+      if (line !== undefined) return Promise.resolve(line);
+      return new Promise<ModLine>((resolve) => waiting.push(resolve));
+    },
+  };
+}
+async function until(pred: () => boolean, ms = 2000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!pred() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+}
+
+test('a mod\'s poll takes a session\'s prompts and session.submit routes through it while it polls (M9 fix 1125)', async () => {
   const cli = await PipeClient.connect(PIPE);
   const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
   try {
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'typed' }, 'no channel: the caller types');
-    await assert.rejects(cli.request('mod.channel', { sessionId: 'nope' }), { code: 'not-found' });
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'typed' }, 'no poll: the caller types');
+    await assert.rejects(cli.request('mod.channel' as never, { sessionId: session.id } as never), { code: 'bad-request', message: 'unknown request type mod.channel' });
     await assert.rejects(cli.request('session.submit', { sessionId: session.id } as never), { code: 'bad-request', message: 'text must be a string' });
 
-    const first = await PipeClient.connect(PIPE);
-    await first.request('mod.channel', { sessionId: session.id });
-    answerPushes(first, server);
-    const pushed = waitFor(first, (m) => m.type === 'mod.submit');
+    const firstHeard: ModLine[] = [];
+    const first = poller(sharedPoll, session.id, answerLines(server, session.id, null, firstHeard));
+    await until(() => sharedPoll.isUp(session.id));
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'hi' }), { via: 'mod' });
-    assert.deepEqual(withoutId(await pushed), { type: 'mod.submit', sessionId: session.id, text: 'hi' });
+    assert.deepEqual(withoutId(firstHeard[0]), { text: 'hi' });
 
-    // A second registration takes the pushes from the first.
-    const second = await PipeClient.connect(PIPE);
-    await second.request('mod.channel', { sessionId: session.id });
-    answerPushes(second, server);
-    const firstHeard: ServerMessage[] = [];
-    first.on('message', (m: ServerMessage) => firstHeard.push(m));
-    const toSecond = waitFor(second, (m) => m.type === 'mod.submit');
+    // A second poller takes the lines from the first, which ends replaced.
+    const secondHeard: ModLine[] = [];
+    const second = poller(sharedPoll, session.id, answerLines(server, session.id, null, secondHeard));
+    assert.equal(await first.ended, 'replaced');
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'again' }), { via: 'mod' });
-    assert.equal((await toSecond as { text: string }).text, 'again');
-    assert.deepEqual(firstHeard.filter((m) => m.type === 'mod.submit'), []);
+    assert.deepEqual(withoutId(secondHeard[0]), { text: 'again' });
+    assert.equal(firstHeard.length, 1, 'the first took nothing after it was replaced');
 
-    // The first closing leaves the second's channel; the second closing ends it.
-    first.close();
-    await once(first, 'close');
-    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'x' }), { via: 'mod' });
-    second.close();
-    await once(second, 'close');
-    await new Promise((r) => setTimeout(r, 100));
+    // The second stopping reads down, and the next send is typed at once.
+    second.stop();
+    assert.equal(await second.ended, 'stopped');
+    assert.equal(sharedPoll.isUp(session.id), false);
+    const t = Date.now();
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'y' }), { via: 'typed' });
+    assert.ok(Date.now() - t < 100, `typed at once, took ${Date.now() - t} ms`);
   } finally {
     await cli.request('session.kill', { sessionId: session.id });
     cli.close();
@@ -716,13 +766,13 @@ test('session.context asks the session\'s mod channel for its breakdown and answ
     await assert.rejects(cli.request('session.context', { sessionId: session.id, detail: 'all' } as never), { code: 'bad-request', message: 'detail must be summary or full' });
     await assert.rejects(cli.request('session.context', { sessionId: 'nope', detail: 'full' }), { code: 'not-found' });
 
-    const channel = await PipeClient.connect(PIPE);
-    await channel.request('mod.channel', { sessionId: session.id });
-    const pushed = waitFor(channel, (m) => m.type === 'mod.context');
+    const tap = lineTap();
+    const mod = poller(sharedPoll, session.id, tap.onLine);
+    await until(() => sharedPoll.isUp(session.id));
     assert.deepEqual(await cli.request('session.context', { sessionId: session.id, detail: 'full' }), { asked: true, mod: false });
-    assert.deepEqual(await pushed, { type: 'mod.context', sessionId: session.id, detail: 'full' });
-    channel.close();
-    await once(channel, 'close');
+    assert.deepEqual(await tap.next(), { context: 'full' });
+    mod.stop();
+    await mod.ended;
   } finally {
     await cli.request('session.kill', { sessionId: session.id });
     cli.close();
@@ -732,25 +782,25 @@ test('session.context asks the session\'s mod channel for its breakdown and answ
 test('a send to a session whose mod posted waits for its channel, and one never seen or whose channel went is typed at once (M9 fix 776)', async () => {
   const pipe = `${PIPE}-776`;
   const seen = new Set<string>();
-  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSeen: (id) => seen.has(id), modChannelWaitMs: 400 });
+  const poll = new ModPoll({ holdMs: 300, graceMs: 200 });
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSeen: (id) => seen.has(id), modChannelWaitMs: 400, modPoll: poll });
   await own.listen();
   const cli = await PipeClient.connect(pipe);
   const { session: held } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
   const { session: late } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
   const { session: unseen } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  let mod: ReturnType<typeof poller> | null = null;
   try {
     seen.add(held.id);
     seen.add(late.id);
-    // (1) Held, then the channel opens 150 ms later and takes the push.
-    const channel = await PipeClient.connect(pipe);
-    answerPushes(channel, own);
-    const pushed = waitFor(channel, (m) => m.type === 'mod.submit');
+    // (1) Held, then the poll comes 150 ms later and takes the line.
+    const heard: ModLine[] = [];
     const t1 = Date.now();
     const reply = cli.request('session.submit', { sessionId: held.id, text: 'early' });
     await new Promise((r) => setTimeout(r, 150));
-    await channel.request('mod.channel', { sessionId: held.id });
-    assert.deepEqual(await reply, { via: 'mod' }, 'a held send goes through the channel once it opens');
-    assert.deepEqual(withoutId(await pushed), { type: 'mod.submit', sessionId: held.id, text: 'early' });
+    mod = poller(poll, held.id, answerLines(own, held.id, null, heard));
+    assert.deepEqual(await reply, { via: 'mod' }, 'a held send goes through the channel once it polls');
+    assert.deepEqual(withoutId(heard[0]), { text: 'early' });
     assert.ok(Date.now() - t1 >= 140, 'the reply waited for the channel');
     // (2) Seen, no channel: typed at the deadline.
     const t2 = Date.now();
@@ -760,14 +810,14 @@ test('a send to a session whose mod posted waits for its channel, and one never 
     const t3 = Date.now();
     assert.deepEqual(await cli.request('session.submit', { sessionId: unseen.id, text: 'x' }), { via: 'typed' });
     assert.ok(Date.now() - t3 < 100, `typed at once, took ${Date.now() - t3} ms`);
-    // (4) A channel that opened and closed: typed at once.
-    channel.close();
-    await once(channel, 'close');
-    await new Promise((r) => setTimeout(r, 100));
+    // (4) A channel that was up and went: typed at once.
+    mod.stop();
+    await mod.ended;
     const t4 = Date.now();
     assert.deepEqual(await cli.request('session.submit', { sessionId: held.id, text: 'x' }), { via: 'typed' });
     assert.ok(Date.now() - t4 < 100, `typed at once after the channel went, took ${Date.now() - t4} ms`);
   } finally {
+    mod?.stop();
     for (const s of [held, late, unseen]) await cli.request('session.kill', { sessionId: s.id }).catch(() => undefined);
     cli.close();
     await own.close();
@@ -776,18 +826,19 @@ test('a send to a session whose mod posted waits for its channel, and one never 
 
 test('session.submit answers typed when the mod says its prompt did not enter, mod when it entered or no word came in time (M9 fix 781)', async () => {
   const pipe = `${PIPE}-781`;
-  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSubmitAckMs: 300 });
+  const poll = new ModPoll({ holdMs: 300, graceMs: 200 });
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, modSubmitAckMs: 300, modPoll: poll });
   await own.listen();
   const cli = await PipeClient.connect(pipe);
   const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
-  const channel = await PipeClient.connect(pipe);
+  const tap = lineTap();
+  const mod = poller(poll, session.id, tap.onLine);
   try {
-    await channel.request('mod.channel', { sessionId: session.id });
+    await until(() => poll.isUp(session.id));
     const answer = (drop: string | null, otherSession = false) => {
-      const heard = waitFor(channel, (m) => m.type === 'mod.submit');
-      void heard.then((m) => {
-        const push = m as { sessionId: string; submitId: string };
-        own.modSubmitAnswered(otherSession ? 'another' : push.sessionId, push.submitId, drop === null, drop);
+      void tap.next().then((line) => {
+        if (!('text' in line) || line.submitId === undefined) return;
+        own.modSubmitAnswered(otherSession ? 'another' : session.id, line.submitId, drop === null, drop);
       });
     };
     // A person's Stop stands: the engine dropped the prompt, so the caller types it.
@@ -804,7 +855,7 @@ test('session.submit answers typed when the mod says its prompt did not enter, m
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod' });
     assert.ok(Date.now() - t >= 290, `mod after the bound, took ${Date.now() - t} ms`);
   } finally {
-    channel.close();
+    mod.stop();
     await cli.request('session.kill', { sessionId: session.id }).catch(() => undefined);
     cli.close();
     await own.close();
@@ -818,55 +869,81 @@ test('a queued submit is answered at once and its late word is logged (M9 fix 99
   const pipe = `${PIPE}-995`;
   const lines: string[] = [];
   const log = { info: (msg: string) => lines.push(msg), warn() {}, error() {} };
-  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log, modSubmitAckMs: 300 });
+  const poll = new ModPoll({ holdMs: 300, graceMs: 200 });
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log, modSubmitAckMs: 300, modPoll: poll });
   await own.listen();
   const cli = await PipeClient.connect(pipe);
   const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
   const id8 = session.id.slice(0, 8);
-  const channel = await PipeClient.connect(pipe);
-  const nextPush = async (c: PipeClient) => (await waitFor(c, (m) => m.type === 'mod.submit')) as { sessionId: string; submitId: string };
+  const tap = lineTap();
+  const mod = poller(poll, session.id, tap.onLine);
+  const nextPush = async () => (await tap.next()) as { text: string; submitId: string };
   try {
-    await channel.request('mod.channel', { sessionId: session.id });
+    await until(() => poll.isUp(session.id));
     // (1) The mod's queued word: mod in well under the bound; its final word later.
-    let heard = nextPush(channel);
-    void heard.then((p) => own.modSubmitAnswered(p.sessionId, p.submitId, true, null, true));
+    let heard = nextPush();
+    void heard.then((p) => own.modSubmitAnswered(session.id, p.submitId, true, null, true));
     const t = Date.now();
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'queued' }), { via: 'mod', queued: true });
     assert.ok(Date.now() - t < 250, `answered on the queued word, took ${Date.now() - t} ms`);
     assert.ok(lines.includes(`mod submit for ${id8}: queued behind the turn, by the mod's word`), lines.join(' | '));
     let p = await heard;
-    own.modSubmitAnswered(p.sessionId, p.submitId, true, null);
+    own.modSubmitAnswered(session.id, p.submitId, true, null);
     assert.ok(lines.includes(`mod submit for ${id8} entered after 0 s`), lines.join(' | '));
 
     // (2) No word while the session works: queued behind the turn at the bound, the late word logged.
     manager.applyHook(session.id, { hook_event_name: 'SessionStart', session_id: 'c995', source: 'startup', cwd: process.cwd() }, Date.now());
     manager.applyHook(session.id, { hook_event_name: 'UserPromptSubmit', session_id: 'c995', prompt: 'a long turn' }, Date.now());
     assert.equal(manager.get(session.id).info.state, 'working');
-    heard = nextPush(channel);
+    heard = nextPush();
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'unanswered' }), { via: 'mod', queued: true });
     assert.ok(lines.includes(`mod submit for ${id8}: no word from the mod in 300 ms, queued behind the turn`), lines.join(' | '));
     p = await heard;
-    own.modSubmitAnswered(p.sessionId, p.submitId, true, null);
+    own.modSubmitAnswered(session.id, p.submitId, true, null);
     assert.equal(lines.filter((l) => l === `mod submit for ${id8} entered after 0 s`).length, 2, lines.join(' | '));
 
     // (3) A late drop is logged and nothing is typed.
-    heard = nextPush(channel);
+    heard = nextPush();
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'dropped' }), { via: 'mod', queued: true });
     p = await heard;
-    own.modSubmitAnswered(p.sessionId, p.submitId, false, 'gone');
+    own.modSubmitAnswered(session.id, p.submitId, false, 'gone');
     assert.ok(lines.includes(`mod submit for ${id8} not entered after 0 s (gone): nothing typed`), lines.join(' | '));
 
-    // (4) A kept entry whose channel closes never entered.
-    heard = nextPush(channel);
-    void heard.then((q) => own.modSubmitAnswered(q.sessionId, q.submitId, true, null, true));
+    // (4) A kept entry whose channel goes never entered.
+    heard = nextPush();
+    void heard.then((q) => own.modSubmitAnswered(session.id, q.submitId, true, null, true));
     assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'orphan' }), { via: 'mod', queued: true });
-    channel.close();
-    await once(channel, 'close');
-    const deadline = Date.now() + 2000;
-    while (!lines.some((l) => l.includes('never entered')) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    mod.stop();
+    await until(() => lines.some((l) => l.includes('never entered')));
     assert.ok(lines.includes(`mod submit for ${id8} never entered: the mod channel closed after 0 s`), lines.join(' | '));
   } finally {
-    channel.close();
+    mod.stop();
+    await cli.request('session.kill', { sessionId: session.id }).catch(() => undefined);
+    cli.close();
+    await own.close();
+  }
+});
+
+test('a submit queued between polls whose channel then reads down is typed with the reason logged (M9 fix 1125)', async () => {
+  const pipe = `${PIPE}-1125`;
+  const lines: string[] = [];
+  const log = { info: (msg: string) => lines.push(msg), warn() {}, error() {} };
+  const poll = new ModPoll({ holdMs: 300, graceMs: 200 });
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log, modPoll: poll });
+  await own.listen();
+  const cli = await PipeClient.connect(pipe);
+  const { session } = await cli.request('session.spawn', { kind: 'shell', cwd: process.cwd(), cols: 80, rows: 24 });
+  const id8 = session.id.slice(0, 8);
+  try {
+    // One poll answered empty at the hold, and none after it: up, no poll held.
+    assert.deepEqual(await poll.poll(session.id).answer, { lines: [] });
+    assert.equal(poll.isUp(session.id), true);
+    const t = Date.now();
+    assert.deepEqual(await cli.request('session.submit', { sessionId: session.id, text: 'stranded' }), { via: 'typed' });
+    assert.ok(Date.now() - t < 200 + 100, `typed at the grace, took ${Date.now() - t} ms`);
+    assert.ok(lines.includes(`mod submit for ${id8} not entered (the mod channel closed before the mod took it): typed`), lines.join(' | '));
+    assert.ok(lines.includes(`mod channel down for ${id8}`), lines.join(' | '));
+  } finally {
     await cli.request('session.kill', { sessionId: session.id }).catch(() => undefined);
     cli.close();
     await own.close();
@@ -1617,5 +1694,33 @@ test('hosts.set then hosts.list round trip, a bad record refused, and hosts.chan
   } finally {
     for (const c of clients) c.close();
     await own.close();
+  }
+});
+
+test('claude.auth answers the manager\'s read, two asks at once reading once (M9 fix 1094)', async () => {
+  let calls = 0;
+  const own = new SessionManager(silentLogger, {
+    readClaudeAuth: () => {
+      calls += 1;
+      return new Promise((resolve) => setTimeout(() => resolve({ signedIn: false, expiresAt: null }), 50));
+    },
+  });
+  const pipe = `${PIPE}-auth`;
+  const srv = new PipeServer(own, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger });
+  await srv.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const want = { auth: { signedIn: false, expiresAt: null } };
+    const [a, b] = await Promise.all([cli.request('claude.auth', {}), cli.request('claude.auth', {})]);
+    assert.deepEqual(a, want);
+    assert.deepEqual(b, want);
+    assert.equal(calls, 1, 'two asks at once read once');
+    assert.deepEqual(await cli.request('claude.auth', {}), want);
+    assert.equal(calls, 2, 'an ask after the read settled reads again');
+    cli.close();
+  } finally {
+    own.killAll();
+    await srv.close();
   }
 });

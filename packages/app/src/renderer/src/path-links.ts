@@ -129,6 +129,110 @@ export function joinWrappedRows(buffer: WrapBuffer, y0: number): JoinedLine {
   return { text, cellOf };
 }
 
+// M9 fix 1099: a program that breaks its own rows (Claude Code among
+// them) indents the continuation and marks no row wrapped, so a long path
+// it broke was two halves, neither a file. joinContinuedRows walks as
+// joinWrappedRows does with a second way for a row to continue the one
+// above: it is not marked wrapped, it starts with spaces and then a
+// character, and the row above ends in a path token (so a row ending in a
+// sentence's period, a bracket or a word that is no path continues into
+// nothing). Both kinds count against WRAP_ROW_CAP together, each way. A
+// row followed by an indented continuation gives its cells only to its
+// last non-blank one, and an indented row drops its leading blanks; a
+// seam is the index in `text` where an indented row's first kept
+// character sits. Whether a token across a seam is one path is the
+// stat's to say (continuedLinkHolds), in Pane.tsx.
+export interface ContinuedLine extends JoinedLine {
+  seams: number[];
+}
+
+function rowText(line: WrapLine): string {
+  let text = '';
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (cell === undefined) break;
+    if (cell.getWidth() === 0) continue;
+    text += cell.getChars() || ' ';
+  }
+  return text;
+}
+
+// Whether the row's text ends in a path token, its trailing blanks aside.
+function endsInToken(text: string): boolean {
+  const trimmed = text.trimEnd();
+  const found = pathLinksIn(trimmed);
+  const last = found[found.length - 1];
+  return last !== undefined && last.end === trimmed.length;
+}
+
+// How row `y` continues row `y - 1`: xterm's own wrap, an indent, or not.
+function continues(buffer: WrapBuffer, y: number): 'wrap' | 'indent' | null {
+  const line = buffer.getLine(y);
+  const above = buffer.getLine(y - 1);
+  if (line === undefined || above === undefined) return null;
+  if (line.isWrapped) return 'wrap';
+  return /^ +\S/.test(rowText(line)) && endsInToken(rowText(above)) ? 'indent' : null;
+}
+
+export function joinContinuedRows(buffer: WrapBuffer, y0: number): ContinuedLine {
+  let top = y0;
+  for (let steps = 0; steps < WRAP_ROW_CAP; steps++) {
+    if (continues(buffer, top) === null) break;
+    top -= 1;
+  }
+  let bottom = y0;
+  for (let steps = 0; steps < WRAP_ROW_CAP; steps++) {
+    if (continues(buffer, bottom + 1) === null) break;
+    bottom += 1;
+  }
+  let text = '';
+  const cellOf: JoinedChar[] = [];
+  const seams: number[] = [];
+  for (let y = top; y <= bottom; y++) {
+    const line = buffer.getLine(y);
+    if (line === undefined) continue;
+    const indented = y > top && continues(buffer, y) === 'indent';
+    const beforeIndent = y < bottom && continues(buffer, y + 1) === 'indent';
+    const chars: { ch: string; x: number }[] = [];
+    for (let x = 0; x < line.length; x++) {
+      const cell = line.getCell(x);
+      if (cell === undefined) break;
+      if (cell.getWidth() === 0) continue;
+      const ch = cell.getChars() || ' ';
+      for (let i = 0; i < ch.length; i++) chars.push({ ch: ch[i] ?? ' ', x });
+    }
+    let from = 0;
+    let to = chars.length;
+    if (indented) while (from < to && chars[from]?.ch === ' ') from++;
+    if (beforeIndent) while (to > from && chars[to - 1]?.ch === ' ') to--;
+    if (indented) seams.push(text.length);
+    for (let i = from; i < to; i++) {
+      const c = chars[i];
+      if (c === undefined) continue;
+      text += c.ch;
+      cellOf.push({ y, x: c.x });
+    }
+  }
+  return { text, cellOf, seams };
+}
+
+// The first seam inside a link, never at its ends, or null.
+export function seamIn(link: PathLink, seams: readonly number[]): number | null {
+  return seams.find((seam) => link.start < seam && seam < link.end) ?? null;
+}
+
+// The shape of the preload's FileStat, kept here so this file imports
+// nothing of the preload.
+export type LinkStat = { kind: 'file' | 'dir' } | { error: string };
+
+// M9 fix 1099: a token across a seam is one path when the whole is a file
+// and the part on the first row is not (an error or a folder); a path at a
+// row's end that is itself a file is never glued to an unrelated indented
+// row, since the whole then most likely is not one.
+export function continuedLinkHolds(whole: LinkStat, head: LinkStat): boolean {
+  return 'kind' in whole && whole.kind === 'file' && !('kind' in head && head.kind === 'file');
+}
+
 // The path as the file system would find it from the session's folder:
 // an absolute one with its separators made Windows', a relative one
 // joined under the folder with `.` and `..` walked. The folder is the
@@ -168,6 +272,18 @@ export function pathLinkTitle(full: string, kind: 'file' | 'dir', beside: boolea
 // beside when the daemon can hold one and fix 204's text when not.
 export function urlLinkTitle(uri: string, beside: boolean): string {
   return beside ? `Ctrl+click opens ${uri} in a pane beside` : `Ctrl+click opens ${uri}`;
+}
+
+// M9 fix 1098: a program that tracks the mouse (Claude Code in fullscreen
+// among them) opens a link under a Ctrl release in the system browser
+// itself, so a Ctrl+click on a link emerald shows opened twice. A left
+// press with Ctrl on a shown link is kept from such a program; a plain
+// click, the right button, a press off any link and a terminal that
+// tracks no mouse all go on as before. The mode is xterm's
+// `modes.mouseTrackingMode` as a plain string, so this file imports
+// nothing of xterm.
+export function linkPressKept(press: { button: number; ctrlKey: boolean }, mouseTracking: string, linkShown: boolean): boolean {
+  return press.button === 0 && press.ctrlKey && mouseTracking !== 'none' && linkShown;
 }
 
 export type PathLinkAction = 'beside' | 'tab' | 'reveal' | 'open-folder';

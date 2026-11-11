@@ -10,8 +10,15 @@ class FakeTerm implements FeedTerminal {
   rows = 24;
   writes: string[] = [];
   resets = 0;
-  write(data: string | Uint8Array): void {
+  // A test that holds the parse keeps the callbacks here (M9 fix 1091);
+  // otherwise each one runs at once, as a parse that is already done.
+  hold = false;
+  held: Array<() => void> = [];
+  write(data: string | Uint8Array, callback?: () => void): void {
     this.writes.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+    if (callback === undefined) return;
+    if (this.hold) this.held.push(callback);
+    else callback();
   }
   reset(): void {
     this.resets += 1;
@@ -272,4 +279,30 @@ test('an output for an attachment that has not attached is dropped (M9 fix 867)'
   assert.deepEqual(t1.writes, ['mine'], 'its own replay is written, with no reset');
   assert.equal(t1.resets, 0);
   h.close();
+});
+
+test('copies(): only the first handle copies, and none while a replay is being parsed (M9 fix 1091)', () => {
+  const { pipe, feed } = setup();
+  const t1 = new FakeTerm();
+  t1.hold = true;
+  const h1 = feed.open('s1', t1, { paneId: () => 'p1', fit: { cols: 100, rows: 30 } });
+  assert.equal(h1.copies(), true, 'a lone handle with nothing in flight copies');
+  pipe.push(output('s1', 'ring', true));
+  assert.equal(h1.copies(), false, 'not while its replay is unparsed');
+  for (const cb of t1.held.splice(0)) cb();
+  assert.equal(h1.copies(), true, 'once the replay is parsed');
+  pipe.push(output('s1', 'live'));
+  assert.equal(h1.copies(), true, 'live output is no replay');
+
+  const t2 = new FakeTerm();
+  t2.hold = true;
+  const h2 = feed.open('s1', t2, { paneId: () => 'p2', fit: { cols: 100, rows: 30 } });
+  assert.equal(t2.held.length, 1, 'the late handle was written the ring as a replay');
+  assert.equal(h2.copies(), false, 'not while the ring is unparsed');
+  for (const cb of t2.held.splice(0)) cb();
+  assert.equal(h2.copies(), false, 'nor after: it is not the first handle');
+  assert.equal(h1.copies(), true, 'the first still copies');
+  h1.close();
+  assert.equal(h2.copies(), true, 'with the first closed, the second copies');
+  h2.close();
 });

@@ -3,8 +3,8 @@
 // what a key in the empty box means. Covered by node:test; EmptyPane.tsx
 // holds the state and the starts.
 
-import { folderName } from '@emerald/shared';
-import type { SessionInfo, ShellId, ShellOption } from '@emerald/shared';
+import { CLAUDE_AUTH_LEVEL, folderName } from '@emerald/shared';
+import type { ClaudeAuth, SessionInfo, ShellId, ShellOption } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
 import { normalizeFolder, RECENT_FOLDERS_MAX } from './new-session-model.ts';
 import { normalizePath } from './files-model.ts';
@@ -269,11 +269,24 @@ export function hostRefusal(
   return null;
 }
 
-// The host button's sub-line.
-export function hostSub(state: string): string | null {
+// The host button's sub-line. On an up host with kind Claude picked, the
+// sign-in its daemon read (M9 fix 1094): an expiry that has passed first,
+// whatever signedIn says, then signed out; signed in shows nothing.
+export function hostSub(state: string, name = '', auth: ClaudeAuth | null = null, now = 0): string | null {
   if (state === 'setup') return 'setting up';
   if (state === 'lost') return 'unreachable';
+  if (state === 'up' && auth !== null) {
+    if (auth.expiresAt !== null && auth.expiresAt <= now) return `login expired on ${name}`;
+    if (!auth.signedIn) return `not signed in on ${name}`;
+  }
   return null;
+}
+
+// Whether the empty pane asks a host's daemon for its claude's sign-in
+// (M9 fix 1094): kind Claude picked with no tile over it, the host up, and
+// its daemon at the level that answers claude.auth.
+export function wantsAuthRead(kind: EmptyKind, tilePick: 'browser' | 'file' | null, state: string, featureLevel: number | null): boolean {
+  return kind === 'claude' && tilePick === null && state === 'up' && (featureLevel ?? 0) >= CLAUDE_AUTH_LEVEL;
 }
 
 // The setup block's figure: the archive size and the elapsed seconds, since
@@ -283,7 +296,7 @@ export function setupFigure(bytes: number, startedAt: number, now: number): stri
   return bytes === 0 ? `${s} s` : `${(bytes / 1048576).toFixed(1)} MB, ${s} s`;
 }
 
-// Whether the folders give way while the host has not answered.
+// Whether the folders give way while the host has not answered, or its line is lost (M9 fix 1095).
 export function hostWaiting(state: string): boolean {
-  return state === 'connecting' || state === 'setup' || state === 'refused';
+  return state === 'connecting' || state === 'setup' || state === 'refused' || state === 'lost';
 }

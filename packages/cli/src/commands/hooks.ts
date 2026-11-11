@@ -71,16 +71,18 @@ const command: Command = {
     if (parsed.values.test && action !== 'status') throw usageError('--test goes with hooks status');
     switch (action) {
       case 'install': {
-        const { changed, removed } = installHooks(opts);
+        const { changed, removed, statusLineShared } = installHooks(opts);
         const sl = statusLinePaths(opts);
         const skill = skillPaths(opts).dest;
         // What is left dead after the install is anyone else's (M9 fix 710).
         const left = hooksStatus(opts).dead;
-        if (json) printJson({ changed, events: HOOK_EVENTS.length, settings: opts.settingsPath, script: opts.scriptDest, statusLine: sl.cmdDest, skill, removed, left });
+        if (json) printJson({ changed, events: HOOK_EVENTS.length, settings: opts.settingsPath, script: opts.scriptDest, statusLine: sl.cmdDest, statusLineShared, skill, removed, left });
         else {
-          println(`${changed ? 'installed' : 'already installed'}: ${HOOK_EVENTS.length} hooks and the status line in ${opts.settingsPath}`);
+          if (statusLineShared !== null) println(`${changed ? 'installed' : 'already installed'}: ${HOOK_EVENTS.length} hooks in ${opts.settingsPath}`);
+          else println(`${changed ? 'installed' : 'already installed'}: ${HOOK_EVENTS.length} hooks and the status line in ${opts.settingsPath}`);
           println(`script: ${opts.scriptDest}`);
-          println(`status line: ${sl.cmdDest} (a status line that was there before still runs after it)`);
+          if (statusLineShared !== null) println(`status line: left to another emerald's wrapper, ${statusLineShared}, which reports this home's sessions too`);
+          else println(`status line: ${sl.cmdDest} (a status line that was there before still runs after it)`);
           println(`skill: ${skill}`);
           if (removed.length === 1) println('removed: 1 entry that pointed at a missing file');
           else if (removed.length > 1) println(`removed: ${removed.length} entries that pointed at missing files`);
@@ -102,7 +104,7 @@ const command: Command = {
         const s = hooksStatus(opts);
         // A dead entry of ours counts against complete; anyone else's is
         // named and does not, since no install of ours clears it (M9 fix 710).
-        const complete = s.missing.length === 0 && s.scriptPresent && !s.scriptStale && s.statusLine && s.skill && !s.dead.some((d) => d.ours);
+        const complete = s.missing.length === 0 && s.scriptPresent && !s.scriptStale && (s.statusLine || s.statusLineShared !== null) && s.skill && !s.dead.some((d) => d.ours);
         const test = parsed.values.test ? await runHookTest(opts.scriptDest) : null;
         const written = writtenPath(opts);
         // The mod never counts toward complete: the hook file is its
@@ -114,7 +116,8 @@ const command: Command = {
           println(`installed: ${s.installed.length}/${HOOK_EVENTS.length}${s.missing.length > 0 ? ` (missing ${s.missing.join(', ')})` : ''}`);
           println(`script: ${s.scriptPresent ? (s.scriptStale ? 'present but differs from the shipped copy' : 'present') : 'missing'} at ${opts.scriptDest}`);
           const version = s.statusLineVersion === null ? 'no version, from before the bash pass-through' : `version ${s.statusLineVersion}`;
-          println(`status line: ${s.statusLine ? 'set to' : 'not set to'} ${statusLinePaths(opts).cmdDest} (${version}, shipped ${s.shippedStatusLineVersion})`);
+          if (s.statusLineShared !== null) println(`status line: held by another emerald's wrapper, ${s.statusLineShared}, which reports this home's sessions too (${version}, shipped ${s.shippedStatusLineVersion})`);
+          else println(`status line: ${s.statusLine ? 'set to' : 'not set to'} ${statusLinePaths(opts).cmdDest} (${version}, shipped ${s.shippedStatusLineVersion})`);
           println(`skill: ${s.skill ? 'present' : 'missing or differs from the shipped copy'} at ${skillPaths(opts).dest}`);
           println(modPresent ? `mod: shipped at ${modDir}, loaded by Emerald's own Claude sessions` : `mod: missing at ${modDir}; Emerald's Claude sessions post through the hook file alone`);
           for (const d of s.dead) println(deadLine(d));

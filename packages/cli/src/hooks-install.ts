@@ -14,6 +14,9 @@ import { Limits } from '@emerald/shared';
 // and the context fill are handed out, so ours goes in and whatever was
 // there before is kept in statusline-previous.json beside the wrapper. The
 // wrapper runs it after reporting to emmerd, and uninstall puts it back.
+// Another emerald's live wrapper in the slot is left there (M9 fix 1103): it
+// reports our stamped sessions too, and taking it would set the two wrappers
+// running each other.
 //
 // The emmer-cli skill rides along: a SKILL.md copied into the skills folder
 // beside the settings file (~/.claude/skills/emmer-cli, or CLAUDE_CONFIG_DIR's), so every Claude
@@ -76,6 +79,8 @@ export interface HooksStatus {
   scriptStale: boolean;
   // settings.json names our status line wrapper.
   statusLine: boolean;
+  // Another emerald's status line wrapper holds the slot and is there (M9 fix 1103): its path, else null. It posts a stamped session's reading to the daemon that spawned it, so the slot is left to it.
+  statusLineShared: string | null;
   // The STATUS_LINE_VERSION the installed claude-statusline.js declares,
   // null when it is missing or has none (an install from before M34), and
   // the one the shipped copy declares.
@@ -174,7 +179,11 @@ function isShellScript(p: string): boolean {
   return p.endsWith('.sh');
 }
 
-export function installHooks(opts: HooksInstallOptions): { changed: boolean; removed: DeadEntry[] } {
+export function installHooks(opts: HooksInstallOptions): {
+  changed: boolean;
+  removed: DeadEntry[];
+  statusLineShared: string | null;
+} {
   const before = readSettings(opts.settingsPath);
   // Our dead entries from an old home go with our current ones (M9 fix
   // 710); anyone else's dead entries are named by status and left alone.
@@ -196,12 +205,24 @@ export function installHooks(opts: HooksInstallOptions): { changed: boolean; rem
   // left alone so a second install does not overwrite the kept one. A dead
   // status line of ours from an old home counts as ours (M9 fix 710): kept
   // as the previous one it would fail on every turn.
-  if (!isOurStatusLine(current, sl.cmdDest) && !isDeadOurs(current)) {
-    writeJson(sl.previous, { statusLine: asObject(current) ?? null });
-  } else if (!fs.existsSync(sl.previous)) {
-    writeJson(sl.previous, { statusLine: null });
+  const shared = otherStatusLine(current, sl.cmdDest);
+  if (shared !== null) {
+    // Another emerald's live wrapper keeps the slot (M9 fix 1103). A wrapper
+    // kept as our previous would be started by ours, so it goes; a stranger's
+    // line kept by an earlier install stays.
+    const kept = readPreviousStatusLine(sl.previous);
+    const keptCommand = kept !== null && typeof kept['command'] === 'string' ? commandFile(kept['command']) : null;
+    if (kept === null || (keptCommand !== null && isStatusLineByShape(keptCommand))) {
+      writeJson(sl.previous, { statusLine: null });
+    }
+  } else {
+    if (!isOurStatusLine(current, sl.cmdDest) && !isDeadOurs(current)) {
+      writeJson(sl.previous, { statusLine: asObject(current) ?? null });
+    } else if (!fs.existsSync(sl.previous)) {
+      writeJson(sl.previous, { statusLine: null });
+    }
+    settings['statusLine'] = { type: 'command', command: hookCommand(sl.cmdDest) };
   }
-  settings['statusLine'] = { type: 'command', command: hookCommand(sl.cmdDest) };
 
   const node = opts.nodePath ?? process.execPath;
   fs.mkdirSync(path.dirname(opts.scriptDest), { recursive: true });
@@ -213,7 +234,7 @@ export function installHooks(opts: HooksInstallOptions): { changed: boolean; rem
   fs.copyFileSync(skill.source, skill.dest);
   const changed = canonical(settings) !== canonical(before);
   if (changed) recordWrite(opts, writeSettings(opts.settingsPath, settings), true);
-  return { changed, removed };
+  return { changed, removed, statusLineShared: shared };
 }
 
 export function uninstallHooks(opts: HooksInstallOptions): { changed: boolean; removed: DeadEntry[] } {
@@ -396,6 +417,7 @@ export function hooksStatus(opts: HooksInstallOptions): HooksStatus {
     scriptPresent,
     scriptStale,
     statusLine,
+    statusLineShared: otherStatusLine(settings['statusLine'], sl.cmdDest),
     statusLineVersion: statusLineVersion(sl.jsDest),
     shippedStatusLineVersion: statusLineVersion(sl.jsSource) ?? 0,
     skill,
@@ -438,6 +460,25 @@ function isOursByShape(file: string): boolean {
     p.endsWith('/hooks/claude-hook.sh') ||
     p.endsWith('/hooks/claude-statusline.sh')
   );
+}
+
+// Only a wrapper belongs in the status line slot, so the two hook script
+// names are left out (M9 fix 1103).
+function isStatusLineByShape(file: string): boolean {
+  const p = toForwardSlashes(file).toLowerCase();
+  return p.endsWith('/hooks/claude-statusline.cmd') || p.endsWith('/hooks/claude-statusline.sh');
+}
+
+// Another emerald's live status line wrapper in the slot (M9 fix 1103): its
+// file as the command spells it, else null (ours, nothing, a stranger's, or
+// a wrapper whose file is gone, which is fix 710's).
+export function otherStatusLine(value: unknown, cmdDest: string): string | null {
+  if (isOurStatusLine(value, cmdDest)) return null;
+  const s = asObject(value);
+  if (s === null || typeof s['command'] !== 'string') return null;
+  const file = commandFile(s['command']);
+  if (file === null || !isStatusLineByShape(file) || !fs.existsSync(file)) return null;
+  return file;
 }
 
 function deadFile(entry: unknown): string | null {

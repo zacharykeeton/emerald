@@ -63,6 +63,7 @@ function lineAt(x: number): string | null {
 // so it is never a window's only tab and the daemon never refuses it; a
 // window's only tab dragged out is refused there and stays.
 export async function dropOutsideWindows(drag: WindowDrag, x: number, y: number): Promise<void> {
+  if (drag.kind === 'files') return;
   if (drag.kind === 'tab') {
     await window.emerald.windowDrag.open(drag.tabId, x, y);
     return;
@@ -84,6 +85,7 @@ export function startWindowDropTarget(): void {
       return;
     }
     const { drag, x, y } = msg;
+    if (drag.kind === 'files') return; // main forwards no folder or set (M9 fix 1122)
     if (msg.type === 'over') {
       if (drag.kind === 'pane') lightPane(drag, x, y);
       else lineAt(x);

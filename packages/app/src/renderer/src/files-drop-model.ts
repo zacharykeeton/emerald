@@ -79,8 +79,11 @@ export function moveNote(outcomes: readonly MoveOutcome[], folder: string): stri
   const name = (o: MoveOutcome) => folderName(o.from);
   const moved = outcomes.filter((o) => o.result === 'moved');
   const copied = outcomes.filter((o) => o.result === 'copied');
-  const skipped = outcomes.filter((o) => o.result === 'skipped');
-  const refused = outcomes.filter((o) => o.result === 'refused' || o.result === 'inside');
+  // What a Cancel left out (M9 fix 1124) is one part of its own, kept out
+  // of the skipped and refused lists.
+  const cancelled = outcomes.filter((o) => o.cancelled === true);
+  const skipped = outcomes.filter((o) => o.result === 'skipped' && o.cancelled !== true);
+  const refused = outcomes.filter((o) => (o.result === 'refused' || o.result === 'inside') && o.cancelled !== true);
   const kept = outcomes.find((o) => o.sourceKept === true);
   const parts: string[] = [];
   const landed = moved.length + copied.length;
@@ -89,6 +92,10 @@ export function moveNote(outcomes: readonly MoveOutcome[], folder: string): stri
   else if (moved.length > 1) parts.push(`Moved ${moved.length} items into ${folder}`);
   else if (copied.length === 1) parts.push(`Copied ${name(copied[0]!)} into ${folder}`);
   else if (copied.length > 1) parts.push(`Copied ${copied.length} items into ${folder}`);
+  if (cancelled.length > 0) {
+    const what = cancelled.length === 1 ? name(cancelled[0]!) : String(cancelled.length);
+    parts.push(landed > 0 ? `cancelled, ${what} not copied` : `Cancelled: nothing copied into ${folder}`);
+  }
   if (skipped.length > 0) {
     const what = skipped.length === 1 ? name(skipped[0]!) : String(skipped.length);
     parts.push(landed > 0 ? `skipped ${what}` : `Skipped ${what}: already in ${folder}`);
@@ -99,8 +106,26 @@ export function moveNote(outcomes: readonly MoveOutcome[], folder: string): stri
   return parts.length === 0 ? null : parts.join('; ');
 }
 
+// The copy note counts bytes when the files average over this (M9 fix 1123): a few big files move by bytes, many small ones by files.
+export const BYTE_NOTE_MIN_AVERAGE = 50 * 1024 * 1024;
+
+// A size in the note's words: bytes under a KB, else one decimal of the
+// largest unit it reaches, no locale (72.0 MB, 1.2 GB).
+export function byteSize(n: number): string {
+  if (n < 1024) return `${n} bytes`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(1)} ${units[i]!}`;
+}
+
 // The corner note while a drop's copy runs (M9 fix 1008); the final note
 // is moveNote's.
-export function copyingNote(done: number, total: number, folder: string): string {
+export function copyingNote(done: number, total: number, folder: string, bytesDone = 0, bytesTotal = 0): string {
+  if (total > 0 && bytesTotal / total > BYTE_NOTE_MIN_AVERAGE) return `Copying ${byteSize(bytesDone)} of ${byteSize(bytesTotal)} into ${folder}`;
   return `Copying ${done.toLocaleString()} of ${total.toLocaleString()} files into ${folder}`;
 }

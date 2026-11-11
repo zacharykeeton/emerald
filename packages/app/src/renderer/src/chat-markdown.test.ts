@@ -49,9 +49,10 @@ test('a relative link outside the folder loses its path; one that climbs back in
   assert.deepEqual(ask, []);
 });
 
-test('a path outside the folder or with no folder stays plain (M9 fix 716)', () => {
+test('a drive path outside the folder links, a relative one outside it or with no folder stays plain (M9 fixes 716 and 1099)', () => {
   const all = () => 'file' as const;
-  assert.ok(renderReply('`C:/other/x.ts`', 'C:\\repo', all).html.includes('<code>C:/other/x.ts</code>'));
+  assert.ok(renderReply('`C:/other/x.ts`', 'C:\\repo', all).html.includes('<code class="chat-path" data-path="C:\\other\\x.ts">C:/other/x.ts</code>'));
+  assert.ok(renderReply('`../other/x.ts`', 'C:\\repo', all).html.includes('<code>../other/x.ts</code>'));
   assert.ok(renderReply('`docs/x.md`', '', all).html.includes('<code>docs/x.md</code>'));
   assert.ok(renderReply('`docs/x`', 'C:\\repo', () => 'other').html.includes('<code>docs/x</code>'));
 });
@@ -71,13 +72,35 @@ test('an unstatted picture is asked for and drawn plain (M9 fix 864)', () => {
   assert.ok(!html.includes('chat-path'), html);
 });
 
-test("a picture in the text resolves a relative path with a folder, and a bare name, another file or a link's text stays plain (M9 fix 864)", () => {
+test("a picture in the text resolves a relative path with a folder, and a bare name or a link's text stays plain (M9 fixes 864 and 1099)", () => {
   const reply = 'see img/shot.png, logo.png, C:\\other\\x.ts and [C:\\other\\b.png](https://example.com/x)';
-  assert.deepEqual(renderReply(reply, 'C:\\repo', () => undefined).ask, ['C:\\repo\\img\\shot.png']);
+  assert.deepEqual(renderReply(reply, 'C:\\repo', () => undefined).ask, ['C:\\repo\\img\\shot.png', 'C:\\other\\x.ts']);
   const { html } = renderReply(reply, 'C:\\repo', () => 'file');
-  assert.equal(html.match(/chat-path/g)?.length, 1, html);
+  assert.equal(html.match(/chat-path/g)?.length, 2, html);
   assert.ok(html.includes('<span class="chat-path" data-path="C:\\repo\\img\\shot.png">img/shot.png</span>'), html);
+  assert.ok(html.includes('<span class="chat-path" data-path="C:\\other\\x.ts">C:\\other\\x.ts</span>'), html);
   assert.ok(html.includes('<a href="https://example.com/x">C:\\other\\b.png</a>'), html);
+});
+
+const probe1099 = 'The notes are `C:\\other\\notes.md:4`, the plan C:\\other\\plan.md, and the hand-off:\n\n```\nRead C:\\Users\\me\\Temp\\handoff-plan-batch-test-shield.md and do what it says.\n```';
+
+test('an absolute path to a file links in a code span, bare in the text and in a fenced block, wherever it is (M9 fix 1099)', () => {
+  const files = new Set(['C:\\other\\notes.md', 'C:\\other\\plan.md', 'C:\\Users\\me\\Temp\\handoff-plan-batch-test-shield.md']);
+  const { html, ask } = renderReply(probe1099, 'C:\\repo', (abs) => (files.has(abs) ? 'file' : undefined));
+  assert.ok(html.includes('<code class="chat-path" data-path="C:\\other\\notes.md" data-line="4">'), html);
+  assert.ok(html.includes('<span class="chat-path" data-path="C:\\other\\plan.md">C:\\other\\plan.md</span>'), html);
+  assert.ok(html.includes('<pre><code>Read <span class="chat-path" data-path="C:\\Users\\me\\Temp\\handoff-plan-batch-test-shield.md">C:\\Users\\me\\Temp\\handoff-plan-batch-test-shield.md</span> and do what it says.\n</code></pre>'), html);
+  assert.deepEqual(ask, []);
+  const unknown = renderReply(probe1099, 'C:\\repo', () => undefined);
+  assert.ok(!unknown.html.includes('chat-path'), unknown.html);
+  assert.deepEqual(unknown.ask, ['C:\\other\\notes.md', 'C:\\other\\plan.md', 'C:\\Users\\me\\Temp\\handoff-plan-batch-test-shield.md']);
+});
+
+test('a relative path in a fence, and a drive path that is no file, stay plain (M9 fix 1099)', () => {
+  const fenced = renderReply('```\nsee docs/PLAN.md\n```', 'C:\\repo', known);
+  assert.ok(!fenced.html.includes('chat-path'), fenced.html);
+  assert.deepEqual(fenced.ask, []);
+  assert.ok(!renderReply('C:\\other\\dir', 'C:\\repo', () => 'other').html.includes('chat-path'));
 });
 
 test('a picture with no folder links only by a drive path (M9 fix 864)', () => {

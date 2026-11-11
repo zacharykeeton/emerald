@@ -97,14 +97,14 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'story', fixes: ['797', '798', '919', '920', '921', '956', '958', '993'], needs: ['stub'] },
   { name: 'reply', fixes: ['716', '978', '979'], needs: ['stub'] },
   { name: 'paths', fixes: ['717'], needs: ['reply'] },
-  { name: 'beside', fixes: ['863', '864', '892'], needs: ['paths'] },
+  { name: 'beside', fixes: ['863', '864', '892', '1099', '1135'], needs: ['paths'] },
   { name: 'bubbles', fixes: ['891', '918'], needs: ['stub'] },
   { name: 'thumbs', fixes: ['717', '718', '891'], needs: ['stub'] },
   { name: 'edit-ask', fixes: ['717'], needs: ['stub'] },
   { name: 'real', fixes: ['690', '778', '799', '809'], needs: [] },
   { name: 'fresh', fixes: ['722'], needs: [] },
   { name: 'menus', fixes: ['719', '720', '746', '749', '750', '751', '755'], needs: [] },
-  { name: 'image', fixes: ['721', '747', '748', '784', '807'], needs: [] },
+  { name: 'image', fixes: ['721', '747', '748', '784', '807', '1136'], needs: [] },
   { name: 'more', fixes: ['723'], needs: [] },
   { name: 'turns', fixes: ['752', '753'], needs: [] },
   { name: 'queued', fixes: ['754'], needs: ['turns'] },
@@ -114,7 +114,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'ask-once', fixes: ['801', '880'], needs: ['stub'] },
   { name: 'ask-tabs', fixes: ['922', '959'], needs: ['stub'] },
   { name: 'switch', fixes: ['976', '1004'], needs: ['stub'] },
-  { name: 'btw', fixes: ['1005', '1058'], needs: ['stub'] },
+  { name: 'btw', fixes: ['1005', '1058', '1134'], needs: ['stub'] },
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003', '1059', '1060'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
@@ -764,8 +764,8 @@ try {
     await openMenu('model', modelMenu);
     {
       const labels = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modelMenu + ' .menu-item .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
-      const want = ['Model', 'Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
-      expect(JSON.stringify(labels) === JSON.stringify(want), `the heading and the nine models, got ${JSON.stringify(labels)}`);
+      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
+      expect(JSON.stringify(labels) === JSON.stringify(want), `the heading and the six models, got ${JSON.stringify(labels)}`);
       expect(JSON.stringify(await ticked()) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(await ticked())}`);
       const segs = await segments();
       expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the five effort levels, got ${JSON.stringify(segs)}`);
@@ -1482,6 +1482,64 @@ try {
     await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
     await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab', 5000);
     step('fix 892: a markdown path at a line Ctrl+clicked opens a pane beside on Rendered with the block holding the line in view, and its plain click opens the tab on Rendered there, opening the folded section that holds it');
+    // (g) M9 fix 1099: an absolute path to a file outside the folder links
+    // wherever it appears: a code span, a fenced block and the prompt
+    // bubble. Three files in the block's outside folder, one per place.
+    const fenced1099 = path.join(outside, 'handoff-1099-test-shield.md');
+    const spanned1099 = path.join(outside, 'notes-1099.md');
+    const prompted1099 = path.join(outside, 'prompt-1099.md');
+    for (const f of [fenced1099, spanned1099, prompted1099]) fs.writeFileSync(f, '# 1099\n');
+    const prompt1099 = `Read ${prompted1099} and do what it says.`;
+    fs.appendFileSync(fixture, [userLine(prompt1099, 257), asstLine([{ type: 'text', text: `The notes are \`${spanned1099}\`, and the hand-off:\n\n\`\`\`\nRead ${fenced1099} and do what it says.\n\`\`\`` }], 258)].join('\n') + '\n');
+    // The turn by its prompt's text, which the spans keep whole.
+    const turn1099 = `[...${q(paneSel(stubPane))}.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent === ${JSON.stringify(prompt1099)})`;
+    const inTurn1099 = (sel, abs) => `[...(${turn1099}?.querySelectorAll(${JSON.stringify(sel)}) ?? [])].find((e) => e.dataset.path === ${JSON.stringify(abs)})`;
+    const promptSpan1099 = inTurn1099('.chat-prompt span.chat-path', prompted1099);
+    const fenceSpan1099 = inTurn1099('.chat-code pre code span.chat-path', fenced1099);
+    const codeSpan1099 = inTurn1099('code.chat-path', spanned1099);
+    await s.waitFor(`!!${promptSpan1099} && !!${fenceSpan1099} && !!${codeSpan1099}`, 'fix 1099: the prompt, the fence and the code span each hold their path as a link', 5000);
+    const fenceText1099 = await s.evalJs(`${turn1099}?.querySelector('.chat-code pre code')?.textContent ?? null`);
+    expect(fenceText1099 === `Read ${fenced1099} and do what it says.\n`, `fix 1099: the fence reads as it was written, got ${JSON.stringify(fenceText1099)}`);
+    await clickOn(fenceSpan1099, ', ctrlKey: true');
+    const fencePane1099 = await waitLeaf({ kind: 'file', path: fenced1099 }, 'fix 1099: the Ctrl+click on the fence path opened a file pane on it');
+    await besideStub(fencePane1099, 'fix 1099: the fence path pane');
+    await closePane(fencePane1099.id);
+    await clickOn(promptSpan1099, ', ctrlKey: true');
+    const promptPane1099 = await waitLeaf({ kind: 'file', path: prompted1099 }, 'fix 1099: the Ctrl+click on the prompt path opened a file pane on it');
+    await besideStub(promptPane1099, 'fix 1099: the prompt path pane');
+    await closePane(promptPane1099.id);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'fix 1099: one pane again', 5000);
+    await clickOn(codeSpan1099, '');
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === ${JSON.stringify(spanned1099)}`, 'fix 1099: the plain click on the code span opened the notes in a tab', 5000);
+    await s.evalJs(`${q(`.tab-file[data-tab=${JSON.stringify(spanned1099)}] .tab-close`)}.click()`);
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'fix 1099: back on the panes tab', 5000);
+    step('fix 1099: an absolute path to a file outside the folder is a link in a code span, in a fenced block and in the prompt bubble; a Ctrl+click opens it beside the chat\'s pane and a plain click in a tab');
+    // (h) M9 fix 1135: a relative path, an @ mention and a bare name to
+    // files in the session's folder link in the prompt bubble; a path
+    // outside the folder and a missing file stay plain.
+    fs.mkdirSync(path.join(longFixtureDir(), 'docs-1135'), { recursive: true });
+    for (const f of ['plan-1135.md', 'mention-1135.md']) fs.writeFileSync(path.join(longFixtureDir(), 'docs-1135', f), '# 1135\n');
+    const cwd1135 = (await record(stubId)).cwd;
+    const prompt1135 = 'Compare docs-1135/plan-1135.md, @docs-1135/mention-1135.md and notes-892.md, not ../chat-864/frame-864.png or docs-1135/absent-1135.md.';
+    fs.appendFileSync(fixture, [userLine(prompt1135, 259), asstLine([{ type: 'text', text: 'Compared.' }], 259)].join('\n') + '\n');
+    const turn1135 = `[...${q(paneSel(stubPane))}.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent === ${JSON.stringify(prompt1135)})`;
+    const spans1135 = `[...(${turn1135}?.querySelectorAll('.chat-prompt span.chat-path') ?? [])]`;
+    await s.waitFor(`${spans1135}.length === 3`, 'fix 1135: three paths link in the prompt bubble', 5000);
+    const read1135 = await s.evalJs(`${spans1135}.map((e) => [e.textContent, e.dataset.path])`);
+    const want1135 = [
+      ['docs-1135/plan-1135.md', path.win32.join(cwd1135, 'docs-1135', 'plan-1135.md')],
+      ['@docs-1135/mention-1135.md', path.win32.join(cwd1135, 'docs-1135', 'mention-1135.md')],
+      ['notes-892.md', path.win32.join(cwd1135, 'notes-892.md')],
+    ];
+    expect(JSON.stringify(read1135) === JSON.stringify(want1135), `fix 1135 (h): the linked paths, got ${JSON.stringify(read1135)}`);
+    expect((await s.evalJs(`${turn1135}?.querySelector('.chat-prompt')?.textContent`)) === prompt1135, 'fix 1135 (h): the prompt reads as it was written');
+    await clickOn(`${spans1135}[1]`, ', ctrlKey: true');
+    const pane1135 = await waitLeaf({ kind: 'file', path: want1135[1][1] }, 'fix 1135: the Ctrl+click on the @ mention opened a file pane on it');
+    await besideStub(pane1135, 'fix 1135: the mention pane');
+    await closePane(pane1135.id);
+    await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'fix 1135: one pane again', 5000);
+    step('fix 1135 (h): a relative path, an @ mention and a bare name to files in the session\'s folder link in the prompt bubble, a path outside it and a missing file stay plain, and a Ctrl+click on the mention opens it beside the chat\'s pane');
   });
 
   await block('bubbles', async () => {
@@ -1841,7 +1899,7 @@ try {
       // gets a Current model row first; it is dropped before the compare.
       const rows = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', line: b.querySelector('.menu-line')?.textContent ?? null }))`);
       const labels = rows.filter((r) => r.line !== 'Current model').map((r) => r.label);
-      const want = ['Model', 'Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
+      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
       expect(JSON.stringify(labels) === JSON.stringify(want), `the real model menu's rows, got ${JSON.stringify(labels)}`);
       const segs = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu [data-segments="Effort"] .menu-segment')].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
       expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the real effort row, got ${JSON.stringify(segs)}`);
@@ -1852,7 +1910,7 @@ try {
     }
     await s.key('Escape', 'Escape', 27);
     await s.waitFor(`!document.querySelector('.menu.chat-model-menu')`, 'Escape closed the real model menu', 2000);
-    step('fix 744: the real session\'s model menu lists the nine models and the five effort levels, read and closed without a pick');
+    step('fix 744: the real session\'s model menu lists the six models and the five effort levels, read and closed without a pick');
 
     // The same reply in the terminal underneath, and back.
     await s.evalJs(`${q(paneSel(pane.id) + ' .pane-face-toggle')}.click()`);
@@ -2467,7 +2525,7 @@ try {
     // (b2) M9 fix 748: the chips' × takes the image out of Claude's prompt
     // with one Ctrl+C, and the session neither ends nor starts a turn.
     const clearTitle = await s.evalJs(`${q(clearSel)}?.title ?? null`);
-    expect(clearTitle === 'Remove the images (clears Claude Code\'s prompt; your text stays)', `the ×'s title, got ${JSON.stringify(clearTitle)}`);
+    expect(clearTitle === 'Remove the pasted text and images (clears Claude Code\'s prompt; your text stays)', `the ×'s title, got ${JSON.stringify(clearTitle)}`);
     expect((await s.evalJs(`${q(clearSel)}.disabled`)) === false, 'the × enabled while idle');
     await clearByX('b2');
     const afterX = (await record(imageId)).state;
@@ -2630,7 +2688,12 @@ try {
       await sleep(1500);
       const carried = { box: await s.evalJs(`${q(boxSel)}.value`), hint: await hintNow(), input: await promptRow() };
       console.log(`[verify] fix 784: ${name} on the flip to chat: ${JSON.stringify(carried)}`);
-      expect(carried.box === '' && carried.hint === "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it", `${name} stays in the terminal with the hint (decision 4 (b)), got ${JSON.stringify(carried)}`);
+      if (/^\s*❯\s*\[Pasted text #\d+(?: \+\d+ lines)?\]\s*$/.test(carried.input ?? '')) {
+        // M9 fix 1136: an input of a paste marker alone flips to a chip.
+        const chips784 = await s.evalJs(`document.querySelectorAll(${JSON.stringify(paneSel(imagePane) + ' .chat-paste-chip')}).length`);
+        expect(carried.box === '' && carried.hint !== "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it" && chips784 === 1, `${name} came as a paste marker, one chip on the flip, got ${JSON.stringify(carried)} and ${chips784} chips`);
+        console.log(`[verify] note: fix 784: ${name} came as a paste marker, a chip on the flip`);
+      } else expect(carried.box === '' && carried.hint === "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it", `${name} stays in the terminal with the hint (decision 4 (b)), got ${JSON.stringify(carried)}`);
       // Back to the terminal (the box is empty, so nothing is typed) and
       // clear the input with one Ctrl+C, two seconds past the last.
       await toggle();
@@ -2641,6 +2704,42 @@ try {
     }
     step('fix 784: an input past one row on a real Claude stays in the terminal on the flip, with the hint');
     await toChat();
+
+    // M9 fix 1136 (i): a paste into Claude's input shows as a chip labelled
+    // with Claude Code's own marker. A Design Mode pick makes these two
+    // acts: a bracketed paste typed into the session, and the event.
+    const block1136 = Array.from({ length: 24 }, (_, k) => `line ${k + 1} of 1136`).join('\r');
+    const pasteChipSel = paneSel(imagePane) + ' .chat-paste-chip';
+    const pasteOnce1136 = async () => {
+      await typeRaw(imageId, '\x1b[200~' + block1136 + '\x1b[201~');
+      await s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:chat-paste', { detail: { sessionId: ${JSON.stringify(imageId)} } }))`);
+      await waitPrompt((row) => /\[Pasted text #\d+ \+23 lines\]/.test(row), 'fix 1136: Claude\'s input holds the paste\'s marker');
+      const n = /\[Pasted text #(\d+) \+23 lines\]/.exec(await promptRow())[1];
+      await s.waitFor(`(() => { const cs = [...document.querySelectorAll(${JSON.stringify(pasteChipSel)})]; return cs.length === 1 && cs[0].querySelector('.chat-paste-chip-label')?.textContent === ${JSON.stringify(`Pasted text #${n} · 23 lines`)}; })()`, 'fix 1136: one paste chip labelled with the marker', 5000);
+      return n;
+    };
+    // The loop's last Ctrl+C was typed raw, which sendCtrlC's gap does not
+    // see, so wait it out here: a second one within two seconds exits Claude.
+    await sleep(2200);
+    await pasteOnce1136();
+    const title1136 = await s.evalJs(`${q(clearSel)}?.title ?? null`);
+    expect(title1136 === 'Remove the pasted text and images (clears Claude Code\'s prompt; your text stays)', `fix 1136 (a): the ×'s title, got ${JSON.stringify(title1136)}`);
+    await s.waitFor(`${q(clearSel)}.disabled === false`, 'fix 1136: the × enabled', 5000);
+    await s.evalJs(`${q(clearSel)}.click()`);
+    await s.waitFor(`!document.querySelector(${JSON.stringify(pasteChipSel)})`, 'fix 1136: no paste chip after the ×', 6000);
+    await waitPrompt((row) => !row.includes('[Pasted text'), 'fix 1136: the × cleared Claude\'s prompt');
+    step('fix 1136 (a): a paste into Claude\'s input shows as a chip labelled with its marker, Pasted text #N · 23 lines, and the × clears it');
+    await sleep(2200);
+    await pasteOnce1136();
+    await setBoxText('Reply with the one word ok.');
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.key('Enter', 'Enter', 13);
+    await waitRecord(imageId, (r) => r.state === 'working', 'fix 1136: the turn started', 30000);
+    await waitRecord(imageId, (r) => r.state === 'idle' || r.state === 'done', 'fix 1136: the turn ended', 60000);
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(paneSel(imagePane) + ' .chat-prompt')})].some((p) => { const t = p.textContent ?? ''; return t.includes('line 1 of 1136') && t.includes('line 24 of 1136') && t.includes('Reply with the one word ok.') && !t.includes('pasted_content'); })`, 'fix 1136: the sent bubble shows the block and the words', 30000);
+    expect((await s.evalJs(`document.querySelectorAll(${JSON.stringify(pasteChipSel)}).length`)) === 0, 'fix 1136: no paste chip after the send');
+    await s.waitFor(`!document.querySelector(${JSON.stringify(paneSel(imagePane) + ' .chat-prompt-pending')})`, 'fix 1136: the Sending bubble gave way to the landed one', 5000);
+    step('fix 1136 (b): a send with a pasted chip types the words after the marker, the bubble shows the block and the words, and its Sending bubble gives way to it');
 
     // (h) /exit, which the / menu's row sends, ends the session.
     await s.type('/exit');
@@ -3472,6 +3571,28 @@ try {
     await post({ hook_event_name: 'Stop', stop_hook_active: false });
     await waitRecord(stubId, (r) => r.state === 'done' || r.state === 'idle', 'fix 1005: the stub at rest at the block\'s end', 5000);
     await s.waitFor(`${q(boxSel)}?.disabled === false`, 'fix 1005: the box back at the block\'s end');
+    // M9 fix 1134 (d): the capture's narrow pane: the footer wraps over
+    // three rows, so no single row says "Esc to close". The strip must
+    // still read the answer, and its close must send the panel's Escape.
+    const narrowFooter = `Write-Host ('  ' + ${c('2191')} + '/' + ${c('2193')} + ' to scroll ' + ${c('B7')} + ' c to copy'); Write-Host ('  ' + ${c('B7')} + ' f to fork ' + ${c('B7')} + ' Esc to'); Write-Host '  close'`;
+    await typeRaw(stubId, `$q = Read-Host; cls; Write-Host ''; Write-Host ('  /btw what folder' + ${c('2026')}); Write-Host ''; Write-Host ('    ' + ${c('273B')} + ' Answering' + ${c('2026')}); Write-Host ''; Write-Host '  Esc to close'; Start-Sleep -Milliseconds 3000; cls; Write-Host ''; Write-Host ('  /btw what folder' + ${c('2026')}); Write-Host ''; Write-Host '    You are in the'; Write-Host '    fixture folder.'; Write-Host ''; ${narrowFooter}; $k = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('gotbtw ' + $k.Key); Read-Host | Out-Null\r`);
+    await waitRecord(stubId, (r) => r.command?.state === 'running', 'fix 1134: the stub\'s Read-Host running', 10000);
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'fix 1134: the box holds the keyboard');
+    await s.type('/btw what folder am I in');
+    await s.key('Enter', 'Enter', 13);
+    await s.waitFor(`${q(sideSel)}?.dataset.state === 'answered'`, 'fix 1134: the strip answered off the wrapped footer', 8000).catch(async (err) => {
+      throw new Error(`${err.message}: strip ${JSON.stringify(await s.evalJs(`${q(sideSel)}?.outerHTML ?? null`))}, rows ${JSON.stringify((await screen(stubId)).rows.filter((r) => r.trim() !== '').slice(-8))}`);
+    });
+    const answer1134 = await s.evalJs(`${q(sideSel + ' .chat-side-answer')}?.textContent ?? null`);
+    expect(answer1134 === 'You are in the fixture folder.', `fix 1134 (d): the strip's answer, got ${JSON.stringify(answer1134)}`);
+    await s.evalJs(`${q(sideSel + ' .chat-side-close')}.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))`);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('gotbtw Escape'), 'fix 1134: the stub took the Escape');
+    await s.waitFor(`!${q(sideSel)}`, 'fix 1134: the strip gone', 3000);
+    expect((await record(stubId)).state !== 'working', 'fix 1134 (d): no turn started');
+    await typeRaw(stubId, '\r');
+    await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1134: the Read-Host ended at the prompt', 10000);
+    step('fix 1134 (d): a /btw panel whose footer wraps over three rows reads its answer in the strip, and the strip\'s close sends the panel its Escape');
   });
 
   await block('box', async () => {
@@ -4312,13 +4433,13 @@ try {
       await s.waitFor(`!${q(chipsMenu)}`, 'the model menu gone', 2000);
     };
     const ticks = (rows) => rows.filter((r) => r.checked === 'true').map((r) => r.label);
-    const listed = ['Default', 'Opus 5.5', 'Opus 5.5 (1M context)', 'Sonnet 5.5', 'Sonnet 5.5 (1M context)', 'Haiku 5.5', 'Fable 5.1', 'Fable 5.1 (1M context)', 'Opus Plan'];
+    const listed = ['Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
     await postChips({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-9-9', display_name: 'Opus 9.9' } });
     await s.waitFor(`${q(modelChip + ' .chat-chip-word')}?.textContent === 'Opus 9.9'`, 'the model chip reading Opus 9.9', 5000);
     await openModel();
     {
       const rows = await modelRows();
-      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', 'Opus 9.9', ...listed]), `the heading, Opus 9.9 and the nine models, got ${JSON.stringify(rows.map((r) => r.label))}`);
+      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', 'Opus 9.9', ...listed]), `the heading, Opus 9.9 and the six models, got ${JSON.stringify(rows.map((r) => r.label))}`);
       expect(JSON.stringify(ticks(rows)) === '["Opus 9.9"]', `Opus 9.9 ticked alone, got ${JSON.stringify(ticks(rows))}`);
       expect(rows[1].line === 'Current model' && rows[1].disabled === true, `row 1 reads Current model and is disabled, got ${JSON.stringify(rows[1])}`);
       await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(chipsMenu + ' .menu-item')})][1].click()`);
@@ -4331,11 +4452,11 @@ try {
     await openModel();
     {
       const rows = await modelRows();
-      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', ...listed]), `the heading and the nine models alone, got ${JSON.stringify(rows.map((r) => r.label))}`);
+      expect(JSON.stringify(rows.map((r) => r.label)) === JSON.stringify(['Model', ...listed]), `the heading and the six models alone, got ${JSON.stringify(rows.map((r) => r.label))}`);
       expect(JSON.stringify(ticks(rows)) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(ticks(rows))}`);
     }
     await closeModel();
-    step('fix 786: a session on Opus 9.9 reads a ticked Current model row first, not pickable, above the nine models; on Opus 5.5 the list alone, its row ticked');
+    step('fix 786: a session on Opus 9.9 reads a ticked Current model row first, not pickable, above the six models; on Opus 5.5 the list alone, its row ticked');
 
     // The layout as the block found it: the first pane on its earlier
     // session, which opens on its terminal face.

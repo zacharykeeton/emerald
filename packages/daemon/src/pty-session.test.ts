@@ -156,6 +156,10 @@ test('stampEnv strips the terminal the daemon was born in and says what the pane
   assert.deepEqual(env, { PATH: 'x', TERM: 'xterm-256color', COLORTERM: 'truecolor', EMERALD_SESSION_ID: 's' });
 });
 
+test('stampEnv keeps SSH_CONNECTION, which the relay puts on the daemon for every session (M9 fix 1091)', () => {
+  assert.equal(stampEnv({ PATH: 'x', SSH_CONNECTION: '10.0.0.5 51234 10.0.0.9 22' }, { sessionId: 's' })['SSH_CONNECTION'], '10.0.0.5 51234 10.0.0.9 22');
+});
+
 test('output is batched until the flush tick', async () => {
   const fake = new FakePty();
   const s = new PtySession(fake, { flushIntervalMs: 20, earlyFlushBytes: 1000 });

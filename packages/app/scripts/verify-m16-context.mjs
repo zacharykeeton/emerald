@@ -953,6 +953,9 @@ try {
     // M9 fix 1043: a /clear's SessionEnd, SessionStart and the null status line Claude Code posts after it.
     const titlePercent = `[data-pane-id=${JSON.stringify(p1)}] .pane-context-percent`;
     const rowPercent = `${liveRow} .sidebar-row-context-percent`;
+    // M9 fix 1101: a warm hour cache on the record first, which the clear must drop.
+    await postLive(cacheLine(100000, { warm: true, ttl: '1h', expires_at: exp(3000), requests: 12 }));
+    await waitClock(reads('cache cold in 50m', 'cold'), 'fix 1101: 100k on the hour reads cache cold in 50m before the clear');
     await s.waitFor(`document.querySelector(${JSON.stringify(titlePercent)})?.textContent === '25%'`, 'fix 1043: the title reads 25% before the clear', 5000);
     // M9 fix 1053: a breakdown on the record first, which the clear must drop.
     await postLive({
@@ -981,8 +984,12 @@ try {
     expect(rec1043?.claudeSessionId === 'sim-m16-1043' && rec1043.contextPercent === 0, `fix 1043: the record is on the new id at 0, got ${rec1043?.claudeSessionId} ${rec1043?.contextPercent}`);
     expect(JSON.stringify(rec1043.contextWindow) === JSON.stringify({ size: 1000000, used: 0, cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0 }), `fix 1043: the window's counts are at 0 with its size kept, got ${JSON.stringify(rec1043.contextWindow)}`);
     expect(!('context' in rec1043), `fix 1053: the clear dropped the breakdown, got ${JSON.stringify(rec1043.context)?.slice(0, 120)}`);
+    await waitClock(none, 'fix 1101: no countdown on the row or the pane title after the clear');
+    const cache1101 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === live.id)?.cache ?? null;
+    expect(cache1101 === null, `fix 1101: the record's cache is null after the clear, got ${JSON.stringify(cache1101)}`);
   }
   step("M9 fix 1043: a /clear's SessionEnd, SessionStart and null status line read 0% on the title and the row, the window's counts at 0 with its 1M size kept, and the mod's breakdown gone (fix 1053)");
+  step("M9 fix 1101: a /clear after a warm cache (cache cold in 50m) drops the countdown from the row and the pane title and the record's cache, and the bare status line after it brings none back");
 
   await zreq(s, 'session.kill', { sessionId: live.id, remove: true });
   await s.waitFor(`!document.querySelector(${JSON.stringify(liveRow)})`, 'the live claude row is gone', 8000);

@@ -90,8 +90,9 @@ function runMethod(method) {
       const wmiMs = lastWmiCpu === null ? null : Math.max(0, wmiNow - lastWmiCpu);
       lastWmiCpu = wmiNow;
       if (prev !== null) {
-        perTick.push({ childMs, wmiMs, wallMs: sweep.wallMs, daemonMs, readings, processes: sweep.rows.length });
-        console.log(`  tick ${String(perTick.length).padStart(2)}: child cpu ${fmt(childMs)} ms, WMI host ${fmt(wmiMs)} ms, sweep wall ${String(sweep.wallMs).padStart(5)} ms, daemon parse+walk ${fmt(daemonMs)} ms, ${readings} of ${TREES} trees read, ${sweep.rows.length} processes`);
+        const privateMb = sweep.childPrivateBytes === undefined ? null : sweep.childPrivateBytes / 1048576;
+        perTick.push({ childMs, wmiMs, wallMs: sweep.wallMs, daemonMs, readings, processes: sweep.rows.length, privateMb });
+        console.log(`  tick ${String(perTick.length).padStart(2)}: child cpu ${fmt(childMs)} ms, WMI host ${fmt(wmiMs)} ms, sweep wall ${String(sweep.wallMs).padStart(5)} ms, daemon parse+walk ${fmt(daemonMs)} ms, ${readings} of ${TREES} trees read, ${sweep.rows.length} processes, child private ${privateMb === null ? '?' : Math.round(privateMb)} MB`);
       }
       prev = sweep;
       prevIndex = index;
@@ -119,6 +120,13 @@ for (const { method, perTick } of results) {
   const daemons = perTick.map((t) => t.daemonMs);
   const p90 = pct(daemons, 0.9);
   console.log(`${method}: child cpu per tick median ${fmt(pct(childs, 0.5))} ms, p90 ${fmt(pct(childs, 0.9))}, max ${fmt(Math.max(...childs))}; WMI host per tick median ${fmt(pct(wmis, 0.5))} ms, p90 ${fmt(pct(wmis, 0.9))}; sweep wall median ${fmt(pct(walls, 0.5))} ms, p90 ${fmt(pct(walls, 0.9))}; daemon parse+walk median ${fmt(pct(daemons, 0.5))} ms, p90 ${fmt(p90)}, max ${fmt(Math.max(...daemons))}${p90 > LINE_MS ? `  OVER the ${LINE_MS} ms line` : ''}`);
+  // The child's own private bytes (M9 fix 1126): first, at minute 5 of
+  // an hour's run, last and the largest, so a growth shows on one line.
+  const mbs = perTick.map((t) => t.privateMb);
+  if (mbs.length > 0 && mbs.every((m) => m !== null)) {
+    const at = Math.min(mbs.length, Math.max(1, Math.round(ticks / 12)));
+    console.log(`  child private: first ${Math.round(mbs[0])} MB, at tick ${at} ${Math.round(mbs[at - 1])} MB, last ${Math.round(mbs[mbs.length - 1])} MB, max ${Math.round(Math.max(...mbs))} MB`);
+  }
   if (p90 > LINE_MS) over = true;
 }
 if (results.length === 2) {

@@ -2,6 +2,54 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1115 to 1138, 2026-11-11
+
+Twenty-four fixes: a folder's own icon found wherever it sits in the repository, a file dragged out of the window into another app, a Cancel on a long copy, New Claude session here that closes the Claude it replaces, a few less megabytes per session, and a run of small ones. The daemon goes to level 82; the update's restart starts the new daemon, so nothing asks for another.
+
+### Highlights
+
+**A folder heading draws its own icon, wherever the repository keeps it.** A folder whose favicon or icon sits outside the usual places (`src/app/favicon.ico`, `packages/app/build/icon.ico`) is now found by one search of the repository, kept ten minutes, so emerald's own heading draws its gem. A site whose root `index.html` links its icon from the site root also finds it under `public`. The design came from GitHub issue zacharykeeton/emerald#1.
+
+**Drag a file out of the window into another app.** In the Files tab, drag a file, a picked set or a folder past the window's edge, with no Emerald window under the pointer, and it becomes an ordinary file drag: drop it on a browser's upload box, an email, or an Explorer folder. A row dropped outside every window no longer opens a new window holding the file; a pane by its title and a layout tab still do.
+
+**Cancel a long copy.** A drop of a few big files counts its copy in bytes, so the corner note moves inside a large file rather than standing still, and the note now carries a Cancel. What finished before the click stays whole, the file being copied at that moment is taken back, and the rest are left where they were; the note says which.
+
+### Details
+
+**New Claude session here closes the Claude it replaces.** Over a live Claude, the dialog has a ticked `Close "<old name>"` box: leave it and the old session closes as Close does, its row counting down; untick it to keep both. A shell, a Claude that is working or asking, and a mirrored session are kept. Resume on the old row puts it back to the right of the new one.
+
+**Always start a Claude on a split?** After three splits in a day that you followed with a Claude start within ten seconds, the next empty pane a split makes offers it once.
+
+**The chat view.** A paste into a Claude on the chat face shows as a chip over the box, `Pasted text #2 · 40 lines`, when Claude Code folds it into a marker. A relative path or an `@` mention in your prompt bubble links when it names a file in the session's folder. The `/btw` side strip reads its answer in a narrow pane too, and closing it closes Claude Code's panel.
+
+**Less memory a session.** A Claude in a pane no longer carries a 24 MB `emmer mod-channel` process of its own: the mod asks the daemon for prompts by a long poll instead. The daemon's load sweep holds near 64 MB where it grew to about 90. Panes on a tab not in front give up their graphics context once more than twelve are live, and take one back before their tab is shown, so a window with many tabs draws on less GPU memory.
+
+**Small ones.** An uncaught error in the window leaves its stack in `main.log`. `emmer daemon stop --json` with nothing running says what it did with the left record (`none`, `removed` or `left`). The remote kit's Node is 24.22.2.
+
+## Fixes 1091 to 1114, 2026-11-07
+
+Twenty-four fixes: the remote panes' first follow-ups, a Ctrl+click that opens a link once, a path link across a broken line, the model menu without the 1M rows, and a run of small ones. The daemon goes to level 81; the update's restart starts the new daemon, so nothing asks for another.
+
+### Highlights
+
+**Sign in to Claude on another machine from here.** Pick a host with kind Claude and its button on the `on` row says `not signed in on <host>` or `login expired on <host>` before anything starts. In the Claude that asks for its login, `c` to copy now puts the link on this PC's clipboard, with the corner note, and a Ctrl+click on any row of the link opens it in a browser pane beside. Any program's own copy (OSC 52), in any pane, lands on this PC's clipboard the same way. The first daemon the new Emerald starts on a host carries what makes this work, so a host whose daemon is still the old one picks it up at its next start.
+
+**A Ctrl+click on a link opens it once.** In a fullscreen Claude, a Ctrl+click on a URL used to open it twice, in a pane beside and in your browser. The press is now Emerald's alone, so it opens once, beside; a Ctrl+click anywhere else still reaches the program.
+
+**A path Claude broke across lines is one link.** When Claude wraps a long path onto an indented next row, hover either row and the whole path underlines, and a Ctrl+click opens it beside. In the chat view an absolute path to a file links wherever it appears: in a code span, bare in the text, inside a fenced block and in your own prompt bubble.
+
+### Details
+
+**The model menu.** The three `(1M context)` rows are gone: Opus 5.5, Sonnet 5.5 and Fable 5.1 each run with a 1M window already, and Claude Code names such a pick by its plain name, so those rows could never tick. `/model opus[1m]` still works typed by hand.
+
+**After a `/clear`.** The row's and the pane title's `cache cold in 48m` goes at a `/clear`, a resume or a start, and comes back with the new conversation's first reply. The Context tab's Recount now really counts (its ask never reached Claude before), and a conversation with no reply yet says `A new conversation; the breakdown comes with its first reply` rather than that Emerald did not start the Claude.
+
+**Remote hosts.** A request to a host whose line is lost fails at once with `<host> is unreachable`, and Start waits, dimmed, while the host is lost. A remote folder's `+` menu offers New Claude session here alone, and its Copy path copies the host's own folder, with no Reveal in Explorer. Forgetting a host takes its sessions out of the window. An errored row names Claude Code's own error, and a turn that failed on a missing login reads `signed out: run /login`.
+
+**Copy image on every picture.** GIF, WebP, BMP, ICO and SVG copy now: an SVG at the size it declares, an icon at its own size rather than 256 by 256, a paused GIF at the frame on show.
+
+**Small ones.** The Skills group's button names the one skill it turns off (`Turn off ado ▾`) or says `these 2`. On a Mac the edit keys' hints say Cmd, and Cmd+Enter works where a hint names Ctrl+Enter. The File pick's path box shows a long path whole on hover. Two Emeralds sharing one Claude settings file (a host's own and the remote kit) share its status line rather than take it from each other or start each other in a loop. `emmer daemon stop` on the wrong pipe no longer deletes a running daemon's record, and a process whose start time cannot be read is never killed.
+
 ## Fixes 1079 to 1090, 2026-11-05
 
 Twelve fixes, one feature: a pane whose session runs on another machine, reached over ssh. The daemon goes to level 80; the update's restart starts the new daemon, so nothing asks for another.

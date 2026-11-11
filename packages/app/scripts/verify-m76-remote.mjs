@@ -12,7 +12,8 @@
 // connect through the stub's relay with the argv's quotes intact, a shell
 // started on the host routed by its id both ways, a dropped line lost and
 // back with the screen replayed, the host daemon started again through
-// WMI (its parent WmiPrvSE.exe), and an unknown host key refused.
+// WMI (its parent WmiPrvSE.exe), and an unknown host key refused, a host
+// session's SSH_CONNECTION (fix 1091).
 // Block `store` (fixes 1085 and 1086, needs relay): a reload's one list
 // holds the remote row and replays its screen; a lost line reads
 // unreachable on the row. Block `row` (fixes 1087 and 1088, needs relay):
@@ -23,7 +24,10 @@
 // Block `kit` (fixes 1083 and 1084, needs relay; last, since it replaces
 // the stub's daemon): a first contact that copies the kit from local
 // fixtures (a stage, a Node zip, a node-pty tarball) and starts the kit's
-// own daemon, then the Linux refusal. The store, row, marks and kit
+// own daemon, then the Linux refusal. Block clip (fix 1091, needs nothing;
+// last): a local shell's OSC 52 write on the window's held clipboard with
+// its note, an OSC 8 link wrapped over two rows opened by a Ctrl+click on its
+// second, and a reload's replay copying nothing. The store, row, marks and kit
 // blocks read what the other branches of the batch build; they were
 // written from the plan's contracts (C4 to C7) and run first at the
 // batch's close-out on the merged tree.
@@ -42,10 +46,11 @@ const { blockRunner, daemonRecord, emeraldHome, expect, freshPort, getTabs, kill
 const { block, blocksRun } = blockRunner([
   { name: 'relay', fixes: ['1079', '1080', '1081', '1082'], needs: [] },
   { name: 'store', fixes: ['1085', '1086'], needs: ['relay'] },
-  { name: 'row', fixes: ['1087', '1088'], needs: ['relay'] },
-  { name: 'marks', fixes: ['1089', '1090'], needs: ['relay'] },
+  { name: 'row', fixes: ['1087', '1088', '1094', '1095'], needs: ['relay'] },
+  { name: 'marks', fixes: ['1089', '1090', '1096', '1097'], needs: ['relay'] },
   // Replaces the stub's daemon with the kit's, so it stays last.
   { name: 'kit', fixes: ['1083', '1084'], needs: ['relay'] },
+  { name: 'clip', fixes: ['1091'], needs: [] },
 ]);
 
 let app = null;
@@ -59,6 +64,9 @@ setTimeout(() => {
 const scriptsDir = path.join(repoRoot, 'packages', 'app', 'scripts');
 const cliMain = path.join(repoRoot, 'packages', 'cli', 'dist', 'main.js');
 const appVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'packages', 'app', 'package.json'), 'utf8')).version;
+// The kit's Node, read off its one pin with docs-commit-check.py's regex, so a move of the pin is one line (M9 fix 1118).
+const kitNode = /KIT_NODE_VERSION = '([\d.]+)'/.exec(fs.readFileSync(path.join(repoRoot, 'packages', 'app', 'src', 'main', 'remote-kit.ts'), 'utf8'))?.[1];
+if (kitNode === undefined) throw new Error('no KIT_NODE_VERSION in remote-kit.ts');
 const H = path.join(emeraldHome, 'stub-host');
 const R = path.join(H, '.emerald-remote');
 const stubPipe = `${process.env['EMERALD_PIPE']}-stub`;
@@ -79,7 +87,7 @@ const killStubSsh = () => {
   spawnSync('taskkill', ['/pid', pid, '/t', '/f'], { stdio: 'ignore', windowsHide: true });
 };
 const stubArch = process.arch === 'arm64' ? 'arm64' : 'x64';
-const stubRecord = (extra = {}) => ({ name: 'stub', destination: 'stub', os: 'win32', arch: stubArch, shell: 'powershell', home: H, nodeVersion: '24.20.0', kitVersion: appVersion, addedAt: Date.now(), ...extra });
+const stubRecord = (extra = {}) => ({ name: 'stub', destination: 'stub', os: 'win32', arch: stubArch, shell: 'powershell', home: H, nodeVersion: kitNode, kitVersion: appVersion, addedAt: Date.now(), ...extra });
 
 // Every process run from under the stub host's home, matched on its command
 // line (never a remembered pid): the kit's daemon, started through WMI from
@@ -95,6 +103,8 @@ killDaemonIfSame(daemonRecord(R));
 killUnderStubHome();
 fs.rmSync(H, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
 fs.mkdirSync(H, { recursive: true });
+// The stub home carries AppData\Local, so a PowerShell run under it as USERPROFILE (stub-ssh.mjs, fix 1094's daemon) keeps its cache there and goes with the home (M9 fix 1120).
+fs.mkdirSync(path.join(H, 'AppData', 'Local'), { recursive: true });
 fs.writeFileSync(path.join(emeraldHome, 'ssh-config'), 'Host stub\n  HostName stub.invalid\n  User verify\n');
 setModes({});
 {
@@ -124,6 +134,18 @@ const screenHas = async (sessionId, line, what, ms = 10_000) => {
     await sleep(250);
   }
   throw new Error(`timed out waiting for ${what}: no row ${JSON.stringify(line)} in ${JSON.stringify(rows.filter((r) => r !== '').slice(-6))}`);
+};
+// A pane split a few columns wide wraps what it prints, so this reads the rows joined: trimmed at their ends and joined bare by default (a wrapped row has no space at its seam once trimmed), or with collapse untrimmed and every run of whitespace one space, for a needle that holds a real space a wrap may fall on (M9 fix 1119).
+const screenJoinedHas = async (sessionId, text, what, ms = 10_000, { collapse = false } = {}) => {
+  const until = Date.now() + ms;
+  let joined = '';
+  while (Date.now() < until) {
+    const rows = (await zreq(s, 'pty.screen', { sessionId })).rows;
+    joined = collapse ? rows.join('').replace(/\s+/g, ' ') : rows.map((r) => r.trimEnd()).join('');
+    if (joined.includes(text)) return;
+    await sleep(250);
+  }
+  throw new Error(`timed out waiting for ${what}: the screen joined ${JSON.stringify(joined.slice(-120))}`);
 };
 const listed = async (id) => (await zreq(s, 'session.list', { removed: true })).sessions.find((x) => x.id === id);
 const listenPushes = () => s.evalJs(`(() => { window.__hostPushes = []; window.emerald.on((m) => { if (m.type === 'host.changed') window.__hostPushes.push(m); }); return true; })()`);
@@ -202,7 +224,7 @@ try {
     const head = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', 'stub', '&'];
     expect(JSON.stringify(argv.slice(0, head.length)) === JSON.stringify(head), `ssh's argv starts with the options, stub and &, got ${JSON.stringify(argv)}`);
     const [nodeWord, cliWord, relay, homeFlag, homeWord] = argv.slice(head.length);
-    expect(nodeWord.startsWith('"') && nodeWord.endsWith('node-24.20.0\\node.exe"'), `the node path in its quotes, one word: ${nodeWord}`);
+    expect(nodeWord.startsWith('"') && nodeWord.endsWith(`node-${kitNode}\\node.exe"`), `the node path in its quotes, one word: ${nodeWord}`);
     expect(cliWord.startsWith('"') && cliWord.endsWith('\\cli\\dist\\main.js"'), `the CLI path in its quotes, one word: ${cliWord}`);
     expect(relay === 'relay' && homeFlag === '--home' && homeWord === `"${R}"`, `relay --home "<R>", got ${JSON.stringify([relay, homeFlag, homeWord])}`);
     step(`fix 1081 (2): up on the stub's daemon pid ${firstPid}; ssh got the -o words, stub and the relay's quoted words intact`);
@@ -248,11 +270,11 @@ try {
     const newPid = again.daemon?.pid;
     expect(typeof newPid === 'number' && newPid !== firstPid, `a new daemon (${newPid} against ${firstPid})`);
     const line = powershell(`(Get-CimInstance Win32_Process -Filter "ProcessId = ${newPid}").CommandLine`);
-    expect(line.includes(`--home "${R}"`) && line.includes(`--pipe "${stubPipe}"`), `the WMI-started daemon carries --home and --pipe: ${line}`);
+    expect(line.includes(`--home "${R}"`) && line.includes(`--pipe "${stubPipe}"`) && line.includes('--ssh-connection "127.0.0.1 50022 127.0.0.1 22"'), `the WMI-started daemon carries --home, --pipe and --ssh-connection: ${line}`);
     const parent = powershell(`$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${newPid}"; (Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)").Name`);
     expect(parent.toLowerCase() === 'wmiprvse.exe', `its parent is WmiPrvSE.exe, got ${parent}`);
     await s.waitFor(`(async () => (await window.emerald.request('session.list', { removed: true })).sessions.find((x) => x.id === ${JSON.stringify(stubId)})?.state === 'exited')()`, 'the stub shell listed exited after the stop', 10_000);
-    step(`fix 1079 (6): the relay started the stub daemon again through WMI, pid ${newPid} under WmiPrvSE.exe with --home and --pipe`);
+    step(`fix 1079 (6): the relay started the stub daemon again through WMI, pid ${newPid} under WmiPrvSE.exe with --home, --pipe and --ssh-connection`);
 
     // 7. An unknown host key.
     setModes({ stub: 'hostkey' });
@@ -269,6 +291,19 @@ try {
     await s.evalJs(`window.emerald.hostConnect('stub')`);
     await waitPush(from, (m) => m.state === 'up', 'up after the refusal', 20_000);
     step('fix 1081 (8): connected again once the stub answers');
+
+    // 9. The relay's SSH_CONNECTION on a host session (M9 fix 1091). A shell,
+    // never kind Claude: the WMI-started stub daemon runs on the person's
+    // registry PATH, so a Claude there would be their own claude.exe. No
+    // pane; it exits at the end, so the later blocks meet no extra live
+    // stub session.
+    const { session: sshShell } = await s.evalJs(`window.emerald.request('session.spawn', ${JSON.stringify({ kind: 'shell', shell: 'powershell', cwd: H, cols: 80, rows: 24 })}, 'stub')`);
+    await sleep(1500);
+    await typeRaw(sshShell.id, 'echo "ssh=$env:SSH_CONNECTION"\r');
+    await screenHas(sshShell.id, 'ssh=127.0.0.1 50022 127.0.0.1 22', 'SSH_CONNECTION in a shell on the stub');
+    await typeRaw(sshShell.id, 'exit\r');
+    await s.waitFor(`(async () => (await window.emerald.request('session.list', { removed: true })).sessions.find((x) => x.id === ${JSON.stringify(sshShell.id)})?.state === 'exited')()`, 'the SSH_CONNECTION shell listed exited', 10_000);
+    step('fix 1091 (9): a shell on the relay-started daemon carries the relay\'s SSH_CONNECTION');
   });
 
   await block('store', async () => {
@@ -321,6 +356,44 @@ try {
   });
 
   await block('row', async () => {
+    // M9 fix 1094 (1): the stub daemon started again on stub-bin's claude.
+    // The WMI-started stub daemon runs on the person's registry PATH and
+    // would find their own claude.exe, so before anything picks kind
+    // Claude on stub the daemon is restarted from here on an environment
+    // of its own: stub-bin first on its PATH with every folder holding a
+    // claude.exe dropped, the stub home as its home, and
+    // EMERALD_SPAWN_PATH=inherit so no app hello brings the registry's
+    // PATH back.
+    const stubBin = path.join(H, 'stub-bin');
+    fs.mkdirSync(stubBin, { recursive: true });
+    fs.copyFileSync(path.join(scriptsDir, 'stub-claude.mjs'), path.join(stubBin, 'stub-claude.mjs'));
+    // npm's shim shape, which the daemon's resolveNpmShim reads as node on the script.
+    fs.writeFileSync(path.join(stubBin, 'claude.cmd'), '@node "%~dp0\\stub-claude.mjs" %*\r\n');
+    const authFile = path.join(stubBin, 'auth.json');
+    const claudeLog = path.join(stubBin, 'stub-claude.log');
+    const authReads = () => (fs.existsSync(claudeLog) ? fs.readFileSync(claudeLog, 'utf8').split('\n').filter((l) => l.trim() === '["auth","status","--json"]').length : 0);
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const dirs = (process.env[pathKey] ?? '').split(';').filter((d) => d !== '' && !fs.existsSync(path.join(d, 'claude.exe')));
+    const claudeEnv = { ...stubEnv, USERPROFILE: H, HOME: H, HOMEPATH: H, EMERALD_SPAWN_PATH: 'inherit', [pathKey]: [stubBin, ...dirs].join(';') };
+    let from1094 = await pushCount();
+    setModes({ stub: 'down' });
+    killStubSsh();
+    await waitPush(from1094, (m) => m.state === 'lost', 'lost before the stub daemon restart', 5000);
+    const before1094 = daemonRecord(R);
+    cli(stubEnv, 'daemon', 'stop');
+    killDaemonIfSame(before1094);
+    {
+      const r = cli(claudeEnv, 'daemon', 'start');
+      expect(r.code === 0, `the stub daemon started on stub-bin (${r.code}: ${r.out}${r.err})`);
+    }
+    setModes({});
+    from1094 = await pushCount();
+    await s.evalJs(`window.emerald.hostTryNow('stub')`);
+    const up1094 = await waitPush(from1094, (m) => m.state === 'up', 'up on the stub daemon started on stub-bin', 20_000);
+    const restarted1094 = daemonRecord(R);
+    expect(up1094.daemon?.claude === true && up1094.daemon.pid === restarted1094?.pid, `the hello finds a claude on the restarted daemon, got ${JSON.stringify(up1094.daemon)} against ${restarted1094?.pid}`);
+    step("fix 1094 (1): the stub daemon started again on stub-bin's claude, the hello finding it");
+
     // A new tab in front with a local shell, an empty pane split off it.
     const tabsBefore = (await getTabs(s)).tabs.length;
     await s.evalJs(`${q('.tab-add')}.click()`);
@@ -358,6 +431,60 @@ try {
     await s.key('ArrowLeft', 'ArrowLeft', 37);
     await s.waitFor(`${q(E + ' .empty-host[data-host=""]')}?.getAttribute('aria-pressed') === 'true'`, 'ArrowLeft back to This PC');
     step("fix 1087 (2): ArrowRight picked stub (Start ends on stub, the stub's home first), ArrowLeft This PC");
+
+    // M9 fix 1094 (2): kind Claude on stub reads the stub claude's sign-in.
+    // In brackets: a bare `a ?? null === 'x'` reads as `a ?? (null === 'x')`, true on any text.
+    const stubSub = `(${q(E + ' .empty-host[data-host="stub"] .empty-host-sub')}?.textContent ?? null)`;
+    fs.writeFileSync(authFile, JSON.stringify({ loggedIn: false, loginExpiresAt: null }));
+    await s.evalJs(`${q(E + ' .empty-host[data-host="stub"]')}.click()`);
+    await s.evalJs(`${q(E + ' .empty-kind[data-kind="claude"]')}.click()`);
+    await s.waitFor(`${stubSub} === 'not signed in on stub'`, 'kind Claude on stub reads not signed in on stub', 15_000);
+    await s.waitFor(
+      `${q(E + ' .empty-start')}?.disabled === false && (() => { const t = ${q(E + ' .empty-start-label')}?.textContent ?? ''; return t.startsWith('Start Claude') && t.endsWith(' on stub'); })()`,
+      'Start Claude ready on stub while signed out',
+      15_000,
+    );
+    expect(authReads() >= 1, `the stub claude was asked auth status --json, its log ${fs.existsSync(claudeLog) ? JSON.stringify(fs.readFileSync(claudeLog, 'utf8')) : 'missing'}`);
+    await s.evalJs(`${q(E + ' .empty-kind[data-kind="shell"]')}.click()`);
+    await s.waitFor(`${stubSub} === null`, 'no sign-in line under Shell', 5000);
+    step('fix 1094 (2): kind Claude on stub reads not signed in on stub, Start still ready, the line gone under Shell');
+
+    // M9 fix 1094 (3): an expired login, then a signed-in re-pick.
+    fs.writeFileSync(authFile, JSON.stringify({ loggedIn: true, loginExpiresAt: new Date(Date.now() - 86_400_000).toISOString() }));
+    await s.evalJs(`${q(E + ' .empty-kind[data-kind="claude"]')}.click()`);
+    await s.waitFor(`${stubSub} === 'login expired on stub'`, 'an expired login reads login expired on stub', 15_000);
+    fs.writeFileSync(authFile, JSON.stringify({ loggedIn: true, loginExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }));
+    await s.evalJs(`${q(E + ' .empty-host[data-host=""]')}.click()`);
+    await s.waitFor(`${q(E + ' .empty-host[data-host=""]')}?.getAttribute('aria-pressed') === 'true'`, 'This PC pressed');
+    await s.evalJs(`${q(E + ' .empty-host[data-host="stub"]')}.click()`);
+    await s.waitFor(`${stubSub} === null`, 'a signed-in re-pick clears the line', 15_000);
+    expect(authReads() >= 3, `three auth status reads at least, got ${authReads()}`);
+    step('fix 1094 (3): an expired login reads login expired on stub, and a signed-in re-pick clears the line');
+
+    // M9 fix 1095 (1): a lost stub holds Start and the folders wait.
+    await s.evalJs(`${q(E + ' .empty-kind[data-kind="shell"]')}.click()`);
+    let from1095 = await pushCount();
+    setModes({ stub: 'down' });
+    killStubSsh();
+    await waitPush(from1095, (m) => m.state === 'lost', 'lost before the held Start', 5000);
+    await s.waitFor(
+      `${stubSub} === 'unreachable' && ${q(E + ' .empty-start')}?.disabled === true && ${q(E + ' .empty-start')}?.dataset.dim === 'true' && ${q(E + ' .empty-in-wait')}?.textContent === 'The folders on stub show once it answers.'`,
+      'a lost stub reads unreachable, holds and dims Start, and the folders wait',
+      5000,
+    );
+    step('fix 1095 (1): a lost stub holds Start, dims it and the folders wait');
+
+    // M9 fix 1095 (2): a request naming the lost stub fails at the next try.
+    const lost1095 = await s.evalJs(
+      `(async () => { const t = Date.now(); try { await window.emerald.request('session.list', {}, 'stub'); return { ok: true, ms: Date.now() - t }; } catch (e) { return { ok: false, ms: Date.now() - t, message: String(e?.message ?? e) }; } })()`,
+    );
+    expect(lost1095.ok === false && lost1095.message.includes('stub is unreachable') && lost1095.ms < 5000, `a request on the lost stub failed unreachable within 5 s, got ${JSON.stringify(lost1095)}`);
+    setModes({});
+    from1095 = await pushCount();
+    await s.evalJs(`window.emerald.hostTryNow('stub')`);
+    await waitPush(from1095, (m) => m.state === 'up', 'up after the held Start', 20_000);
+    await s.waitFor(`${q(E + ' .empty-start')}?.disabled === false`, 'Start ready again on stub', 15_000);
+    step(`fix 1095 (2): a request naming the lost stub failed unreachable in ${lost1095.ms} ms and the line came back`);
 
     // 3. Start on the host.
     await s.evalJs(`${q(E + ' .empty-host[data-host="stub"]')}.click()`);
@@ -402,17 +529,9 @@ try {
       if (sshShell === null) await sleep(200);
     }
     expect(sshShell !== null, 'a local shell opened for the key');
-    const until6b = Date.now() + 10_000;
-    let typed = false;
-    let sshRows = [];
-    while (!typed && Date.now() < until6b) {
-      sshRows = (await zreq(s, 'pty.screen', { sessionId: sshShell.id })).rows;
-      // The pane is narrow by now (sixteen columns after the block's
-      // splits), so the command wraps: read the rows joined.
-      typed = sshRows.join('').replace(/\s+/g, ' ').includes('ssh stub2.invalid');
-      if (!typed) await sleep(250);
-    }
-    expect(typed, `the local shell ran ssh stub2.invalid, its screen ${JSON.stringify(sshRows.map((r) => r.trimEnd()).filter((r) => r !== '').slice(-6))}`);
+    // The pane is narrow by now (sixteen columns after the block's
+    // splits), so the command wraps: read the rows joined.
+    await screenJoinedHas(sshShell.id, 'ssh stub2.invalid', 'the local shell running ssh stub2.invalid', 10_000, { collapse: true });
     step('fix 1088 (6): Open a shell here ran ssh stub2.invalid in a local shell');
 
     // 7. A refused login.
@@ -526,13 +645,71 @@ try {
     await s.evalJs(`${q(P + ' button.host-lost-try')}.click()`);
     await s.waitFor(`!${q(P + ' div.host-lost-note')} && !document.querySelector('.sidebar-unreachable')`, 'the band and the count gone after Try now', 5000);
     step('fix 1090 (5): Try now brought the line back and the band and the count went');
+
+    // M9 fix 1096 (6): the stub group's menus offer only what works on the
+    // host. The group's key holds a NUL, so it is matched in script, never
+    // put in a selector.
+    const stubKey = `stub\u0000${stubCwd}`;
+    const groupPoint = (part) =>
+      s.evalJs(
+        `(() => { const g = [...document.querySelectorAll('section.sidebar-host[data-host="stub"] .sidebar-group')].find((x) => x.dataset.group === ${JSON.stringify(stubKey)}); const el = g?.querySelector(${JSON.stringify(part)}); if (!el) return null; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+      );
+    const plus = await groupPoint('.sidebar-group-add');
+    expect(plus !== null, `the stub group's + button, the key ${JSON.stringify(stubKey)}`);
+    await s.rightClick(plus.x, plus.y);
+    await s.waitFor(`document.querySelector('.group-menu')?.dataset.folder === ${JSON.stringify(stubCwd)}`, "the stub group's add menu");
+    const addItems = await s.evalJs(`[...document.querySelectorAll('.group-menu .menu-item .menu-label')].map((l) => l.textContent)`);
+    expect(JSON.stringify(addItems) === JSON.stringify(['New Claude session here']), `the stub group's add menu offers New Claude session here alone, got ${JSON.stringify(addItems)}`);
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.group-menu')`, 'the add menu closed');
+    const name = await groupPoint('.sidebar-group-name');
+    expect(name !== null, "the stub group's name");
+    await s.rightClick(name.x, name.y);
+    await s.waitFor(`document.querySelector('.group-heading-menu')?.dataset.group === ${JSON.stringify(stubKey)}`, "the stub group's heading menu");
+    const headItems = await s.evalJs(`[...document.querySelectorAll('.group-heading-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent ?? '', title: b.title }))`);
+    expect(
+      headItems.length === 4 && headItems[0].label === 'Copy path' && headItems[0].title === stubCwd && headItems[1].label.startsWith('Close all ') && headItems[2].label.startsWith('Kill all ') && headItems[3].label.endsWith(' and remove') && !headItems.some((i) => i.label === 'Reveal in Explorer'),
+      `the stub heading menu is Copy path on the bare folder and the three sweeps, no Reveal in Explorer, got ${JSON.stringify(headItems)}`,
+    );
+    await s.key('Escape', 'Escape', 27);
+    await s.waitFor(`!document.querySelector('.group-heading-menu')`, 'the heading menu closed');
+    step("fix 1096 (6): the stub group's + offers New Claude session here alone, and its heading copies the bare folder with no Reveal in Explorer");
+
+    // M9 fix 1097 (7): forgetting stub takes its sessions off the window.
+    const shellId = (await getTabs(s)).tabs.flatMap((t) => leaves(t)).find((p) => p.id === rowStubPane)?.sessionId ?? null;
+    expect(shellId !== null, 'the row block\'s stub pane holds its shell');
+    const stubIds = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.host === 'stub').map((x) => x.id);
+    expect(stubIds.includes(shellId), `the stub shell is listed before the forget, got ${JSON.stringify(stubIds)}`);
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    await s.waitFor(`${JSON.stringify(stubIds)}.every((id) => !document.querySelector('.sidebar-row[data-session-id=' + JSON.stringify(id) + ']'))`, 'every stub row off the sidebar after the forget', 5000);
+    const afterForget = (await zreq(s, 'session.list', {})).sessions.filter((x) => x.host === 'stub');
+    expect(afterForget.length === 0, `main lists no stub session after the forget, got ${JSON.stringify(afterForget.map((x) => x.id))}`);
+    await s.waitFor(`!!${q(paneSel(rowStubPane) + ' .pane-state[data-state="unknown"]')}`, 'the stub pane reads unknown', 5000);
+    step('fix 1097 (7): hostForget took every stub row off the sidebar, main lists none, and the stub pane reads unknown');
+
+    // M9 fix 1097 (8): a later contact lists the shell again and its pane
+    // is attached again.
+    const from1097 = await pushCount();
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    await waitPush(from1097, (m) => m.state === 'up', 'up after the forget', 20_000);
+    await s.waitFor(`!!document.querySelector('section.sidebar-host[data-host="stub"] .sidebar-row[data-session-id=' + ${JSON.stringify(JSON.stringify(shellId))} + ']')`, 'the stub shell listed again in the stub section', 10_000);
+    // The pane is a few columns wide by now, so the output wraps: the rows
+    // are read joined, and the typed command spells the word in two
+    // quoted halves so only the output holds it whole.
+    await typeRaw(shellId, "echo ('marks-'+'1097')\r");
+    await screenJoinedHas(shellId, 'marks-1097', 'marks-1097 on the stub shell');
+    await s.waitFor(`(() => { const t = ${q(paneSel(rowStubPane) + ' .term-host')}?.emeraldTerm; if (!t) return false; const b = t.buffer.active; let all = ''; for (let i = 0; i < b.length; i++) all += (b.getLine(i)?.translateToString(true) ?? ''); return all.includes('marks-1097'); })()`, 'the stub pane printed marks-1097', 10_000);
+    step('fix 1097 (8): a later contact listed the stub shell again and its pane, attached again, printed marks-1097');
   });
 
   await block('kit', async () => {
     // 1. The stub host as it was before any kit: no daemon, no folder.
     await s.evalJs(`window.emerald.hostForget('stub')`);
+    // The record read before the stop (M9 fix 1093): a stop on the stub pipe
+    // used to delete the kit daemon's record, so the kill read null.
+    const kitRec = daemonRecord(R);
     cli(stubEnv, 'daemon', 'stop');
-    killDaemonIfSame(daemonRecord(R));
+    killDaemonIfSame(kitRec);
     await sleep(500);
     fs.rmSync(R, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     // 2. The record with no kit.
@@ -546,9 +723,9 @@ try {
     fs.rmSync(kitStage, { recursive: true, force: true });
     fs.cpSync(stageDir, kitStage, { recursive: true });
     const nodeBase = path.join(emeraldHome, 'kit-node');
-    const zipName = `node-v24.20.0-win-${stubArch}.zip`;
-    const zipDir = path.join(nodeBase, 'v24.20.0');
-    const zipTop = path.join(emeraldHome, 'kit-zip', `node-v24.20.0-win-${stubArch}`);
+    const zipName = `node-v${kitNode}-win-${stubArch}.zip`;
+    const zipDir = path.join(nodeBase, `v${kitNode}`);
+    const zipTop = path.join(emeraldHome, 'kit-zip', `node-v${kitNode}-win-${stubArch}`);
     fs.rmSync(path.dirname(zipTop), { recursive: true, force: true });
     fs.mkdirSync(zipTop, { recursive: true });
     fs.mkdirSync(zipDir, { recursive: true });
@@ -602,8 +779,8 @@ try {
     // 5. Done.
     await s.waitFor(`!${q(K + ' .empty-in-wait')}`, 'the folders once the kit answers', 120_000);
     const rec = (await zreq(s, 'hosts.list', {})).hosts.find((x) => x.name === 'stub');
-    expect(rec?.kitVersion === appVersion && rec.nodeVersion === '24.20.0', `the record carries the kit, got ${JSON.stringify(rec)}`);
-    expect(fs.existsSync(path.join(R, appVersion, 'cli', 'dist', 'main.js')) && fs.existsSync(path.join(R, 'node-24.20.0', 'node.exe')), 'the kit and its Node unpacked under R');
+    expect(rec?.kitVersion === appVersion && rec.nodeVersion === kitNode, `the record carries the kit, got ${JSON.stringify(rec)}`);
+    expect(fs.existsSync(path.join(R, appVersion, 'cli', 'dist', 'main.js')) && fs.existsSync(path.join(R, `node-${kitNode}`, 'node.exe')), 'the kit and its Node unpacked under R');
     const tgzLeft = [];
     const walk = (d) => {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -634,8 +811,8 @@ try {
       .map((l) => JSON.parse(l.slice(l.indexOf(' ') + 1)))
       .filter((a) => a.includes('relay'))
       .pop() ?? [];
-    const kitNode = (kitArgv.find((w) => w.endsWith('node.exe"')) ?? '').replace(/"/g, '');
-    expect(kitNode !== '' && fs.existsSync(kitNode), `the relay ran the kit's own node, ${kitNode}`);
+    const kitNodePath = (kitArgv.find((w) => w.endsWith('node.exe"')) ?? '').replace(/"/g, '');
+    expect(kitNodePath !== '' && fs.existsSync(kitNodePath), `the relay ran the kit's own node, ${kitNodePath}`);
     step("fix 1083 (6): a shell through the kit's own node, relay and daemon read back kit-1083");
 
     // 7. A Linux host.
@@ -659,6 +836,92 @@ try {
     step('fix 1084 (7): a Linux host is refused with no button');
   });
 
+  await block('clip', async () => {
+    // M9 fix 1091: OSC 52 and OSC 8 in a pane's terminal. A local shell in a
+    // tab of its own (never kind Claude on stub: the kit's WMI-started daemon
+    // runs on the person's registry environment), so nothing remote is read.
+    const tabsBefore = (await getTabs(s)).tabs.length;
+    await s.evalJs(`${q('.tab-add')}.click()`);
+    await s.waitFor(`(async () => (await window.emerald.request('layout.get', {})).layout.tabs.length === ${tabsBefore + 1})()`, 'a new tab for the clip block');
+    let layout = await getTabs(s);
+    const first = leaves(layout.tabs.find((t) => t.id === layout.currentTabId))[0];
+    const { session: clipShell } = await zreq(s, 'session.spawn', { kind: 'shell', shell: 'powershell', cwd: os.homedir(), cols: 80, rows: 24 });
+    layout = await getTabs(s);
+    await zreq(s, 'layout.set', { layout: { ...layout, tabs: layout.tabs.map((t) => (t.id === layout.currentTabId ? { ...t, root: { ...first, sessionId: clipShell.id } } : t)) } });
+    const clipPane = first.id;
+    const clipHost = paneSel(clipPane) + ' .term-host';
+    await s.waitFor(`!!${q(clipHost)}?.emeraldTerm`, 'the clip shell in its tab');
+    const keptClipboard = await s.evalJs(`window.emerald.clipboard.read().then((r) => r.text)`);
+    await s.evalJs(`window.emerald.clipboard.write('before-1091')`);
+
+    // 2. The fixture: an OSC 8 link wrapped over two rows by the program's
+    // own line break, then an OSC 52 write. ASCII only, since PowerShell 5.1
+    // reads a BOM-less file as ANSI; the discard port refuses at once.
+    const url = 'http://127.0.0.1:9/login-1091?state=' + 'x'.repeat(60);
+    const fixture = path.join(emeraldHome, 'osc-1091.ps1');
+    fs.writeFileSync(
+      fixture,
+      [
+        '$e = [char]27; $b = [char]7',
+        "$u = 'http://127.0.0.1:9/login-1091?state=' + ('x' * 60)",
+        '[Console]::Write("$e]8;;$u$e\\" + $u.Substring(0, 40) + "`r`n" + $u.Substring(40) + "$e]8;;$e\\`r`n")',
+        "[Console]::Write(\"$e]52;c;\" + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('clip-1091 ' + [char]0xE9)) + \"$b\")",
+        "Write-Output 'osc-1091 done'",
+      ].join('\r\n') + '\r\n',
+      'ascii',
+    );
+    await sleep(1500);
+    await typeRaw(clipShell.id, `& '${fixture}'\r`);
+    const printed = async () => (await termText(clipPane)).includes('osc-1091 done');
+    const until = Date.now() + 15_000;
+    while (!(await printed()) && Date.now() < until) await sleep(250);
+    expect(await printed(), `the fixture ran in the clip shell: ${JSON.stringify((await termText(clipPane)).filter((l) => l !== '').slice(-6))}`);
+
+    // 3. The copy.
+    await s.waitFor(`window.emerald.clipboard.read().then((r) => r.text === 'clip-1091 é')`, 'the OSC 52 write on the held clipboard', 5000);
+    await s.waitFor(`document.querySelector('.corner-note')?.textContent === 'Copied 11 characters'`, 'the copied note', 5000);
+    step('fix 1091 (1): a shell\'s OSC 52 write landed on the window\'s clipboard with the copied note');
+
+    // 4. The link: the middle of the second row, which holds only the
+    // URL's tail, so no web-links regex finds a URL there and only the OSC 8
+    // link (the whole URI) can answer the hover.
+    const tail = url.slice(40);
+    const tailCell = await s.evalJs(
+      `(() => { const host = document.querySelector(${JSON.stringify(clipHost)}); const t = host?.emeraldTerm; if (!t) return null; const b = t.buffer.active; for (let i = 0; i < b.length; i++) { const text = b.getLine(i)?.translateToString(true) ?? ''; if (text.trim() === ${JSON.stringify(tail)}) { const at = text.indexOf(${JSON.stringify(tail)}); const cell = t._core._renderService.dimensions.css.cell; const r = host.querySelector('.xterm-screen').getBoundingClientRect(); return { x: r.left + (at + ${Math.floor(tail.length / 2)}) * cell.width, y: r.top + (i - b.viewportY) * cell.height + cell.height / 2 }; } } return null; })()`,
+    );
+    expect(tailCell !== null, `the URL's second row on the clip pane: ${JSON.stringify((await termText(clipPane)).filter((l) => l !== '').slice(-6))}`);
+    const screenEvent = (type, at, extra = '') =>
+      s.evalJs(`document.querySelector(${JSON.stringify(clipHost + ' .xterm-screen')}).dispatchEvent(new MouseEvent(${JSON.stringify(type)}, { clientX: ${at.x}, clientY: ${at.y}, bubbles: true, cancelable: true, button: 0 ${extra} }))`);
+    await screenEvent('mousemove', tailCell);
+    await s.waitFor(`${q(clipHost)}?.dataset.link === ${JSON.stringify(url)} && ${q(clipHost)}?.title === ${JSON.stringify(`Ctrl+click opens ${url} in a pane beside`)}`, 'the whole URL and its tooltip on the host from the second row', 5000);
+    await screenEvent('mousedown', tailCell, ', ctrlKey: true');
+    await screenEvent('mouseup', tailCell, ', ctrlKey: true');
+    const browserLeaf = async () => {
+      const l = await getTabs(s);
+      return leaves(l.tabs.find((t) => t.id === l.currentTabId)).find((p) => p.view?.kind === 'browser' && p.view.url === url) ?? null;
+    };
+    const opened = Date.now() + 5000;
+    while ((await browserLeaf()) === null && Date.now() < opened) await sleep(150);
+    const leaf = await browserLeaf();
+    expect(leaf !== null && JSON.stringify(leaf.view) === JSON.stringify({ kind: 'browser', url }), `the Ctrl+click opened a browser pane on the whole URL, got ${JSON.stringify(leaf?.view ?? null)}`);
+    await s.evalJs(`${q(paneSel(leaf.id) + ' .pane-hide')}.click()`);
+    await s.waitFor(`!${q(paneSel(leaf.id))}`, 'the browser pane closed');
+    step('fix 1091 (2): an OSC 8 link wrapped over two rows opened whole by a Ctrl+click on its second row, in a browser pane beside');
+
+    // 5. The replay: a reload replays the ring's raw bytes, OSC 52 and all,
+    // which must copy nothing.
+    await s.evalJs(`window.emerald.clipboard.write('after-1091')`);
+    await s.send('Page.reload');
+    await s.waitFor(`(() => { const t = ${q(clipHost)}?.emeraldTerm; if (!t) return false; const b = t.buffer.active; for (let i = 0; i < b.length; i++) if ((b.getLine(i)?.translateToString(true) ?? '').trimEnd() === 'osc-1091 done') return true; return false; })()`, 'the clip pane replayed osc-1091 done after the reload', 15_000);
+    await sleep(1500);
+    const afterReload = await s.evalJs(`window.emerald.clipboard.read().then((r) => r.text)`);
+    expect(afterReload === 'after-1091', `a reload's replay copied nothing, the clipboard holds ${JSON.stringify(afterReload)}`);
+    step('fix 1091 (3): a reload\'s replay of the OSC 52 copied nothing');
+
+    // 6. The kept clipboard text back.
+    await s.evalJs(`window.emerald.clipboard.write(${JSON.stringify(keptClipboard ?? '')})`);
+  });
+
   step(`PASS (${blocksRun()})`);
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -672,9 +935,11 @@ try {
   stopDaemon();
   // The stub host's daemon: the CLI's stop, then whichever daemon last
   // wrote R's daemon.json (the WMI-started one, the kit's), by its start
-  // time as well as its pid.
+  // time as well as its pid, read before the stop, which on the stub pipe
+  // used to delete the kit daemon's record (M9 fix 1093).
+  const lastRec = daemonRecord(R);
   cli(stubEnv, 'daemon', 'stop');
-  killDaemonIfSame(daemonRecord(R));
+  killDaemonIfSame(lastRec);
   killUnderStubHome();
   setTimeout(() => process.exit(), 500);
 }

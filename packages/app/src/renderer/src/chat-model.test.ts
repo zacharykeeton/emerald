@@ -6,7 +6,8 @@ import { ARGUMENT_COMMANDS, EFFORT_LEVELS, IMAGE_PASTE_KEY, MENTION_ROWS, MODEL_
 import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
-import { rcOf, rcUrlOf } from './chat-model.ts';
+import { freshPaste, pasteChipLabel, pastedMarkers, pastesOnly, promptRowPastes } from './chat-model.ts';
+import { rcOf, rcUrlOf, sideCloseSends } from './chat-model.ts';
 
 test('chatPanes: the pairs round trip, and a corrupt entry reads as nothing', () => {
   const panes = new Map([
@@ -545,22 +546,23 @@ test('stepModeTo: polls every MODE_POLL_MS after a press and stops at the first 
 });
 
 // M9 fix 744: the model chip's menu and the effort it shows after a pick.
-test('MODEL_CHOICES: the aliases in order, each one /model takes on Claude Code 2.1.301', () => {
-  assert.deepEqual(MODEL_CHOICES.map((c) => c.alias), ['default', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'fable', 'fable[1m]', 'opusplan']);
-  // The bundle's own list beside `/model`'s usage line, at 2.1.301.
+test('MODEL_CHOICES: the aliases in order, each one /model takes on Claude Code 2.1.319, and no [1m] row (M9 fix 1100)', () => {
+  assert.deepEqual(MODEL_CHOICES.map((c) => c.alias), ['default', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan']);
+  // The bundle's own list beside `/model`'s usage line, at 2.1.319 (the same as 2.1.301's).
   const t4 = ['sonnet', 'opus', 'haiku', 'fable', 'best', 'sonnet[1m]', 'opus[1m]', 'fable[1m]', 'opusplan'];
   for (const c of MODEL_CHOICES) if (c.alias !== 'default') assert.ok(t4.includes(c.alias), c.alias);
+  assert.ok(MODEL_CHOICES.every((c) => !c.alias.endsWith('[1m]') && !c.name.includes('(1M context)')), 'no [1m] row');
   assert.deepEqual([...EFFORT_LEVELS], ['low', 'medium', 'high', 'xhigh', 'max']);
 });
 
 // M9 fix 786: the model menu ticks the session's model, or shows it first.
 test('modelItems: a listed name ticks its row; an unlisted one comes first, ticked, as Current model', () => {
   const listed = modelItems('Sonnet 5.5', MODEL_CHOICES);
-  assert.equal(listed.length, 9);
+  assert.equal(listed.length, 6);
   assert.deepEqual(listed.filter((r) => r.checked).map((r) => r.name), ['Sonnet 5.5']);
   assert.ok(listed.every((r) => typeof r.alias === 'string'));
   const unlisted = modelItems('Opus 9.9', MODEL_CHOICES);
-  assert.equal(unlisted.length, 10);
+  assert.equal(unlisted.length, 7);
   assert.deepEqual(unlisted[0], { alias: null, name: 'Opus 9.9', line: 'Current model', checked: true });
   assert.ok(unlisted.slice(1).every((r) => !r.checked));
   assert.deepEqual(unlisted.slice(1).map((r) => r.name), MODEL_CHOICES.map((c) => c.name));
@@ -568,8 +570,11 @@ test('modelItems: a listed name ticks its row; an unlisted one comes first, tick
   const newer = modelItems('Opus 5.6', MODEL_CHOICES);
   assert.equal(newer[0]!.name, 'Opus 5.6');
   assert.equal(newer.find((r) => r.name === 'Opus 5.5')!.checked, false);
+  const fable = modelItems('Fable 5.1', MODEL_CHOICES);
+  assert.equal(fable.length, 6);
+  assert.deepEqual(fable.filter((r) => r.checked).map((r) => r.name), ['Fable 5.1']);
   const none = modelItems(null, MODEL_CHOICES);
-  assert.equal(none.length, 9);
+  assert.equal(none.length, 6);
   assert.ok(none.every((r) => !r.checked));
 });
 
@@ -927,4 +932,49 @@ test('imageOnlyPrompt: markers alone with images are bare, typed words or no ima
   assert.equal(imageOnlyPrompt('[Image #1] look', [{}]), false);
   assert.equal(imageOnlyPrompt('[Image #1]', []), false);
   assert.equal(imageOnlyPrompt('', []), false);
+});
+
+test('sideCloseSends: the Escape when the panel is drawn, or never read on a session not working (M9 fix 1134)', () => {
+  assert.equal(sideCloseSends(true, true, true), true);
+  assert.equal(sideCloseSends(true, false, false), true);
+  assert.equal(sideCloseSends(false, false, false), true);
+  assert.equal(sideCloseSends(false, true, false), false);
+  assert.equal(sideCloseSends(false, false, true), false);
+});
+
+test('pastedMarkers, freshPaste, pasteChipLabel and pastesOnly: Claude Code\'s pasted text markers on the prompt row (M9 fix 1136)', () => {
+  const rule = '─'.repeat(40);
+  const at = (input: string, ...under: string[]) => [rule, input, rule, ...under];
+  assert.deepEqual(pastedMarkers(['❯ [Pasted text #3 +23 lines] and [Pasted text #4] then [...Truncated text #5 +40 lines...] [Image #6]']), [
+    { n: 3, lines: 23, truncated: false },
+    { n: 4, lines: null, truncated: false },
+    { n: 5, lines: 40, truncated: true },
+  ]);
+  assert.deepEqual(promptRowPastes(['[Pasted text #1 +9 lines]', ...at('❯ ')]), [], 'a marker in the scrollback is not the prompt row\'s');
+  const rows = at('❯ [Pasted text #3 +23 lines] [Pasted text #4]');
+  assert.equal(freshPaste(rows, new Set([3]))?.n, 4);
+  assert.equal(freshPaste(rows, new Set([3, 4])), null);
+  assert.equal(pasteChipLabel({ n: 3, lines: 23, truncated: false }), 'Pasted text #3 · 23 lines');
+  assert.equal(pasteChipLabel({ n: 4, lines: null, truncated: false }), 'Pasted text #4');
+  assert.equal(pasteChipLabel({ n: 5, lines: 40, truncated: true }), 'Truncated text #5 · 40 lines');
+  assert.equal(pasteChipLabel({ n: 7, lines: 1, truncated: false }), 'Pasted text #7 · 1 line');
+  assert.deepEqual(pastesOnly(at('❯ [Pasted text #3 +23 lines]')), [{ n: 3, lines: 23, truncated: false }]);
+  assert.equal(pastesOnly(at('❯ [Pasted text #3 +23 lines] [Pasted text #4 +9 lines]'))?.length, 2);
+  assert.equal(pastesOnly(at('❯ fix [Pasted text #3 +23 lines]')), null);
+  assert.equal(pastesOnly(at('❯ [Image #1] [Pasted text #2]')), null);
+  assert.equal(pastesOnly(at('❯ ')), null);
+  assert.equal(pastesOnly([rule, '❯ [Pasted text #3 +23 lines]', '  second row', rule]), null);
+  assert.deepEqual(carryRead({ rows: at('❯ [...Truncated text #2 +40 lines...]'), cursor: { x: 2, y: 1 } }), { kind: 'blocked' });
+  assert.deepEqual(carryRead({ rows: at('❯ [✦ Team setup guide #1 +5 lines]'), cursor: { x: 2, y: 1 } }), { kind: 'blocked' });
+});
+
+test('a send after a pasted chip is matched by its words at the end of the landed prompt (M9 fix 1136)', () => {
+  const landed = promptTurn('\n\nline 1\nline 2\n\n\nReply with ok.');
+  const item = pendingItem(1, 'Reply with ok.', 0, [], new Map(), true);
+  assert.deepEqual(pendingAfter([item], landedCounts([landed], [])), [], 'the landed line ends with the words');
+  assert.deepEqual(pendingAfter([item], landedCounts([promptTurn('something else')], [])), [item]);
+  const plain = pendingItem(2, 'Reply with ok.', 0, [], new Map());
+  assert.deepEqual(pendingAfter([plain], landedCounts([landed], [])), [plain], 'a send with no pasted chip still matches on the whole key');
+  const before = pendingItem(3, 'Reply with ok.', 0, [], landedCounts([landed], []), true);
+  assert.deepEqual(pendingAfter([before], landedCounts([landed], [])), [before], 'an earlier landed line does not match a later send');
 });
