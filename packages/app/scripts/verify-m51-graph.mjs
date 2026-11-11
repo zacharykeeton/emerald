@@ -67,6 +67,7 @@ const BLOCKS = [
   { name: 'fix-353', fixes: ['fix-353'], needs: [] },
   { name: 'fix-869', fixes: ['fix-869', 'fix-868', 'fix-905', 'fix-906', 'fix-907'], needs: [] },
   { name: 'fix-944', fixes: ['fix-944', 'fix-945', 'fix-946'], needs: [] },
+  { name: 'fix-1155', fixes: ['fix-1155'], needs: [] },
 ];
 const { block, blocksRun, partial, flags } = blockRunner(BLOCKS);
 
@@ -938,11 +939,10 @@ try {
   await s.waitFor(`document.querySelector(${JSON.stringify(rowSel + ' .commits-pill')})?.dataset.pending !== undefined`, 'the row becomes a commit-less worktree', 8000);
   ag = await agentProbe();
   const aRow = await s.evalJs(`[...document.querySelectorAll('.commits-graph-rows .commits-row')].findIndex(r => r.dataset.hash === ${JSON.stringify(A)})`);
-  // M9 fix 944: A is older than the worker's head, so the row stays in the
-  // members' block above the worker's own row (the seats stack above
-  // main's row), its fork running down to A's row; it used to move right
-  // above A.
-  expect(ag.lane === '2' && ag.row === 2 && ag.below === `own:${worker.id}` && aRow > ag.row, `the row keeps its lane in the worker's block and stays above the worker's own row (${JSON.stringify([ag.lane, ag.row, ag.below, aRow])})`);
+  // M9 fix 1155: the row sits right above A, the commit its branch is on,
+  // its fork one row down to it (fix 944 kept it above the worker's own
+  // row, in the members' block there).
+  expect(ag.lane === '2' && ag.row === aRow - 1 && ag.below === A, `the row keeps its lane in the worker's block and sits right above A (${JSON.stringify([ag.lane, ag.row, ag.below, aRow])})`);
   expect(ag.pill === 'agent' && ag.pillDashed === 'dashed', `the branch as a dashed pill at the right (${ag.pill}, ${ag.pillDashed})`);
   // M68: the dashed pill is the agent row's alone; a pill on a commit
   // row is solid whoever is on the branch (the open pill here, and the
@@ -1277,11 +1277,10 @@ try {
   // K1's parent MA is grey and on the merger's ancestry (MK sits on
   // it), so the member's lane also curves into the merger's line at
   // MA's row (M9 fix 145).
-  // M9 fix 944: the member's head K1 is under MK, the merger's head, so
-  // its row is lifted above the merger's own row (the seats stack above
-  // main's row, a merged one too) and its stretch runs down from there.
+  // M9 fix 1155: the member's row sits right above its head K1, under MK
+  // (fix 944 lifted it above the merger's own row).
   const mgRows = await s.evalJs(`(() => { const rows = [...document.querySelectorAll('.commits-graph-rows .commits-row')]; return { member: rows.indexOf(document.querySelector('.commits-agent-row[data-member="mg1"]')), own: rows.indexOf(document.querySelector(${JSON.stringify(ownRowSel(merger.id))})) }; })()`);
-  expect(mgRows.member !== -1 && mgRows.member < mgRows.own, `the merged member's row above the merger's own (${JSON.stringify(mgRows)})`);
+  expect(mgRows.member === +merged.k1Row - 1, `the merged member's row right above K1 (${JSON.stringify([mgRows, merged.k1Row])})`);
   // M9 fix 946: the merge line comes up the member's lane past the rows of
   // that stretch, so the member's star sits on a side lane right after its
   // lane, its stretch a dashed fork down it bending into K1.
@@ -1468,6 +1467,11 @@ try {
   // after M71's columns opened no card on about a third of quiet runs,
   // with fix 997's harness and without it alike, and a second hover
   // opened it in about 430 ms every time (measured at fix 997's close-out).
+  // M9 fix 1154's probe met no miss in ten runs (thirty first hovers,
+  // under load) on the build before its move arm, so the second try
+  // stays until a miss is seen and read; the anchor now also arms its
+  // card on the pointer's move, which covers an enter lost under a
+  // still pointer by construction.
   const layoutOn = async (want) => {
     for (let attempt = 0; ; attempt += 1) {
       await away();
@@ -4811,15 +4815,12 @@ try {
     // Proposed.dc.html), each a member row, `lead`, or a commit and the
     // line its board colour lane names: `lead`, `a`, `b` or `c` for the
     // lead's and the seats' lines, `o` for a commit nobody here made.
-    // From F07, the first stage where main has moved past every seat's
-    // head, the seats stack above the lead's row (the user's amendment to
-    // rule 2 of 2026-10-20, backlog entry "A batch's seats always stack
-    // above main's row", option (a): a merged seat still there too), in
-    // the order they started.
+    // Each seat's row sits right above its branch's head at every stage
+    // (M9 fix 1155, the user's pick at the plan of fixes 1139 to 1157,
+    // superseding fix 944's lift of the seats above the lead's row from
+    // F07 on).
     const old = ['D0:o', 'Z2:o', 'Z1:o'];
     const seatsDone = ['seat-b', 'B2:b', 'seat-a', 'A2:a', 'seat-c', 'C1:c', 'B1:b', 'A1:a'];
-    const seatsAbove = ['seat-a', 'seat-b', 'seat-c'];
-    const seatWork = ['B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a'];
     const merged = ['MC:lead', 'MB:lead', 'MA:lead', 'X1:o'];
     const board = {
       1: ['lead', ...old],
@@ -4828,10 +4829,10 @@ try {
       4: ['seat-a', 'A2:a', 'seat-c', 'C1:c', 'seat-b', 'B1:b', 'A1:a', 'lead', 'P:lead', ...old],
       5: [...seatsDone, 'lead', 'P:lead', ...old],
       6: [...seatsDone, 'lead', 'P:lead', ...old],
-      7: [...seatsAbove, 'lead', 'X1:o', ...seatWork, 'P:lead', ...old],
-      8: [...seatsAbove, 'lead', 'MA:lead', 'X1:o', ...seatWork, 'P:lead', ...old],
-      9: [...seatsAbove, 'lead', ...merged, ...seatWork, 'P:lead', ...old],
-      10: [...seatsAbove, 'lead', 'D1:lead', ...merged, ...seatWork, 'P:lead', ...old],
+      7: ['lead', 'X1:o', ...seatsDone, 'P:lead', ...old],
+      8: ['lead', 'MA:lead', 'X1:o', ...seatsDone, 'P:lead', ...old],
+      9: ['lead', ...merged, ...seatsDone, 'P:lead', ...old],
+      10: ['lead', 'D1:lead', ...merged, ...seatsDone, 'P:lead', ...old],
       11: ['lead', 'D1:lead', ...merged, 'B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a', 'P:lead', ...old],
       12: ['lead', 'X2:o', 'D1:lead', ...merged, 'B2:b', 'A2:a', 'C1:c', 'B1:b', 'A1:a', 'P:lead', ...old],
     };
@@ -4862,7 +4863,7 @@ try {
         expect(off.length === 0, `F${n}: every commit on the line the board names (off: ${off.join(', ')}; ${JSON.stringify(linesOf(read))} ${read.rows.map((r) => `${r.id}@${r.lane}`).join(' ')})`);
         const lines = linesOf(read);
         const strayStars = ['a', 'b', 'c'].filter((x) => read.rows.some((r) => r.id === `seat-${x}`) && read.rows.find((r) => r.id === `seat-${x}`).lane !== lines[x]);
-        expect(strayStars.length === 0, `F${n}: every seat's star on its own line, lifted or not (off: ${strayStars.join(', ')})`);
+        expect(strayStars.length === 0, `F${n}: every seat's star on its own line (off: ${strayStars.join(', ')})`);
         if (n === 2) expect(read.columns === '1', `F2: one column under active, the grey block drawing nothing (${read.columns})`);
         if (n >= 3) expect(read.columns === '4', `F${n}: four columns, the lead's line and three seats' (${read.columns})`);
       } else {
@@ -4995,16 +4996,17 @@ try {
     await stage(6, 'seats-done', 'The three seats report and stop; their worktrees and branches are still there.', null, 'P');
     const X1 = named('X1', commitIn(gitBt, btRepo, 'X1', 'backlog: an entry from another session'));
     await stage(7, 'commit-on-main-from-elsewhere', "Another session (or the person, by hand) commits X1 on main; main's head moves past where the lead last saw it.", X1, 'X1');
-    // M9 fix 991: the list lifts the seats above the lead's row as Graph
-    // does. Not pushed to `reads`, so frames.json and the later frames'
-    // row totals do not change.
+    // M9 fix 1155: the list puts each seat's row right above its newest own
+    // commit, the lead's over X1 (fix 991 lifted the seats above the lead's
+    // row as Graph did). Not pushed to `reads`, so frames.json and the
+    // later frames' row totals do not change.
     await s.evalJs(`document.querySelector('.files-rail .commits-switch [data-view="list"]').click()`);
     await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.view === 'list' && document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, 'the list, ready', 10000);
     const listRead = await readRail();
-    expect(ids(listRead).slice(0, 5).join(' ') === 'seat-a seat-b seat-c lead X1', `F7 in the list: the seats stack above the lead's row as in Graph (M9 fix 991) (${ids(listRead).join(' ')})`);
+    expect(ids(listRead).slice(0, 8).join(' ') === 'lead X1 B2 seat-a A2 seat-c C1 seat-b', `F7 in the list: each seat right above its newest own commit, the lead's row over X1 (M9 fix 1155) (${ids(listRead).join(' ')})`);
     await s.evalJs(`document.querySelector('.files-rail .commits-switch [data-view="graph"]').click()`);
     await s.waitFor(`document.querySelector(${JSON.stringify(btPanel)})?.dataset.view === 'graph' && document.querySelector(${JSON.stringify(btPanel)})?.dataset.graph === 'ready'`, 'Graph again', 10000);
-    step("M9 fix 991: the list stacks a batch's seats above the lead's row as Graph does, the write graph lifting none");
+    step("M9 fix 1155: the list puts each seat's row right above its newest own commit, with no stretch");
     // M9 fix 992: a hover on X1's square opens the lead's card, which names
     // the square and its author. Two tries, the fix 175 pattern.
     const squareSel = `.lane-popover[data-session-id=${JSON.stringify(lead.id)}] .lane-card-squares`;
@@ -5065,6 +5067,140 @@ try {
     await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]')?.click()`);
     await s.evalJs(`localStorage.removeItem('emerald.files')`);
     await removeSession(lead.id);
+  });
+
+  await block('fix-1155', async () => {
+    // M9 fix 1155: a session's row and a subagent's sit directly above the
+    // commit each is on, and one whose commit is past the log's window sits
+    // at the bottom under the last commit with a bare stub. A repository of
+    // the block's own, 210 commits on main (the log reads 200,
+    // GRAPH_ENTRIES), a lead on main's head, a subagent `near` in a
+    // worktree on a branch at main~3, a subagent `far` in one on a branch
+    // at the root commit, past the window, and a session `detached` in a
+    // detached worktree at the root.
+    const rwShort = path.join(os.tmpdir(), 'emerald-verify', `m51-rows-${process.pid}`);
+    fs.rmSync(rwShort, { recursive: true, force: true });
+    fs.mkdirSync(rwShort, { recursive: true });
+    const rwRepo = fs.realpathSync.native(rwShort);
+    fixDirs.push(rwRepo);
+    const gitRw = gitIn(rwRepo);
+    gitRw('init', '-q', '-b', 'main');
+    gitRw('config', 'user.name', 'verify');
+    gitRw('config', 'user.email', 'verify@example.invalid');
+    gitRw('config', 'commit.gpgsign', 'false');
+    let rwStream = '';
+    for (let i = 0; i < 210; i += 1) {
+      const msg = `r${i}\n`;
+      rwStream += `commit refs/heads/main\ncommitter verify <verify@example.invalid> ${1600000000 + i} +0000\ndata ${Buffer.byteLength(msg)}\n${msg}M 644 inline r.txt\ndata ${Buffer.byteLength(msg)}\n${msg}\n`;
+    }
+    execFileSync('git', ['fast-import', '--quiet'], { cwd: rwRepo, input: rwStream, stdio: ['pipe', 'pipe', 'pipe'] });
+    gitRw('reset', '-q', '--hard', 'main');
+    const rwHead = gitRw('rev-parse', 'main').trim();
+    const rwNear = gitRw('rev-parse', 'main~3').trim();
+    const rwRoot = gitRw('rev-list', '--max-parents=0', 'main').trim();
+    const rwWts = {};
+    for (const [key, args] of [['near', ['-b', 'm9-seat-near']], ['far', ['-b', 'm9-seat-far']], ['detached', ['--detach']]]) {
+      const short = path.join(os.tmpdir(), 'emerald-verify', `m51-rows-${key}-${process.pid}`);
+      fs.rmSync(short, { recursive: true, force: true });
+      gitRw('worktree', 'add', '-q', ...args, short, key === 'near' ? 'main~3' : rwRoot);
+      rwWts[key] = fs.realpathSync.native(short);
+      fixDirs.push(rwWts[key]);
+    }
+    const rwLead = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: rwRepo, name: 'Rows lead', cols: 100, rows: 24 })).session;
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return r.sessions.find(x => x.id === ${JSON.stringify(rwLead.id)})?.branch === 'main'; })()`, 'the daemon reads the rows lead on main', 8000);
+    await post(rwLead.id, { cwd: rwRepo, hook_event_name: 'SessionStart', source: 'startup' });
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const x = r.sessions.find(x => x.id === ${JSON.stringify(rwLead.id)}); return x?.startHead !== null && x?.claudeSessionId !== null; })()`, 'the rows lead knows its start commit and its conversation', 8000);
+    await s.evalJs(`localStorage.setItem('emerald.files', JSON.stringify({ collapsed: false, width: 560 }))`);
+    await s.send('Page.reload');
+    await s.waitFor(`!!document.querySelector('.app-body') && Math.abs((document.querySelector('.files-rail')?.getBoundingClientRect().width ?? 0) - 560) < 3`, 'the app back with the rail at 560px', 20000);
+    await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(rwLead.id)}]`)})`, "the rows lead's sidebar row", 10000);
+    await s.evalJs(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(rwLead.id)}]').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`);
+    await s.evalJs(`document.querySelector('.files-rail .rail-tab[data-tab="timeline"]')?.click()`);
+    const rwPanel = '.files-rail .commits-panel';
+    await s.waitFor(`document.querySelector(${JSON.stringify(rwPanel)})?.dataset.folder === ${JSON.stringify(rwRepo)} && document.querySelector(${JSON.stringify(rwPanel)})?.dataset.graph === 'ready'`, "the rail follows the rows lead to its repository", 15000);
+    if (await s.evalJs(`document.querySelector(${JSON.stringify(rwPanel)}).dataset.rows !== 'on'`)) {
+      await s.evalJs(`document.querySelector('.files-rail .commits-panel .commits-rows')?.click()`);
+      await s.waitFor(`document.querySelector(${JSON.stringify(rwPanel)})?.dataset.rows === 'on'`, 'the rows on', 5000);
+    }
+    if (await s.evalJs(`!!document.querySelector('.files-rail .commits-draw [data-draw="some"]')`)) await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="some"]').click()`);
+    await s.waitFor(`!!document.querySelector('.files-rail .commits-draw [data-draw="active"]')`, 'the draw chips', 5000);
+    await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="active"]').click()`);
+    await s.waitFor(`document.querySelector(${JSON.stringify(rwPanel)})?.dataset.draw === 'active'`, 'the graph draws the active blocks alone', 5000);
+    await s.waitFor(`!!document.querySelector(${JSON.stringify(ownRowSel(rwLead.id))})`, "the rows lead's own row", 10000);
+    for (const key of ['near', 'far']) {
+      await post(rwLead.id, { cwd: rwRepo, hook_event_name: 'SubagentStart', agent_id: key, agent_type: 'fork' });
+      await post(rwLead.id, { cwd: rwRepo, hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: key, subagent_type: 'fork' }, tool_response: { agentId: key, description: key, status: 'async_launched' } });
+      await post(rwLead.id, { cwd: rwWts[key], agent_id: key, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } });
+      await post(rwLead.id, { cwd: rwWts[key], agent_id: key, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } });
+      await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const m = r.sessions.find(x => x.id === ${JSON.stringify(rwLead.id)})?.team.find(m => m.id === ${JSON.stringify(key)}); return m?.branch === ${JSON.stringify(`m9-seat-${key}`)}; })()`, `${key}'s folder maps to its branch`, 8000);
+    }
+    const rwDetached = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: rwWts.detached, name: 'Rows detached', cols: 100, rows: 24 })).session;
+    await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return r.sessions.some(x => x.id === ${JSON.stringify(rwDetached.id)}); })()`, 'the detached session listed', 8000);
+    await sleep(1000);
+    await post(rwDetached.id, { cwd: rwWts.detached, hook_event_name: 'SessionStart', source: 'startup' });
+    await sleep(1500);
+    const detachedRecord = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === rwDetached.id);
+    // The daemon reads a detached HEAD's branch as its short hash (seen at
+    // the branch's first run), a name no ref carries, so the row has no
+    // head to sit over either way.
+    const keepDetached = detachedRecord?.startHead === rwRoot && (detachedRecord?.branch === null || rwRoot.startsWith(detachedRecord?.branch ?? '-'));
+    if (!keepDetached) console.log(`[verify] note: fix 1155: the detached session reads branch ${detachedRecord?.branch} and start ${detachedRecord?.startHead}; its bottom row is left to the unit test`);
+    else await s.waitFor(`!!document.querySelector(${JSON.stringify(`.files-rail ${ownRowSel(rwDetached.id)}`)})`, "the detached session's row", 10000);
+    await s.waitFor(`document.querySelectorAll('.files-rail .commits-agent-row[data-member]').length === 2 && document.querySelector(${JSON.stringify(rwPanel)})?.dataset.graph === 'ready'`, 'the two subagent rows', 10000);
+    await sleep(1500);
+    // The frames first, before any expect: the top as it stands and the
+    // bottom after the rows' scrolling box is at its end. The bottom frame
+    // clips the panel's lower 640px, where the end of the list is.
+    const rwFrames = path.join(shotsDir, 'm51-frames');
+    fs.mkdirSync(rwFrames, { recursive: true });
+    const rwClip = async (bottom) => {
+      const r = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(rwPanel)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+      const h = Math.min(r.height, 640);
+      return { x: r.x, y: bottom ? r.y + r.height - h : r.y, width: r.width, height: h, scale: 2 };
+    };
+    const rwShot = async (name, bottom) => {
+      const shot = await s.send('Page.captureScreenshot', { format: 'png', clip: await rwClip(bottom) });
+      fs.writeFileSync(path.join(rwFrames, name), Buffer.from(shot.data, 'base64'));
+      console.log(`[verify] fix 1155 frame: ${path.join(rwFrames, name)}`);
+    };
+    await rwShot('m9-fix1155-top.png', false);
+    const scrolled = await s.evalJs(`(() => { let el = document.querySelector('.files-rail .commits-graph-rows'); while (el !== null && !(el.scrollHeight > el.clientHeight)) el = el.parentElement; if (el === null) return false; el.scrollTop = el.scrollHeight; return true; })()`);
+    await sleep(800);
+    await rwShot('m9-fix1155-bottom.png', true);
+    expect(scrolled, 'a scrolling box around the rows to scroll to its end');
+    const rwRead = await s.evalJs(`(() => {
+      const rail = document.querySelector('.files-rail');
+      const rows = [...rail.querySelectorAll('.commits-graph-rows .commits-row')].map((row, i) => {
+        const beyond = 'beyond' in row.dataset;
+        if (row.dataset.hash) return { id: row.dataset.hash, row: i, commit: true, beyond };
+        const sid = row.dataset.session;
+        const mid = row.dataset.member ?? null;
+        const mark = rail.querySelector('.commits-agent-node[data-session=' + JSON.stringify(sid) + ']' + (mid === null ? ':not([data-member])' : '[data-member=' + JSON.stringify(mid) + ']'));
+        const stub = mark === null ? null : [...rail.querySelectorAll('.commits-edge[data-kind="beyond"]')].find((e) => e.dataset.lane === mark.dataset.lane && e.dataset.from === String(i)) ?? null;
+        return { id: mid ?? (sid === ${JSON.stringify(rwLead.id)} ? 'lead' : sid === ${JSON.stringify(rwDetached.id)} ? 'detached' : 'session ' + sid), row: i, commit: false, beyond, markBeyond: mark !== null && 'beyond' in mark.dataset, stub: stub === null ? null : { to: stub.dataset.to, dashed: 'dashed' in stub.dataset } };
+      });
+      return { rows, stubs: rail.querySelectorAll('.commits-edge[data-kind="beyond"]').length };
+    })()`);
+    const rwIds = rwRead.rows.map((r) => r.id);
+    const rwShort7 = (h) => (h.length === 40 ? h.slice(0, 7) : h);
+    const rwPic = rwIds.map(rwShort7).join(' ');
+    expect(rwIds[0] === 'lead' && rwIds[1] === rwHead, `the lead's own row first, right above main's head (${rwPic.slice(0, 200)})`);
+    const nearAt = rwIds.indexOf('near');
+    expect(nearAt !== -1 && rwIds[nearAt + 1] === rwNear, `near's row right above main~3's (${rwPic.slice(0, 200)})`);
+    const lastCommit = rwRead.rows.map((r) => r.commit).lastIndexOf(true);
+    const tail = rwRead.rows.slice(lastCommit + 1);
+    const wantTail = keepDetached ? ['detached', 'far'] : ['far'];
+    expect(tail.map((r) => r.id).join(' ') === wantTail.join(' '), `under the last commit the rows past the window, ${wantTail.join(' then ')} (${tail.map((r) => r.id).join(' ')})`);
+    const badTail = tail.filter((r) => !r.beyond || !r.markBeyond || r.stub === null || r.stub.to !== 'b' || r.stub.dashed);
+    expect(badTail.length === 0, `each row past the window says so, on the row and its mark, with a solid stub to the end on its mark's lane (${JSON.stringify(tail)})`);
+    const strayBeyond = rwRead.rows.filter((r) => r.beyond && !wantTail.includes(r.id));
+    expect(strayBeyond.length === 0 && rwRead.stubs === wantTail.length, `no other row says beyond, and one stub per row past the window (${JSON.stringify(strayBeyond)} ${rwRead.stubs})`);
+    step("M9 fix 1155: a session row sits right above the commit it is on: the lead over main's head, a subagent over its branch's head below it, and a subagent and a session whose commit is past the log's window at the bottom under the last commit, each with a bare stub");
+    await removeSession(rwDetached.id);
+    await removeSession(rwLead.id);
+    await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]')?.click()`);
+    await s.evalJs(`localStorage.removeItem('emerald.files')`);
   });
 
   step(blocksRun());

@@ -63,3 +63,12 @@ export function panesShowing(layout: Layout, sessionId: string): number {
   for (const tab of layout.tabs) for (const pane of listPanes(tab)) if (pane.sessionId === sessionId) n++;
   return n;
 }
+
+// M9 fix 1146: what Start does with the session it replaced, the box and the
+// session read at Start: kept when the box is off or the session is gone,
+// closed as a pane's Close closes a live one, forgotten as the exited
+// notice's Close forgets an exited one.
+export function replacedFate(closeOld: boolean, live: Pick<SessionInfo, 'state'> | undefined): 'keep' | 'retire' | 'forget' {
+  if (!closeOld || live === undefined) return 'keep';
+  return live.state === 'exited' ? 'forget' : 'retire';
+}

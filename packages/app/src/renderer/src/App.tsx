@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { allPanes, currentTab, findPane, windowsOf } from '@emerald/shared';
+import { FIRST_WINDOW_ID, allPanes, currentTab, findPane, windowsOf } from '@emerald/shared';
 import { installAttention } from './attention.ts';
 import { BrowserLayer } from './BrowserLayer.tsx';
 import { CheatSheet, PrefixIndicator } from './CheatSheet.tsx';
@@ -29,7 +29,7 @@ import { SplitView } from './SplitView.tsx';
 import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
 import { PANES, commitsFolder, isDocument, isWhatsNew, statsFolder } from './tabs-model.ts';
-import { start, useStore } from './store.ts';
+import { getState, start, useStore } from './store.ts';
 import { adoptWindowTabs, clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, pruneWindowTabs, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
 
@@ -48,9 +48,6 @@ export function App() {
       .info()
       .then((info) => configurePrefix(info.config.prefixKey))
       .catch((err: unknown) => console.warn('[emerald] could not read the config', err));
-    // The release notes open once per build (M9 fix 227), after the
-    // kept tabs are up so the new tab lands last and active.
-    openWhatsNewOnStart();
     const uninstallKeys = installKeybindings();
     const uninstallUseRecord = installUseRecord();
     const uninstallDrop = installExplorerDrop();
@@ -100,9 +97,16 @@ export function App() {
   }, [allLayout]);
 
   // This window's file tabs under its own key (M9 fix 867), once the main
-  // process has said which window this page is.
+  // process has said which window this page is; the release notes (fix 227)
+  // open after that, so they land in the key the window keeps (fix 1144).
+  const notesChecked = useRef(false);
   useEffect(() => {
-    if (windowId !== null) adoptWindowTabs(windowId);
+    if (windowId === null) return;
+    const all = getState().allLayout;
+    adoptWindowTabs(windowId, all === null ? new Set([FIRST_WINDOW_ID]) : new Set(windowsOf(all).map((w) => w.id)));
+    if (notesChecked.current) return;
+    notesChecked.current = true;
+    openWhatsNewOnStart();
   }, [windowId]);
 
   // Coming back to the panes puts the keyboard in the focused terminal;

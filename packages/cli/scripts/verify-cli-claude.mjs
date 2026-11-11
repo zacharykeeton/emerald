@@ -297,8 +297,11 @@ try {
   expect(answered1125?.lastPrompt === text1125 && (answered1125.lastReply ?? '').includes('poll-1125'), `the prompt after the held poll landed and was answered (${JSON.stringify({ lastPrompt: answered1125?.lastPrompt, lastReply: answered1125?.lastReply })})`);
   // M9 fix 1125 (2): no mod-channel process from this checkout's CLI (the
   // person's installed emerald, whose Claudes may still run its own
-  // resources\cli\dist\main.js mod-channel, is never counted).
-  const ps1125 = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mod-channel*' -and $_.CommandLine -like '*${main}*' }).Count`], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  // resources\cli\dist\main.js mod-channel, is never counted). The query's
+  // own powershell carries both strings in its filter text, so it leaves out
+  // its own pid; without that it counted itself and read 1 on every run
+  // (the install of fixes 1115 to 1138).
+  const ps1125 = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `@(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*mod-channel*' -and $_.CommandLine -like '*${main}*' }).Count`], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
   expect(ps1125.stdout.trim() === '0', `no mod-channel process from this checkout (${JSON.stringify(ps1125.stdout.trim())})`);
   log("M9 fix 1125: a prompt routed through first's mod after its poll was held past 20 s and asked again, and no mod-channel process from this checkout");
   j = emeraldJson('new', repoRoot, '--name', 'safe', '--json', '--', '--safe-mode');

@@ -725,6 +725,34 @@ try {
   expect(JSON.stringify(await lit953()) === '[]' && d953.dir === null && d953.effect === null, `the light is gone after the drag left, got ${JSON.stringify(await lit953())} ${JSON.stringify(d953)}`);
   step('fix 953: a drag from Explorer over the Files rail lights the folder it would land in, a folder row itself and a file row its folder, the list for the root, and the effect follows Ctrl');
 
+  // M9 fix 1152: the word on the lit folder for a drag from Explorer, whose
+  // paths are unreadable until the drop: the rule with no key, the plain
+  // word with one, and the OS effect left at the safe copy.
+  {
+    const word1152 = (sel) => s.evalJs(`document.querySelector(${JSON.stringify(sel)})?.dataset.dropWord ?? null`);
+    await setDropFiles(s, [a953]);
+    await hover(s, into953Spot);
+    let w1152 = await word1152('[data-drop-into]');
+    d953 = await drop953();
+    expect(w1152 === 'Ctrl copies, Shift moves' && d953.effect === 'copy', `no key says the rule with the effect copy, got ${w1152} ${JSON.stringify(d953)}`);
+    await hover(s, into953Spot, { ctrl: true });
+    w1152 = await word1152('[data-drop-into]');
+    expect(w1152 === 'Copy here', `Ctrl says Copy here, got ${w1152}`);
+    await hover(s, into953Spot, { shift: true });
+    w1152 = await word1152('[data-drop-into]');
+    d953 = await drop953();
+    expect(w1152 === 'Move here' && d953.effect === 'copy', `Shift says Move here with the effect still copy, got ${w1152} ${JSON.stringify(d953)}`);
+    await hover(s, await centerOf(s, rowSel953(seedFile)));
+    const lit1152 = await lit953();
+    w1152 = await word1152('.files-list');
+    expect(JSON.stringify(lit1152) === JSON.stringify(['list']) && w1152 === 'Ctrl copies, Shift moves', `the lit list says the rule, got ${JSON.stringify(lit1152)} ${w1152}`);
+    await s.screenshot('m12-drop-word-1152.png');
+    await drag(s, 'dragleave', await blank953());
+    const left1152 = await s.evalJs(`document.querySelectorAll('[data-drop-word]').length`);
+    expect(left1152 === 0, `no word is left after the drag left, got ${left1152}`);
+    step('fix 1152: a drag from Explorer over the Files rail shows the rule Ctrl copies, Shift moves, Copy here with Ctrl and Move here with Shift, the OS effect still copy');
+  }
+
   // (b) Two entries onto a folder row.
   await setDropFiles(s, [a953, dir953]);
   await hover(s, into953Spot);
@@ -1085,6 +1113,58 @@ try {
   );
   await s.waitFor(`!document.querySelector('.corner-note')`, 'the cancelled note goes after its usual moment', 3500);
   step("fix 1124: the corner note's Cancel, clicked while the second of three 72 MB files copies, keeps the first whole, takes the second back and leaves the third, the note saying so");
+
+  // M9 fix 1153: three 60 MB files, under the 64 MB stream floor but over
+  // the byte note's 50 MB average, so each streams from 8 MB and the note
+  // moves inside the first file; and the copy cancelled from the palette's
+  // Cancel the copy while the second copies.
+  const MB60 = 60 * 1024 * 1024;
+  const s1153 = [1, 2, 3].map((i) => path.join(src953, `s1153-${i}.bin`));
+  for (const p of s1153) {
+    fs.closeSync(fs.openSync(p, 'w'));
+    fs.truncateSync(p, MB60);
+  }
+  await s.evalJs(
+    `(() => { window.__notes1153 = []; const read = () => { const t = document.querySelector('.corner-note:not(.in-pane) .corner-note-text')?.textContent ?? null; if (t !== null && window.__notes1153.at(-1) !== t) window.__notes1153.push(t); }; window.__obs1153 = new MutationObserver(read); window.__obs1153.observe(document.body, { subtree: true, childList: true, characterData: true }); return true; })()`,
+  );
+  await setDropFiles(s, s1153);
+  const spot1153 = await centerOf(s, rowSel953(into953));
+  await hover(s, spot1153, { ctrl: true });
+  await drag(s, 'drop', spot1153, { ctrl: true });
+  await s.waitFor(
+    `(() => { const m = /^Copying ([\\d.]+) MB of 180\\.0 MB into into953$/.exec(document.querySelector('.corner-note .corner-note-text')?.textContent ?? ''); return m !== null && Number(m[1]) >= 70 && Number(m[1]) <= 110; })()`,
+    'the byte note inside the second of three 60 MB files',
+    60000,
+  );
+  await s.key('P', 'KeyP', 80, CTRL | SHIFT);
+  const row1153 = '.picker-overlay .action-row[data-kind="note"][data-action="cancel-copy"]';
+  await s.waitFor(`!!document.querySelector(${JSON.stringify(row1153)})`, 'the palette lists Cancel the copy', 5000);
+  const seen1153 = await s.evalJs(
+    `(() => { const row = document.querySelector(${JSON.stringify(row1153)}); let el = row.previousElementSibling; while (el && !el.classList.contains('palette-group')) el = el.previousElementSibling; return { label: row.querySelector('.action-label')?.textContent ?? null, group: el?.textContent ?? null }; })()`,
+  );
+  expect(seen1153.label === 'Cancel the copy' && seen1153.group === 'Copy', `the row reads Cancel the copy under Copy, got ${JSON.stringify(seen1153)}`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(row1153)}).click()`);
+  await s.waitFor(`!document.querySelector('.picker-overlay')`, 'the palette closed on the pick', 5000);
+  await noteIs953('Copied s1153-1.bin into into953; cancelled, 2 not copied', 'the final note says what Cancel the copy left out');
+  const notes1153 = await s.evalJs(`(() => { window.__obs1153.disconnect(); return window.__notes1153; })()`);
+  expect(sizeOf(path.join(into953, 's1153-1.bin')) === MB60, `fix 1153: the first file stays whole, got ${sizeOf(path.join(into953, 's1153-1.bin'))}`);
+  expect(sizeOf(path.join(into953, 's1153-2.bin')) === -1 && sizeOf(path.join(into953, 's1153-3.bin')) === -1, 'fix 1153: the second is taken back and the third never lands');
+  expect(s1153.every((p) => sizeOf(p) === MB60), 'fix 1153: the three sources are whole');
+  const mainLog1153 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'main.log'), 'utf8');
+  expect(
+    mainLog1153.includes(`files-move into ${into953} (copy): s1153-1.bin copied, s1153-2.bin refused cancelled, s1153-3.bin skipped cancelled`),
+    'fix 1153: main.log has the cancelled copy line',
+  );
+  const perMB1153 = { bytes: 1048576, KB: 1024, MB: 1 };
+  const mbs1153 = notes1153
+    .map((t) => /^Copying ([\d.]+) (bytes|KB|MB) of 180\.0 MB into into953$/.exec(t))
+    .filter((m) => m !== null)
+    .map((m) => Number(m[1]) / perMB1153[m[2]]);
+  const firstWhole1153 = mbs1153.findIndex((n) => n >= 60);
+  const inside1153 = (firstWhole1153 === -1 ? mbs1153 : mbs1153.slice(0, firstWhole1153)).filter((n) => n > 0 && n < 60);
+  expect(inside1153.length >= 2, `fix 1153: the byte note moves inside the first 60 MB file, got ${JSON.stringify(notes1153)}`);
+  await s.waitFor(`!document.querySelector('.corner-note')`, 'the cancelled note goes after its usual moment', 3500);
+  step('fix 1153: three 60 MB files dropped with Ctrl count bytes inside the first file, and Cancel the copy from the palette, run while the second copies, keeps the first and leaves the other two');
 
   step('PASS');
 } catch (err) {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionKind } from '@emerald/shared';
 import { findPane, setPaneHost, setPaneSession, tabHolding } from '@emerald/shared';
-import { retireReplaced, roomBesideFocused } from './actions.ts';
-import { closeOldOffer, panesShowing, splitArgs } from './new-session-model.ts';
+import { removeSession, retireReplaced, roomBesideFocused } from './actions.ts';
+import { closeOldOffer, panesShowing, replacedFate, splitArgs } from './new-session-model.ts';
 import { loadRecent, rememberFolderUsed } from './recent-folders.ts';
 import { editTab, getState, useStore } from './store.ts';
 import { closeNewSession, getUiState, loadClaudeOpensOn, loadCloseReplaced, rememberCloseReplaced, setChatFace, useUi } from './ui.ts';
@@ -107,7 +107,10 @@ function Dialog({ paneId, preset, replace }: { paneId: string; preset: NewSessio
         if (offer.offered && old !== undefined) {
           if (!offer.busy) rememberCloseReplaced(closeOld);
           const live = getState().sessions.get(old.id);
-          if (closeOld && live !== undefined && live.state !== 'exited') void retireReplaced(old.id, target).catch((err: unknown) => console.warn('[emerald] could not close the replaced session', err));
+          const fate = replacedFate(closeOld, live);
+          if (fate === 'retire') void retireReplaced(old.id, target).catch((err: unknown) => console.warn('[emerald] could not close the replaced session', err));
+          // M9 fix 1146: an old session that exited while the dialog was up is forgotten, as the exited notice's Close forgets one; it is on no pane by now, so session.remove alone, not closeSession.
+          else if (fate === 'forget') void removeSession(old.id).catch((err: unknown) => console.warn('[emerald] could not forget the replaced session', err));
         }
       })
       .then(() => {

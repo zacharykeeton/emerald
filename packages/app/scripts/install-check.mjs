@@ -57,7 +57,10 @@ const secondsBetween = (a, b) => ((Date.parse(b) - Date.parse(a)) / 1000).toFixe
 // the updater's Executing line when neither is on record) to the end of
 // the file, with the Executing line itself picked out. Null when there
 // is no `updater: Executing:` line at all. Shared by parseMainLog and
-// posterForm so both read the same sequence.
+// posterForm so both read the same sequence. `before` is the lines
+// between the previous `updater: Executing:` line (or the file's start)
+// and the sequence's start, where a click that found its installer gone
+// and downloaded again sits (M9 fix 1141).
 function lastInstallSequence(lines) {
   let exec = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -85,7 +88,14 @@ function lastInstallSequence(lines) {
       break;
     }
   }
-  return { execLine: lines[exec], seq: lines.slice(start) };
+  let prev = -1;
+  for (let i = start - 1; i >= 0; i--) {
+    if (lines[i].msg.startsWith('updater: Executing:')) {
+      prev = i;
+      break;
+    }
+  }
+  return { execLine: lines[exec], seq: lines.slice(start), before: lines.slice(prev + 1, start) };
 }
 
 // Which form the second click's poster spawn took, off the same
@@ -117,7 +127,14 @@ export function parseMainLog(text) {
     out.push(look('main.log has no `updater: Executing:` line; no install through the updater is on record'));
     return out;
   }
-  const { execLine, seq } = found;
+  const { execLine, seq, before } = found;
+  // M9 fix 1141: a click before this install's that found its installer
+  // gone downloaded it again rather than quitting on nothing.
+  for (const l of before) {
+    if (l.msg.startsWith('updater: the installer of ') && l.msg.includes(' is gone (')) {
+      out.push(look(`${l.at} ${l.msg}: a click found its installer gone and downloaded it again`));
+    }
+  }
   const find = (pred) => seq.find((l) => pred(l.msg)) ?? null;
   const after = (from, pred) => {
     const i = seq.indexOf(from);

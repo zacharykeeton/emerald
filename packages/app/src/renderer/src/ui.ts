@@ -15,7 +15,7 @@ import type { ChimeMode } from '../../preload/api.ts';
 import { isDirty } from './file-edits.ts';
 import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, rawAtLine, emptyTabs, isDocument, openFile, pinTab, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
 import { renamedPath } from './files-model.ts';
-import { tabsKeyFor, windowIdFromSearch, windowOfTabsKey } from './window-keys.ts';
+import { TABS_KEY, dropsBareKey, tabsKeyFor, windowIdFromSearch, windowOfTabsKey } from './window-keys.ts';
 import { cycleKeys, currentKey, layoutTabOf, moveKey, orderFromJson, orderWithNew, replaceKey, stripOrder } from './tab-order.ts';
 import type { FileTabView, TabsModel } from './tabs-model.ts';
 import { reviewFolderPath, reviewPath } from './review-model.ts';
@@ -342,10 +342,12 @@ const SHADE_AFTER_KEY = 'emerald.shadeAfter';
 const COPY_ON_SELECT_KEY = 'emerald.copyOnSelect';
 const SPLIT_KIND_KEY = 'emerald.splitKind';
 const CLOSE_REPLACED_KEY = 'emerald.closeReplaced';
-// M9 fix 1132: the day's count of empty splits followed by a Claude start
-// ({"day":"2026-11-10","count":2}), and 'shown' once the offer has been on a
-// pane, once per profile since every window of it shares this storage. Both
-// are read at each use with no cache, so a script's clear takes effect.
+// M9 fix 1132: the count of empty splits followed by a Claude start, over any
+// days since fix 1145 ({"count":2}; an older profile's per-day
+// {"day":"2026-11-10","count":2} is read as its count and rewritten on the next
+// pair), and 'shown' once the offer has been on a pane, once per profile since
+// every window of it shares this storage. Both are read at each use with no
+// cache, so a script's clear takes effect.
 const SPLIT_PAIRS_KEY = 'emerald.splitClaudePairs';
 const SPLIT_OFFER_KEY = 'emerald.splitClaudeOffer';
 const EMPTY_PANE_KIND_KEY = 'emerald.emptyPaneKind';
@@ -889,7 +891,7 @@ export function noteEmptySplit(paneId: string, now = Date.now()): void {
   for (const [id, at] of emptySplitAt) if (now - at > SPLIT_OFFER_WITHIN_MS) emptySplitAt.delete(id);
   emptySplitAt.set(paneId, now);
   try {
-    if (!offerDue(parsePairs(localStorage.getItem(SPLIT_PAIRS_KEY)), localStorage.getItem(SPLIT_OFFER_KEY) === 'shown', state.splitKind, now)) return;
+    if (!offerDue(parsePairs(localStorage.getItem(SPLIT_PAIRS_KEY)), localStorage.getItem(SPLIT_OFFER_KEY) === 'shown', state.splitKind)) return;
     localStorage.setItem(SPLIT_OFFER_KEY, 'shown');
   } catch {
     return;
@@ -1637,11 +1639,23 @@ function loadTabOrder(): string[] {
 // startup window bound to a window that is not the first (the first was
 // closed in an earlier run) moves to that window's key and reads its
 // file tabs from it. Nothing changes when the key is the one in use.
-export function adoptWindowTabs(windowId: string | null): void {
+export function adoptWindowTabs(windowId: string | null, liveIds: ReadonlySet<string>): void {
   const key = tabsKeyFor(windowId);
   if (key === tabsKey) return;
+  const old = tabsKey;
   tabsKey = key;
   setState({ ...state, tabs: loadTabs(), tabOrder: loadTabOrder() });
+  try {
+    if (dropsBareKey(old, key, liveIds)) localStorage.removeItem(TABS_KEY);
+  } catch {
+    // Storage denied; the stale key stays and does no harm since the notes wait for the window.
+  }
+}
+
+// The key this page keeps its file tabs under now (M9 fix 1144), for the
+// use record to see the adopt move it.
+export function tabsStorageKey(): string {
+  return tabsKey;
 }
 
 // The keys of windows the layout no longer holds go.

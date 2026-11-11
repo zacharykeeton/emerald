@@ -38,5 +38,22 @@ test('the marker round-trips through the file, and a missing or malformed file r
   assert.deepEqual(readMarker(file), marker);
   fs.writeFileSync(file, '{"version": 1}');
   assert.equal(readMarker(file), null);
+  // M9 fix 1142: the installer's path rides along when it is a string.
+  writeMarker(file, '0.1.274', t0, 'C:\\c\\pending\\x.exe');
+  assert.deepEqual(readMarker(file), { ...marker, installer: 'C:\\c\\pending\\x.exe' });
+  writeMarker(file, '0.1.274', t0, null);
+  assert.deepEqual(readMarker(file), marker);
+  fs.writeFileSync(file, JSON.stringify({ ...marker, installer: 7 }));
+  assert.deepEqual(readMarker(file), marker);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a marker naming an installer that is gone is spent; one whose installer is there is still the gap (M9 fix 1142)', () => {
+  const named = { ...marker, installer: 'C:\\c\\pending\\x.exe' };
+  assert.equal(gapState(named, '0.1.258', t0 + 20000, () => false), 'fresh');
+  assert.equal(gapState(named, '0.1.258', t0 + 20000, () => true), 'gap');
+  assert.equal(gapState(named, '0.1.274', t0 + 20000, () => false), 'fresh');
+  assert.equal(gapState(named, '0.1.274', t0 + 20000, () => true), 'fresh');
+  // A marker from 0.1.1115 or older names no installer and reads as before.
+  assert.equal(gapState(marker, '0.1.258', t0 + 20000, () => false), 'gap');
 });

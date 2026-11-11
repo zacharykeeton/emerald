@@ -82,7 +82,16 @@ const quietDayAt = dayAgo(9).getTime();
 const dayKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const debtDay = dayKeyOf(dayAgo(8));
 const quietDay = dayKeyOf(dayAgo(9));
-const hm = (dayAt, h, m, sec = 0) => dayAt + h * HOUR + m * MINUTE + sec * SEC;
+// From the day's 03:00, not its midnight (M9 fix 1140): on a day the
+// clocks change, midnight plus h hours is an hour off the wall clock
+// for every time past 02:00, and two steps read wall-clock text
+// (fix 285's capped tooltip, fix 231's crosshair). Elapsed spans keep
+// their length, so the night's away stretch across the change still
+// reads 7.5 h.
+const hm = (dayAt, h, m, sec = 0) => {
+  const d = new Date(dayAt);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 3).getTime() + (h - 3) * HOUR + m * MINUTE + sec * SEC;
+};
 const seedTeam = (at, id, event, extra) => seed.push(JSON.stringify({ at, sessionId: id, event, outcome: 'applied', payload: { session_id: `sim-${id}`, hook_event_name: event, cwd: home, ...extra } }));
 {
   const D = debtDayAt;
@@ -1625,7 +1634,7 @@ try {
   await s.waitFor(`document.querySelector('.activity-view[data-place="tab"]')?.dataset.state === 'ready'`, 'the day as a tab beside the pane');
   const titles = await s.evalJs(`(() => { const p = document.querySelector('.pane[data-view="activity"]'); return { paneTitle: !!p.querySelector('.activity-view-title'), tabTitle: document.querySelector('.activity-view[data-place="tab"] .activity-view-title')?.textContent ?? null, right: p.querySelector('.pane-split-right').title, down: p.querySelector('.pane-split-down').title, hide: p.querySelector('.pane-hide').title }; })()`);
   expect(!titles.paneTitle && titles.tabTitle === `Activity · ${day}`, `no title span in the pane, the tab keeps its own (${JSON.stringify(titles)})`);
-  expect(titles.right === 'Split right, an empty pane (Ctrl+Shift+E)' && titles.down === 'Split down, an empty pane (Ctrl+Shift+O)', `the split titles say an empty pane (${JSON.stringify(titles)})`);
+  expect(titles.right === 'Split right, an empty pane (Ctrl+Shift+E); right-click for what a split gives' && titles.down === 'Split down, an empty pane (Ctrl+Shift+O); right-click for what a split gives', `the split titles say an empty pane (${JSON.stringify(titles)})`);
   expect(/^(Close|Empty) this pane \(/.test(titles.hide) && titles.hide.endsWith("the view can be opened again from the rail's Activity tab"), `the hide title says where the view comes back from (${JSON.stringify(titles.hide)})`);
   await s.evalJs(`[...document.querySelectorAll('.activity-view[data-place="tab"] .file-header .files-button')].pop().click()`);
   await s.waitFor(`!document.querySelector('.activity-view[data-place="tab"]') && document.querySelectorAll('.tab-file').length === 0`, 'the tab closed again');

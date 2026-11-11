@@ -16,9 +16,9 @@ import path from 'node:path';
 import { CTRL, SHIFT, emeraldHome, expect, freshPort, getLayout, killTree, launch, leaves, sleep, splitWithShell, startSessionByKey, startShellByKey, step, stopDaemon, zreq } from './cdp.mjs';
 
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 300 s');
+  console.error('[verify] WATCHDOG: run exceeded 360 s');
   process.exit(3);
-}, 300000);
+}, 360000);
 
 const read = async (s, id) => Buffer.from((await zreq(s, 'session.read', { sessionId: id })).data, 'base64').toString();
 
@@ -453,6 +453,9 @@ try {
   const chooseSplitMenu = (label) =>
     s.evalJs(`[...document.querySelectorAll('.split-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent.replace(/^✓/, '') === ${JSON.stringify(label)}).click()`);
   const rightSel = `[data-pane-id=${JSON.stringify(soloPaneId)}] .pane-split-right`;
+  const titles1145 = await s.evalJs(`({ right: document.querySelector(${JSON.stringify(rightSel)}).title, down: document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(soloPaneId)}] .pane-split-down`)}).title })`);
+  expect(titles1145.right.startsWith('Split right, ') && titles1145.down.startsWith('Split down, ') && titles1145.right.endsWith('; right-click for what a split gives') && titles1145.down.endsWith('; right-click for what a split gives'), `fix 1145: both split titles end with the right-click clause, got ${JSON.stringify(titles1145)}`);
+  step('fix 1145: both split buttons\' titles end with ; right-click for what a split gives');
   // The pane is in the layout before its spawn answers, and a Claude's
   // spawn takes longer than a shell's, so the session id is waited for.
   const newPaneKind = async () => {
@@ -692,20 +695,38 @@ try {
   await escapeDialog1131();
   step('fix 1131 (3): the untick is remembered, and a working Claude reads the box off with its line whatever is remembered');
 
+  // M9 fix 1146: C, still working, replaced with the box ticked, exits while
+  // the dialog is up (killed, not removed, with no SessionEnd, so nothing
+  // drops its pane to a shell or counts it); Start forgets it.
+  await openReplace1131();
+  box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === false && box1131now.busy === `"${cName1131}" is working`, `fix 1146: the box reads unticked with C's working line, got ${JSON.stringify(box1131now)}`);
+  await s.evalJs(`document.querySelector('.dialog-close-old input[name=closeOld]').click()`);
+  await s.waitFor(`document.querySelector('.dialog-close-old input[name=closeOld]')?.checked === true`, 'the Close box ticked');
+  await zreq(s, 'session.kill', { sessionId: c1131 });
+  for (let i = 0; i < 40 && (await listed1131()).find((x) => x.id === c1131)?.state !== 'exited'; i++) await sleep(200);
+  expect((await listed1131()).find((x) => x.id === c1131)?.state === 'exited', 'fix 1146: C exited under the dialog');
+  expect((await s.evalJs(`!!document.querySelector('.dialog.new-session')`)) === true, 'fix 1146: the dialog is still up after C exited');
+  await startDialog1131();
+  const d1131 = await waitNewSession1131(soloPaneId, c1131, 'Claude D in the solo pane');
+  await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(c1131))})`, "C's row forgotten", 8000);
+  expect(!(await listed1131()).some((x) => x.id === c1131), 'fix 1146: C is gone from session.list');
+  step('fix 1146: a replaced Claude that exits while the dialog is up, its box ticked, is forgotten by Start');
+
   // (4) A session also shown in another pane is offered no box.
   const mirror1131 = await getLayout(s);
   const withMirror1131 = (node) =>
-    node.kind === 'pane' ? (node.id === second1131 ? { ...node, sessionId: c1131, view: null } : node) : { ...node, first: withMirror1131(node.first), second: withMirror1131(node.second) };
+    node.kind === 'pane' ? (node.id === second1131 ? { ...node, sessionId: d1131, view: null } : node) : { ...node, first: withMirror1131(node.first), second: withMirror1131(node.second) };
   await zreq(s, 'layout.set', { layout: { ...mirror1131, root: withMirror1131(mirror1131.root), focusedPaneId: soloPaneId } });
-  for (const end = Date.now() + 8000; Date.now() < end && (await paneSession1131(second1131)) !== c1131; ) await sleep(200);
+  for (const end = Date.now() + 8000; Date.now() < end && (await paneSession1131(second1131)) !== d1131; ) await sleep(200);
   await openReplace1131();
   expect((await box1131()) === null, 'fix 1131 (4): no Close box over a session shown in another pane');
   await escapeDialog1131();
   step('fix 1131 (4): a session shown in another pane is offered no box');
 
   // Clean-up: every session of the block removed, back to one empty pane.
-  for (const id of [a1131, b1131, c1131]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
-  for (const id of [a1131, b1131, c1131]) await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(id))})`, "the block's rows gone", 8000);
+  for (const id of [a1131, b1131, d1131]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
+  for (const id of [a1131, b1131, d1131]) await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(id))})`, "the block's rows gone", 8000);
   await s.waitFor(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}) !== null`, 'the second pane empties');
   await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}).click()`);
   await s.waitFor(`document.querySelectorAll('.pane').length === 1 && !!document.querySelector('.empty-pane')`, 'one empty pane after fix 1131');
@@ -716,10 +737,8 @@ try {
   // the trust dialog of their folder and make no request.
   const kind1132 = await s.evalJs(`localStorage.getItem('emerald.emptyPaneKind')`);
   await s.evalJs(`(() => { localStorage.removeItem('emerald.splitClaudePairs'); localStorage.removeItem('emerald.splitClaudeOffer'); })()`);
-  const today1132 = (() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  })();
+  // M9 fix 1145: one pair from an earlier day in the old per-day shape, the profile an update meets; two more make three over any days.
+  await s.evalJs(`localStorage.setItem('emerald.splitClaudePairs', '{"day":"2026-11-01","count":1}')`);
   const split1132 = async () => {
     await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(soloPaneId) + ' .empty-split-right')}).click()`);
     await s.waitFor(`document.querySelectorAll('.pane').length === 2`, 'two panes after the empty split');
@@ -735,19 +754,21 @@ try {
     await s.waitFor(`document.querySelectorAll('.pane').length === 1`, 'back to the one pane');
   };
   const offerCount1132 = () => s.evalJs(`document.querySelectorAll('.empty-split-offer').length`);
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const leaf = await split1132();
     const tile = pane1131(leaf) + ' .empty-pane .empty-kind[data-kind="claude"]';
     const start = pane1131(leaf) + ' .empty-pane .empty-start';
     await s.evalJs(`document.querySelector(${JSON.stringify(tile)}).click()`);
     await s.waitFor(`document.querySelector(${JSON.stringify(start)})?.disabled === false && document.querySelector(${JSON.stringify(tile)})?.getAttribute('aria-pressed') === 'true'`, 'the empty pane ready to start a Claude');
+    // Past the old 10 s window, inside the 45 s one (fix 1145).
+    if (i === 1) await sleep(12_000);
     await s.evalJs(`document.querySelector(${JSON.stringify(start)}).click()`);
     const id = await waitNewSession1131(leaf, null, `the Claude of split ${i + 1}`);
     await zreq(s, 'session.kill', { sessionId: id, remove: true });
     await closeLeaf1132(leaf);
   }
   const pairs1132 = JSON.parse((await s.evalJs(`localStorage.getItem('emerald.splitClaudePairs')`)) ?? 'null');
-  expect(pairs1132?.day === today1132 && pairs1132?.count === 3, `fix 1132 (1): three pairs for ${today1132}, got ${JSON.stringify(pairs1132)}`);
+  expect(JSON.stringify(pairs1132) === '{"count":3}', `fix 1145 (1): one old pair from 2026-11-01 and two new ones, the second 12 s after its split, count three over any days, got ${JSON.stringify(pairs1132)}`);
   expect((await offerCount1132()) === 0, 'fix 1132 (1): no offer before the fourth split');
   const fourth1132 = await split1132();
   await s.waitFor(`document.querySelectorAll('.empty-split-offer').length === 1 && !!document.querySelector(${JSON.stringify(pane1131(fourth1132) + ' .empty-split-offer')})`, 'the offer on the fourth split', 5000);
@@ -758,7 +779,7 @@ try {
   await s.waitFor(`document.querySelectorAll('.empty-split-offer').length === 0`, 'the offer gone after Yes');
   expect((await s.evalJs(`localStorage.getItem('emerald.splitKind')`)) === 'claude', 'fix 1132 (1): Yes sets the split default to Claude');
   await closeLeaf1132(fourth1132);
-  step('fix 1132 (1): three splits each followed by a Claude start count three for the day, the fourth split\'s empty pane offers Always start a Claude on a split? and Yes sets the default');
+  step('fix 1132 (1), fix 1145: an old per-day pair and two splits each followed by a Claude start, one 12 s later, count three, the third split\'s empty pane offers Always start a Claude on a split? and Yes sets the default');
 
   // (2) Shown once per profile: back on the empty default, a split with
   // the count still at three offers nothing.

@@ -118,12 +118,14 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003', '1059', '1060'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
+  { name: 'model-names', fixes: ['1150'], needs: [] },
   { name: 'review-base', fixes: ['790'], needs: [] },
   { name: 'mod-ask', fixes: ['774', '775'], needs: [] },
   { name: 'notes', fixes: ['805'], needs: [] },
   { name: 'copy', fixes: ['806', '849', '882', '1047'], needs: ['notes'] },
   { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
   { name: 'remote', fixes: ['889', '890', '923'], needs: [] },
+  { name: 'narrow', fixes: ['1147'], needs: [] },
   // Restarts the daemon, so it stays the list's last entry.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
 ]);
@@ -159,6 +161,11 @@ const waitCursorRow = async (sessionId, test, what) => {
   expect(test(await cursorRow(sessionId)), `${what}, got ${JSON.stringify(await cursorRow(sessionId))}`);
 };
 const typeRaw = (sessionId, text) => s.evalJs(`window.emerald.send({ type: 'pty.input', sessionId: ${JSON.stringify(sessionId)}, data: ${JSON.stringify(text)} })`);
+// M9 fix 1148: one Ctrl+C on the pty, 2.2 s after whatever came before: a raw Ctrl+C is invisible to sendCtrlC's gap, and a second inside Claude Code's two-second press-again window ends the session (docs/GOTCHAS.md, fixes 1115 to 1138, item (6)).
+const ctrlC = async (sessionId) => {
+  await sleep(2200);
+  await typeRaw(sessionId, '\x03');
+};
 // A file dropped at the centre of the element a selector names, as the OS
 // drops one: a hidden file input holds it, then dragenter, dragover and
 // drop at elementFromPoint (fix 721's recipe, a helper since fix 746).
@@ -331,6 +338,7 @@ let sendId = null;
 let sendPane = null;
 // M9 fixes 785 and 786: the footer chips stub.
 let chipsId = null;
+let namesId = null;
 // M9 fix 790: the review-base stub.
 let reviewId790 = null;
 // M9 fixes 774 and 775: the real Claude the mod-ask block asks with.
@@ -345,6 +353,8 @@ let trustId = null;
 let trustDir = null;
 // M9 fixes 889 and 890: the remote block's stub.
 let remoteId = null;
+// M9 fix 1147: the narrow block's stub.
+let narrowId = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -755,7 +765,7 @@ try {
     await waitChip('model', 'Opus 5.5 · high', 5000);
     {
       const title = await s.evalJs(`${q(foot('model'))}.title`);
-      expect(title === 'Model and effort. A model pick is saved as your default for new sessions, as /model does.', `the model chip's title, got ${JSON.stringify(title)}`);
+      expect(title === 'Opus 5.5 · high: model and effort. A model pick is saved as your default for new sessions, as /model does.', `the model chip's title, got ${JSON.stringify(title)}`);
     }
     await typeRaw(stubId, `foreach ($i in 1..2) { $l = Read-Host; Write-Host ('got ' + $l) }\r`);
     await sleep(500);
@@ -764,7 +774,7 @@ try {
     await openMenu('model', modelMenu);
     {
       const labels = await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(modelMenu + ' .menu-item .menu-label')})].map((e) => e.textContent.replace(/^✓/, ''))`);
-      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
+      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.2', 'Opus Plan'];
       expect(JSON.stringify(labels) === JSON.stringify(want), `the heading and the six models, got ${JSON.stringify(labels)}`);
       expect(JSON.stringify(await ticked()) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(await ticked())}`);
       const segs = await segments();
@@ -1899,7 +1909,7 @@ try {
       // gets a Current model row first; it is dropped before the compare.
       const rows = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', line: b.querySelector('.menu-line')?.textContent ?? null }))`);
       const labels = rows.filter((r) => r.line !== 'Current model').map((r) => r.label);
-      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
+      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.2', 'Opus Plan'];
       expect(JSON.stringify(labels) === JSON.stringify(want), `the real model menu's rows, got ${JSON.stringify(labels)}`);
       const segs = await s.evalJs(`[...document.querySelectorAll('.menu.chat-model-menu [data-segments="Effort"] .menu-segment')].map((b) => ({ word: b.textContent, active: b.dataset.active !== undefined }))`);
       expect(JSON.stringify(segs.map((x) => x.word)) === JSON.stringify(['low', 'medium', 'high', 'xhigh', 'max']), `the real effort row, got ${JSON.stringify(segs)}`);
@@ -2650,9 +2660,8 @@ try {
     expect(!(await promptRow()).includes('attach.png'), `the terminal drop went in as an image, not as text, got ${JSON.stringify(await promptRow())}`);
     step('fix 747 (g): an image dropped on the terminal face goes into Claude\'s prompt as an image');
     // Two Ctrl+Cs inside Claude Code's press-again window end the session
-    // (fix 748), so this one waits out the gap since (f)'s ×.
-    await sleep(2000);
-    await typeRaw(imageId, '\x03');
+    // (fix 748), so ctrlC waits out the gap since (f)'s ×.
+    await ctrlC(imageId);
     await waitPrompt((row) => !row.includes('[Image #'), 'Ctrl+C cleared the terminal drop');
 
     // M9 fix 784, decision 4: what a wrapped input and a Ctrl+J input look
@@ -2695,11 +2704,10 @@ try {
         console.log(`[verify] note: fix 784: ${name} came as a paste marker, a chip on the flip`);
       } else expect(carried.box === '' && carried.hint === "Claude's input holds text the chat box cannot take; Show the terminal to send or clear it", `${name} stays in the terminal with the hint (decision 4 (b)), got ${JSON.stringify(carried)}`);
       // Back to the terminal (the box is empty, so nothing is typed) and
-      // clear the input with one Ctrl+C, two seconds past the last.
+      // clear the input with one Ctrl+C (ctrlC, 2.2 s past the last).
       await toggle();
       await s.waitFor(`${q(paneSel(imagePane))}.dataset.face === undefined`, 'the terminal face to clear the input');
-      await sleep(2000);
-      await typeRaw(imageId, '\x03');
+      await ctrlC(imageId);
       await waitPrompt((row) => !row.includes(mark) && !row.includes('[Pasted text'), `Ctrl+C cleared ${name}`);
     }
     step('fix 784: an input past one row on a real Claude stays in the terminal on the flip, with the hint');
@@ -4433,7 +4441,7 @@ try {
       await s.waitFor(`!${q(chipsMenu)}`, 'the model menu gone', 2000);
     };
     const ticks = (rows) => rows.filter((r) => r.checked === 'true').map((r) => r.label);
-    const listed = ['Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1', 'Opus Plan'];
+    const listed = ['Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.2', 'Opus Plan'];
     await postChips({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-9-9', display_name: 'Opus 9.9' } });
     await s.waitFor(`${q(modelChip + ' .chat-chip-word')}?.textContent === 'Opus 9.9'`, 'the model chip reading Opus 9.9', 5000);
     await openModel();
@@ -4461,6 +4469,89 @@ try {
     // The layout as the block found it: the first pane on its earlier
     // session, which opens on its terminal face.
     if (before !== null) await bindPane(chipsPane, before);
+  });
+
+  await block('model-names', async () => {
+    // M9 fix 1150: a pick of a family row learns the name the status line
+    // shows next, so a Claude Code update that moves the alias renames the
+    // row. A shell playing Claude, as the chips block's; the footer block's
+    // Sonnet pick has already learned Sonnet 5.5, so the key starts empty.
+    const lay = await getLayout(s);
+    const namesPane = leaves(lay)[0].id;
+    const before = leaves(lay)[0].sessionId;
+    const namesDir = path.join(emeraldHome, 'chat-1150');
+    fs.mkdirSync(namesDir, { recursive: true });
+    const namesFixture = path.join(namesDir, 'fixture.jsonl');
+    fs.writeFileSync(namesFixture, [userLine('say hello', 0), asstLine([{ type: 'text', text: 'Hello.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: namesDir, cols: 120, rows: 30 });
+    namesId = spawned.session.id;
+    await bindPane(namesPane, namesId);
+    await s.waitFor(`!!${q(paneSel(namesPane) + ' .term-host')}`, 'the names stub in the first pane', 10000);
+    const postNames = hookPoster(namesId, { simId: 'sim-chat-1150', cwd: namesDir, transcript: namesFixture });
+    await startStub(postNames, namesId, 'say hello');
+    await s.waitFor(`!!${q(paneSel(namesPane) + ' .pane-face-toggle')}`, 'the face button on the names stub', 10000);
+    await s.evalJs(`localStorage.removeItem('emerald.modelNames')`);
+    await toChat(namesPane);
+    await s.waitFor(`[...document.querySelectorAll(${JSON.stringify(paneSel(namesPane) + ' .chat-reply')})].some((r) => r.textContent.trim() === 'Hello.')`, 'the reply drawn', 5000);
+    const chip = paneSel(namesPane) + ' .chat-chip[data-chip="model"]';
+    const menu = '.menu.chat-model-menu';
+    const rows = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(menu + ' .menu-item')})].map((b) => ({ label: b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') ?? '', checked: b.dataset.checked ?? null, line: b.querySelector('.menu-line')?.textContent ?? null }))`);
+    const open = async () => {
+      await s.evalJs(`${q(chip)}.click()`);
+      await s.waitFor(`!!${q(menu)}`, 'the model menu', 3000);
+    };
+    const close = async () => {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`!${q(menu)}`, 'the model menu gone', 2000);
+    };
+    const waitChipWord = (word) => s.waitFor(`${q(chip + ' .chat-chip-word')}?.textContent === ${JSON.stringify(word)}`, `the model chip reading ${word}`, 5000);
+    const ticks = (rs) => rs.filter((r) => r.checked === 'true').map((r) => r.label);
+    await postNames({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
+    await waitChipWord('Opus 5.5');
+    // Three reads: the first can take a stray empty line before the pick.
+    await typeRaw(namesId, `foreach ($i in 1..3) { $l = Read-Host; Write-Host ('got ' + $l) }\r`);
+    await sleep(500);
+    await open();
+    await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(menu + ' .menu-item')})].find((b) => b.querySelector('.menu-label')?.textContent.replace(/^✓/, '') === 'Fable 5.2').click()`);
+    await s.waitFor(`!${q(menu)}`, 'the menu gone after Fable 5.2', 3000);
+    {
+      // The pick reaching the session is the sign the send went out (the
+      // learning starts at the send's outcome). Its exact text is the
+      // footer block's read: after the chips block a pick here has read
+      // as an empty line, which this block does not chase.
+      const until = Date.now() + 15000;
+      const typed = async () => (await screen(namesId)).rows.some((r) => r.startsWith('got'));
+      while (Date.now() < until && !(await typed())) await sleep(200);
+      const hint = await s.evalJs(`${q(paneSel(namesPane) + ' .chat-hint')}?.textContent ?? null`);
+      expect(await typed(), `the pick reached the session, got ${JSON.stringify((await screen(namesId)).rows.filter((r) => r.trim() !== '').slice(-6))}, the hint ${JSON.stringify(hint)}`);
+    }
+    await postNames({ hook_event_name: 'StatusLine', model: { id: 'claude-fable-5-3', display_name: 'Fable 5.3' } });
+    await waitChipWord('Fable 5.3');
+    await open();
+    {
+      const rs = await rows();
+      const want = ['Model', 'Default', 'Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.3', 'Opus Plan'];
+      expect(JSON.stringify(rs.map((r) => r.label)) === JSON.stringify(want), `the fable row renamed Fable 5.3, got ${JSON.stringify(rs.map((r) => r.label))}`);
+      expect(JSON.stringify(ticks(rs)) === '["Fable 5.3"]', `Fable 5.3 ticked alone, got ${JSON.stringify(ticks(rs))}`);
+      expect(rs.every((r) => r.line !== 'Current model'), `no Current model row, got ${JSON.stringify(rs)}`);
+      const kept = await s.evalJs(`localStorage.getItem('emerald.modelNames')`);
+      expect(kept === '{"fable":"Fable 5.3"}', `the learned name kept per profile, got ${JSON.stringify(kept)}`);
+    }
+    await close();
+    await postNames({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' } });
+    await waitChipWord('Opus 5.5');
+    await open();
+    {
+      const rs = await rows();
+      expect(rs.some((r) => r.label === 'Fable 5.3'), `the Fable 5.3 row kept with no pick, got ${JSON.stringify(rs.map((r) => r.label))}`);
+      expect(JSON.stringify(ticks(rs)) === '["Opus 5.5"]', `Opus 5.5 ticked alone, got ${JSON.stringify(ticks(rs))}`);
+    }
+    await close();
+    step('fix 1150: a pick of Fable followed by a status line naming Fable 5.3 renames the row and ticks it, with no Current model row, and the name is kept per profile');
+
+    // No later block reads a learned name.
+    await s.evalJs(`localStorage.removeItem('emerald.modelNames')`);
+    if (before !== null) await bindPane(namesPane, before);
   });
 
   await block('review-base', async () => {
@@ -5259,6 +5350,190 @@ try {
     await waitRecord(remoteId, (r) => r.command?.state !== 'running', 'the remote stub\'s command ended at the prompt', 10000);
   });
 
+  await block('narrow', async () => {
+    // M9 fix 1147: a chat pane narrower than its foot row. A stub in the
+    // left pane of a split, an empty pane beside it, the width set by the
+    // split's ratio alone.
+    const before1147 = await getLayout(s);
+    const narrowDir = path.join(emeraldHome, 'chat-1147');
+    fs.mkdirSync(narrowDir, { recursive: true });
+    const narrowFixture = path.join(narrowDir, 'fixture.jsonl');
+    const narrowLines = [userLine('narrow the pane', 0), asstLine([{ type: 'thinking', thinking: '', signature: 'x' }], 1, { thinkingDurationMs: 1000 }), asstLine([{ type: 'text', text: 'Narrowed.' }], 2)];
+    fs.writeFileSync(narrowFixture, narrowLines.join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: narrowDir, cols: 120, rows: 30 });
+    narrowId = spawned.session.id;
+    await zreq(s, 'layout.set', {
+      layout: {
+        ...before1147,
+        focusedPaneId: 'n1147-a',
+        root: {
+          kind: 'split',
+          id: 'n1147',
+          direction: 'row',
+          ratio: 0.95,
+          first: { kind: 'pane', id: 'n1147-a', sessionId: narrowId, view: null },
+          second: { kind: 'pane', id: 'n1147-b', sessionId: null, view: null },
+        },
+      },
+    });
+    const NP = paneSel('n1147-a');
+    await s.waitFor(`!!${q(NP + ' .term-host')}`, 'the narrow stub in its pane', 10000);
+    const postNarrow = hookPoster(narrowId, { simId: 'sim-chat-1147', cwd: narrowDir, transcript: narrowFixture });
+    await startStub(postNarrow, narrowId, 'narrow the pane');
+    await s.waitFor(`!!${q(NP + ' .pane-face-toggle')}`, 'the face button on the narrow stub', 10000);
+    await toChat('n1147-a');
+    const narrowCwd = (await record(narrowId)).cwd;
+    const narrowFile = path.join(narrowCwd, 'narrow.ts');
+    fs.appendFileSync(
+      narrowFixture,
+      [asstLine([useOf('e1147', 'Edit', { file_path: narrowFile, old_string: 'a', new_string: 'b' })], 3), resultOf('e1147', 'ok', 4, { toolUseResult: { filePath: narrowFile, structuredPatch: [{ lines: ['-a', '+b'] }] } })].join('\n') + '\n',
+    );
+    await postNarrow({ hook_event_name: 'StatusLine', model: { id: 'claude-opus-5-5', display_name: 'Opus 5.5' }, effort: { level: 'medium' } });
+    await typeRaw(narrowId, `$m = @(('  ' + [char]0x23F8 + ' manual mode on'), ('  ' + [char]0x23F5 + [char]0x23F5 + ' accept edits on (shift+tab to cycle)'), ('  ' + [char]0x23F8 + ' plan mode on (shift+tab to cycle)')); $i = 0; Write-Host $m[0]; while ($i -lt 2) { $k = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); if ($k.VirtualKeyCode -eq 9) { $i += 1; Write-Host $m[$i] } }; Write-Host ('tabs ' + $i)\r`);
+    const chipsSeen = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(NP + ' .chat-chip')})].map((c) => c.dataset.chip + '=' + (c.querySelector('.chat-chip-word')?.textContent ?? ''))`);
+    const waitNarrowChip = async (chip, want) => {
+      try {
+        await s.waitFor(`${q(NP + ` .chat-chip[data-chip="${chip}"] .chat-chip-word`)}?.textContent === ${JSON.stringify(want)}`, `the ${chip} chip reading ${want}`, 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: record cwd ${narrowCwd}, chips ${JSON.stringify(await chipsSeen())}`);
+      }
+    };
+    await waitNarrowChip('view', 'Normal');
+    await s.waitFor(`!!${q(NP + ' .chat-chip[data-chip="diff"]')}`, 'the diff chip', 5000).catch(async (err) => {
+      throw new Error(`${err.message}: record cwd ${narrowCwd}, chips ${JSON.stringify(await chipsSeen())}`);
+    });
+    await waitNarrowChip('model', 'Opus 5.5 · medium');
+    await waitNarrowChip('mode', 'Manual');
+    const geo1147 = () =>
+      s.evalJs(`(() => {
+        const pane = ${q(NP)};
+        const pr = pane.getBoundingClientRect();
+        const foot = pane.querySelector('.chat-foot');
+        const fr = foot.getBoundingClientRect();
+        const y = fr.top + fr.height / 2;
+        const kids = [...foot.children].map((c) => {
+          const b = c.getBoundingClientRect();
+          const rest = c.querySelector('.chat-chip-rest');
+          const caret = c.querySelector('.chat-chip-caret');
+          return { cls: c.className, chip: c.dataset.chip ?? null, display: getComputedStyle(c).display, left: b.left, right: b.right, width: b.width, lead: c.querySelector('.chat-chip-lead')?.textContent ?? null, rest: rest === null ? null : getComputedStyle(rest).display, caret: caret === null ? null : getComputedStyle(caret).display, title: c.title ?? null };
+        });
+        const view = pane.querySelector('.chat-view');
+        const wrap = pane.querySelector('.term-wrap');
+        const stop = pane.querySelector('.chat-stop');
+        const sw = pane.querySelector('.chat-send-word');
+        const tw = pane.querySelector('.chat-stop-word');
+        const xs = [];
+        for (let x = Math.max(0, pr.left - 40); x < pr.left; x += 2) xs.push(x);
+        for (let x = pr.right + 1; x <= pr.right + 120; x += 2) xs.push(x);
+        const stray = xs.filter((x) => document.elementFromPoint(x, y)?.closest('.pane')?.dataset.paneId === 'n1147-a');
+        return {
+          left: pr.left, right: pr.right, width: pr.width, y, kids, stray,
+          dockPad: getComputedStyle(pane.querySelector('.chat-dock')).paddingLeft,
+          viewClip: getComputedStyle(view).overflowX, wrapClip: getComputedStyle(wrap).overflowX,
+          sendWord: sw === null ? null : getComputedStyle(sw).display, stopWord: tw === null ? null : getComputedStyle(tw).display,
+          stopBefore: stop === null ? null : getComputedStyle(stop, '::before').content,
+        };
+      })()`);
+    const drawn = (g) => g.kids.filter((k) => k.display !== 'none' && k.width > 0);
+    const byChip = (g, chip) => g.kids.find((k) => k.chip === chip);
+    const insideAll = (g) => drawn(g).every((k) => k.left >= g.left - 0.5 && k.right <= g.right + 0.5);
+    const widths = (g) => drawn(g).map((k) => `${k.chip ?? k.cls} ${Math.round(k.width)}`).join(', ');
+    const rowSum = (g, skip) => {
+      const ks = drawn(g).filter((k) => !skip.includes(k.chip ?? k.cls));
+      return Math.ceil(ks.reduce((n, k) => n + k.width, 0) + 6 * (ks.length - 1) + 48);
+    };
+    const widthAt = async (ratio, lo, hi) => {
+      const lay = await getLayout(s);
+      const setRatio = (n) => (n.kind === 'split' ? (n.id === 'n1147' ? { ...n, ratio } : { ...n, first: setRatio(n.first), second: setRatio(n.second) }) : n);
+      await zreq(s, 'layout.set', { layout: { ...lay, root: setRatio(lay.root) } });
+      try {
+        await s.waitFor(`(() => { const w = ${q(NP)}.getBoundingClientRect().width; return w >= ${lo} && w <= ${hi}; })()`, `the narrow pane between ${lo} and ${hi} px`, 3000);
+      } catch (err) {
+        throw new Error(`${err.message}: got ${(await geo1147()).width}`);
+      }
+    };
+    const working = async () => {
+      await postNarrow({ hook_event_name: 'UserPromptSubmit', prompt: 'keep going' });
+      await s.waitFor(`!!${q(NP + ' .chat-stop')}`, 'Stop while working', 3000);
+    };
+    const idle = async () => {
+      await postNarrow({ hook_event_name: 'Stop', stop_hook_active: false });
+      await s.waitFor(`!${q(NP + ' .chat-stop')}`, 'Stop gone when idle', 3000);
+    };
+
+    // (a) the full row, wide.
+    await widthAt(0.95, 460, 2000);
+    await working();
+    const ga = await geo1147();
+    expect(ga.width >= 460, `fix 1147 (a): the pane is 460 px or more, got ${ga.width}`);
+    const dnA = drawn(ga).map((k) => k.chip);
+    expect(['mode', 'model', 'view', 'diff'].every((c) => dnA.includes(c)), `fix 1147 (a): mode, model, view and diff drawn, got ${JSON.stringify(dnA)}`);
+    expect(['mode', 'model', 'view'].every((c) => byChip(ga, c).rest !== 'none' && byChip(ga, c).caret !== 'none'), `fix 1147 (a): the menu chips' rest and caret drawn, got ${JSON.stringify(ga.kids.map((k) => [k.chip, k.rest, k.caret]))}`);
+    expect(insideAll(ga) && ga.stray.length === 0, `fix 1147 (a): every drawn child inside the pane and nothing stray, got ${JSON.stringify({ left: ga.left, right: ga.right, kids: ga.kids.map((k) => [k.chip ?? k.cls, k.left, k.right]), stray: ga.stray })}`);
+    const full = rowSum(ga, ['chat-hint', 'diff']);
+    console.log(`[verify] note: fix 1147 full working row at ${Math.round(ga.width)} px: ${widths(ga)}, ${full} px`);
+    expect(full <= 450, `fix 1147 (a): the full working row is ${full} px, over the 450 px the CSS assumes; raise 450 to ${Math.ceil(full / 10) * 10} in style.css and here`);
+    step(`fix 1147 (a): at ${Math.round(ga.width)} px the foot row shows its chips whole, inside the pane`);
+    const bPane = await s.evalJs(`${q(paneSel('n1147-b'))}.getBoundingClientRect().width`);
+    const total = ga.width + bPane;
+    await typeRaw(narrowId, '\t');
+    await waitNarrowChip('mode', 'Accept edits');
+
+    // (b) a four-pane row's width.
+    await widthAt(335 / total, 325, 380);
+    const gb = await geo1147();
+    const dnB = drawn(gb).map((k) => k.chip ?? k.cls);
+    const leadsB = ['mode', 'model', 'view'].map((c) => byChip(gb, c).lead);
+    expect(JSON.stringify(leadsB) === '["Accept","Opus 5.5","N"]', `fix 1147 (b): the leads, got ${JSON.stringify(leadsB)}`);
+    expect(['mode', 'model', 'view'].every((c) => byChip(gb, c).rest === 'none' && byChip(gb, c).caret === 'none' && drawn(gb).includes(byChip(gb, c))), `fix 1147 (b): the menu chips drawn with rest and caret none, got ${JSON.stringify(gb.kids.map((k) => [k.chip, k.display, k.rest, k.caret]))}`);
+    expect(['rc', 'agents', 'diff'].every((c) => byChip(gb, c) === undefined || byChip(gb, c).display === 'none'), `fix 1147 (b): rc, agents and diff gone, got ${JSON.stringify(dnB)}`);
+    expect(dnB.includes('chat-attach') && dnB.includes('chat-hint') && dnB.includes('secondary chat-stop') && gb.sendWord !== 'none', `fix 1147 (b): paperclip, hint, Stop and Send's word drawn, got ${JSON.stringify(dnB)}`);
+    expect(insideAll(gb) && gb.stray.length === 0, `fix 1147 (b): every drawn child inside the pane and nothing stray, got ${JSON.stringify({ left: gb.left, right: gb.right, kids: gb.kids.map((k) => [k.chip ?? k.cls, k.display, k.left, k.right]), stray: gb.stray })}`);
+    const titlesB = ['mode', 'model', 'view'].map((c) => byChip(gb, c).title);
+    expect(titlesB[0].startsWith('Accept edits: ') && titlesB[1].startsWith('Opus 5.5 · medium: ') && titlesB[2].startsWith('Normal: '), `fix 1147 (b): the titles lead with the full words, got ${JSON.stringify(titlesB)}`);
+    const short = rowSum(gb, ['chat-hint']);
+    console.log(`[verify] note: fix 1147 short working row at ${Math.round(gb.width)} px: ${widths(gb)}, ${short} px`);
+    expect(short <= 320, `fix 1147 (b): the short working row is ${short} px, over the 320 px the CSS assumes; a four-pane row would lose its model chip`);
+    step(`fix 1147 (b): at ${Math.round(gb.width)} px, a four-pane row's width, the mode, model and view chips show Accept, Opus 5.5 and N with their full words in their titles, the model chip whole, the row inside the pane`);
+    await idle();
+
+    // (c) under 320 px.
+    await widthAt(260 / total, 210, 310);
+    const gc = await geo1147();
+    const dnC = drawn(gc).map((k) => k.chip ?? k.cls);
+    expect(gc.kids.filter((k) => k.cls.includes('chat-chip')).every((k) => k.display === 'none'), `fix 1147 (c): every chip gone, got ${JSON.stringify(dnC)}`);
+    expect(dnC.includes('chat-attach') && dnC.includes('chat-hint') && gc.sendWord !== 'none', `fix 1147 (c): the paperclip, the hint and Send's word drawn, got ${JSON.stringify(dnC)}`);
+    expect(gc.dockPad === '24px', `fix 1147 (c): the dock's sides 24px, got ${gc.dockPad}`);
+    expect(insideAll(gc) && gc.stray.length === 0, `fix 1147 (c): every drawn child inside the pane and nothing stray, got ${JSON.stringify({ left: gc.left, right: gc.right, kids: gc.kids.map((k) => [k.chip ?? k.cls, k.display, k.left, k.right]), stray: gc.stray })}`);
+    step('fix 1147 (c): under 320 px the chips go, the paperclip, the hint and Send\'s word stay, the row inside the pane');
+
+    // (d) under 200 px.
+    await widthAt(120 / total, 80, 180);
+    await working();
+    const gd = await geo1147();
+    const dnD = drawn(gd).map((k) => k.chip ?? k.cls);
+    expect(gd.kids.find((k) => k.cls.includes('chat-attach')).display === 'none' && gd.kids.find((k) => k.cls.includes('chat-hint')).display === 'none' && gd.sendWord === 'none' && gd.stopWord === 'none', `fix 1147 (d): the paperclip, the hint and both words gone, got ${JSON.stringify(dnD)}`);
+    expect(gd.stopBefore === '"■"', `fix 1147 (d): Stop's glyph, got ${gd.stopBefore}`);
+    expect(gd.dockPad === '4px', `fix 1147 (d): the dock's sides 4px, got ${gd.dockPad}`);
+    expect(dnD.includes('secondary chat-stop') && dnD.includes('chat-send') && insideAll(gd) && gd.stray.length === 0, `fix 1147 (d): Stop and Send drawn and inside, nothing stray, got ${JSON.stringify({ left: gd.left, right: gd.right, kids: gd.kids.map((k) => [k.chip ?? k.cls, k.display, k.left, k.right]), stray: gd.stray })}`);
+    step('fix 1147 (d): under 200 px Send and Stop show their glyphs alone, the paperclip and the hint go, the dock\'s sides are 4 px, the row inside the pane');
+    await idle();
+
+    // (e) the clamp.
+    await widthAt(0.05, 0, 100);
+    const ge = await geo1147();
+    const sendE = ge.kids.find((k) => k.cls.includes('chat-send'));
+    expect(ge.stray.length === 0 && sendE.right <= ge.right + 0.5 && ge.viewClip === 'clip' && ge.wrapClip === 'clip', `fix 1147 (e): nothing stray, Send's right inside, the view and the wrap clip, got ${JSON.stringify({ stray: ge.stray, sendRight: sendE.right, paneRight: ge.right, view: ge.viewClip, wrap: ge.wrapClip })}`);
+    console.log(`[verify] note: fix 1147 (e): Send's left ${Math.round(sendE.left)} against the pane's ${Math.round(ge.left)} at ${Math.round(ge.width)} px`);
+    step('fix 1147 (e): at the 0.05 clamp nothing of the chat paints past the pane\'s edges, Send\'s right edge inside it, and the view and the wrap clip');
+
+    await zreq(s, 'session.kill', { sessionId: narrowId });
+    await waitRecord(narrowId, (r) => r.state === 'exited', 'the narrow stub ended', 10000);
+    narrowId = null;
+    const nowLay = await getLayout(s);
+    await zreq(s, 'layout.set', { layout: { ...nowLay, root: before1147.root, focusedPaneId: before1147.focusedPaneId } });
+  });
+
   await block('exited', async () => {
     // M9 fix 804: (a) nothing else live, so the restart below stops no
     // real Claude; then a stub on the chat face over a two-turn fixture.
@@ -5425,12 +5700,14 @@ try {
   if (tailId !== null) await zreq(s, 'session.kill', { sessionId: tailId }).catch(() => {});
   if (sendId !== null) await zreq(s, 'session.kill', { sessionId: sendId }).catch(() => {});
   if (chipsId !== null) await zreq(s, 'session.kill', { sessionId: chipsId }).catch(() => {});
+  if (namesId !== null) await zreq(s, 'session.kill', { sessionId: namesId }).catch(() => {});
   if (reviewId790 !== null) await zreq(s, 'session.kill', { sessionId: reviewId790 }).catch(() => {});
   if (askId !== null) await zreq(s, 'session.kill', { sessionId: askId }).catch(() => {});
   if (notesId !== null) await zreq(s, 'session.kill', { sessionId: notesId }).catch(() => {});
   if (exitedId !== null) await zreq(s, 'session.kill', { sessionId: exitedId }).catch(() => {});
   if (trustId !== null) await zreq(s, 'session.kill', { sessionId: trustId }).catch(() => {});
   if (remoteId !== null) await zreq(s, 'session.kill', { sessionId: remoteId }).catch(() => {});
+  if (narrowId !== null) await zreq(s, 'session.kill', { sessionId: narrowId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();

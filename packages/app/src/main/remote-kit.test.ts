@@ -91,6 +91,7 @@ function ptyTarball(): Buffer {
   return tgzBuffer([
     e('package.json', '{"name":"node-pty","version":"1.1.0"}'),
     e('lib/index.js'),
+    e('lib/windowsConoutConnection.js'),
     e('lib/worker/conoutSocketWorker.js'),
     e('lib/index.test.js'),
     e('lib/index.d.ts'),
@@ -116,8 +117,14 @@ function stageTree(integrity: string): string {
   put(path.join(root, 'node_modules', '@xterm', 'headless', 'package.json'), '{}');
   put(path.join(root, 'node_modules', '@xterm', 'headless', 'lib-headless', 'xterm-headless.js'), 'xterm');
   put(path.join(root, 'kit-pins.json'), JSON.stringify({ nodePty: { version: '1.1.0', integrity } }));
+  // M9 fix 1156: the stage's node-pty carries emerald's two conout files.
+  put(path.join(root, 'node_modules', 'node-pty', 'lib', 'windowsConoutConnection.js'), STAGE_CONN);
+  put(path.join(root, 'node_modules', 'node-pty', 'lib', 'worker', 'conoutSocketWorker.js'), STAGE_WORKER);
   return root;
 }
+
+const STAGE_CONN = '// emerald fix 1156: the stage conn';
+const STAGE_WORKER = '// emerald fix 1156: the stage worker';
 
 const env = { EMERALD_KIT_NODE_URL: 'https://n.test/dist/', EMERALD_KIT_NPM_URL: 'https://r.test' };
 
@@ -222,6 +229,7 @@ test('assembleKit builds the win32 kit: node.exe repacked flat, the host prebuil
     names.filter((n) => n.startsWith('node_modules/node-pty/')),
     [
       'node_modules/node-pty/lib/index.js',
+      'node_modules/node-pty/lib/windowsConoutConnection.js',
       'node_modules/node-pty/lib/worker/conoutSocketWorker.js',
       'node_modules/node-pty/package.json',
       'node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll',
@@ -235,7 +243,11 @@ test('assembleKit builds the win32 kit: node.exe repacked flat, the host prebuil
   assert.deepEqual(manifest, kit.manifest);
   assert.equal(manifest.version, '0.1.1079');
   assert.deepEqual(manifest.node, { version: V, url: `https://n.test/dist/v${V}/node-v${V}-win-x64.zip`, sha256: kit.manifest.node.sha256 });
-  assert.equal(manifest.pty.version, '1.1.0');
+  // M9 fix 1156: the two conout files are the stage's, laid over npm's, and the manifest says so.
+  const byName = new Map(tarEntries(fs.readFileSync(kit.emeraldArchive)).map((e) => [e.name, e.data.toString()]));
+  assert.equal(byName.get('node_modules/node-pty/lib/windowsConoutConnection.js'), STAGE_CONN);
+  assert.equal(byName.get('node_modules/node-pty/lib/worker/conoutSocketWorker.js'), STAGE_WORKER);
+  assert.deepEqual(manifest.pty, { version: '1.1.0', integrity: kitSources(f.root).pins.nodePty.integrity, overlay: 'fix 1156' });
   assert.deepEqual(manifest.emerald.files, names);
   assert.equal(manifest.emerald.sha256, sha256(fs.readFileSync(kit.emeraldArchive)));
   assert.match(logs.at(-1)!, new RegExp(`^remote kit win32-x64 0\\.1\\.1079: node-${V}\\.tgz \\d+\\.\\d MB, emerald-0\\.1\\.1079\\.tgz \\d+\\.\\d MB, assembled in \\d+\\.\\d s$`));
@@ -267,6 +279,40 @@ test('assembleKit builds the darwin kit: bin/node at 0755, spawn-helper at 0755'
     ['node_modules/node-pty/prebuilds/darwin-arm64/pty.node', 0o644],
     ['node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper', 0o755],
   ]);
+  // M9 fix 1156: the darwin kit keeps npm's conout files and names no overlay.
+  const worker = tarEntries(fs.readFileSync(kit.emeraldArchive)).find((e) => e.name === 'node_modules/node-pty/lib/worker/conoutSocketWorker.js');
+  assert.equal(worker?.data.toString(), 'lib/worker/conoutSocketWorker.js');
+  assert.equal(kit.manifest.pty.overlay, undefined);
+  assert.ok(!('overlay' in kit.manifest.pty));
+});
+
+test('assembleKit refuses a win32 kit from a stage whose conout file lacks fix 1156 and writes no manifest', async () => {
+  const f = fixture();
+  put(path.join(f.root, 'node_modules', 'node-pty', 'lib', 'windowsConoutConnection.js'), "npm's own text");
+  await assert.rejects(
+    assembleKit({ os: 'win32', arch: 'x64', appVersion: '0.1.1079', cacheRoot: f.cacheRoot, root: f.root, env, log: () => {}, read: f.read }),
+    { message: "the stage's node-pty lacks fix 1156's conout files: lib/windowsConoutConnection.js (run npm install at the repo root, then npm run stage -w @emerald/app)" },
+  );
+  assert.ok(!fs.existsSync(path.join(f.cacheRoot, 'win32-x64', '0.1.1079', 'manifest.json')));
+});
+
+test('a win32 kit whose manifest names no overlay is assembled again, and one that names it answers cached', async () => {
+  const f = fixture();
+  const logs: string[] = [];
+  const run = () => assembleKit({ os: 'win32', arch: 'x64', appVersion: '0.1.1079', cacheRoot: f.cacheRoot, root: f.root, env, log: (m) => logs.push(m), read: f.read });
+  const kit = await run();
+  const manifestFile = path.join(kit.dir, 'manifest.json');
+  const reads = f.calls.length;
+  await run();
+  assert.equal(f.calls.length, reads);
+  assert.equal(logs.at(-1), 'remote kit win32-x64 0.1.1079: cached');
+  const old = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  delete old.pty.overlay;
+  fs.writeFileSync(manifestFile, JSON.stringify(old, null, 2));
+  const again = await run();
+  assert.ok(f.calls.length > reads, 'a kit from before the overlay is read again');
+  assert.notEqual(logs.at(-1), 'remote kit win32-x64 0.1.1079: cached');
+  assert.equal(again.manifest.pty.overlay, 'fix 1156');
 });
 
 test('assembleKit refuses a Node download that does not match SHASUMS256.txt and writes no manifest', async () => {

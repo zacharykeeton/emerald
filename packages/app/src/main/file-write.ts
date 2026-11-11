@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { BYTE_NOTE_MIN_AVERAGE } from '../renderer/src/files-drop-model.ts';
 import type { FileClash, FileMade, FileRenamed, FileSaved, FilesMoved, FilesProgress, FileStamp, FileTrashed, MoveMode, MoveOutcome, TextFormat } from '../preload/api.ts';
 
 // The file service's one write (M9 fix 248): the editor's text back onto
@@ -241,6 +242,15 @@ export const COPY_PROGRESS_MS = 100;
 
 // A file over this is copied by stream, its bytes counted as they go (M9 fix 1123); cp's native copy, which is faster but says nothing until it returns, takes the rest.
 export const STREAM_COPY_MIN_BYTES = 64 * 1024 * 1024;
+// The stream floor when the drop's note counts bytes (M9 fix 1153): a file over 8 MB then moves the note inside itself, where cp's native copy would jump it a whole file at a time.
+export const STREAM_COPY_BYTE_NOTE_MIN_BYTES = 8 * 1024 * 1024;
+
+// The size over which a drop's files go by stream: the lower floor when
+// the note counts bytes, by the note's own rule (copyingNote in the
+// renderer's files-drop-model.ts), so the two read one number.
+export function streamFloor(total: number, bytesTotal: number): number {
+  return total > 0 && bytesTotal / total > BYTE_NOTE_MIN_AVERAGE ? STREAM_COPY_BYTE_NOTE_MIN_BYTES : STREAM_COPY_MIN_BYTES;
+}
 // The read stream's highWaterMark, so one pace step and one count per 64 KB.
 export const STREAM_COPY_CHUNK_BYTES = 64 * 1024;
 
@@ -342,7 +352,8 @@ export interface MoveDeps {
   // One file or one link copied (M9 fix 1008); the tests' fake counts
   // the calls and moves a clock. onBytes counts a streamed file's bytes as
   // they land (M9 fix 1123).
-  copyFile?: (from: string, to: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null }) => Promise<void>;
+  // streamAt is the drop's stream floor (M9 fix 1153), streamFloor of its counts.
+  copyFile?: (from: string, to: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null; streamAt: number }) => Promise<void>;
   // A copy's figures so far, at most every COPY_PROGRESS_MS and once at
   // the end (M9 fix 1008).
   progress?: (p: Omit<FilesProgress, 'dir'>) => void;
@@ -473,7 +484,7 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
   // then fails and is reported as before.
   const now = deps.now ?? Date.now;
   const pace = deps.pace ?? 0;
-  const copyFile = deps.copyFile ?? ((a: string, b: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null }) => copyOneFile(a, b, { ...o, pace }));
+  const copyFile = deps.copyFile ?? ((a: string, b: string, o: { size: number; onBytes: (n: number) => void; signal: AbortSignal | null; streamAt: number }) => copyOneFile(a, b, { ...o, pace }));
   const walks = new Map<string, TreeWalk>();
   let total = 0;
   let bytesTotal = 0;
@@ -489,6 +500,8 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
       // Counted as nothing; the copy reports why.
     }
   }
+  // Once, from the first count: an EXDEV fallback's tree counted later does not move it (M9 fix 1153).
+  const streamAt = streamFloor(total, bytesTotal);
   let filesDone = 0;
   let bytesDone = 0;
   let startAt: number | null = null;
@@ -540,6 +553,7 @@ export async function moveEntries(paths: readonly string[], dir: string, mode: M
         await copyFile(f.path, target(f.path), {
           size: f.size,
           signal: deps.signal ?? null,
+          streamAt,
           onBytes: (n) => {
             got += n;
             bytesDone += n;

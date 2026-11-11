@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compareVersions, folderBytes, pendingToSweep, removalOrder, sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir, versionInName } from './updater-cache.ts';
+import { compareVersions, folderBytes, pendingToSweep, removalOrder, sweepGiveUpLine, sweepHeld, sweepLine, sweepPending, updaterCacheDir, versionInName } from './updater-cache.ts';
 
 function seed(cacheDir: string, info: string | null, installerBytes = 1024, installerName = 'Emerald-setup-x-arm64.exe'): string {
   const pending = path.join(cacheDir, 'pending');
@@ -155,4 +155,15 @@ test('the cache root is %LOCALAPPDATA%\\emerald-updater, or AppData\\Local under
   assert.equal(updaterCacheDir({ LOCALAPPDATA: 'D:\\local' }, 'C:\\Users\\me'), path.join('D:\\local', 'emerald-updater'));
   assert.equal(updaterCacheDir({}, 'C:\\Users\\me'), path.join('C:\\Users\\me', 'AppData', 'Local', 'emerald-updater'));
   assert.equal(updaterCacheDir({ LOCALAPPDATA: '' }, 'C:\\Users\\me'), path.join('C:\\Users\\me', 'AppData', 'Local', 'emerald-updater'));
+});
+
+test('the sweep is held under a private EMERALD_HOME unless the cache is inside it (M9 fix 1143)', () => {
+  const user = 'C:\\Users\\me\\AppData\\Local\\emerald-updater';
+  const home = 'C:\\Temp\\emerald-verify-x';
+  assert.equal(sweepHeld({}, user), false);
+  assert.equal(sweepHeld({ EMERALD_HOME: '  ' }, user), false);
+  assert.equal(sweepHeld({ EMERALD_HOME: home }, 'C:\\Temp\\emerald-verify-x\\localappdata\\emerald-updater'), false);
+  assert.equal(sweepHeld({ EMERALD_HOME: home }, 'c:\\temp\\EMERALD-VERIFY-X\\localappdata\\emerald-updater'), false);
+  assert.equal(sweepHeld({ EMERALD_HOME: home }, user), true);
+  assert.equal(sweepHeld({ EMERALD_HOME: home }, 'C:\\Temp\\emerald-verify-x2\\localappdata\\emerald-updater'), true);
 });

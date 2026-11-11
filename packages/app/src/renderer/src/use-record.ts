@@ -2,8 +2,8 @@ import { currentTab } from '@emerald/shared';
 import type { Layout, UseFrom, UseLineIn, UseView } from '@emerald/shared';
 import { getState, subscribe } from './store.ts';
 import type { TabsModel } from './tabs-model.ts';
-import { getUiState, subscribeUi } from './ui.ts';
-import { createTurnGate, frontView, openViews, viewDiff } from './use-record-model.ts';
+import { getUiState, subscribeUi, tabsStorageKey } from './ui.ts';
+import { createTurnGate, frontView, openViews, rebaseline, viewDiff } from './use-record-model.ts';
 
 // The usage record's calls (M9 fix 676). Nothing is sent while the switch
 // on the app menu (fix 887) is off, which is the default. An action is
@@ -46,7 +46,7 @@ export function asMenu(fn: () => void): void {
 export function installUseRecord(): () => void {
   let before: Map<string, UseView> | null = null;
   let openedAt = new Map<string, number>();
-  let seen: { layout: Layout | null; tabs: TabsModel; cheat: boolean } | null = null;
+  let seen: { layout: Layout | null; tabs: TabsModel; cheat: boolean; key: string } | null = null;
   const look = () => {
     const ui = getUiState();
     if (!ui.usageRecord) {
@@ -59,9 +59,18 @@ export function installUseRecord(): () => void {
     // The first layout is the baseline's; until it arrives there is
     // nothing to compare, and a restore must not read as twenty opens.
     if (layout === null) return;
-    if (seen !== null && seen.layout === layout && seen.tabs === ui.tabs && seen.cheat === ui.cheatSheetOpen) return;
-    seen = { layout, tabs: ui.tabs, cheat: ui.cheatSheetOpen };
+    const key = tabsStorageKey();
+    if (seen !== null && seen.layout === layout && seen.tabs === ui.tabs && seen.cheat === ui.cheatSheetOpen && seen.key === key) return;
+    const adopted = seen !== null && seen.key !== key;
+    seen = { layout, tabs: ui.tabs, cheat: ui.cheatSheetOpen, key };
     const after = openViews(layout, ui.tabs, ui.cheatSheetOpen);
+    // The startup window moved its tabs to another window's key (M9 fix 1144):
+    // the swap is not a close of what the bare key held, so start over.
+    if (adopted) {
+      before = after;
+      openedAt = rebaseline(after, openedAt, Date.now());
+      return;
+    }
     const diff = viewDiff(before, after, openedAt, Date.now());
     before = after;
     openedAt = diff.openedAt;

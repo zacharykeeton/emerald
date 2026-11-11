@@ -90,7 +90,11 @@ export interface SessionRecord {
   claimNamed?: Map<string, boolean>;
   // HEAD as read before a subagent's git-writing command (M61), by agent
   // id, so the commits it added are the range up to the HEAD read after.
-  agentHeads?: Map<string, string>;
+  // Keyed again by folder (M9 fix 1139): a git-writing call whose own
+  // folder is not the one the member already works in is read in both,
+  // since a commit made past a leading `grep` or inside a subshell's `cd`
+  // lands in the member's worktree while the command resolves elsewhere.
+  agentHeads?: Map<string, Map<string, string>>;
   // One up per hook of the agent's (M9 fix 311), so a head read spawned
   // for a call keeps its value only while no later hook has landed.
   agentHeadSeq?: Map<string, number>;
@@ -1122,29 +1126,54 @@ export class SessionManager extends EventEmitter {
     const seq = (rec.agentHeadSeq ??= new Map());
     const n = (seq.get(agentId) ?? 0) + 1;
     seq.set(agentId, n);
+    // The member's own folder, read beside the command's when the command
+    // names a git write and resolves elsewhere (M9 fix 1139): `grep ...;
+    // cd <worktree> && git commit` resolves to the session's checkout and
+    // `cd <parent> && (cd w && git commit)` to a folder that is no
+    // repository, and both commits went to nobody. A call naming no git
+    // write keeps its one read, so fix 195's every-call measuring costs
+    // nothing more; `reads` is false whenever movesHead is true.
+    const memberDir = rec.info.team.find((m) => m.id === agentId)?.cwd ?? null;
+    const second = movesHead(command) && memberDir !== null && memberDir !== '' && !sameFolder(memberDir, dir) ? memberDir : null;
+    const folders = second === null ? [dir] : [dir, second];
     if (event === 'PreToolUse') {
       if (reads) return;
-      const fromFiles = this.headFromFiles(dir);
-      if (fromFiles !== null) {
-        heads.set(agentId, fromFiles);
-        return;
+      const held = new Map<string, string>();
+      heads.set(agentId, held);
+      for (const folder of folders) {
+        const fromFiles = this.headFromFiles(folder);
+        if (fromFiles !== null) {
+          held.set(folder, fromFiles);
+          continue;
+        }
+        void this.readHeadSpawned(folder).then((hash) => {
+          if (hash !== null && seq.get(agentId) === n && heads.get(agentId) === held && this.sessions.get(rec.info.id) === rec) held.set(folder, hash);
+        });
       }
-      void this.readHeadSpawned(dir).then((hash) => {
-        if (hash !== null && seq.get(agentId) === n && this.sessions.get(rec.info.id) === rec) heads.set(agentId, hash);
-      });
       return;
     }
-    const before = heads.get(agentId) ?? null;
+    const held = heads.get(agentId) ?? null;
     heads.delete(agentId);
     if (event !== 'PostToolUse') return;
     if (reads) {
+      const before = held?.get(dir) ?? null;
       if (before !== null) void this.noteHeadMovedUnderRead(rec, agentId, dir, before);
       return;
     }
-    // With no read from before, only a command that names a git write
-    // may claim the new HEAD (M9 fix 195), as on the session's own path.
-    if (before === null && !movesHead(command)) return;
-    void this.creditAgentCommits(rec, agentId, dir, before, at);
+    void this.creditAgentFolders(rec, agentId, command, folders, held, at);
+  }
+
+  // The command's folder first, then the member's own only when the first
+  // did not move (M9 fix 1139), through the same claimed-hash filter, so a
+  // merge another session landed in the member's worktree is still never
+  // taken. With no read from before, only a command that names a git
+  // write may claim the new HEAD (M9 fix 195), as on the session's own path.
+  private async creditAgentFolders(rec: SessionRecord, agentId: string, command: string, folders: string[], held: Map<string, string> | null, at: number): Promise<void> {
+    for (const folder of folders) {
+      const before = held?.get(folder) ?? null;
+      if (before === null && !movesHead(command)) continue;
+      if (await this.creditAgentCommits(rec, agentId, folder, before, at)) return;
+    }
   }
 
   private async noteHeadMovedUnderRead(rec: SessionRecord, agentId: string, dir: string, before: string): Promise<void> {
@@ -1170,25 +1199,30 @@ export class SessionManager extends EventEmitter {
     return claimed;
   }
 
-  private async creditAgentCommits(rec: SessionRecord, agentId: string, dir: string, before: string | null, at: number): Promise<void> {
+  // True when HEAD in dir was read and moved (M9 fix 1139), whether or
+  // not a hash survived the filter: a folder that moved is the call's,
+  // and the member's other folder is then not read at all.
+  private async creditAgentCommits(rec: SessionRecord, agentId: string, dir: string, before: string | null, at: number): Promise<boolean> {
     const after = await this.readHead(dir);
-    if (after === null || before === after || this.sessions.get(rec.info.id) !== rec) return;
+    if (after === null || before === after) return false;
+    if (this.sessions.get(rec.info.id) !== rec) return true;
     let hashes: string[] = [];
     if (before !== null) hashes = await (this.opts.listCommits ?? listFirstParent)(dir, before, after);
     if (hashes.length === 0) hashes = [after];
-    if (this.sessions.get(rec.info.id) !== rec) return;
+    if (this.sessions.get(rec.info.id) !== rec) return true;
     const claimed = this.claimedHashes({ id: rec.info.id, agentId });
     hashes = hashes.filter((h) => !claimed.has(h));
-    if (hashes.length === 0) return;
+    if (hashes.length === 0) return true;
     const merges = await this.readMerges(dir, hashes);
-    if (this.sessions.get(rec.info.id) !== rec) return;
+    if (this.sessions.get(rec.info.id) !== rec) return true;
     this.patchMember(rec, agentId, (m) => {
       const last = m.commits[m.commits.length - 1]?.hash ?? null;
       const added = hashes.filter((h) => h !== last && !m.commits.some((c) => c.hash === h)).map((hash) => ({ hash, at, ...(merges.has(hash) ? { merge: true } : {}) }));
       if (added.length === 0) return m;
-      this.log.info('agent commit', { id: rec.info.id, agent: agentId, hashes: added.map((c) => c.hash) });
+      this.log.info('agent commit', { id: rec.info.id, agent: agentId, dir, hashes: added.map((c) => c.hash) });
       return { ...m, commits: [...m.commits, ...added].slice(-Limits.commitsKept) };
     });
+    return true;
   }
 
   // The agent's activity line (M65): the tool phrase of its latest call,

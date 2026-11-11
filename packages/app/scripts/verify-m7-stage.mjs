@@ -150,6 +150,7 @@ async function main() {
   const pins = fs.existsSync(pinsPath) ? JSON.parse(fs.readFileSync(pinsPath, 'utf8')) : {};
   const lock = JSON.parse(fs.readFileSync(path.resolve(packagesDir, '..', 'package-lock.json'), 'utf8')).packages['node_modules/node-pty'];
   expect(pins.nodePty?.version === lock.version && pins.nodePty?.integrity === lock.integrity, "kit-pins.json carries node-pty's version and integrity from package-lock.json (fix 1083)");
+  expect(['windowsConoutConnection.js', 'worker/conoutSocketWorker.js'].every((f) => fs.readFileSync(path.join(stageCopy, 'node_modules', 'node-pty', 'lib', f), 'utf8').includes('emerald fix 1156')), "the staged node-pty carries fix 1156's shared conout worker");
   if (spawnSync('claude --version', { shell: true, windowsHide: true, timeout: 60_000 }).status !== 0) {
     log("claude is not on PATH; the staged mod's validate was not run");
   } else {

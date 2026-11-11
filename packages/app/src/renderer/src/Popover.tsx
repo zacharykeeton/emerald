@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { anchorRect } from './popover-model.ts';
+import { anchorRect, armsOnMove } from './popover-model.ts';
 import type { Rect } from './popover-model.ts';
 
 // A card that opens off a small reading in a row or a title bar: the
@@ -65,6 +65,9 @@ export interface AnchorState {
     onMouseDown: (ev: { preventDefault: () => void; stopPropagation: () => void }) => void;
     onMouseEnter: () => void;
     onMouseLeave: () => void;
+    // M9 fix 1154: a move over the anchor arms the hover as the enter
+    // does, for an enter lost when the anchor moved under a still pointer.
+    onMouseMove: (ev: { target: EventTarget | null; currentTarget: EventTarget }) => void;
   };
   // The click that pins the card, for an anchor whose own click does
   // something else (a pill that folds its branch) and pins by hover only.
@@ -76,6 +79,9 @@ export function usePopoverAnchor(hover = true): AnchorState {
   const [open, setOpen] = useState<{ pinned: boolean } | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set when the card is closed on purpose (M9 fix 1154), so a move does
+  // not open it again until the pointer leaves or enters.
+  const quiet = useRef(false);
   const clearTimers = () => {
     if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
@@ -105,6 +111,12 @@ export function usePopoverAnchor(hover = true): AnchorState {
     clearTimers();
     setOpen({ pinned: true });
   };
+  const armHover = () => {
+    hoverTimer.current = setTimeout(() => {
+      hoverTimer.current = null;
+      setOpen({ pinned: false });
+    }, HOVER_DELAY_MS);
+  };
   return {
     open: open === null ? undefined : open.pinned ? 'pinned' : 'hover',
     pin,
@@ -119,19 +131,36 @@ export function usePopoverAnchor(hover = true): AnchorState {
       },
       onMouseEnter: () => {
         cancelLeave();
+        quiet.current = false;
         if (!hover || open !== null || hoverTimer.current !== null) return;
-        hoverTimer.current = setTimeout(() => {
-          hoverTimer.current = null;
-          setOpen({ pinned: false });
-        }, HOVER_DELAY_MS);
+        armHover();
       },
       onMouseLeave: () => {
+        quiet.current = false;
         if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
         hoverTimer.current = null;
         startLeave();
       },
+      onMouseMove: (ev) => {
+        // A move over a nested anchor, or inside the card (its portal's
+        // events bubble through the React tree), is not this anchor's.
+        if (!(ev.target instanceof Element) || ev.target.closest('[data-popover-for]') !== ev.currentTarget) return;
+        if (!armsOnMove({ hover, open: open !== null, pending: hoverTimer.current !== null, quiet: quiet.current })) return;
+        armHover();
+      },
     },
-    card: (el, render) => (open !== null && el !== null ? render({ anchor: anchorRect(el), onClose: () => setOpen(null), onEnter: cancelLeave, onLeave: startLeave }) : null),
+    card: (el, render) =>
+      open !== null && el !== null
+        ? render({
+            anchor: anchorRect(el),
+            onClose: () => {
+              quiet.current = true;
+              setOpen(null);
+            },
+            onEnter: cancelLeave,
+            onLeave: startLeave,
+          })
+        : null,
   };
 }
 

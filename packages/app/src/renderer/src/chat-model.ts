@@ -308,11 +308,15 @@ export async function stepModeTo(
 // resolves to the account tier's default and has no name of its own. A
 // model this list does not name gets a ticked row of its own (M9 fix 786,
 // modelItems below), so the list going stale costs a missing pick, never
-// a wrong tick.
+// a wrong tick. M9 fix 1149: the names of the four family rows (opus,
+// sonnet, haiku, fable) are written by scripts/sync-models.mjs from the
+// installed Claude Code's catalog, and docs-commit-check.py refuses a
+// stale list.
 //
 // M9 fix 1100: no `[1m]` rows, read off Claude Code 2.1.319. Opus 5.5,
 // Sonnet 5.5 and Fable 5.1 each have a native 1M window, and a
-// `/model fable[1m]` answers "Set model to Fable 5.1": the status line
+// `/model fable[1m]` answers "Set model to Fable 5.1" (the alias reads
+// Fable 5.2 since 2.1.322): the status line
 // names a 1M pick by its plain name, so a `[1m]` row could never tick.
 // `/model` still takes the three aliases when typed by hand.
 export const MODEL_CHOICES: readonly { alias: string; name: string; line: string }[] = [
@@ -320,7 +324,7 @@ export const MODEL_CHOICES: readonly { alias: string; name: string; line: string
   { alias: 'opus', name: 'Opus 5.5', line: 'Best for everyday, complex tasks' },
   { alias: 'sonnet', name: 'Sonnet 5.5', line: 'Efficient for routine tasks' },
   { alias: 'haiku', name: 'Haiku 5.5', line: 'Fastest for quick answers' },
-  { alias: 'fable', name: 'Fable 5.1', line: 'Most capable for your hardest and longest-running tasks' },
+  { alias: 'fable', name: 'Fable 5.2', line: 'Most capable for your hardest and longest-running tasks' },
   { alias: 'opusplan', name: 'Opus Plan', line: 'Opus in plan mode, else Sonnet' },
 ];
 
@@ -334,10 +338,81 @@ export interface ModelRow {
   line: string;
   checked: boolean;
 }
-export function modelItems(model: string | null, choices: readonly { alias: string; name: string; line: string }[]): ModelRow[] {
-  const rows: ModelRow[] = choices.map((c) => ({ alias: c.alias, name: c.name, line: c.line, checked: c.name === model }));
+// M9 fix 1150: a row's name is the one learned off the status line after a
+// pick of its alias when that name's number is higher than the listed
+// one's, so a Claude Code update that moves an alias heals the row before
+// the next emerald release, and that release's fresher list wins over an
+// old learned name.
+export function modelItems(
+  model: string | null,
+  choices: readonly { alias: string; name: string; line: string }[],
+  learned: Readonly<Record<string, string>> = {},
+): ModelRow[] {
+  const rows: ModelRow[] = choices.map((c) => {
+    const l = learned[c.alias];
+    const name = l !== undefined && learnableName(c.alias, l) && newerNumber(l, c.name) ? l : c.name;
+    return { alias: c.alias, name, line: c.line, checked: name === model };
+  });
   if (model === null || rows.some((r) => r.checked)) return rows;
   return [{ alias: null, name: model, line: CURRENT_MODEL_LINE, checked: true }, ...rows];
+}
+
+// M9 fix 1150: the aliases whose rows learn a newer name. `default` and
+// `opusplan` never learn: `opusplan` lands on an Opus or a Sonnet whose
+// name would double another row.
+export const LEARNED_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'] as const;
+// How long a pick waits for the status line to name a different model
+// before it settles on the model then shown (a pick of the row the
+// session is already on changes nothing).
+export const MODEL_LEARN_MS = 30_000;
+
+// Only the alias's own word capitalised, a space and a number: never a
+// "(1M context)" name, another family's name (a refused switch) or an id.
+export function learnableName(alias: string, name: string): boolean {
+  if (!(LEARNED_ALIASES as readonly string[]).includes(alias)) return false;
+  const word = alias[0]!.toUpperCase() + alias.slice(1);
+  const m = /^([A-Za-z]+) (\d+(?:\.\d+)?)$/.exec(name);
+  return m !== null && m[1] === word;
+}
+
+function nameNumber(name: string): [number, number] | null {
+  const m = /(\d+)(?:\.(\d+))?$/.exec(name);
+  return m === null ? null : [Number(m[1]), m[2] === undefined ? 0 : Number(m[2])];
+}
+
+// True when a's trailing number is higher than b's, major then minor.
+function newerNumber(a: string, b: string): boolean {
+  const x = nameNumber(a);
+  const y = nameNumber(b);
+  if (x === null) return false;
+  if (y === null) return true;
+  return x[0] !== y[0] ? x[0] > y[0] : x[1] > y[1];
+}
+
+// What a pick of an alias learns once it settles: the model now shown when
+// it changed from the one before the pick or the wait ran out, if that
+// name is learnable for the alias; else nothing.
+export function modelToLearn(alias: string, before: string | null, now: string | null, expired: boolean): string | null {
+  if (now === null) return null;
+  if (now === before && !expired) return null;
+  return learnableName(alias, now) ? now : null;
+}
+
+// The learned names as stored, keeping only the pairs learnableName takes.
+export function parseModelNames(raw: string | null): Record<string, string> {
+  if (raw === null) return {};
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, n] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof n === 'string' && learnableName(k, n)) out[k] = n;
+  }
+  return out;
 }
 
 // The levels `/effort` takes, with the bundle's own line for each. `auto`
@@ -1172,9 +1247,10 @@ export function pendingWords(item: PendingItem, now: number, quietSince: number 
 // rather than only as a bubble stuck beside its own words. A key with no
 // bubble of its kind (an empty bare turn, a slash command, the memory
 // key) is never one.
+// M9 fix 1148: a send after a pasted chip carries the key its landed line ends with, the match landedFor makes for its bubble.
 export function strayLanded(seen: ReadonlySet<string>, counts: ReadonlyMap<string, number>, items: readonly PendingItem[]): string[] {
   if (!items.some((p) => p.refusal === null)) return [];
-  return [...counts.keys()].filter((key) => !seen.has(key) && drawsPending(key) && !items.some((p) => p.key === key));
+  return [...counts.keys()].filter((key) => !seen.has(key) && drawsPending(key) && !items.some((p) => p.key === key || (p.tail === true && p.key !== '' && key.endsWith(` ${p.key}`))));
 }
 
 // M9 fix 783: a Ctrl+C within about a second of a turn's Stop left the [Image #N] marker in Claude Code's prompt (fix 748's runs), so the × waits this long after the session leaves working or needs-input.

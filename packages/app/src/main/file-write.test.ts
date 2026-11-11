@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { COPY_PROGRESS_MS, CopyRuns, copyOneFile, copyPaceMs, createFile, STREAM_COPY_MIN_BYTES, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, progressDue, renameEntry, requireAbsolute, sameVolume, trashEntry, walkTree, writeFileText } from './file-write.ts';
+import { BYTE_NOTE_MIN_AVERAGE } from '../renderer/src/files-drop-model.ts';
+import { COPY_PROGRESS_MS, CopyRuns, copyOneFile, copyPaceMs, createFile, STREAM_COPY_BYTE_NOTE_MIN_BYTES, STREAM_COPY_MIN_BYTES, streamFloor, describeWrite, detectEol, encodeText, entryMode, fileStamp, heldTrash, makeFolder, moveEntries, progressDue, renameEntry, requireAbsolute, sameVolume, trashEntry, walkTree, writeFileText } from './file-write.ts';
 
 const BOM = String.fromCharCode(0xfeff);
 // Any stamp, for a save refused before the stat.
@@ -741,6 +742,40 @@ test('copyOneFile streams a file over its threshold in chunks, counting every by
     assert.ok(fs.readFileSync(to2).equals(bytes));
     await assert.rejects(copyOneFile(from, to, { size: 10240, onBytes: () => {}, signal: null, pace: 0, streamAt: 1024, chunk: 1024 }), (err: NodeJS.ErrnoException) => err.code === 'EEXIST');
     assert.equal(STREAM_COPY_MIN_BYTES, 64 * 1024 * 1024);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('streamFloor lowers the stream floor to 8 MB only when the note counts bytes (M9 fix 1153)', () => {
+  assert.equal(STREAM_COPY_BYTE_NOTE_MIN_BYTES, 8 * 1024 * 1024);
+  assert.equal(streamFloor(0, 0), STREAM_COPY_MIN_BYTES);
+  assert.equal(streamFloor(2, 2 * BYTE_NOTE_MIN_AVERAGE), STREAM_COPY_MIN_BYTES);
+  assert.equal(streamFloor(2, 2 * BYTE_NOTE_MIN_AVERAGE + 2), STREAM_COPY_BYTE_NOTE_MIN_BYTES);
+});
+
+test('moveEntries hands copyFile the drop\'s stream floor, 8 MB for files over the byte note\'s average and 64 MB under it (M9 fix 1153)', async () => {
+  const dir = tempDir();
+  try {
+    const run = async (name: string, size: number) => {
+      const srcs = [1, 2].map((i) => {
+        const p = path.join(dir, `${name}${i}.bin`);
+        fs.writeFileSync(p, '');
+        fs.truncateSync(p, size);
+        return p;
+      });
+      const into = path.join(dir, `into-${name}`);
+      fs.mkdirSync(into);
+      const seen: number[] = [];
+      const copyFile = async (_from: string, to: string, o: { streamAt: number }) => {
+        seen.push(o.streamAt);
+        fs.writeFileSync(to, '');
+      };
+      await moveEntries(srcs, into, 'copy', null, { trash: fakeTrash(dir).trash, copyFile });
+      return seen;
+    };
+    assert.deepEqual(await run('big', 51 * 1024 * 1024), [STREAM_COPY_BYTE_NOTE_MIN_BYTES, STREAM_COPY_BYTE_NOTE_MIN_BYTES]);
+    assert.deepEqual(await run('small', 1024), [STREAM_COPY_MIN_BYTES, STREAM_COPY_MIN_BYTES]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

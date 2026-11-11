@@ -1136,9 +1136,20 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
         dragged.current = false;
         const onControl = ev.target instanceof Element && ev.target.closest('button') !== null;
         if (ev.button === 0 && !isRenaming && !isCommenting && !onControl) {
-          startSessionDrag(session.id, ev.nativeEvent, () => {
-            dragged.current = true;
-          });
+          // M9 fix 1151: a drag released anywhere but on this row gets no click
+          // here, so its end clears the flag rather than the next real click.
+          const row = ev.currentTarget;
+          startSessionDrag(
+            session.id,
+            ev.nativeEvent,
+            () => {
+              dragged.current = true;
+            },
+            null,
+            (release) => {
+              dragged.current = release !== null && release.target instanceof Node && row.contains(release.target);
+            },
+          );
         }
       }}
     >

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unionRect } from './popover-model.ts';
+import { unionRect, armsOnMove } from './popover-model.ts';
 
 const rect = (left: number, top: number, width: number, height: number) => ({ left, top, right: left + width, bottom: top + height, width, height });
 
@@ -20,4 +20,13 @@ test('unionRect of one rect is a copy of it', () => {
   const u = unionRect([r]);
   assert.deepEqual(u, r);
   assert.notEqual(u, r);
+});
+
+test('armsOnMove arms a hover on a move only with the hover on, no card open, none pending and no close since the last enter or leave (M9 fix 1154)', () => {
+  const clear = { hover: true, open: false, pending: false, quiet: false };
+  assert.equal(armsOnMove(clear), true);
+  assert.equal(armsOnMove({ ...clear, hover: false }), false);
+  assert.equal(armsOnMove({ ...clear, open: true }), false);
+  assert.equal(armsOnMove({ ...clear, pending: true }), false);
+  assert.equal(armsOnMove({ ...clear, quiet: true }), false);
 });

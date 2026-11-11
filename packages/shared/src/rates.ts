@@ -18,6 +18,12 @@ import { tokensUp } from './session.ts';
 // M9 fix 464: Opus 4.8's row, which this box has run, read off the
 // pricing table on 2026-09-28 ($5 fresh, $25 output, the same as Opus 5,
 // so its cache rates are Opus 5's).
+// M9 fix 1149: every row's numbers are written by scripts/sync-models.mjs
+// from the installed Claude Code's own catalog (its pricing_tiers), and
+// docs-commit-check.py refuses a stale table. Haiku 5.5 bills a prompt
+// over 100,000 tokens at five times its base rates, which this table does
+// not carry, so the card under-prices such a request and says so through
+// the stale note.
 
 export interface ModelRates {
   family: string;
@@ -35,6 +41,9 @@ export const MODEL_RATES: readonly ModelRates[] = [
   { family: 'Opus 5.5', fresh: 4, cacheWrite: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20 },
   { family: 'Sonnet 5', fresh: 2, cacheWrite: 2.5, cacheWrite1h: 4, cacheRead: 0.2, output: 10 },
   { family: 'Haiku 4.5', fresh: 1, cacheWrite: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5 },
+  { family: 'Sonnet 5.5', fresh: 2, cacheWrite: 2.5, cacheWrite1h: 4, cacheRead: 0.1, output: 10 },
+  { family: 'Haiku 5.5', fresh: 0.1, cacheWrite: 0.125, cacheWrite1h: 0.2, cacheRead: 0.01, output: 0.5 },
+  { family: 'Fable 5.2', fresh: 8, cacheWrite: 10, cacheWrite1h: 16, cacheRead: 0.2, output: 40 },
 ];
 
 // Every family's first word, for modelWord's fallback below; deduped,
@@ -86,6 +95,11 @@ export function ratesFor(model: string | null): ModelRates | null {
 // the family word ("sonnet 4.5") is a different, unlisted family and
 // stays null throughout, since it is not the bare-integer shape a new
 // release wears.
+// M9 fix 1150: the number may be dotted ("Fable 5.3"), and it reads the
+// family word only when it is higher than every row of that family, so a
+// newer release says its family while an older or between-rows model
+// ("sonnet 4.5" against Sonnet 5, "Opus 4.9" against Opus 4.8 to 5.5)
+// still reads null, since the table simply does not carry it.
 export function modelWord(model: string | null): string | null {
   const rates = ratesFor(model);
   if (rates !== null) return rates.family.split(' ')[0]!;
@@ -96,11 +110,27 @@ export function modelWord(model: string | null): string | null {
     .filter((w) => w.length > 0);
   for (let i = 0; i < words.length - 1; i++) {
     const word = words[i]!;
-    if (FAMILY_WORDS.includes(word) && /^\d+$/.test(words[i + 1]!)) {
-      return word[0]!.toUpperCase() + word.slice(1);
-    }
+    const n = versionOf(words[i + 1]!);
+    if (!FAMILY_WORDS.includes(word) || n === null) continue;
+    const newest = MODEL_RATES.filter((r) => r.family.split(' ')[0]!.toLowerCase() === word).every((r) => {
+      const v = versionOf(r.family.split(' ')[1] ?? '');
+      return v === null || n[0] > v[0] || (n[0] === v[0] && n[1] > v[1]);
+    });
+    if (newest) return word[0]!.toUpperCase() + word.slice(1);
   }
   return null;
+}
+
+// "5" or "5.3" as [major, minor]; null for anything else.
+function versionOf(s: string): [number, number] | null {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(s);
+  return m === null ? null : [Number(m[1]), m[2] === undefined ? 0 : Number(m[2])];
+}
+
+// The context card's line for a model the table has no row for (M9 fix
+// 1150), in the place the priced card's own-figure line takes.
+export function unpricedText(model: string): string {
+  return `${model} is not in our rate table, so the parts carry no dollars; Claude Code's own figure below still counts it`;
 }
 
 // The model's full name for a card (M9 fix 821): the family and its number

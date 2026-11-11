@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionInfo } from '@emerald/shared';
-import { actionGroup, actionKey, actionRows, chordsText, isActionQuery, matchSession, moveHighlight, orderRows, pickRows, rankSessions, segments, subsequence, waitText } from './palette-model.ts';
+import { actionGroup, actionKey, actionRows, chordsText, isActionQuery, matchSession, moveHighlight, noteRows, orderRows, pickRows, rankSessions, segments, subsequence, waitText } from './palette-model.ts';
 import { BINDINGS } from './keys-model.ts';
 import { sessionPaneMenu } from './pane-menu-model.ts';
 import { aSession } from './test-support.ts';
@@ -201,4 +201,16 @@ test('M9 fix 1087: Add a remote host… is listed once something is typed, on th
   assert.deepEqual(pickRows('>remote', picks768(null)), []);
   assert.deepEqual(pickRows('>', withHost), []);
   assert.equal(pickRows('>shell:', withHost).some((r) => r.kind === 'host'), false);
+});
+
+test('noteRows lists Cancel the copy while a copy note is up, under Copy, on a bare > and on its letters (M9 fix 1153)', () => {
+  const text = 'Copying 1 of 2 files into x';
+  assert.deepEqual(noteRows('>', null), []);
+  assert.deepEqual(noteRows('>', text), [{ kind: 'note', label: 'Cancel the copy', detail: text, match: null }]);
+  const hit = noteRows('>cancel', text);
+  assert.equal(hit.length, 1);
+  assert.deepEqual(hit[0]!.match?.indices, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(noteRows('>split', text), []);
+  assert.equal(actionGroup(noteRows('>', text)[0]!), 'Copy');
+  assert.equal(actionKey(noteRows('>', text)[0]!), 'note:cancel-copy');
 });

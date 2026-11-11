@@ -130,7 +130,9 @@ export type ActionRow =
   | { kind: 'shell'; shell: ShellId; checked: boolean; label: string; detail: string; match: Match | null }
   | { kind: 'scheme'; scope: 'session' | 'window'; scheme: string | null; checked: boolean; label: string; detail: string; match: Match | null }
   // M9 fix 1087: Add a remote host…, which opens the empty pane's host box.
-  | { kind: 'host'; label: string; detail: string; match: Match | null };
+  | { kind: 'host'; label: string; detail: string; match: Match | null }
+  // M9 fix 1153: the corner note's Cancel, listed while a copy note carries one.
+  | { kind: 'note'; label: string; detail: string; match: Match | null };
 
 export interface PaneForActions {
   // The focused pane's session name or view name, shown after the label.
@@ -213,6 +215,15 @@ export function pickRows(query: string, picks: PalettePicks): ActionRow[] {
   return [...shellRows, ...sessionRows, ...windowRows, ...hostRows];
 }
 
+// M9 fix 1153: Cancel the copy, the keyboard's way to the copy note's
+// Cancel, its detail the note's text. note is that text while a copy note
+// with a Cancel is up, else null and no row. Listed on a bare > too.
+export function noteRows(query: string, note: string | null): ActionRow[] {
+  if (note === null) return [];
+  const q = (isActionQuery(query) ? query.slice(ACTION_PREFIX.length) : query).trim();
+  return matchRows(q, ['Cancel the copy'], (l) => l, (l, match): ActionRow => ({ kind: 'note', label: l, detail: note, match }));
+}
+
 export function actionGroup(row: ActionRow): string {
   switch (row.kind) {
     case 'key': return 'Keys';
@@ -220,6 +231,7 @@ export function actionGroup(row: ActionRow): string {
     case 'shell': return 'Shell';
     case 'scheme': return 'Terminal colours';
     case 'host': return 'Remote';
+    case 'note': return 'Copy';
   }
 }
 
@@ -230,6 +242,7 @@ export function actionKey(row: ActionRow): string {
     case 'shell': return `shell:${row.shell}`;
     case 'scheme': return `scheme:${row.scope}:${row.scheme ?? ''}`;
     case 'host': return 'host:add-host';
+    case 'note': return 'note:cancel-copy';
   }
 }
 

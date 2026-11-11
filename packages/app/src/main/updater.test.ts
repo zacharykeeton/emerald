@@ -39,7 +39,7 @@ class FakeUpdater extends EventEmitter implements UpdaterLike {
   }
 }
 
-function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0.0.1:7420/' }, intervalMs = 4 * 3600 * 1000, extra: { inApp?: boolean; openRelease?: (v: string) => void } = {}) {
+function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0.0.1:7420/' }, intervalMs = 4 * 3600 * 1000, extra: { inApp?: boolean; openRelease?: (v: string) => void; installerExists?: (file: string) => boolean } = {}) {
   const fake = new FakeUpdater();
   const pushed: UpdateState[] = [];
   const log: string[] = [];
@@ -55,8 +55,8 @@ function setup(feed: FeedSpec | null = { provider: 'generic', url: 'http://127.0
     stopDaemon: async () => {
       order.push('daemon stopped');
     },
-    markInstalling: (version) => {
-      order.push(`marked ${version}`);
+    markInstalling: (version, installer) => {
+      order.push(`marked ${version}${typeof installer === 'string' ? ` ${installer}` : ''}`);
     },
     postPoster: (version) => {
       order.push(`posted ${version}`);
@@ -195,6 +195,34 @@ test('the download runs on its own, ready follows, and the one click marks the i
   // A second click while installing does nothing more.
   await updater.act();
   assert.deepEqual(fake.calls, ['download', 'install true true']);
+});
+
+test('a click whose installer is gone downloads it again and installs nothing until the next click (M9 fix 1141)', async () => {
+  let present = false;
+  const { fake, updater, order, log } = setup(undefined, undefined, { installerExists: () => present });
+  const file = 'C:\\c\\pending\\Emerald-setup-0.1.240-arm64.exe';
+  fake.emit('update-available', { version: '0.1.240' });
+  fake.emit('update-downloaded', { version: '0.1.240', downloadedFile: file });
+  assert.equal(updater.state().phase, 'ready');
+
+  await updater.act();
+  // Nothing written, no word, no daemon stop, no install: a download.
+  assert.deepEqual(order, []);
+  assert.deepEqual(fake.calls, ['download', 'download']);
+  assert.equal(updater.state().phase, 'downloading');
+  assert.ok(log.includes(`updater: the installer of 0.1.240 is gone (${file}); downloading it again for the next click`));
+
+  // The download lands: ready again, and nothing installs on its own.
+  fake.emit('update-downloaded', { version: '0.1.240', downloadedFile: file });
+  assert.equal(updater.state().phase, 'ready');
+  assert.deepEqual(fake.calls, ['download', 'download']);
+
+  present = true;
+  await updater.act();
+  assert.equal(updater.state().phase, 'installing');
+  // M9 fix 1142: the marker names the installer the click runs.
+  assert.deepEqual(order, [`marked 0.1.240 ${file}`, 'posted 0.1.240', 'daemon stopped']);
+  assert.equal(fake.calls.at(-1), 'install true true');
 });
 
 test('a differential download that finishes with no progress event stays null rather than a frozen 0% (M9 fix 296)', async () => {

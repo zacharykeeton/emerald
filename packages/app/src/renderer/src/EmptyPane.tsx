@@ -13,7 +13,8 @@ import type { ClaudeAuth, SessionInfo, ShellId } from '@emerald/shared';
 import { normalizeFolder } from './new-session-model.ts';
 import { Menu, menuOpen } from './Menu.tsx';
 import { HostChip } from './HostChip.tsx';
-import { ACTION_PREFIX, actionGroup, actionKey, actionRows, isActionQuery, moveHighlight, orderRows, pickRows, rankSessions, segments, waitText } from './palette-model.ts';
+import { ACTION_PREFIX, actionGroup, actionKey, actionRows, isActionQuery, moveHighlight, noteRows, orderRows, pickRows, rankSessions, segments, waitText } from './palette-model.ts';
+import { copyCancelIn, noteIn } from './copy-note.ts';
 import type { ActionRow, Match } from './palette-model.ts';
 import { paneMenuOf } from './pane-menus.ts';
 import { lastFolder, loadRecent } from './recent-folders.ts';
@@ -62,6 +63,9 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
   const { sessions, layout, daemon, remoteHosts, hosts } = useStore('sessions', 'layout', 'daemon', 'remoteHosts', 'hosts');
   const schemeState = useScheme();
   const { pickerPaneId, pickerActions, sidebarOrder, attention, splitFolder, zoomedPaneId, splitOfferPaneId } = useUi();
+  // M9 fix 1153: a copy note's Cancel, listed in the palette as Cancel the copy.
+  const { cornerNote } = useUi();
+  const copyCancel = copyCancelIn(cornerNote);
   // M9 fix 1132: a pane that starts something or closes takes the split offer with it.
   useEffect(
     () => () => {
@@ -285,11 +289,19 @@ export function EmptyPane({ paneId, onDone, showSplits = false, onlyPane = false
           session: paneSession === undefined ? null : { own: paneSession.scheme ?? null },
           addHost: showSplits,
         }),
+        // Last, so Enter on a bare > still runs the first key.
+        ...noteRows(query, copyCancel === null ? null : noteIn(cornerNote, null)),
       ]
     : [];
   const count = actionMode ? actions.length : rows.length;
   const current = Math.min(highlighted, Math.max(0, count - 1));
   const runRow = (row: ActionRow) => {
+    // M9 fix 1153: Cancel the copy runs the note's own Cancel.
+    if (row.kind === 'note') {
+      onDone();
+      copyCancel?.run();
+      return;
+    }
     // Add a remote host… (M9 fix 1087) empties the box and opens the host box.
     if (row.kind === 'host') {
       setQuery('');
@@ -920,7 +932,7 @@ Double-click to start here`}
               </span>
             )}
           </div>
-          {/* M9 fix 1132: the one-time offer after three splits a day each followed by a Claude start; Yes sets the split default and starts nothing here. */}
+          {/* M9 fix 1132: the one-time offer after three splits, over any days, each followed by a Claude start; Yes sets the split default and starts nothing here. */}
           {splitOfferPaneId === paneId && (
             <div className="empty-row empty-split-offer">
               <span className="muted empty-split-offer-text">Always start a Claude on a split?</span>
@@ -1117,7 +1129,7 @@ function ActionPaletteRow({ row, heading, highlighted, onHover, onPick }: { row:
       <button
         className={`action-row${highlighted ? ' highlighted' : ''}`}
         data-kind={row.kind}
-        data-action={row.kind === 'key' ? row.action : row.kind === 'host' ? 'add-host' : undefined}
+        data-action={row.kind === 'key' ? row.action : row.kind === 'host' ? 'add-host' : row.kind === 'note' ? 'cancel-copy' : undefined}
         data-run={row.kind === 'pane' ? row.run : undefined}
         data-shell={row.kind === 'pane' || row.kind === 'shell' ? row.shell : undefined}
         data-scope={row.kind === 'scheme' ? row.scope : undefined}

@@ -25,6 +25,9 @@ export interface InstallMarker {
   version: string;
   // When the click landed, an ISO string like installed.json's.
   at: string;
+  // The pending installer the click ran (M9 fix 1142); absent on a marker
+  // written by 0.1.1115 or older, which reads as before.
+  installer?: string;
 }
 
 // How long a marker counts as an install in progress. The install takes
@@ -39,9 +42,16 @@ export const INSTALL_MS = 60 * 1000;
 // 'none': no marker, or not one this module wrote.
 export type GapState = 'gap' | 'fresh' | 'none';
 
-export function gapState(marker: InstallMarker | null, version: string, now: number): GapState {
+// M9 fix 1142: a marker whose installer is no longer on disk has no
+// install behind it (a running installer holds its own exe open, so it
+// cannot be deleted under it, and the new build's sweep removes it only
+// after connect), so it is spent at once rather than after three minutes.
+// Read from the file, never the process list, which meets the antivirus
+// hold at launch.
+export function gapState(marker: InstallMarker | null, version: string, now: number, exists: (file: string) => boolean = fs.existsSync): GapState {
   if (marker === null) return 'none';
   if (marker.version === version) return 'fresh';
+  if (typeof marker.installer === 'string' && !exists(marker.installer)) return 'fresh';
   const at = Date.parse(marker.at);
   if (Number.isNaN(at) || now - at >= GAP_MS) return 'fresh';
   return 'gap';
@@ -66,14 +76,15 @@ export function gapNotice(marker: InstallMarker, now: number): { title: string; 
 
 export function readMarker(file: string): InstallMarker | null {
   try {
-    const o = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; at?: unknown };
+    const o = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; at?: unknown; installer?: unknown };
     if (typeof o.version !== 'string' || typeof o.at !== 'string') return null;
-    return { version: o.version, at: o.at };
+    return { version: o.version, at: o.at, ...(typeof o.installer === 'string' ? { installer: o.installer } : {}) };
   } catch {
     return null;
   }
 }
 
-export function writeMarker(file: string, version: string, now: number): void {
-  fs.writeFileSync(file, JSON.stringify({ version, at: new Date(now).toISOString() }) + '\n');
+export function writeMarker(file: string, version: string, now: number, installer?: string | null): void {
+  const marker: InstallMarker = { version, at: new Date(now).toISOString(), ...(typeof installer === 'string' ? { installer } : {}) };
+  fs.writeFileSync(file, JSON.stringify(marker) + '\n');
 }

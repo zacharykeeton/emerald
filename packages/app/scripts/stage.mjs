@@ -78,6 +78,11 @@ export function stage({ arch = 'arm64', platform = process.platform } = {}) {
   require(path.join(shared, 'dist', 'index.js'), 'run npm run build at the repo root');
   if (prebuild !== null) require(path.join(nodePty, 'prebuilds', prebuild, 'pty.node'), 'npm install did not fetch node-pty 1.1.0');
   else require(path.join(nodePty, 'build', 'Release', 'pty.node'), 'npm ci did not build node-pty (install build-essential and python3)');
+  // M9 fix 1156: the root postinstall lays one shared conout worker over node-pty's worker per pty; a stage without it ships a daemon at about 11 MB more a pty.
+  for (const rel of ['windowsConoutConnection.js', 'worker/conoutSocketWorker.js']) {
+    const f = path.join(nodePty, 'lib', rel);
+    if (!fs.existsSync(f) || !fs.readFileSync(f, 'utf8').includes('emerald fix 1156')) throw new Error("node-pty's conout files are not emerald's (run node scripts/patch-node-pty.mjs at the repo root, fix 1156)");
+  }
 
   fs.rmSync(stageDir, { recursive: true, force: true });
 

@@ -6,6 +6,8 @@ import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
 import { CHAT_MODES, CHAT_MODE_WORDS, CHAT_REREAD_MS, CHIP_SETTLE_MS, EFFORT_LEVELS, EFFORT_LINES, FALLBACK_ON_GROWTH, IMAGE_PASTE_KEY, MODEL_CHOICES, MODE_CHOICES, QUEUE_PICK, SCREEN_READ_MS, agentChipText, askHeading, drawsPending, effortShown, fileHref, filterMention, filterSlash, hintText, inputHolds, isImageName, landedCounts, mentionQuery, mentionText, modelChipText, modelItems, modeOf, nextChatMode, opensMenu, pastedPath, pendingAfter, pendingItem, pendingWords, freshImage, freshPaste, pasteChipLabel, pastesOnly, promptRowMarked, promptRowImages, relativeMention, sessionDiff, slashQuery, slashRows, spinnerOf, stepModeTo, timelineItems, imageOnlyPrompt, viewChipShown, foldText, placeholderFirstLine } from './chat-model.ts';
 // M9 fix 797, on a line of its own so the chat branches' imports do not meet.
 import { shellWords } from './chat-model.ts';
+import { LEARNED_ALIASES, MODEL_LEARN_MS, modelToLearn } from './chat-model.ts';
+import { loadModelNames, rememberModelName } from './model-names.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
 // M9 fix 1005, the side strip.
 import { BTW_OPEN_MS, SIDE_CLOSE_MS, SIDE_STILL_OPEN, sideCloseSends } from './chat-model.ts';
@@ -995,18 +997,60 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number } | null>(null);
   const [effortPick, setEffortPick] = useState<{ level: string; assistants: number; live: string | null } | null>(null);
   useEffect(() => setEffortPick(null), [session.id]);
+  // M9 fix 1150: a pick of a family alias learns the name the status line
+  // shows next, or the one shown when MODEL_LEARN_MS runs out (a pick of
+  // the model the session is already on), so the row heals when Claude
+  // Code moves the alias. Loaded at mount and at every open, so a name
+  // another window learned shows at the next open.
+  const [modelNames, setModelNames] = useState<Record<string, string>>(() => loadModelNames());
+  const modelNow = useRef(session.model);
+  modelNow.current = session.model;
+  const learnRef = useRef<{ alias: string; before: string | null; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const settleLearn = (expired: boolean) => {
+    const p = learnRef.current;
+    if (p === null) return;
+    clearTimeout(p.timer);
+    learnRef.current = null;
+    const name = modelToLearn(p.alias, p.before, modelNow.current, expired);
+    if (name !== null) setModelNames(rememberModelName(p.alias, name));
+  };
+  const settleRef = useRef(settleLearn);
+  settleRef.current = settleLearn;
+  useEffect(() => {
+    const p = learnRef.current;
+    if (p !== null && session.model !== p.before) settleRef.current(false);
+  }, [session.model]);
+  useEffect(
+    () => () => {
+      if (learnRef.current !== null) clearTimeout(learnRef.current.timer);
+      learnRef.current = null;
+    },
+    [session.id],
+  );
   const openModelMenu = () => {
     const el = modelChipRef.current;
     if (el === null) return;
     const r = el.getBoundingClientRect();
+    setModelNames(loadModelNames());
     setModelMenu((open) => (open === null ? { x: r.left, y: r.top } : null));
   };
   const pickModel = (alias: string) => {
     setModelMenu(null);
+    const before = session.model;
+    const sid = session.id;
     void inputFirst().then((ok) => {
       if (ok)
-        void sendPrompt(session.id, `/model ${alias}`).then((outcome) => {
-          if (outcome.kind === 'refused') setRefusal(outcome.reason);
+        void sendPrompt(sid, `/model ${alias}`).then((outcome) => {
+          if (outcome.kind === 'refused') {
+            setRefusal(outcome.reason);
+            return;
+          }
+          if (!(LEARNED_ALIASES as readonly string[]).includes(alias)) return;
+          if (learnRef.current !== null) clearTimeout(learnRef.current.timer);
+          const timer = setTimeout(() => settleRef.current(true), MODEL_LEARN_MS);
+          learnRef.current = { alias, before, timer };
+          // The status line can land before the send resolves.
+          if (modelNow.current !== before) settleRef.current(false);
         });
     });
   };
@@ -1025,7 +1069,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   const modelText = modelChipText(contextWords(session), shownEffort);
   const modelMenuItems: Array<MenuItem | MenuHeading | MenuSegments> = [
     { heading: 'Model' },
-    ...modelItems(session.model, MODEL_CHOICES).map(({ alias, name, line, checked }) => (alias === null ? { label: name, line, checked, disabled: true, onClick: () => {} } : { label: name, line, checked, onClick: () => pickModel(alias) })),
+    ...modelItems(session.model, MODEL_CHOICES, modelNames).map(({ alias, name, line, checked }) => (alias === null ? { label: name, line, checked, disabled: true, onClick: () => {} } : { label: name, line, checked, onClick: () => pickModel(alias) })),
     {
       segments: 'Effort',
       separator: true,
@@ -1726,10 +1770,14 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 data-open={modeMenu !== null || undefined}
                 data-busy={busy || undefined}
                 onMouseDown={keepKeys}
-                title={modePending !== null ? `Switching to ${modePending}` : 'Permission mode; pick one from the list'}
+                title={modePending !== null ? `Switching to ${modePending}` : `${mode}: permission mode; pick one from the list`}
                 onClick={openModeMenu}
               >
-                <span className="chat-chip-word">{modePending ?? mode}</span>
+                {/* M9 fix 1147: the word in a lead and a rest, so a narrow pane shows the lead alone; the textContent is the word whole. */}
+                <span className="chat-chip-word">
+                  <span className="chat-chip-lead">{(modePending ?? mode ?? '').replace(/ .*$/, '')}</span>
+                  <span className="chat-chip-rest">{(modePending ?? mode ?? '').replace(/^[^ ]*/, '')}</span>
+                </span>
                 <span className="chat-chip-caret" aria-hidden="true">
                   <ChevronIcon />
                 </span>
@@ -1738,6 +1786,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             {modeMenu !== null && (
               <Menu x={modeMenu.x} y={modeMenu.y} above items={modeItems} onClose={() => setModeMenu(null)} className="chat-mode-menu" data={{ menu: 'chat-mode' }} anchor={modeChipRef.current} />
             )}
+            {/* M9 fix 1147: modelText in two parts, so a narrow pane hides the effort; the words are modelChipText's. */}
             {modelText !== null && (
               <button
                 ref={modelChipRef}
@@ -1746,10 +1795,13 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
                 data-chip="model"
                 data-open={modelMenu !== null || undefined}
                 onMouseDown={keepKeys}
-                title="Model and effort. A model pick is saved as your default for new sessions, as /model does."
+                title={`${modelText}: model and effort. A model pick is saved as your default for new sessions, as /model does.`}
                 onClick={openModelMenu}
               >
-                <span className="chat-chip-word">{modelText}</span>
+                <span className="chat-chip-word">
+                  <span className="chat-chip-lead">{contextWords(session) ?? ''}</span>
+                  {shownEffort !== null && <span className="chat-chip-rest">{` · ${shownEffort}`}</span>}
+                </span>
                 <span className="chat-chip-caret" aria-hidden="true">
                   <ChevronIcon />
                 </span>
@@ -1779,8 +1831,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               </button>
             )}
             {showViewChip && (
-              <button ref={viewChipRef} type="button" className="chat-chip" data-chip="view" data-open={viewMenu !== null || undefined} onMouseDown={keepKeys} title="What the timeline shows (Ctrl+O)" onClick={openViewMenu}>
-                <span className="chat-chip-word">{CHAT_MODE_WORDS[view]}</span>
+              <button ref={viewChipRef} type="button" className="chat-chip" data-chip="view" data-open={viewMenu !== null || undefined} onMouseDown={keepKeys} title={`${CHAT_MODE_WORDS[view]}: what the timeline shows (Ctrl+O)`} onClick={openViewMenu}>
+                <span className="chat-chip-word">
+                  <span className="chat-chip-lead">{CHAT_MODE_WORDS[view].slice(0, 1)}</span>
+                  <span className="chat-chip-rest">{CHAT_MODE_WORDS[view].slice(1)}</span>
+                </span>
                 <span className="chat-chip-caret" aria-hidden="true">
                   <ChevronIcon />
                 </span>
@@ -1809,12 +1864,12 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             )}
             <span className="chat-hint">{hint}</span>
             {working && (
-              <button type="button" className="secondary chat-stop" title="Sends Escape to the session" onClick={stop}>
-                Stop
+              <button type="button" className="secondary chat-stop" aria-label="Stop" title="Sends Escape to the session" onClick={stop}>
+                <span className="chat-stop-word">Stop</span>
               </button>
             )}
-            <button type="button" className="chat-send" disabled={(box.trim() === '' && chips.length === 0) || asking} onClick={() => sendBox()}>
-              Send ⏎
+            <button type="button" className="chat-send" aria-label="Send" disabled={(box.trim() === '' && chips.length === 0) || asking} onClick={() => sendBox()}>
+              <span className="chat-send-word">{'Send '}</span>⏎
             </button>
           </div>
         </div>

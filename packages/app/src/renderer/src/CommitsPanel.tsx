@@ -1241,7 +1241,7 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
     const label = replay === undefined ? live : replay.working ? { text: 'working', tone: 'working' as const } : { text: 'idle', tone: 'idle' as const };
     return (
       <>
-        <div ref={ref} className="commits-row commits-agent-row" data-session={item.sessionId} data-working={working ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-tone={label.tone} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
+        <div ref={ref} className="commits-row commits-agent-row" data-session={item.sessionId} data-working={working ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-beyond={item.beyond === true ? '' : undefined} data-tone={label.tone} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
           <span className="commits-wash" />
           {model !== null && <span className="commits-agent-model">{model}</span>}
           <span className="commits-agent-status" data-tone={label.tone}>
@@ -1267,7 +1267,7 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
   const elapsed = working ? formatDuration(member.startedAt, now) : formatDuration(member.startedAt, member.endedAt ?? now);
   return (
     <>
-      <div ref={ref} className="commits-row commits-agent-row" data-member={member.id} data-session={item.sessionId} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
+      <div ref={ref} className="commits-row commits-agent-row" data-member={member.id} data-session={item.sessionId} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-beyond={item.beyond === true ? '' : undefined} data-replay={replay === undefined ? undefined : replay.shown ? 'shown' : 'dim'} data-replay-spans={replay?.spans} style={style} {...popoverData} {...handlers}>
         <span className="commits-wash" />
         {model !== null && <span className="commits-agent-model">{model}</span>}
         <span className="commits-agent-status">{working ? 'working' : 'idle'}</span>
@@ -1822,6 +1822,8 @@ function CommitRow({ item, write, ownerName, color, branch, defaultBranch, now, 
         setHover(false);
         card.handlers.onMouseLeave();
       }}
+      // The rows move under a still pointer as the lanes do (M9 fix 1154).
+      onMouseMove={card.handlers.onMouseMove}
       // A chromeless pane (M9 fix 179) has no row menu: the right-click
       // is the pane's, so the event goes on up.
       onContextMenu={(ev) => {

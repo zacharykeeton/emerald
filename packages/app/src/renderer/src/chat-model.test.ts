@@ -8,6 +8,7 @@ import type { SlashRow } from './chat-model.ts';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { freshPaste, pasteChipLabel, pastedMarkers, pastesOnly, promptRowPastes } from './chat-model.ts';
 import { rcOf, rcUrlOf, sideCloseSends } from './chat-model.ts';
+import { modelToLearn, parseModelNames } from './chat-model.ts';
 
 test('chatPanes: the pairs round trip, and a corrupt entry reads as nothing', () => {
   const panes = new Map([
@@ -570,12 +571,38 @@ test('modelItems: a listed name ticks its row; an unlisted one comes first, tick
   const newer = modelItems('Opus 5.6', MODEL_CHOICES);
   assert.equal(newer[0]!.name, 'Opus 5.6');
   assert.equal(newer.find((r) => r.name === 'Opus 5.5')!.checked, false);
-  const fable = modelItems('Fable 5.1', MODEL_CHOICES);
+  const fable = modelItems('Fable 5.2', MODEL_CHOICES);
   assert.equal(fable.length, 6);
-  assert.deepEqual(fable.filter((r) => r.checked).map((r) => r.name), ['Fable 5.1']);
+  assert.deepEqual(fable.filter((r) => r.checked).map((r) => r.name), ['Fable 5.2']);
+  // M9 fix 1149: Fable 5.1 is no longer the listed name, so it reads as Current model.
+  const older = modelItems('Fable 5.1', MODEL_CHOICES);
+  assert.equal(older.length, 7);
+  assert.equal(older[0]!.line, 'Current model');
   const none = modelItems(null, MODEL_CHOICES);
   assert.equal(none.length, 6);
   assert.ok(none.every((r) => !r.checked));
+});
+
+// M9 fix 1150: a row learns its alias's newer name, kept per profile.
+test('modelItems with learned names, parseModelNames and modelToLearn', () => {
+  const learned = modelItems('Fable 5.3', MODEL_CHOICES, { fable: 'Fable 5.3' });
+  assert.equal(learned.length, 6);
+  assert.equal(learned.find((r) => r.alias === 'fable')!.name, 'Fable 5.3');
+  assert.deepEqual(learned.filter((r) => r.checked).map((r) => r.name), ['Fable 5.3']);
+  assert.ok(learned.every((r) => r.line !== 'Current model'));
+  // The release's fresher list wins over an older learned name.
+  assert.equal(modelItems(null, MODEL_CHOICES, { fable: 'Fable 5.1' }).find((r) => r.alias === 'fable')!.name, 'Fable 5.2');
+  assert.deepEqual(parseModelNames(null), {});
+  assert.deepEqual(parseModelNames('x'), {});
+  assert.deepEqual(
+    parseModelNames('{"fable":"Fable 5.3","opusplan":"Opus 5.5","opus":"Sonnet 5.5","haiku":"Haiku 6","sonnet":"Sonnet 5.5 (1M context)"}'),
+    { fable: 'Fable 5.3', haiku: 'Haiku 6' },
+  );
+  assert.equal(modelToLearn('fable', 'Opus 5.5', 'Fable 5.3', false), 'Fable 5.3');
+  assert.equal(modelToLearn('fable', 'Fable 5.2', 'Fable 5.2', true), 'Fable 5.2');
+  assert.equal(modelToLearn('fable', 'Fable 5.2', 'Fable 5.2', false), null, 'nothing yet');
+  assert.equal(modelToLearn('fable', 'Opus 5.5', 'Opus 5.5', true), null);
+  assert.equal(modelToLearn('opusplan', 'Sonnet 5.5', 'Opus 5.5', false), null);
 });
 
 // M9 fix 785: the view chip waits for a step the mode changes.
@@ -727,6 +754,14 @@ test('strayLanded: a new key no waiting send carries, never a seen one, a matche
   assert.deepEqual(strayLanded(new Set(), new Map([['echo x', 1]]), [item]), []);
   assert.deepEqual(strayLanded(new Set([wrapped]), new Map([[wrapped, 1]]), [item]), []);
   assert.deepEqual(strayLanded(new Set(), new Map([['', 1], ['/model opus', 1]]), [item]), []);
+});
+
+test('strayLanded: a send after a pasted chip matches a landed key ending in its words, as its bubble does (M9 fix 1148)', () => {
+  const tail = pendingItem(2, 'echo y', 0, [], new Map(), true);
+  assert.deepEqual(strayLanded(new Set(), new Map([['line one line two echo y', 1]]), [tail]), []);
+  assert.deepEqual(strayLanded(new Set(), new Map([['xecho y', 1]]), [tail]), ['xecho y']);
+  const plain = pendingItem(3, 'echo y', 0, [], new Map());
+  assert.deepEqual(strayLanded(new Set(), new Map([['line one echo y', 1]]), [plain]), ['line one echo y']);
 });
 
 // M9 fix 778: the carry helper's read of Claude Code's input.

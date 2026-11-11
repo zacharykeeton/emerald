@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Layout } from '@emerald/shared';
-import { closeOldOffer, normalizeFolder, panesShowing, rememberFolder, splitArgs } from './new-session-model.ts';
+import { closeOldOffer, normalizeFolder, panesShowing, rememberFolder, replacedFate, splitArgs } from './new-session-model.ts';
 
 test('splitArgs splits on whitespace and drops empties', () => {
   assert.deepEqual(splitArgs(''), []);
@@ -54,4 +54,13 @@ test('closeOldOffer offers the box over a live Claude alone, unticked when it is
   } as Layout;
   assert.equal(panesShowing(layout, 'x'), 2);
   assert.equal(panesShowing(layout, 'y'), 0);
+});
+
+test('replacedFate keeps, closes or forgets the replaced session by the box and its state at Start (M9 fix 1146)', () => {
+  assert.equal(replacedFate(true, { state: 'idle' }), 'retire');
+  assert.equal(replacedFate(true, { state: 'working' }), 'retire');
+  assert.equal(replacedFate(true, { state: 'exited' }), 'forget');
+  assert.equal(replacedFate(false, { state: 'exited' }), 'keep');
+  assert.equal(replacedFate(false, { state: 'idle' }), 'keep');
+  assert.equal(replacedFate(true, undefined), 'keep');
 });

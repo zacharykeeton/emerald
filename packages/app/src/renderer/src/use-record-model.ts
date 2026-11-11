@@ -130,6 +130,18 @@ export function viewDiff(
   return { lines, openedAt: next };
 }
 
+// The open times after the adopt moved the tabs to another key (M9 fix 1144):
+// a view open across it keeps its clock, one that is new starts at `now`.
+export function rebaseline(
+  after: ReadonlyMap<string, UseView>,
+  openedAt: ReadonlyMap<string, number>,
+  now: number,
+): Map<string, number> {
+  const next = new Map<string, number>();
+  for (const key of after.keys()) next.set(key, openedAt.get(key) ?? now);
+  return next;
+}
+
 // One record per synchronous turn: the first take passes, every later one
 // before the scheduled clear is refused. A menu pick that runs splitHere
 // which runs another recorded function is one line, not two.

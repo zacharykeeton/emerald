@@ -216,3 +216,20 @@ export function sweepLine(outcome: SweepOutcome, when: string): string {
 export function sweepGiveUpLine(version: string): string {
   return `updater cache: could not remove pending ${version} on the retry; the next launch's sweep takes it`;
 }
+
+// M9 fix 1143: a packed build at the pending version run by a script that
+// forgot a private LOCALAPPDATA swept the person's own download (the
+// install of 0.1.1115). Under a private EMERALD_HOME (non-blank, the rule
+// of namedHome in pipe-name.ts) the sweep runs only on a cache inside that
+// home, which is where verify:install points it. path.win32 throughout,
+// so the read is the same on any box, and its relative folds case; a
+// sibling folder whose name starts with the home's is not inside it.
+export const SWEEP_HELD_LINE = 'updater cache: sweep held under a private EMERALD_HOME';
+
+export function sweepHeld(env: NodeJS.ProcessEnv, cacheDir: string): boolean {
+  const home = (env['EMERALD_HOME'] ?? '').trim();
+  if (home === '') return false;
+  const rel = path.win32.relative(path.win32.resolve(home), path.win32.resolve(cacheDir));
+  const inside = rel === '' || (!rel.startsWith('..') && !path.win32.isAbsolute(rel));
+  return !inside;
+}

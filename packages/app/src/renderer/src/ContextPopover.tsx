@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { COMPACT_BUFFER_TOKENS, compactPercent, contextPercentText, costParts, formatTokens, formatUsd, ratesFor, ratesLookStale, tokensUp, uncachedCost } from '@emerald/shared';
+import { COMPACT_BUFFER_TOKENS, compactPercent, contextPercentText, costParts, formatTokens, formatUsd, ratesFor, ratesLookStale, tokensUp, uncachedCost, unpricedText } from '@emerald/shared';
 import type { ContextWindow, SessionInfo, UsageMessage } from '@emerald/shared';
 import { askUsageLive, useConversationUsage } from './commit-usage.ts';
 import { PopoverAnchor, PopoverCard } from './Popover.tsx';
@@ -151,6 +151,7 @@ export function ContextPopover({ session, anchor, onClose, onEnter, onLeave }: C
               this pane's requests: ~{formatUsd(parts.total)} cached, ~{formatUsd(uncachedCost(t, rates))} uncached · the dollars are an estimate from our rate table
             </div>
           )}
+          {rates === null && session.model !== null && <div className="context-popover-unpriced">{unpricedText(session.model)}</div>}
           {figure?.tokens !== null && figure !== null && (
             <div className="context-popover-running-tokens" title="the forks' requests since this pane's own last request, not yet in the counts above">
               {figure.tokens}

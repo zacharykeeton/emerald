@@ -1065,10 +1065,7 @@ try {
   s = await launch(freshPort(), { env: { EMERALD_WHATS_NEW: 'on', EMERALD_PICK_FILE: notes } });
   app = s;
   await s.waitFor(`document.querySelector('.whats-new-view')?.dataset.state === 'text'`, "the What's New tab open with the notes read", 15000);
-  // The layout too: the first window's kill takes its daemon, its
-  // reconnect loop can start another before the window itself is gone,
-  // and that one dies with the tree after this window has connected to
-  // it, so the panes tab lands a second or two after the notes.
+  // The notes open once the sync has named this window (fix 1144), so they land with the layout or after it; the first window's kill takes its daemon and the reconnect can take a second or two.
   await s.waitFor(`!!document.querySelector('.tab[data-tab="panes"]')`, 'the layout synced on the second window', 15000);
   expect(JSON.stringify(await whatsNewTabs()) === '["active"]', `one What's new tab, active, on the fresh profile: ${JSON.stringify(await whatsNewTabs())}`);
   expect((await s.evalJs(`document.querySelector('.whats-new-view').dataset.stamp`)) === newest, `the view's stamp is the file's newest heading (${newest})`);
@@ -2223,6 +2220,47 @@ try {
     w.close();
   }
   await s.waitFor(windowCount867(0), 'the layout back to one window after the drags', 5000);
+
+  // M9 fix 1144. A startup page bound to a window that is not the first:
+  // the notes open after the bind into that window's key and stay, the bare
+  // key goes, and the usage record writes no close of them. The usage switch
+  // is off here (fix 700 left it off).
+  await pickUsage700('Usage record: off');
+  await s.waitFor(`document.querySelector('.title-bar-mark')?.dataset.usage === 'on'`, 'the usage switch on for fix 1144', 5000);
+  await s.evalJs(`(() => { localStorage.setItem('emerald.tabs', JSON.stringify({ files: ['emerald://whats-new'], active: 'emerald://whats-new', raw: [], query: {}, preview: null, order: [] })); localStorage.removeItem('emerald.whatsNewSeen'); })()`);
+  const L1144 = await getTabs(s);
+  // Chromium commits localStorage to disk on a delay and a hard kill loses it, so the window closes gracefully (the app quits with its last window) and the daemon, which outlives it, is stopped with the profile kept.
+  await s.send('Page.close').catch(() => {});
+  s.close();
+  const exitBy1144 = Date.now() + 15000;
+  while (s.child.exitCode === null && s.child.signalCode === null && Date.now() < exitBy1144) await sleep(200);
+  killTree(s.child);
+  process.env['EMERALD_KEEP_PROFILE'] = '1';
+  stopDaemon();
+  delete process.env['EMERALD_KEEP_PROFILE'];
+  const daemonBy1144 = Date.now() + 10000;
+  while (fs.existsSync(path.join(emeraldHome, 'daemon.json')) && Date.now() < daemonBy1144) await sleep(200);
+  await sleep(1000);
+  fs.writeFileSync(path.join(emeraldHome, 'state.json'), JSON.stringify({ version: 1, layout: { ...L1144, windows: [{ id: 'solo1144', tabIds: L1144.tabs.map((t) => t.id), currentTabId: L1144.currentTabId }] } }, null, 2));
+  const usageOffset1144 = usageSize700();
+  s = await launch(freshPort(), { env: { EMERALD_WHATS_NEW: 'on' } });
+  app = s;
+  await s.waitFor(`!!document.querySelector('.tab[data-tab="panes"]')`, 'the layout synced on the relaunch for fix 1144', 15000);
+  expect(JSON.stringify((await getTabs(s)).windows?.map((w) => w.id)) === '["solo1144"]', `the daemon read the solo1144 layout: ${JSON.stringify((await getTabs(s)).windows)}`);
+  expect(mainLog867().includes("window bound to solo1144, the layout's first window"), 'main.log says the startup window bound to solo1144');
+  const att1144 = JSON.parse(await s.evalJs(`localStorage.getItem('emerald.attention')`) ?? 'null');
+  expect(att1144 !== null && att1144.usage === true, `the usage switch survived the kill: ${JSON.stringify(att1144)}`);
+  await s.waitFor(`document.querySelector('.whats-new-view')?.dataset.state === 'text'`, "the What's New tab open with the notes after the bind", 15000);
+  await sleep(1500);
+  const wn1144 = await s.evalJs(`[...document.querySelectorAll('.tab')].filter((t) => t.querySelector('.tab-name')?.textContent === "What's new").map((t) => (t.dataset.active ? 'active' : 'open'))`);
+  expect(JSON.stringify(wn1144) === '["active"]', `the notes stay open and active after the adopt: ${JSON.stringify(wn1144)}`);
+  const own1144 = JSON.parse(await s.evalJs(`localStorage.getItem('emerald.tabs:solo1144')`) ?? 'null');
+  expect(own1144 !== null && own1144.files.includes('emerald://whats-new'), `the notes are in the window's own key: ${JSON.stringify(own1144)}`);
+  expect((await s.evalJs(`localStorage.getItem('emerald.tabs')`)) === null, 'the bare emerald.tabs key is dropped');
+  const text1144 = fs.readFileSync(usageFile700).subarray(usageOffset1144).toString('utf8');
+  expect(!text1144.split('\n').some((l) => l.includes('"ev":"view-close"') && l.includes('"view":"whats-new-tab"')), `the usage record wrote no close of the notes: ${text1144}`);
+  await pickUsage700('Usage record: on');
+  step('fix 1144: on a layout whose only window is not first, the release notes open after the bind into that window\'s key and stay, the bare emerald.tabs key is dropped, and the usage record writes no close of them');
 
   step('PASS');
 } catch (err) {

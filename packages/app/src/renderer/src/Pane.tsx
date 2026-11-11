@@ -824,7 +824,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
       )}
       <button
         className="pane-split-right"
-        title={`Split right, ${where} (${plainKeyFor('split-vertical')})`}
+        title={`Split right, ${where} (${plainKeyFor('split-vertical')}); right-click for what a split gives`}
         onClick={() => splitHere(paneId, 'row')}
         onContextMenu={openSplitMenu('row')}
       >
@@ -832,7 +832,7 @@ export function PaneActions({ paneId, onlyPane, session, shaded, folder, view = 
       </button>
       <button
         className="pane-split-down"
-        title={`Split down, ${where} (${plainKeyFor('split-horizontal')})`}
+        title={`Split down, ${where} (${plainKeyFor('split-horizontal')}); right-click for what a split gives`}
         onClick={() => splitHere(paneId, 'column')}
         onContextMenu={openSplitMenu('column')}
       >

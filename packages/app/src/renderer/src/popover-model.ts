@@ -38,3 +38,15 @@ export function anchorRect(el: Element): Rect {
   if (own.width > 0 || own.height > 0) return own;
   return unionRect(Array.from(el.children, (c) => c.getBoundingClientRect())) ?? own;
 }
+
+// Whether a pointer's move over an anchor arms its hover card (M9 fix
+// 1154). The enter alone missed when the rows shifted under a still
+// pointer (a re-render moved the node away and back, or remounted the
+// lane under it), and nothing armed the card again until the pointer
+// left and came back. A move arms it as the enter does, but not after
+// the card was closed on purpose (Escape, a press outside, a card's own
+// action) until the pointer leaves or enters again, so a nudge of the
+// mouse does not bring back a card the person just dismissed.
+export function armsOnMove(s: { hover: boolean; open: boolean; pending: boolean; quiet: boolean }): boolean {
+  return s.hover && !s.open && !s.pending && !s.quiet;
+}

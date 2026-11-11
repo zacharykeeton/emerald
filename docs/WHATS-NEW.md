@@ -2,6 +2,32 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1139 to 1157, 2026-11-11
+
+Nineteen fixes: what the last install found, a model menu that keeps up with Claude Code, each subagent's row beside its own commit on the graph, a chat pane that fits a narrow column, and about 11 MB less for every terminal. The daemon stays at level 82, so nothing asks for a restart.
+
+### Highlights
+
+**The model menu keeps up with Claude Code.** The chat view's model menu names Fable 5.2, and when Claude Code moves Opus, Sonnet, Haiku or Fable to a newer model, that row takes the new name the first time you pick it. Fable 5.2, Sonnet 5.5 and Haiku 5.5 sessions are priced on the context card, and a model with no price says so there.
+
+**Each row sits above its own commit.** On the commit graph a subagent's row sits right above the commit it is on rather than at the top, and a session or subagent whose commit is older than the graph shows sits at the bottom with a short stub.
+
+**A narrow chat pane stays in its column.** Four chat panes side by side keep everything inside their own edges: under 450 px the chips shorten to a word, under 320 px they go, and under 200 px the paperclip and the hint go too. Send and Stop stay at any width, and the model chip's tooltip leads with its full name.
+
+### Details
+
+**Updating.** A click on Restart to update whose downloaded installer has gone missing downloads it again and waits for another click, instead of closing the window with nothing to install. A launch that finds an install marker whose installer is gone comes up at once rather than saying it is still installing.
+
+**The release notes.** They open after an install again on a profile whose first window was closed in an earlier run; they used to open and vanish in the same second.
+
+**The split offer comes sooner, and says where it lives.** A split you follow with a Claude start now counts if the start comes within 45 seconds, and the count runs over every day, so the next empty pane a split makes asks Always start a Claude on a split? after your third such split. The split buttons' tooltips now say a right-click sets what a split gives.
+
+**Dragging files.** A drag over a folder in the Files tree says on the lit row what letting go will do: `Move here · Ctrl copies` on the same drive, `Copy here · Shift moves` across drives. A drop on the same drive moves; hold Ctrl as you let go to copy. A drag that ends anywhere but its own row no longer swallows your next click. A copy counted in bytes streams every file over 8 MB, and the action palette has `Cancel the copy`.
+
+**Less memory for every terminal.** Every pane's output now drains through one shared worker in the daemon, where each used to start its own, about 11 MB apiece on this laptop and 16 on an x64 PC; a session that exited on its own also used to keep its worker until the daemon stopped. A remote Windows host's kit carries the same change.
+
+**Small ones.** A subagent's commit made in a chained command (a `cd` after a `grep`) is credited to it. A replaced Claude that exits while the New Claude session dialog is up is forgotten by Start. A send typed after a paste chip no longer logs a stray message. A lane card on the graph opens on the first hover after the rows shift.
+
 ## Fixes 1115 to 1138, 2026-11-11
 
 Twenty-four fixes: a folder's own icon found wherever it sits in the repository, a file dragged out of the window into another app, a Cancel on a long copy, New Claude session here that closes the Claude it replaces, a few less megabytes per session, and a run of small ones. The daemon goes to level 82; the update's restart starts the new daemon, so nothing asks for another.

@@ -82,6 +82,10 @@ async function main(): Promise<void> {
     if (shutdownOnThrow !== null) shutdownOnThrow('uncaughtException');
     else process.exit(1);
   });
+  // M9 fix 1156: node-pty's shared conout worker reports one pty's failed pipe as a warning; the daemon's stderr goes nowhere, so it is logged here.
+  process.on('warning', (w) => {
+    if (w.name === 'EmeraldConoutWarning') log.warn(w.message);
+  });
   // Named per user and per home (M9 fix 495), so a private EMERALD_HOME
   // alone no longer lands on the user's own daemon.
   const pipePath = pipePathOf();

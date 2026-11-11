@@ -2794,7 +2794,7 @@ try {
     await s.mouse('mousePressed', a.x, a.y);
     await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: a.x + 10, y: a.y, button: 'left', buttons: 1 });
     await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: b.x, y: b.y, button: 'left', buttons: 1, modifiers });
-    const seen = await s.evalJs(`({ lit: [...document.querySelectorAll('[data-drop-into]')].map((e) => e.dataset.path ?? 'list'), ghost: document.querySelector('.drag-ghost')?.textContent ?? null })`);
+    const seen = await s.evalJs(`({ lit: [...document.querySelectorAll('[data-drop-into]')].map((e) => e.dataset.path ?? 'list'), ghost: document.querySelector('.drag-ghost')?.textContent ?? null, word: document.querySelector('[data-drop-into]')?.dataset.dropWord ?? null, effect: document.querySelector('.files-list')?.dataset.dropEffect ?? null })`);
     await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: b.x, y: b.y, button: 'left', clickCount: 1, modifiers });
     return seen;
   };
@@ -2806,14 +2806,44 @@ try {
   const movedTo981 = path.join(to981, 'open981.txt');
   const seenA981 = await dragRow981(open981, to981);
   expect(JSON.stringify(seenA981.lit) === JSON.stringify([to981]) && seenA981.ghost === 'open981.txt', `the hover lights to981 alone and the ghost names the file (${JSON.stringify(seenA981)})`);
+  // M9 fix 1152: one volume, no key: the word says a move and the effect is one.
+  expect(seenA981.word === 'Move here · Ctrl copies' && seenA981.effect === 'move', `the hover says Move here · Ctrl copies with the effect move (${JSON.stringify(seenA981)})`);
   await s.waitFor(`${noteJs981} === 'Moved open981.txt into to981'`, 'the note says open981.txt moved', 5000);
   await s.waitFor(`!!document.querySelector(${JSON.stringify(`.tab-file[data-tab=${JSON.stringify(movedTo981)}]`)}) && !!document.querySelector(${JSON.stringify(rowSel(movedTo981))})`, 'the tab follows the file and its row is at the new path', 5000);
   expect(fs.existsSync(movedTo981) && !fs.existsSync(open981), 'open981.txt moved into to981 on disk');
   // (b) Ctrl copies.
   const seenB981 = await dragRow981(f1981, to981, CTRL);
   expect(JSON.stringify(seenB981.lit) === JSON.stringify([to981]), `the Ctrl hover lights to981 (${JSON.stringify(seenB981)})`);
+  expect(seenB981.word === 'Copy here' && seenB981.effect === 'copy', `the Ctrl hover says Copy here with the effect copy (${JSON.stringify(seenB981)})`);
   await s.waitFor(`${noteJs981} === 'Copied f1981.txt into to981'`, 'the note says f1981.txt copied', 5000);
   expect(fs.existsSync(f1981) && fs.existsSync(path.join(to981, 'f1981.txt')), 'Ctrl copied f1981.txt, both on disk');
+  // M9 fix 1152: the word follows a key pressed or let go with the pointer
+  // at rest over the folder, and Shift on the move says Move here.
+  {
+    await topOf981();
+    const a = await centre981(f2981);
+    const b = await centre981(to981);
+    await s.mouse('mousePressed', a.x, a.y);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: a.x + 10, y: a.y, button: 'left', buttons: 1 });
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: b.x, y: b.y, button: 'left', buttons: 1 });
+    const word1152 = `(document.querySelector('[data-drop-into]')?.dataset.dropWord ?? null)`;
+    await s.waitFor(`${word1152} === 'Move here · Ctrl copies'`, 'the word says Move here · Ctrl copies', 2000);
+    const drawn1152 = await s.evalJs(`getComputedStyle(document.querySelector(${JSON.stringify(rowSel(to981))}), '::before').content`);
+    expect(drawn1152 === JSON.stringify('Move here · Ctrl copies'), `the lit row draws the word (${drawn1152})`);
+    await s.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17, modifiers: CTRL });
+    await s.waitFor(`${word1152} === 'Copy here'`, 'Ctrl pressed at rest says Copy here', 2000);
+    await s.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17, modifiers: 0 });
+    await s.waitFor(`${word1152} === 'Move here · Ctrl copies'`, 'Ctrl let go at rest says Move here · Ctrl copies again', 2000);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: b.x, y: b.y, button: 'left', buttons: 1, modifiers: SHIFT });
+    await s.waitFor(`${word1152} === 'Move here'`, 'Shift on the move says Move here', 2000);
+    await s.key('Escape', 'Escape', 27);
+    await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: b.x, y: b.y, button: 'left', clickCount: 1 });
+    await sleep(300);
+    const left1152 = await s.evalJs(`({ into: document.querySelectorAll('[data-drop-into]').length, word: document.querySelectorAll('[data-drop-word]').length })`);
+    expect(left1152.into === 0 && left1152.word === 0, `Escape leaves no lit folder and no word (${JSON.stringify(left1152)})`);
+    expect(fs.existsSync(f2981) && !fs.existsSync(path.join(to981, 'f2981.txt')), 'Escape moved nothing: f2981.txt still in drag981');
+    step('M9 fix 1152: a drag from the tree over a folder says Move here · Ctrl copies, Copy here while Ctrl is held and Move here with Shift, following a key pressed with the pointer at rest');
+  }
   // (c) A drop on the row's own folder lights nothing and says nothing.
   const seenC981 = await dragRow981(f2981, f3981);
   expect(seenC981.lit.length === 0, `a drop on its own folder lights nothing (${JSON.stringify(seenC981)})`);
@@ -3039,12 +3069,9 @@ try {
   expect((await windows1122()) === windowsBefore1122 && leaves(await getLayout(s)).length === panesBefore1122, 'no window and no pane was opened');
   // (b) A picked set of two, dragged by its second row.
   const picked1122 = `[...document.querySelectorAll('.files-list .files-row[data-picked]')].map((r) => r.dataset.path)`;
-  // A press and release by the mouse, not clickRow's click(): (a)'s drag
-  // ended past the edge with no click, so the row still swallows the next
-  // click that comes with no press of its own.
-  const atA1122 = await at1122(a1122);
-  await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: atA1122.x, y: atA1122.y, button: 'left', clickCount: 1 });
-  await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: atA1122.x, y: atA1122.y, button: 'left', clickCount: 1 });
+  // M9 fix 1151: (a)'s drag ended at the hand-over, which clears the row's
+  // drag flag, so a click with no press of its own picks the row.
+  await clickRow(s, a1122);
   await s.waitFor(`JSON.stringify(${picked1122}) === ${JSON.stringify(JSON.stringify([a1122]))}`, 'a1122.json picked alone', 3000);
   const atB1122 = await at1122(b1122);
   await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: atB1122.x, y: atB1122.y, button: 'left', clickCount: 1, modifiers: CTRL });

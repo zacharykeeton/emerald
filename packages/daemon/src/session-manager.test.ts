@@ -2128,6 +2128,72 @@ test("a member's head read that lands after its call's end is discarded, the pic
   }
 });
 
+test("a member's commit made past a leading cd is credited by a second HEAD read in its own folder, and only when the command's folder did not move (M9 fix 1139)", windowsOnly, async () => {
+  const heads = new Map<string, string>();
+  const reads: string[] = [];
+  const readHead = async (cwd: string) => {
+    reads.push(cwd);
+    return heads.get(cwd) ?? null;
+  };
+  const listCommits = async (_cwd: string, _before: string, after: string) => [after];
+  const branches: Record<string, string> = { 'C:/code/emerald': 'main', 'C:/code/emerald-wt/w1': 'fix-w1' };
+  const manager = new SessionManager(silentLogger, { staleCheckIntervalMs: 0, readHead, listCommits, readBranch: (cwd) => branches[cwd] ?? null });
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  try {
+    const s = manager.spawn({ kind: 'shell', cwd: process.cwd(), args: ['-NoProfile', '-Command', 'Start-Sleep 3'], cols: 80, rows: 24 });
+    await settle();
+    const post = (payload: Record<string, unknown>) => manager.applyHook(s.id, { session_id: 'c1', cwd: 'C:/code/emerald', ...payload }, 1000);
+    post({ hook_event_name: 'SessionStart', source: 'startup' });
+    await settle();
+    post({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'fork' });
+    const member = () => manager.list()[0]!.team.find((m) => m.id === 'a1')!;
+    const bash = (event: string, command: string) => post({ hook_event_name: event, agent_id: 'a1', tool_name: 'Bash', tool_input: { command } });
+    bash('PreToolUse', 'cd C:/code/emerald-wt/w1 && ls');
+    await settle();
+    assert.equal(member().cwd, 'C:/code/emerald-wt/w1', 'the member has its folder');
+    heads.set('C:/code/emerald', 'm'.repeat(40));
+    // (a) a grep first, then the cd: the command resolves to the session's
+    // checkout, whose HEAD does not move; the member's folder does.
+    heads.set('C:/code/emerald-wt/w1', 'a'.repeat(40));
+    reads.length = 0;
+    const a = 'grep -c x run.log; cd C:/code/emerald-wt/w1 && git commit -m x';
+    bash('PreToolUse', a);
+    await settle();
+    assert.deepEqual(reads, ['C:/code/emerald', 'C:/code/emerald-wt/w1'], 'both folders read before, the command first');
+    heads.set('C:/code/emerald-wt/w1', 'b'.repeat(40));
+    bash('PostToolUse', a);
+    await settle();
+    assert.deepEqual(member().commits.map((c) => c.hash), ['b'.repeat(40)], 'credited through the second read');
+    // (b) a subshell's cd under a leading cd to a folder that is no repository.
+    const b = 'cd C:/code/emerald-wt && (cd w1 && git commit -m y)';
+    reads.length = 0;
+    bash('PreToolUse', b);
+    await settle();
+    assert.deepEqual(reads, ['C:/code/emerald-wt', 'C:/code/emerald-wt/w1']);
+    assert.equal(member().cwd, 'C:/code/emerald-wt/w1', 'a folder outside any repository leaves the member on w1');
+    heads.set('C:/code/emerald-wt/w1', 'c'.repeat(40));
+    bash('PostToolUse', b);
+    await settle();
+    assert.deepEqual(member().commits.map((c) => c.hash), ['b'.repeat(40), 'c'.repeat(40)]);
+    // (c) a commit in the session's own folder that moves it, while w1
+    // moves too: the first folder moved, so w1 is not read after at all.
+    const c = 'git commit -m z';
+    bash('PreToolUse', c);
+    await settle();
+    heads.set('C:/code/emerald', 'n'.repeat(40));
+    heads.set('C:/code/emerald-wt/w1', 'd'.repeat(40));
+    reads.length = 0;
+    bash('PostToolUse', c);
+    await settle();
+    assert.deepEqual(member().commits.map((x) => x.hash), ['b'.repeat(40), 'c'.repeat(40), 'n'.repeat(40)], 'the moved first folder alone');
+    assert.ok(reads.includes('C:/code/emerald'), 'the command folder read after');
+    assert.ok(!reads.includes('C:/code/emerald-wt/w1'), 'the member folder not read after');
+  } finally {
+    manager.killAll();
+    manager.close();
+  }
+});
+
 test('two spellings of one folder group as one: the spawn folder, a hook cwd and a resume all take the real spelling (M9 fix 108)', windowsOnly, async () => {
   // Windows keeps a folder's case and hands out an 8.3 form beside the
   // long one; a lower-cased path is the spelling any machine can vary.

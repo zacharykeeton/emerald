@@ -157,7 +157,15 @@ async function launchPackaged(port, extraEnv = {}) {
   // keeps the run's tabs and folds out of theirs and theirs (the rail
   // left on Activity) out of the run (M68 found the icon check waiting on
   // a Files tree that was not on show).
-  child = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${path.join(home, 'electron-profile')}`], { env: { ...env, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  // LOCALAPPDATA is the home's too, as verify:install's has been since M9
+  // fix 330: a packaged build sweeps %LOCALAPPDATA%\emerald-updater\pending
+  // of every installer at or below its own version once it connects, so a
+  // run of this script between the user's window downloading a build and
+  // their badge click deleted that very installer, and the click met ENOENT
+  // (the install of fixes 1115 to 1138).
+  const localAppData = path.join(home, 'localappdata');
+  fs.mkdirSync(localAppData, { recursive: true });
+  child = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${path.join(home, 'electron-profile')}`], { env: { ...env, LOCALAPPDATA: localAppData, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   child.stdout.on('data', (d) => appLogs.push(d.toString()));
   child.stderr.on('data', (d) => appLogs.push(d.toString()));
   const deadline = Date.now() + 20000;

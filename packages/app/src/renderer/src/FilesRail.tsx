@@ -9,7 +9,7 @@ import { applyListing, browserPaneFolders, canEditFrom, chatPaneFolders, collaps
 import { endHandover, renameModels } from './monaco.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
-import { dropDirFor, hoverEffect, SPRING_OPEN_MS, springDirFor } from './files-drop-model.ts';
+import { dropDirFor, dropWord, hoverEffect, railEffect, SPRING_OPEN_MS, springDirFor, treeEffect } from './files-drop-model.ts';
 import type { RailDrop } from './files-drop-model.ts';
 import { dropIntoFolder } from './files-drop.ts';
 import { dragOutFiles, setCopy, treeRefusal } from './files-set-model.ts';
@@ -477,7 +477,10 @@ export function FilesRail() {
     };
     const sameDir = (a: string, b: string) => normalizePath(a).toLowerCase() === normalizePath(b).toLowerCase();
     const clearLight = () => {
-      for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) delete el.dataset['dropInto'];
+      for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) {
+        delete el.dataset['dropInto'];
+        delete el.dataset['dropWord'];
+      }
       const listEl = listRef.current;
       if (listEl !== null) {
         delete listEl.dataset['dropDir'];
@@ -500,7 +503,7 @@ export function FilesRail() {
       return { dir, light: dirRow ?? hit, row };
     };
     railDrop.current = {
-      over: (x, y, keys) => {
+      over: (x, y, keys, sources) => {
         const a = aim(x, y);
         // M9 fix 1066: spring only while the tree is on show, the list's own condition (search hits and the Changed list are rows too).
         const want = a === null || search !== null || filesChanged ? null : springDirFor(a.row, model.expanded);
@@ -518,9 +521,19 @@ export function FilesRail() {
           clearLight();
           return 'none';
         }
-        const effect = hoverEffect(keys);
-        for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) if (el !== a.light) delete el.dataset['dropInto'];
-        if (a.light !== null) a.light.dataset['dropInto'] = '';
+        // M9 fix 1152: a drag from the tree knows its sources, so its effect
+        // is exact; one from Explorer keeps the safe hover effect for the OS.
+        const settled = sources === null ? null : treeEffect(sources, a.dir);
+        const effect = sources === null ? hoverEffect(keys) : railEffect(keys, settled);
+        for (const el of document.querySelectorAll<HTMLElement>('[data-drop-into]')) {
+          if (el === a.light) continue;
+          delete el.dataset['dropInto'];
+          delete el.dataset['dropWord'];
+        }
+        if (a.light !== null) {
+          a.light.dataset['dropInto'] = '';
+          a.light.dataset['dropWord'] = dropWord(keys, settled);
+        }
         const listEl = listRef.current;
         if (listEl !== null) {
           listEl.dataset['dropDir'] = a.dir;
@@ -560,7 +573,7 @@ export function FilesRail() {
   }
   useEffect(() => {
     setRailDrop({
-      over: (x, y, k) => railDrop.current?.over(x, y, k) ?? 'none',
+      over: (x, y, k, sources) => railDrop.current?.over(x, y, k, sources) ?? 'none',
       leave: () => railDrop.current?.leave(),
       drop: (p, x, y, k) => railDrop.current?.drop(p, x, y, k),
       dirAt: (x, y) => railDrop.current?.dirAt(x, y) ?? null,
@@ -1996,6 +2009,12 @@ function useFilePress(path: string | null, line?: number, column?: number, tree?
       ev.preventDefault();
       dragged.current = false;
       if ((path === null && tree === undefined) || ev.button !== 0) return;
+      // M9 fix 1151: a release on the row keeps the flag for the click Chromium
+      // sends it; every other end of the drag clears it, since no click follows.
+      const row = ev.currentTarget;
+      const onEnd = (release: MouseEvent | null) => {
+        dragged.current = release !== null && release.target instanceof Node && row.contains(release.target);
+      };
       const paths = tree?.() ?? [];
       let payload: DragPayload | null = null;
       if (path !== null && (tree === undefined || paths.length === 1)) {
@@ -2008,8 +2027,8 @@ function useFilePress(path: string | null, line?: number, column?: number, tree?
       };
       // M9 fix 1122: the paths the OS takes past every window.
       const out = dragOutFiles(path === null ? null : normalizePath(path), paths);
-      if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin, null, null, out);
-      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items`, refusal: payload === null ? treeRefusal(paths.length, kind) : null }, out);
+      if (tree === undefined) startDrag(payload, ev.nativeEvent, onBegin, null, null, out, onEnd);
+      else if (paths.length > 0) startDrag(payload, ev.nativeEvent, onBegin, null, { paths, label: paths.length === 1 ? folderName(paths[0]!) : `${paths.length} items`, refusal: payload === null ? treeRefusal(paths.length, kind) : null }, out, onEnd);
     },
     swallowClick: () => {
       if (!dragged.current) return false;

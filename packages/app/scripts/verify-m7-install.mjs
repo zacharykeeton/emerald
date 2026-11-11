@@ -9,8 +9,10 @@
 // download on its own (M9 fix 625): with no click the installer lands in
 // the updater's cache (the run's own under the home, pending\ in it) with
 // the manifest's sha512, the title row shows no badge while it downloads,
-// and the badge then reads `Restart to update`. The one click is made with
-// the cached installer removed first (M9 fix 323), so its marker, its
+// and the badge then reads `Restart to update`. A click with the cached
+// installer removed downloads it again and waits (M9 fix 1141). The one
+// click that installs is made with a copy of whoami.exe in the cached
+// installer's place (M9 fix 323, fix 1141), so its marker, its
 // poster script and its daemon stop are read while nothing installs; the
 // handoff itself (the silent install, the relaunch, the toast) is read by
 // hand at the first real update. The command line is read beside it (M9
@@ -118,6 +120,9 @@ const pipe = process.env['EMERALD_PIPE'] ?? '\\\\.\\pipe\\emmerd-verify-install'
 const feedRelease = path.join(home, 'install-feed-release');
 const feedDir = path.join(home, 'install-feed');
 const localAppData = path.join(home, 'localappdata');
+// M9 fix 1143: a LOCALAPPDATA outside the home, whatever the home is, for
+// the launch that must hold its sweep.
+const outsideLocal = path.join(verifyDir, `install-outside-${path.basename(home)}`);
 const cacheDir = path.join(localAppData, UPDATER_CACHE_DIR_NAME);
 const logFile = path.join(verifyDir, process.env['EMERALD_HOME'] === undefined ? 'install.log' : `install-${path.basename(home)}.log`);
 let child = null;
@@ -302,6 +307,7 @@ function cleanupHard() {
   killDaemonIfSame(daemonRecord(home));
   if (feed !== null) void feed.close();
   cleanCache();
+  fs.rmSync(outsideLocal, { recursive: true, force: true });
 }
 
 // The run's private cache goes whole, with the localappdata folder it
@@ -528,18 +534,6 @@ async function updaterHalf() {
   const daemon = readDaemonInfo();
   expect(daemon !== null && daemon.pipe === pipe, 'the app autostarted a daemon on the private pipe');
 
-  // M9 fix 323: the click itself (the second click before M9 fix 625,
-  // the one click since), with the pending installer
-  // removed first so nothing installs: electron-updater spawns the
-  // cached file, gets ENOENT, tries shell.openPath on the missing path
-  // (nothing) and quits the app, which is the exit waited on below. The
-  // click writes the marker, has the install's word posted from outside
-  // the install folder (a PowerShell script under the home, whose spawn
-  // a harness window holds and says so) and stops the daemon, in that
-  // order.
-  fs.rmSync(pendingFile, { force: true });
-  const posterFile = path.join(home, 'install-poster.ps1');
-  fs.rmSync(posterFile, { force: true });
   const mainLogFile = path.join(home, 'logs', 'main.log');
   const readMainLog = () => {
     try {
@@ -548,6 +542,46 @@ async function updaterHalf() {
       return '';
     }
   };
+
+  // M9 fix 1141: a click whose downloaded installer has gone downloads it
+  // again and waits for another click. Before the fix that click quit the
+  // window with nothing to install and wrote the marker.
+  const goneLogBefore = readMainLog().length;
+  const installerGets = () => requests.filter((r) => new RegExp(`^GET /${stubName.replace(/\./g, '\\.')} 20[06]`).test(r)).length;
+  const getsBefore = installerGets();
+  const downloadedBefore = readMainLog().split('is downloaded and checked').length;
+  fs.rmSync(pendingFile, { force: true });
+  await s.evalJs(`window.emerald.update.act()`);
+  await until('ready again after the download the gone installer started', async () => {
+    const st = await s.evalJs(`window.emerald.update.state()`);
+    return st.phase === 'ready' && readMainLog().split('is downloaded and checked').length > downloadedBefore && fs.existsSync(pendingFile);
+  }, 30000);
+  const goneLog = readMainLog().slice(goneLogBefore);
+  const goneLine = `updater: the installer of ${stub} is gone (${pendingFile}); downloading it again for the next click`;
+  expect(goneLog.includes(goneLine), `the click found the installer gone and said so: ${goneLog.split(/\r?\n/).find((l) => l.includes('is gone (')) ?? 'no line'}`);
+  expect(!goneLog.includes('updater: restart to install') && !goneLog.includes('install poster'), 'and stopped nothing, posted nothing');
+  expect(!fs.existsSync(path.join(home, 'installing.json')), 'and wrote no installing.json');
+  expect(readDaemonInfo()?.pid === daemon.pid && child.exitCode === null, 'the daemon and the window are the same ones still up');
+  expect(installerGets() > getsBefore, `the feed served the installer once more (${getsBefore} then ${installerGets()})`);
+  expect(fs.existsSync(pendingFile) && sha512(pendingFile) === hash, "the installer is back in pending with the manifest's sha512");
+  const readyAgain = await badge();
+  expect(readyAgain?.text === 'Restart to update', `the badge reads "${readyAgain?.text ?? 'nothing'}" and waits for another click`);
+
+  // M9 fix 323: the click itself (the second click before M9 fix 625,
+  // the one click since), made so that nothing installs. Since M9 fix
+  // 1141 a missing installer downloads again, so the pending installer is
+  // replaced by a copy of whoami.exe: electron-updater checks no hash at
+  // install time, spawns it with `--updated,/S,--force-run`, it exits 1 at
+  // once with nothing on screen, and the app quits, which is the exit
+  // waited on below (an empty file throws EFTYPE, and an UNKNOWN code
+  // would send electron-updater to elevate.exe and a UAC prompt). The
+  // click writes the marker, has the install's word posted from outside
+  // the install folder (a PowerShell script under the home, whose spawn
+  // a harness window holds and says so) and stops the daemon, in that
+  // order.
+  fs.copyFileSync(path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'whoami.exe'), pendingFile);
+  const posterFile = path.join(home, 'install-poster.ps1');
+  fs.rmSync(posterFile, { force: true });
   s.evalJs(`window.emerald.update.act()`).catch(() => {});
   await until('the poster held in the main log', () => readMainLog().includes('install poster held (harness)'), 15000);
   const clickLog = readMainLog();
@@ -560,6 +594,8 @@ async function updaterHalf() {
   expect(poster.includes("'electron.app.Emerald'") && !/Programs\\emerald|emerald\.exe/i.test(poster), "it runs under the app's AUMID and names nothing under the install folder");
   const clickMarker = JSON.parse(fs.readFileSync(path.join(home, 'installing.json'), 'utf8'));
   expect(clickMarker.version === stub, `the click left installing.json at ${clickMarker.version}`);
+  // M9 fix 1142: the marker names the installer the click ran.
+  expect(typeof clickMarker.installer === 'string' && path.resolve(clickMarker.installer).toLowerCase() === path.resolve(pendingFile).toLowerCase(), `and names its installer (${clickMarker.installer ?? 'no installer field'})`);
   s.close();
   // The exit after a download took 8 s once and past 30 s twice on a
   // loaded box (Defender reads the 118 MB it just wrote), so the wait is
@@ -567,6 +603,16 @@ async function updaterHalf() {
   await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000);
   child = null;
   expect(readMainLog().includes('updater: running the installer silently and relaunching'), 'the click reached the install step and the app quit on its own');
+  expect(readMainLog().includes(`updater: Executing: ${pendingFile}`), 'the updater ran the stand-in installer');
+  // The stand-in goes, so the gap launches' sweep counts only its own files.
+  await until('the stand-in installer removed', () => {
+    try {
+      fs.rmSync(pendingFile, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 5000);
   const r = spawnSync('cmd.exe', ['/d', '/c', shim, 'daemon', 'stop'], { env, encoding: 'utf8', windowsHide: true });
   expect(r.status === 0 && /^emmerd is not running/.test(r.stdout), `the click stopped the daemon; daemon stop through the shim reads: ${r.stdout.trim()}`);
   // The stub feed closes before the gap launches (M9 fix 625): the
@@ -575,6 +621,7 @@ async function updaterHalf() {
   // pending\, replacing the folder the sweep step reads.
   await feed.close();
   feed = null;
+  await installerGoneLaunch(env, stub, clickMarker.installer);
   await gapLaunches(env, stub);
   // The download put this build's blockmap at the private cache's root
   // (electron-updater copies it up from pending\ for the next
@@ -587,6 +634,67 @@ async function updaterHalf() {
   log(`the user's cache root before: [${userCacheRootBefore}]; after: [${userCacheRootAfter}]`);
   expect(userCacheRootAfter === userCacheRootBefore, `the user's ${userCacheDir} reads as before the run (M9 fix 330)`);
   log('updater half PASS');
+}
+
+// M9 fix 1142: a launch whose marker names an installer that is gone has
+// no install behind it, so it comes up and removes the marker rather than
+// refusing for three minutes, as two launches were at the install of
+// 0.1.1115. The click's marker is kept, naming the stand-in step B
+// removed, with its time set 20 s back so only the missing installer can
+// free the launch, never the clock on a slow exit.
+async function installerGoneLaunch(env, stub, installer) {
+  const marker = path.join(home, 'installing.json');
+  const mainLog = path.join(home, 'logs', 'main.log');
+  const at = new Date(Date.now() - 20000).toISOString();
+  fs.writeFileSync(marker, JSON.stringify({ version: stub, at, installer }) + '\n');
+  expect(!fs.existsSync(installer), `the marker's installer is gone (${installer})`);
+  // M9 fix 1143: the same launch runs on an updater cache outside the
+  // home, seeded with a pending installer at the running version, which
+  // the sweep would take; under the private home it is held instead.
+  const outsidePending = path.join(outsideLocal, UPDATER_CACHE_DIR_NAME, 'pending');
+  const outsideName = `Emerald-setup-${version}-arm64.exe`;
+  fs.rmSync(outsideLocal, { recursive: true, force: true });
+  fs.mkdirSync(outsidePending, { recursive: true });
+  fs.writeFileSync(path.join(outsidePending, 'update-info.json'), JSON.stringify({ fileName: outsideName, sha512: 'stand-in', isAdminRightsRequired: false }));
+  fs.writeFileSync(path.join(outsidePending, outsideName), Buffer.alloc(1024));
+  const logBefore = fs.readFileSync(mainLog, 'utf8').length;
+  const port = freshPort();
+  child = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${path.join(home, 'electron-profile')}`], { env: { ...env, LOCALAPPDATA: outsideLocal }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  child.stdout.on('data', (d) => appLogs.push(d.toString()));
+  child.stderr.on('data', (d) => appLogs.push(d.toString()));
+  let pages = [];
+  await until('a page target from the launch over a gone installer', async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(2000) });
+      pages = (await res.json()).filter((p) => p.type === 'page' && !p.url.startsWith('about:'));
+    } catch {
+      pages = [];
+    }
+    return pages.length > 0;
+  }, 20000);
+  const s = await connect(pages[0].webSocketDebuggerUrl);
+  await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await s.waitFor(`!!document.querySelector('.title-bar')`, 'the title row', 20000);
+  expect(!fs.existsSync(marker), 'a launch whose marker names a gone installer comes up and removes the marker');
+  const since = fs.readFileSync(mainLog, 'utf8').slice(logBefore);
+  const spent = `installing.json (${stub} at ${at}) is spent: removed, its installer is gone (${installer})`;
+  expect(since.includes(spent), `the main log says why: ${since.split(/\r?\n/).find((l) => l.includes('is spent')) ?? 'no spent line'}`);
+  expect(!since.includes('launched while'), 'and the launch did not quit for an install');
+  // updater-cache.ts's SWEEP_HELD_LINE, written out since a script cannot
+  // import the main process's TypeScript.
+  const heldLine = 'updater cache: sweep held under a private EMERALD_HOME';
+  await until('the sweep held', () => fs.readFileSync(mainLog, 'utf8').slice(logBefore).includes(heldLine), 25000);
+  const heldLog = fs.readFileSync(mainLog, 'utf8').slice(logBefore);
+  expect(heldLog.indexOf('connected to emmerd') >= 0 && heldLog.indexOf('connected to emmerd') < heldLog.indexOf(heldLine), 'the sweep was held after the daemon connected, on a cache outside the private home');
+  expect(!/updater cache: (removed pending|could not remove)/.test(heldLog), 'and no sweep ran');
+  expect(fs.existsSync(path.join(outsidePending, 'update-info.json')) && fs.existsSync(path.join(outsidePending, outsideName)), `and both seeded files are still in ${outsidePending}`);
+  await s.send('Page.close').catch(() => {});
+  s.close();
+  await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000);
+  child = null;
+  const r = spawnSync('cmd.exe', ['/d', '/c', shim, 'daemon', 'stop'], { env, encoding: 'utf8', windowsHide: true });
+  expect(r.status === 0 && /^stopped emmerd/.test(r.stdout), `daemon stop after the launch over a gone installer: ${r.stdout.trim()}`);
+  fs.rmSync(outsideLocal, { recursive: true, force: true });
 }
 
 // M9 fix 282: the launch in the install's gap. The second click writes

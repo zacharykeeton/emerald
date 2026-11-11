@@ -693,7 +693,7 @@ function AgentMarker({ item, kind, family, cx, cy, leaderTo, style, card, now, l
   return (
     <>
       {leaderTo !== null && leaderTo > cx + mark / 2 + 2 && <line className="commits-leader" x1={cx + mark / 2 + 2} y1={cy} x2={leaderTo} y2={cy} data-member={memberId} data-session={item.sessionId} style={style} />}
-      <g ref={ref} className="commits-agent-node" data-member={memberId} data-session={item.sessionId} data-lane={item.lane} data-side={item.beside === true ? '' : undefined} data-size={size} data-family={memberFamily ?? undefined} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-lit={lit ? '' : undefined} data-popover-for={card?.id} data-popover-open={state.open} style={style} {...handlers}>
+      <g ref={ref} className="commits-agent-node" data-member={memberId} data-session={item.sessionId} data-lane={item.lane} data-side={item.beside === true ? '' : undefined} data-beyond={item.beyond === true ? '' : undefined} data-size={size} data-family={memberFamily ?? undefined} data-working={working ? '' : undefined} data-pending={item.pending ? '' : undefined} data-start={item.startRow !== null ? '' : undefined} data-lit={lit ? '' : undefined} data-popover-for={card?.id} data-popover-open={state.open} style={style} {...handlers}>
         <foreignObject x={cx - mark / 2} y={cy - mark / 2} width={mark} height={mark}>
           <SessionMark kind={kind} working={working} size={size} family={memberFamily} className="commits-agent-mark" />
         </foreignObject>

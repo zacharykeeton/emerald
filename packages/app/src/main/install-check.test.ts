@@ -62,6 +62,21 @@ test('a quick start, a swept cache and a launch in the gap read the other way', 
   assert.deepEqual(posterForm(text), { form: 'worker', pid: '10' });
 });
 
+test('a click that found its installer gone before the install reads as a look, and the 352 install has none (M9 fix 1141)', () => {
+  const gone = '2026-11-11T14:16:00.000Z updater: the installer of 0.1.1139 is gone (C:\\x\\pending\\Emerald-setup-0.1.1139-arm64.exe); downloading it again for the next click';
+  const text = lines(
+    '2026-11-11T14:10:00.000Z updater: Executing: C:\\x\\pending\\Emerald-setup-0.1.1115-arm64.exe with args: --updated,/S,--force-run',
+    gone,
+    '2026-11-11T14:16:40.000Z updater: 0.1.1139 is downloaded and checked',
+    '2026-11-11T14:17:00.000Z install poster spawned (worker pid 10)',
+    '2026-11-11T14:17:00.001Z updater: restart to install: stopping the daemon first',
+    '2026-11-11T14:17:00.100Z updater: Executing: C:\\x\\pending\\Emerald-setup-0.1.1139-arm64.exe with args: --updated,/S,--force-run',
+  );
+  const out = texts(parseMainLog(text));
+  assert.ok(out.includes(`look: ${gone}: a click found its installer gone and downloaded it again`));
+  assert.ok(!texts(parseMainLog(install352)).some((l) => l.includes('found its installer gone')));
+});
+
 test('a log with no install and one with a failed hooks install say so', () => {
   assert.deepEqual(texts(parseMainLog(lines('2026-09-21T20:00:00.000Z connected to emmerd 0.1.352 pid 1 feature level 54'))), [
     'look: main.log has no `updater: Executing:` line; no install through the updater is on record',

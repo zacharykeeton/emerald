@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizePath } from './files-model.ts';
 import type { MoveOutcome } from '../../preload/api.ts';
-import { BYTE_NOTE_MIN_AVERAGE, byteSize, copyingNote, dropDirFor, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote, SPRING_OPEN_MS, springDirFor, treeDropPaths } from './files-drop-model.ts';
+import { BYTE_NOTE_MIN_AVERAGE, byteSize, copyingNote, dropDirFor, dropWord, HOVER_MOVE_EFFECT, hoverEffect, modeFor, moveNote, railEffect, SPRING_OPEN_MS, springDirFor, treeDropPaths, treeEffect, volumeRoot } from './files-drop-model.ts';
 
 // M9 fix 953: a drop from Explorer on the Files rail.
 
@@ -31,6 +31,43 @@ test('modeFor and hoverEffect follow Explorer\'s keys', () => {
   assert.equal(hoverEffect({ ctrl: false, shift: true }), HOVER_MOVE_EFFECT);
   assert.equal(hoverEffect({ ctrl: true, shift: false }), 'copy');
   assert.equal(hoverEffect({ ctrl: true, shift: true }), 'copy');
+});
+
+// M9 fix 1152: the word on the lit folder and the effect a drag from the tree shows.
+
+test('volumeRoot reads a drive, a share and a Unix root, and null for a path naming none', () => {
+  assert.equal(volumeRoot('C:\\w'), 'c:');
+  assert.equal(volumeRoot('c:/w'), 'c:');
+  assert.equal(volumeRoot('\\\\srv\\share\\x'), '\\\\srv\\share');
+  assert.equal(volumeRoot('//SRV/Share'), '\\\\srv\\share');
+  assert.equal(volumeRoot('\\\\srv'), null);
+  assert.equal(volumeRoot('/home/x'), '/');
+  assert.equal(volumeRoot('w\\x'), null);
+});
+
+test('treeEffect moves on one volume, copies across, and knows nothing when mixed, empty or relative', () => {
+  assert.equal(treeEffect(['C:\\w\\a.txt', 'c:/w/src/b.txt'], 'c:\\w\\lib'), 'move');
+  assert.equal(treeEffect(['D:\\x\\a.txt'], 'C:\\w'), 'copy');
+  assert.equal(treeEffect(['C:\\w\\a.txt', 'D:\\x\\b.txt'], 'C:\\w\\lib'), null);
+  assert.equal(treeEffect([], 'C:\\w'), null);
+  assert.equal(treeEffect(['w\\a.txt'], 'C:\\w'), null);
+});
+
+test('dropWord says the key held, else the settled effect and the key that changes it, else the rule', () => {
+  const none = { ctrl: false, shift: false };
+  assert.equal(dropWord({ ctrl: true, shift: false }, 'move'), 'Copy here');
+  assert.equal(dropWord({ ctrl: true, shift: true }, null), 'Copy here');
+  assert.equal(dropWord({ ctrl: false, shift: true }, 'copy'), 'Move here');
+  assert.equal(dropWord(none, 'move'), 'Move here · Ctrl copies');
+  assert.equal(dropWord(none, 'copy'), 'Copy here · Shift moves');
+  assert.equal(dropWord(none, null), 'Ctrl copies, Shift moves');
+});
+
+test('railEffect follows the keys, then the settled effect, then the hover effect', () => {
+  assert.equal(railEffect({ ctrl: true, shift: false }, 'move'), 'copy');
+  assert.equal(railEffect({ ctrl: false, shift: true }, 'copy'), 'move');
+  assert.equal(railEffect({ ctrl: false, shift: false }, 'move'), 'move');
+  assert.equal(railEffect({ ctrl: false, shift: false }, null), HOVER_MOVE_EFFECT);
 });
 
 const o = (name: string, result: MoveOutcome['result'], extra: Partial<MoveOutcome> = {}): MoveOutcome => ({

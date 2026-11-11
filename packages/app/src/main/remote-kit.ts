@@ -11,7 +11,10 @@ import zlib from 'node:zlib';
 // headless xterm and node-pty for the host's arch) pinned to this app's
 // version. Every download is checked: Node against its release's
 // SHASUMS256.txt, node-pty against package-lock.json's integrity, which
-// stage.mjs carries into the stage as kit-pins.json. Nothing here imports
+// stage.mjs carries into the stage as kit-pins.json. A Windows kit then lays
+// fix 1156's two conout files from the stage over npm's node-pty, after the
+// integrity check, so a Windows host's daemon shares one conout worker
+// across its ptys as the local one does. Nothing here imports
 // electron, so node --test runs its test; main passes in what it reads from
 // the app.
 
@@ -19,6 +22,15 @@ import zlib from 'node:zlib';
 // and two copies of the number would drift. The tests and verify:remote read
 // it from here (M9 fix 1118), so a move is this one line.
 export const KIT_NODE_VERSION = '24.22.2';
+
+// M9 fix 1156's conout files, laid over npm's node-pty in a Windows kit. The
+// mark and the paths repeat scripts/patch-node-pty.mjs's CONOUT_MARK and
+// CONOUT_FILES (the main process cannot import a root script). PTY_OVERLAY
+// goes into a Windows kit's manifest, so a kit assembled before the overlay
+// is assembled again rather than reused.
+export const CONOUT_MARK = 'emerald fix 1156';
+export const CONOUT_OVERLAY = ['lib/windowsConoutConnection.js', 'lib/worker/conoutSocketWorker.js'];
+export const PTY_OVERLAY = 'fix 1156';
 
 export type KitOs = 'win32' | 'darwin';
 export type KitArch = 'x64' | 'arm64';
@@ -30,7 +42,7 @@ export interface KitPins {
 export interface KitManifest {
   version: string;
   node: { version: string; url: string; sha256: string };
-  pty: { version: string; integrity: string };
+  pty: { version: string; integrity: string; overlay?: string };
   emerald: { files: string[]; sha256: string };
 }
 
@@ -46,6 +58,8 @@ export interface KitSources {
   cli: string;
   shared: string;
   headless: string;
+  // The stage's node-pty, whose conout files a Windows kit lays over npm's.
+  ptyLib: string;
   pins: KitPins;
 }
 
@@ -87,7 +101,7 @@ export function kitSources(root: string): KitSources {
   const pinsFile = path.join(root, 'kit-pins.json');
   if (!fs.existsSync(pinsFile)) throw missing(root);
   const pins = JSON.parse(fs.readFileSync(pinsFile, 'utf8')) as KitPins;
-  return { daemon, cli, shared, headless, pins };
+  return { daemon, cli, shared, headless, ptyLib: path.join(root, 'node_modules', 'node-pty'), pins };
 }
 
 function base(value: string | undefined, fallback: string): string {
@@ -322,6 +336,7 @@ export async function assembleKit(opts: {
     cached.version === appVersion &&
     cached.node?.version === v &&
     cached.pty?.integrity === pins.integrity &&
+    (os !== 'win32' || cached.pty?.overlay === PTY_OVERLAY) &&
     fs.existsSync(nodeArchive) &&
     fs.existsSync(emeraldArchive)
   ) {
@@ -389,6 +404,20 @@ export async function assembleKit(opts: {
     entries.push({ name: `node_modules/node-pty/${rel}`, mode, data: e.data });
   }
   if (prebuilds === 0) throw new Error(`${ptyName} holds no prebuilds/${os}-${arch}`);
+  // M9 fix 1156: a Windows host loads these two, so they come from the
+  // stage, which the root postinstall patched; the darwin kit keeps npm's.
+  if (os === 'win32') {
+    for (const rel of CONOUT_OVERLAY) {
+      const f = path.join(sources.ptyLib, rel);
+      const data = fs.existsSync(f) ? fs.readFileSync(f) : null;
+      if (data === null || !data.toString('utf8').includes(CONOUT_MARK)) {
+        throw new Error(`the stage's node-pty lacks fix 1156's conout files: ${rel} (run npm install at the repo root, then npm run stage -w @emerald/app)`);
+      }
+      const name = `node_modules/node-pty/${rel}`;
+      for (let i = entries.length - 1; i >= 0; i--) if (entries[i]!.name === name) entries.splice(i, 1);
+      entries.push({ name, mode: 0o644, data });
+    }
+  }
 
   // (3) The emerald part, as the stage left it.
   const parts: [string, string][] = [
@@ -407,7 +436,7 @@ export async function assembleKit(opts: {
   const manifest: KitManifest = {
     version: appVersion,
     node: { version: v, url, sha256: nodeSha },
-    pty: { version: pins.version, integrity: pins.integrity },
+    pty: { version: pins.version, integrity: pins.integrity, ...(os === 'win32' ? { overlay: PTY_OVERLAY } : {}) },
     emerald: { files: entries.map((e) => e.name), sha256: sha256Hex(fs.readFileSync(emeraldArchive)) },
   };
   fs.writeFileSync(`${manifestFile}.tmp`, JSON.stringify(manifest, null, 2));

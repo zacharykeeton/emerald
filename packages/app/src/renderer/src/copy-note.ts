@@ -35,3 +35,11 @@ export function noteIn(note: CornerNote | null, paneId: string | null): string |
 export function actionIn(note: CornerNote | null, paneId: string | null): CornerAction | null {
   return note !== null && note.paneId === paneId ? (note.action ?? null) : null;
 }
+
+// M9 fix 1153: the window's copy note's Cancel, or null when no such note
+// is up. The copy's Cancel is the one corner action with that label (M9
+// fix 1124), so the label is what tells it from any other.
+export function copyCancelIn(note: CornerNote | null): CornerAction | null {
+  const action = actionIn(note, null);
+  return action !== null && action.label === 'Cancel' ? action : null;
+}

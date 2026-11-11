@@ -148,7 +148,7 @@ function onOver(e: DragEvent): void {
   if (rail !== null && railAt(e.clientX, e.clientY)) {
     setSessionDropTarget(null);
     setOutside(null);
-    e.dataTransfer.dropEffect = rail.over(e.clientX, e.clientY, keysOf(e));
+    e.dataTransfer.dropEffect = rail.over(e.clientX, e.clientY, keysOf(e), null);
     return;
   }
   rail?.leave();

@@ -56,8 +56,8 @@ let active = false;
 // the pane a title drag picked up (M9 fix 73), which the drop closes so
 // the pane moves; a row drag has none and the drop adds a pane (M50).
 // Both hold over a layout tab or the + too (M9 fix 651).
-export function startSessionDrag(sessionId: string, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null): void {
-  startDrag({ kind: 'session', sessionId }, press, onBegin, fromPaneId);
+export function startSessionDrag(sessionId: string, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, onEnd: ((release: MouseEvent | null) => void) | null = null): void {
+  startDrag({ kind: 'session', sessionId }, press, onBegin, fromPaneId, null, null, onEnd);
 }
 
 // M9 fix 981: a drag that began on a row of the Files tree: the paths a drop on the rail moves, and the ghost's words when no payload names it.
@@ -73,7 +73,8 @@ export interface TreeDrag {
 // row, a picked set): it drops on the rail's folders alone (M9 fix 981).
 // files, M9 fix 1122: what the OS takes if the drag leaves every window;
 // null for every drag but the rail's.
-export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, tree: TreeDrag | null = null, files: readonly string[] | null = null): void {
+// M9 fix 1151: called once when a drag that began ends, with the mouseup that ended it, or null for Escape, the blur or the hand-over to the OS; a press that never became a drag calls nothing.
+export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegin: () => void, fromPaneId: string | null = null, tree: TreeDrag | null = null, files: readonly string[] | null = null, onEnd: ((release: MouseEvent | null) => void) | null = null): void {
   if (active || press.button !== 0) return;
   active = true;
   const startX = press.clientX;
@@ -82,18 +83,24 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
   let ghost: HTMLDivElement | null = null;
   // The pointer is past the window's edge, the drag handed to main (M9 fix 927).
   let out = false;
+  // Set once onEnd has been called, so a second teardown calls nothing (M9 fix 1151).
+  let endSent = false;
+  // M9 fix 1152: the last point of the drag, where a Ctrl or Shift pressed
+  // with the pointer at rest re-aims, since no mousemove comes.
+  let last: { x: number; y: number } | null = null;
   // The rail a tree drag has called over on and not yet left (M9 fix 981):
   // every such drag ends with exactly one drop or one leave on it.
   let onRail: RailDrop | null = null;
   // M9 fix 1122: main's word that the drag went to the OS.
   let offOut: (() => void) | null = null;
 
-  const teardown = () => {
+  const teardown = (release: MouseEvent | null = null) => {
     offOut?.();
     offOut = null;
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
     window.removeEventListener('keydown', onKey, { capture: true });
+    window.removeEventListener('keyup', onModKey, { capture: true });
     window.removeEventListener('blur', cancel);
     document.body.classList.remove('dragging-session');
     delete document.body.dataset.dragRefused;
@@ -106,6 +113,10 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     if (out) window.emerald.windowDrag.back();
     out = false;
     active = false;
+    if (dragging && !endSent) {
+      endSent = true;
+      onEnd?.(release);
+    }
   };
 
   const begin = () => {
@@ -120,6 +131,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     ghost.textContent = payload === null ? (tree?.label ?? '') : payload.kind === 'session' ? (getState().sessions.get(payload.sessionId)?.name ?? payload.sessionId) : viewName(payload.view);
     document.body.appendChild(ghost);
     window.addEventListener('keydown', onKey, { capture: true });
+    window.addEventListener('keyup', onModKey, { capture: true });
     window.addEventListener('blur', cancel);
     if (files !== null) {
       // The OS loop takes the release, so the drag ends here with no drop;
@@ -153,6 +165,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
       if (Math.max(Math.abs(e.clientX - startX), Math.abs(e.clientY - startY)) < DRAG_THRESHOLD) return;
       begin();
     }
+    last = { x: e.clientX, y: e.clientY };
     if (ghost !== null) ghost.style.transform = `translate(${e.clientX + GHOST_OFFSET}px, ${e.clientY + GHOST_OFFSET}px)`;
     const aim = railAim(e.clientX, e.clientY);
     if (aim !== null) {
@@ -160,7 +173,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
       setSessionDropTarget(null);
       if (aim.dir !== null && aim.paths.length > 0) {
         onRail = aim.rail;
-        aim.rail.over(e.clientX, e.clientY, { ctrl: e.ctrlKey, shift: e.shiftKey });
+        aim.rail.over(e.clientX, e.clientY, { ctrl: e.ctrlKey, shift: e.shiftKey }, aim.paths);
       } else {
         aim.rail.leave();
         onRail = null;
@@ -216,14 +229,14 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
     const aim = dropped ? railAim(e.clientX, e.clientY) : null;
     if (aim !== null) {
       onRail = null;
-      teardown();
+      teardown(e);
       if (aim.dir !== null && aim.paths.length > 0) aim.rail.drop(aim.paths, e.clientX, e.clientY, { ctrl: e.ctrlKey, shift: e.shiftKey });
       else aim.rail.leave();
       return;
     }
     // Cleared first, so the teardown sends no back for a drag main is ending.
     out = false;
-    teardown();
+    teardown(e);
     if (payload === null) {
       // Main's flight for a set over another window would otherwise stay.
       if (handed) window.emerald.windowDrag.back();
@@ -248,7 +261,20 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
 
   const cancel = () => teardown();
 
+  // M9 fix 1152: Ctrl or Shift pressed or let go over the rail re-reads the
+  // word on the lit folder at the last point. Never prevents the key.
+  const onModKey = (e: KeyboardEvent) => {
+    if (e.key !== 'Control' && e.key !== 'Shift') return;
+    if (last === null || onRail === null) return;
+    const aim = railAim(last.x, last.y);
+    if (aim !== null && aim.dir !== null && aim.paths.length > 0) aim.rail.over(last.x, last.y, { ctrl: e.ctrlKey, shift: e.shiftKey }, aim.paths);
+  };
+
   const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Control' || e.key === 'Shift') {
+      onModKey(e);
+      return;
+    }
     if (e.key !== 'Escape') return;
     e.preventDefault();
     e.stopPropagation();

@@ -19,6 +19,7 @@
 import type { UpdatePhase, UpdateState } from '../renderer/src/update-model.ts';
 import { feedUrl, GITHUB_RELEASES, isNewerVersion } from '@emerald/shared';
 import { defaultFeedDir } from '@emerald/shared/feed-server';
+import fs from 'node:fs';
 
 // Where the updater reads (fix 608): a generic URL (the local feed, or a
 // verify script's stub) or the public releases repository on GitHub.
@@ -58,8 +59,10 @@ export interface UpdaterDeps {
   // Stops the daemon and resolves once it has let go of the pipe.
   stopDaemon: () => Promise<void>;
   // Writes installing.json for the version about to be installed (M9 fix
-  // 282), before the daemon stops, so a launch in the gap finds it.
-  markInstalling: (version: string) => void;
+  // 282), before the daemon stops, so a launch in the gap finds it; with
+  // the installer about to run, or null when the updater named none (M9
+  // fix 1142), so a launch can tell a marker with no install behind it.
+  markInstalling: (version: string, installer: string | null) => void;
   // Posts the install's word for the version about to be installed from
   // a process outside the install folder (M9 fix 323), before the daemon
   // stops; the app's own notifier is killed by the installer's sweep
@@ -75,6 +78,9 @@ export interface UpdaterDeps {
   inApp?: boolean;
   // Opens a version's release page, for a build that does not update itself.
   openRelease?: (version: string) => void;
+  // Whether the downloaded installer is still on disk (M9 fix 1141); absent
+  // is fs.existsSync. A test hands in its own.
+  installerExists?: (file: string) => boolean;
 }
 
 // The page a build that does not update itself sends its badge to (M9 fix
@@ -163,6 +169,10 @@ export function createUpdater(deps: UpdaterDeps): Updater {
   let state: UpdateState = { phase: feed === null ? 'off' : 'idle', current: deps.current, latest: null, percent: null, message: null, checks: 0 };
   let timer: NodeJS.Timeout | null = null;
   let installing = false;
+  // The downloaded installer's path, off update-downloaded's downloadedFile
+  // (M9 fix 1141), so a click can see it is gone before it quits on nothing.
+  let installer: string | null = null;
+  const installerExists = deps.installerExists ?? ((file: string) => fs.existsSync(file));
   // Whether the person asked for the last step (a download, a retry), so
   // a failure is shown to them; a check that fails on its own (no feed
   // served, the machine offline) is logged and the badge stays away.
@@ -247,7 +257,8 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     updater.on('download-progress', (p: { percent?: number }) => {
       set({ phase: 'downloading', percent: typeof p.percent === 'number' ? Math.floor(p.percent) : null });
     });
-    updater.on('update-downloaded', (info: { version?: string }) => {
+    updater.on('update-downloaded', (info: { version?: string; downloadedFile?: string }) => {
+      installer = typeof info.downloadedFile === 'string' ? info.downloadedFile : null;
       log(`updater: ${info.version ?? state.latest ?? '?'} is downloaded and checked`);
       asked = false;
       set({ phase: 'ready', latest: typeof info.version === 'string' ? info.version : state.latest, percent: 100 });
@@ -351,11 +362,20 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       }
       if (state.phase === 'ready') {
         if (installing) return;
+        // Once quitAndInstall runs nothing stops the quit, even with no file
+        // to run (its ENOENT falls through and app.quit is already queued),
+        // so a cache emptied under the window would close it with nothing
+        // installed. Download again and wait for another click instead.
+        if (installer !== null && !installerExists(installer)) {
+          log(`updater: the installer of ${state.latest ?? '?'} is gone (${installer}); downloading it again for the next click`);
+          await download(true, state.latest);
+          return;
+        }
         installing = true;
         set({ phase: 'installing' });
         const target = state.latest ?? '?';
         try {
-          deps.markInstalling(target);
+          deps.markInstalling(target, installer);
         } catch (err) {
           log(`updater: could not write the install marker: ${err instanceof Error ? err.message : String(err)}`);
         }

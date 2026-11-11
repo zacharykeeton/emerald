@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MODEL_RATES, costParts, formatUsd, modelName, modelWord, ratesFor, ratesLookStale, uncachedCost } from './rates.ts';
+import { MODEL_RATES, costParts, formatUsd, modelName, modelWord, ratesFor, ratesLookStale, uncachedCost, unpricedText } from './rates.ts';
 
 test('M9 fix 154: the rate table prices each part of the sum and the uncached figure, and knows a model it lacks', () => {
   const opus = ratesFor('Opus 5 (1M context)');
@@ -19,7 +19,7 @@ test('M9 fix 154: the rate table prices each part of the sum and the uncached fi
   assert.equal(ratesFor('claude-sonnet-4-5'), null, 'an older model is not the family whose number it ends with');
   assert.equal(ratesFor('Some Model 9'), null);
   assert.equal(ratesFor(null), null);
-  assert.equal(MODEL_RATES.length, 6);
+  assert.equal(MODEL_RATES.length, 9);
   // M9 fix 444: Opus 5.5's row, and its id form the same way Fable 5.1
   // and Haiku 4.5 need theirs; "opus 5.5" must not read as "opus 5"
   // whichever row comes first in the table.
@@ -83,6 +83,15 @@ test('M9 fix 287: modelWord names the family the row wears in front of the state
   assert.equal(ratesFor('claude-opus-6'), null, 'but prices nothing made up for it');
 });
 
+test('M9 fix 1150: a dotted newer number reads its family word, an older one does not, and the card says when a model has no price', () => {
+  assert.equal(modelWord('Fable 5.3'), 'Fable');
+  assert.equal(modelWord('claude-fable-5-3'), 'Fable', 'the id form');
+  assert.equal(ratesFor('Fable 5.3'), null, 'priced nothing');
+  assert.equal(modelWord('Opus 4.9'), null, 'between Opus 4.8 and Opus 5.5 is an older model');
+  assert.equal(modelWord('claude-sonnet-4-5'), null);
+  assert.equal(unpricedText('Fable 5.3'), "Fable 5.3 is not in our rate table, so the parts carry no dollars; Claude Code's own figure below still counts it");
+});
+
 test('M9 fix 464: a dated single-number id reads its family, and Opus 4.8 has a row', () => {
   assert.equal(ratesFor('claude-sonnet-5-20260301')?.family, 'Sonnet 5');
   assert.equal(ratesFor('claude-opus-5-20260101')?.family, 'Opus 5');
@@ -104,4 +113,16 @@ test('M9 fix 821: modelName gives the whole name a card wears, and an id the tab
   assert.equal(modelName('claude-sonnet-5'), 'Sonnet 5');
   assert.equal(modelName('claude-opus-6'), 'claude-opus-6');
   assert.equal(modelName(null), null);
+});
+
+test('M9 fix 1149: Fable 5.2, Sonnet 5.5 and Haiku 5.5 have the catalog rows, and Sonnet 5 keeps its own', () => {
+  for (const m of ['Fable 5.2', 'claude-fable-5-2']) {
+    const f = ratesFor(m);
+    assert.equal(f?.family, 'Fable 5.2', m);
+    assert.deepEqual([f?.fresh, f?.cacheWrite, f?.cacheWrite1h, f?.cacheRead, f?.output], [8, 10, 16, 0.2, 40]);
+  }
+  assert.equal(ratesFor('claude-sonnet-5-5')?.cacheRead, 0.1);
+  assert.equal(ratesFor('claude-sonnet-5')?.family, 'Sonnet 5');
+  assert.equal(ratesFor('Haiku 5.5')?.fresh, 0.1);
+  assert.equal(ratesFor('Fable 5.1')?.family, 'Fable 5.1', 'an older row still prices');
 });

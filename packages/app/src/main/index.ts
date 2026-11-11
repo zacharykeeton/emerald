@@ -80,7 +80,7 @@ import { launchArgument, launchLabel } from './launch-argument.ts';
 import type { LaunchKind } from './launch-argument.ts';
 import { wireBrowserDriver } from './browser-driver.ts';
 import { wireDesignMode } from './design-wire.ts';
-import { sweepGiveUpLine, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
+import { SWEEP_HELD_LINE, sweepGiveUpLine, sweepHeld, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
 import { pruneShots } from './shot-prune.ts';
 import { inspectPort } from './inspect.ts';
 import { pipePathOf, emeraldHomeOf } from '@emerald/shared/pipe-name';
@@ -764,9 +764,9 @@ const updater = createUpdater({
     updateRelay.report(state);
   },
   stopDaemon: () => client.stopDaemon(),
-  markInstalling: (version) => {
+  markInstalling: (version, installer) => {
     fs.mkdirSync(path.dirname(installMarker), { recursive: true });
-    writeMarker(installMarker, version, Date.now());
+    writeMarker(installMarker, version, Date.now(), installer);
   },
   // The word from outside the install folder (M9 fix 323); held under a
   // harness window so a verify run pops no toast on the person.
@@ -833,7 +833,10 @@ function launchInGap(): boolean {
   const state = gapState(marker, appVersion(), now);
   if (state === 'none') return false;
   if (state === 'fresh' || marker === null) {
-    log(`installing.json${marker === null ? '' : ` (${marker.version} at ${marker.at})`} is spent: removed`);
+    // M9 fix 1142: a marker whose installer is gone says so, the prefix
+    // kept for install-check's and verify:install's reads.
+    const gone = marker !== null && typeof marker.installer === 'string' && !fs.existsSync(marker.installer) ? `, its installer is gone (${marker.installer})` : '';
+    log(`installing.json${marker === null ? '' : ` (${marker.version} at ${marker.at})`} is spent: removed${gone}`);
     try {
       fs.rmSync(installMarker, { force: true });
     } catch (err) {
@@ -919,6 +922,12 @@ function sweepPendingAfterConnect(): void {
   // 1025): nothing to sweep off Windows.
   if (!app.isPackaged || sweepRan || process.platform !== 'win32') return;
   sweepRan = true;
+  // M9 fix 1143: a private home sweeps only a cache inside it, so a script
+  // that forgets a private LOCALAPPDATA never takes the person's download.
+  if (sweepHeld(process.env, updaterCacheDir())) {
+    log(SWEEP_HELD_LINE);
+    return;
+  }
   const version = appVersion();
   const first = sweepPending(updaterCacheDir(), version);
   if (first === null) return;

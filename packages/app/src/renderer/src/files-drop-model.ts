@@ -12,7 +12,8 @@ export interface DropKeys {
 
 // The rail's side of explorer-drop.ts, in client points.
 export interface RailDrop {
-  over(x: number, y: number, keys: DropKeys): 'move' | 'copy' | 'none';
+  // sources: what a drag from the tree would move (M9 fix 1152), null for a drag from Explorer.
+  over(x: number, y: number, keys: DropKeys, sources: readonly string[] | null): 'move' | 'copy' | 'none';
   leave(): void;
   drop(paths: string[], x: number, y: number, keys: DropKeys): void;
   // M9 fix 981: the folder a drop at the point would land in, or null when none is in view; a drag from the tree asks it before lighting anything.
@@ -69,6 +70,62 @@ export function modeFor(keys: DropKeys): MoveMode {
 // a drop across drives copies, its note saying so.
 export function hoverEffect(keys: DropKeys): 'move' | 'copy' {
   return keys.ctrl ? 'copy' : HOVER_MOVE_EFFECT;
+}
+
+// M9 fix 1152: the volume a path sits on, the renderer's twin of
+// sameVolume's root in main/file-write.ts (a change to one is a change to
+// both): a drive letter lower-cased with its colon, a share as
+// \\server\share lower-cased, / for a Unix path, or null when the path
+// names none (a relative path, a share missing its server or its share).
+export function volumeRoot(p: string): string | null {
+  const drive = /^([A-Za-z]):/.exec(p);
+  if (drive !== null) return `${drive[1]!.toLowerCase()}:`;
+  if (/^[\\/]{2}/.test(p)) {
+    const [server, share] = p.slice(2).split(/[\\/]/);
+    if (server === undefined || server === '' || share === undefined || share === '') return null;
+    return `\\\\${server}\\${share}`.toLowerCase();
+  }
+  if (p.startsWith('/')) return '/';
+  return null;
+}
+
+// M9 fix 1152: what a no-key drop of a tree drag's sources into dir does,
+// mirroring main's auto mode (sameVolume in main/file-write.ts): move when
+// every source shares dir's volume, copy when none does, null when they
+// are mixed or a volume cannot be read, so the word falls to the rule.
+export function treeEffect(sources: readonly string[], dir: string): 'move' | 'copy' | null {
+  if (sources.length === 0) return null;
+  const into = volumeRoot(dir);
+  if (into === null) return null;
+  let same = 0;
+  for (const s of sources) {
+    const root = volumeRoot(s);
+    if (root === null) return null;
+    if (root === into) same++;
+  }
+  if (same === sources.length) return 'move';
+  if (same === 0) return 'copy';
+  return null;
+}
+
+// M9 fix 1152: the word on the lit folder. A key held decides (modeFor's
+// order, Ctrl first); with no key, the settled effect and the key that
+// changes it, or the rule when the effect cannot be known (a drag from
+// Explorer, whose paths are unreadable until the drop).
+export function dropWord(keys: DropKeys, settled: 'move' | 'copy' | null): string {
+  if (keys.ctrl) return 'Copy here';
+  if (keys.shift) return 'Move here';
+  if (settled === 'move') return 'Move here · Ctrl copies';
+  if (settled === 'copy') return 'Copy here · Shift moves';
+  return 'Ctrl copies, Shift moves';
+}
+
+// M9 fix 1152: the effect a drag from the tree shows on the rail, exact
+// since pane-drag ignores it and main is not asked to settle it.
+export function railEffect(keys: DropKeys, settled: 'move' | 'copy' | null): 'move' | 'copy' {
+  if (keys.ctrl) return 'copy';
+  if (keys.shift) return 'move';
+  return settled ?? HOVER_MOVE_EFFECT;
 }
 
 // The corner note after a drop, its parts joined by `; `, or null when

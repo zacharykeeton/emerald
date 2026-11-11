@@ -35,6 +35,7 @@
     "src/renderer/src/claude-commands.ts",
     "src/renderer/src/context-model.ts",
     "src/renderer/src/daemon-model.ts",
+    "src/renderer/src/files-drop-model.ts",
     "src/renderer/src/files-model.ts",
     "src/renderer/src/git-changes-model.ts",
     "src/renderer/src/git-status-model.ts",

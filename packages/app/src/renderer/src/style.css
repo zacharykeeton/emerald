@@ -7679,6 +7679,7 @@ button:disabled {
 
 .context-popover-token-totals,
 .context-popover-own,
+.context-popover-unpriced,
 .context-popover-stale {
   margin-top: 2px;
 }
@@ -14686,6 +14687,37 @@ button.answer-popover-tab[data-sent="true"]:hover {
   background-color: var(--drop-target-fill);
 }
 
+/* M9 fix 1152: what a drop on the lit folder does, from the rail's
+   data-drop-word. On a row it sits at the right end, the name shortening
+   first; on the list (the rail's own folder) it sits at the top right
+   over the first row, taking no height and no pointer, so aim's
+   elementFromPoint still finds the row under it. */
+.files-row[data-drop-word]::before {
+  content: attr(data-drop-word);
+  order: 1;
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--done);
+  font-size: 11px;
+}
+
+.files-list[data-drop-word]::before {
+  content: attr(data-drop-word);
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 0;
+  overflow: visible;
+  padding-right: 10px;
+  text-align: right;
+  line-height: 22px;
+  color: var(--done);
+  font-size: 11px;
+  pointer-events: none;
+}
+
 /* M9 fix 953: the ask when a drop from Explorer meets names already in
    the folder. */
 .move-clash-dialog {
@@ -15901,4 +15933,77 @@ div.rail-context-head-row:hover {
   border-radius: 3px;
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* M9 fix 1147: a chat pane narrower than its foot row. The view and the
+   wrap clip what they draw to the pane, so nothing lands on a neighbour
+   (overflow: clip, never hidden, which would scroll on a focus past the
+   edge); the row is aligned to its end, so a row still too wide loses its
+   left and never Send; and the view is a size container, so the row sheds
+   by the pane's width. Under 450 px (the full working row, measured 442:
+   paperclip 17, Manual 62, Opus 5.5 · medium 117, Normal 62, Stop 45, Send
+   60, six gaps and the dock's 48) the mode, model and view chips show their leads with
+   no chevron and the rc, agents and diff chips go; under 320 px (the short
+   row: paperclip 17, Accept 43, Opus 5.5 54, N 17, Stop 44, Send 57, six
+   gaps and 48) every chip goes; under 200 px (the row is then 185 px) the
+   paperclip and the hint go, Send and Stop show their glyphs and the
+   dock's sides are 4 px. */
+.chat-view {
+  overflow: clip;
+  container-type: inline-size;
+  container-name: chat-view;
+}
+
+.term-wrap {
+  overflow: clip;
+}
+
+.chat-foot {
+  justify-content: unsafe flex-end;
+}
+
+@container chat-view (width < 450px) {
+  .chat-foot .chat-chip {
+    padding: 0 4px;
+  }
+
+  .chat-foot .chat-chip-caret,
+  .chat-foot .chat-chip-rest,
+  .chat-foot .chat-chip[data-chip='rc'],
+  .chat-foot .chat-chip[data-chip='agents'],
+  .chat-foot .chat-chip[data-chip='diff'] {
+    display: none;
+  }
+}
+
+@container chat-view (width < 320px) {
+  .chat-foot .chat-chip {
+    display: none;
+  }
+}
+
+@container chat-view (width < 200px) {
+  .chat-dock {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .chat-attach,
+  .chat-hint,
+  .chat-send-word,
+  .chat-stop-word {
+    display: none;
+  }
+
+  .chat-send {
+    padding: 5px 6px;
+  }
+
+  button.chat-stop {
+    padding: 4px 5px;
+  }
+
+  .chat-stop::before {
+    content: '\25A0';
+  }
 }

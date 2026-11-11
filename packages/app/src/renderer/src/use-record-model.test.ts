@@ -1,10 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { USE_FEATURES, USE_NAMES } from '@emerald/shared';
-import type { LayoutTab, LayoutNode } from '@emerald/shared';
+import type { LayoutTab, LayoutNode, UseView } from '@emerald/shared';
 import { BINDINGS } from './keys-model.ts';
 import { PANES, emptyTabs, statsPath } from './tabs-model.ts';
-import { PANE_USE, createTurnGate, frontView, openViews, outsideOpenUse, paneKind, tabKind, viewDiff } from './use-record-model.ts';
+import { PANE_USE, createTurnGate, frontView, openViews, outsideOpenUse, paneKind, rebaseline, tabKind, viewDiff } from './use-record-model.ts';
+
+test('rebaseline keeps the clock of a view open across the adopt and starts the adopted tabs\' (M9 fix 1144)', () => {
+  const after = new Map<string, UseView>([['pane:p1', 'activity-pane'], ['tab:new', 'whats-new-tab']]);
+  const next = rebaseline(after, new Map([['pane:p1', 1000], ['tab:gone', 500]]), 9000);
+  assert.deepEqual([...next], [['pane:p1', 1000], ['tab:new', 9000]]);
+});
+
+test('viewDiff from a bare-key before to an after without the notes writes one whats-new-tab close, the line the rebaseline skips (M9 fix 1144)', () => {
+  const before = new Map<string, UseView>([['tab:emerald://whats-new', 'whats-new-tab']]);
+  const diff = viewDiff(before, new Map(), new Map([['tab:emerald://whats-new', 0]]), 400);
+  assert.deepEqual(diff.lines, [{ ev: 'view-close', view: 'whats-new-tab', ms: 400 }]);
+});
 
 test('M9 fix 700: a file from a launch records file-launch, any other open cli-open', () => {
   assert.deepEqual(outsideOpenUse({}), { name: 'cli-open', from: 'cli' });
