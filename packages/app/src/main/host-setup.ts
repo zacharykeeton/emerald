@@ -57,6 +57,8 @@ export interface SetupDeps {
   refused?: (r: { kind: 'hostkey' | 'ssh'; line: string }) => void;
   appVersion: string;
   now: () => number;
+  // For the test; a timer otherwise.
+  sleep?: (ms: number) => Promise<void>;
   log: (msg: string) => void;
 }
 
@@ -214,6 +216,15 @@ export function setupHost(host: RemoteHost, deps: SetupDeps): Promise<SetupResul
 
 class SetupFailed extends Error {}
 
+// M9 fix 1166: a same-version setup unpacks over the folder a just-stopped
+// daemon ran from, and Windows' tar cannot replace a pty.node or conpty.dll
+// a process still has loaded (exit 1, "Can't unlink already-existing
+// object: Permission denied", read 2026-11-12) until it has exited, which
+// the daemon's reaper ensures within 4 s; so the emerald unpack is tried
+// UNPACK_TRIES times, UNPACK_RETRY_MS apart.
+export const UNPACK_TRIES = 3;
+export const UNPACK_RETRY_MS = 2000;
+
 async function runSetup(host: RemoteHost, deps: SetupDeps): Promise<SetupResult> {
   const name = host.name;
   const startedAt = deps.now();
@@ -305,7 +316,14 @@ async function runSetup(host: RemoteHost, deps: SetupDeps): Promise<SetupResult>
     }
     const kitDir = kitDirOf(h, deps.appVersion);
     await must('ssh', sshArgs(host, mkdirCommand(h, kitDir)));
-    await must('ssh', sshArgs(host, untarCommand(h, remoteFile(h, remoteHome, path.basename(kit.emeraldArchive)), kitDir)));
+    const emeraldUntar = sshArgs(host, untarCommand(h, remoteFile(h, remoteHome, path.basename(kit.emeraldArchive)), kitDir));
+    for (let tries = 1; ; tries++) {
+      const out = await run('ssh', emeraldUntar);
+      if (out.code === 0) break;
+      if (tries >= UNPACK_TRIES) throw new SetupFailed(out.stderrLast !== '' ? out.stderrLast : `exit ${out.code}`);
+      deps.log(`host ${name}: unpack failed (exit ${out.code}): ${out.stderrLast}; trying again in ${UNPACK_RETRY_MS / 1000} s`);
+      await (deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(UNPACK_RETRY_MS);
+    }
     for (const archive of copied) await must('ssh', sshArgs(host, removeCommand(h, remoteFile(h, remoteHome, path.basename(archive)))));
     // A shell pane needs no hooks, and the mod the daemon passes with
     // --plugin-dir carries a hosted Claude's, so a failed install is logged
@@ -316,7 +334,7 @@ async function runSetup(host: RemoteHost, deps: SetupDeps): Promise<SetupResult>
 
     // 4. The start: the relay starts the host's daemon.
     push('starting');
-    const withKit: HostRecord = { ...record, kitVersion: deps.appVersion, nodeVersion: KIT_NODE_VERSION };
+    const withKit: HostRecord = { ...record, kitVersion: deps.appVersion, nodeVersion: KIT_NODE_VERSION, kitStage: kit.manifest.emerald.stage };
     let daemon: DaemonInfo;
     try {
       daemon = await deps.connect(withKit);
@@ -337,14 +355,16 @@ async function runSetup(host: RemoteHost, deps: SetupDeps): Promise<SetupResult>
 
 const pruned = new Set<string>();
 
-// The old kit's removal: once per app run per host, at the first connect
-// whose daemon is the record's kit (a Windows host holds a running daemon's
-// pty.node open, and an app update leaves the old kit's daemon serving the
-// pipe until it restarts). Never changes a phase.
+// The old kit's removal: once per daemon a host runs (its pid and start
+// time), at the first connect whose daemon is the record's kit (a Windows
+// host holds a running daemon's pty.node open, and an app update leaves the
+// old kit's daemon serving the pipe until it restarts, M9 fix 1165's
+// Restart). Never changes a phase.
 export async function pruneOldKits(host: RemoteHost, daemon: DaemonInfo, deps: { run: RemoteRunner; log: (msg: string) => void }): Promise<boolean> {
-  if (pruned.has(host.name)) return false;
   if (host.kitVersion === undefined || host.home === undefined || host.shell === undefined || daemon.version !== host.kitVersion) return false;
-  pruned.add(host.name);
+  const key = `${host.name}\0${daemon.pid}\0${daemon.startedAt ?? ''}`;
+  if (pruned.has(key)) return false;
+  pruned.add(key);
   const nodeVersion = host.nodeVersion ?? KIT_NODE_VERSION;
   const h: KitPlace = { home: host.home, shell: host.shell, nodeVersion, kitVersion: host.kitVersion };
   const out = await deps.run('ssh', sshArgs(host, pruneCommand(h, host.kitVersion, nodeVersion))).done;

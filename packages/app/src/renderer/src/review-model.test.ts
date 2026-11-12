@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EMPTY_REVIEW, branchLine, commentCount, keepDraft, openDraft, removeComment, reviewFile, reviewFolder, reviewFolderKey, reviewFolderPath, reviewPath, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
+import { EMPTY_REVIEW, branchLine, commentCount, keepDraft, openDraft, removeComment, reviewFile, reviewFolder, reviewFolderKey, reviewFolderPath, reviewLine, reviewPath, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
 
 // M9 fix 790
 test('sessionStartHead: the current conversation\'s span, then the last span, then the record\'s own; reviewBaseArg', () => {
@@ -41,6 +41,17 @@ test('reviewPath (M9 fix 199): the file to show rides as a query the key leaves 
   assert.equal(reviewFolder(f), 'C:\\code\\emerald', 'the folder back, normalized');
   assert.equal(reviewFile(f), 'README.md');
   assert.equal(reviewFolderKey('C:/Code/Emerald/'), 'folder:c:\\code\\emerald', 'one key per folder whatever the spelling');
+});
+
+test('reviewPath (M9 fix 1170): a line rides after the file', () => {
+  const p = reviewPath('abc-123', 'a.ts', 12);
+  assert.equal(p, 'emerald://review/abc-123?file=a.ts&line=12');
+  assert.equal(reviewLine(p), 12);
+  assert.equal(reviewFile(p), 'a.ts');
+  assert.equal(reviewLine(reviewPath('abc-123', 'a.ts')), null);
+  assert.equal(reviewLine('file=a.ts&line=0'), null);
+  assert.equal(reviewLine(null), null);
+  assert.equal(reviewPath('abc-123', undefined, 5), 'emerald://review/abc-123', 'a line with no file is dropped');
 });
 
 test('keepDraft: one comment per line, sorted by file and line, an empty draft keeps nothing', () => {

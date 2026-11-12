@@ -317,6 +317,9 @@ try {
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hitCentre333.x + 10, y: hitCentre333.y, button: 'left', buttons: 1 });
   await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: band333.x, y: band333.y, button: 'left', buttons: 1 });
   expect(!!(await s.evalJs(`document.querySelector('.drag-ghost')`)), 'the drag ghost shows once the pointer has moved past the threshold');
+  // M9 fix 1162: the lit part of the pane says what the drop does.
+  const word1162 = await s.evalJs(`(() => { const o = document.querySelector(${JSON.stringify(`[data-pane-id=${JSON.stringify(p1)}] .drop-overlay`)}); return o === null ? null : { zone: o.dataset.dropZone, word: o.dataset.dropWord ?? null, shown: getComputedStyle(o, '::after').content }; })()`);
+  expect(word1162 !== null && word1162.zone === 'right' && word1162.word === 'Open the file beside' && word1162.shown === JSON.stringify('Open the file beside'), `fix 1162: a Files row over a pane's edge says Open the file beside (${JSON.stringify(word1162)})`);
   await s.mouse('mouseReleased', band333.x, band333.y);
   await s.waitFor(`document.querySelectorAll('.pane[data-view="file"]').length === 1`, 'the search hit opened a file pane', 5000);
   const droppedPath333 = await s.evalJs(`document.querySelector('.pane[data-view="file"]').dataset.path`);

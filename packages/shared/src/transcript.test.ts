@@ -476,6 +476,15 @@ test('parseSteps: a task notification is one line of the open turn, not a turn o
   assert.equal(turns[0]!.endAt, Date.parse('2026-10-16T14:00:31.000Z'));
 });
 
+test("parseSteps (M9 fix 1170): a task notification carries its <result> as the step's report, and none without one", () => {
+  const withResult = taskText('completed', 'Agent "/code-review medium" finished', null).replace('</task-notification>', '<result>```json\n[]\n```\n\nNothing else.</result>\n<usage><tool_uses>1</tool_uses></usage>\n</task-notification>');
+  const text = [userAt('/code-review medium', 0), userAt(withResult, 30, { origin: { kind: 'task-notification', producer: 'session-task', runId: 'r1' } }), taskLine('completed', 'Background command "x" completed', null, 31)].join('\n');
+  const notes = parseFolded(text)[0]!.steps.filter((s) => s.kind === 'notification');
+  assert.equal(notes.length, 2);
+  assert.equal(notes[0]!.kind === 'notification' ? notes[0]!.report : null, '```json\n[]\n```\n\nNothing else.');
+  assert.equal(notes[1]!.kind === 'notification' ? 'report' in notes[1]! : null, false);
+});
+
 test('parseSteps: a failed or killed task reads in the error tone, and one with no summary reads its status (M9 fix 805)', () => {
   const text = [userAt('go', 0), taskLine('failed', 'Background command "Slow gate" failed with exit code 1', null, 1), taskLine('killed', 'Background command "x" was stopped', null, 2), taskLine('failed', null, null, 3), taskLine('completed', null, null, 4)].join('\n');
   assert.deepEqual(noteOf(parseFolded(text)[0]!.steps), [

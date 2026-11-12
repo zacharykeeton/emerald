@@ -78,6 +78,7 @@ import { PaneNote } from './CheatSheet.tsx';
 import { PANES, fileViewAt } from './tabs-model.ts';
 import { paneInFront, webglBudget } from './webgl-budget.ts';
 import type { WebglMember } from './webgl-budget.ts';
+import { paneDropLight } from './drop-zone-model.ts';
 import { closePicker, FONT_SIZE_DEFAULT, getUiState, liftPanes, openFileTab, openFind, openNewSession, openPicker, openReviewTab, pinFileTab, resetFontSize, revealInPane, setChatFace, setCopyOnSelect, setShadeAfter, setSplitKind, shadePane, shadePanes, toggleZoom, useUi } from './ui.ts';
 
 interface Props {
@@ -152,8 +153,8 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
   // typed into the session, so the whole pane lights, in its own colour.
   // A file over an empty pane (M9 fix 387) takes a half instead, the same
   // preview a folder gets, since the drop opens a file view there rather
-  // than typing anything.
-  const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file && sessionId != null ? 'file' : sessionDrag.target.zone;
+  // than typing anything. The overlay says what the drop does (M9 fix 1162).
+  const drop = paneDropLight(sessionDrag, paneId, sessionId != null);
   const [menu, setMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
   const [renaming, setRenaming] = useState(false);
   // The name's width when the rename box replaced it (M9 fix 93): the box
@@ -567,7 +568,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
           <EmptyPane paneId={paneId} onDone={closePicker} />
         </div>
       )}
-      {dropZone !== null && <div className="drop-overlay" data-drop-zone={dropZone} />}
+      {drop !== null && <div className="drop-overlay" data-drop-zone={drop.zone} data-drop-word={drop.word ?? undefined} />}
     </div>
   );
 }

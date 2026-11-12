@@ -1,3 +1,5 @@
+import { hostPlatform, plainKeyFor } from './keys-model.ts';
+
 // M9 fix 806: what the corner note says after a copy out of a pane. A text
 // that holds a line break is counted in lines, a trailing break not making
 // a line of its own; a text within one line is counted in characters, by
@@ -16,6 +18,13 @@ export function copiedNote(text: string): string {
 export interface CornerAction {
   label: string;
   run: () => void;
+  // M9 fix 1163: the button's tooltip, for the copy's Cancel its keyboard route.
+  title?: string;
+}
+
+// M9 fix 1163: the copy note's Cancel names the palette's way to the same act.
+export function cancelCopyTitle(platform: string = hostPlatform()): string {
+  return `Or ${plainKeyFor('open-actions', platform)}, then Cancel the copy`;
 }
 
 export interface CornerNote {

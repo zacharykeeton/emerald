@@ -6,7 +6,7 @@ import { sendPrompt } from './actions.ts';
 import { folderName } from './files-model.ts';
 import { countsText } from './git-changes-model.ts';
 import { ReviewDiff } from './ReviewDiff.tsx';
-import { branchLine, commentCount, commentsOn, countText, keepDraft, reviewFile, reviewFolder, reviewFolderKey, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
+import { branchLine, commentCount, commentsOn, countText, keepDraft, reviewFile, reviewFolder, reviewFolderKey, reviewLine, reviewBaseArg, reviewPrompt, reviewSessionId, sendGate, sessionStartHead } from './review-model.ts';
 import type { ReviewBase } from './review-model.ts';
 import { getReview, updateReview, useReview } from './review-state.ts';
 import { colorStyle } from './session-color.ts';
@@ -60,6 +60,8 @@ export function ReviewTab({ path }: { path: string }) {
   // The file the opener asked for, off the tab's state; it wins whenever
   // it changes, and the list's first file stands in until it is known.
   const wanted = reviewFile(tabQuery(tabs, path));
+  // M9 fix 1170: the line a findings card asked for, shown only on its own file.
+  const wantedLine = reviewLine(tabQuery(tabs, path));
   const [selected, setSelected] = useState<string | null>(wanted);
   useEffect(() => {
     if (wanted !== null) setSelected(wanted);
@@ -267,7 +269,7 @@ export function ReviewTab({ path }: { path: string }) {
           {shown !== null && shown.repo === true ? (
             <NestedRepo file={shown} />
           ) : shown !== null && git !== null && folder !== null && (session !== undefined || sessionId === null) ? (
-            <ReviewDiff key={`${git.baseHash ?? ''}:${shown.rel}`} sessionId={reviewKey} folder={folder} file={shown} baseHash={git.baseHash} baseName={baseName} branch={git.head ?? session?.branch ?? null} />
+            <ReviewDiff key={`${git.baseHash ?? ''}:${shown.rel}`} sessionId={reviewKey} folder={folder} file={shown} baseHash={git.baseHash} baseName={baseName} branch={git.head ?? session?.branch ?? null} line={wanted !== null && shown.rel === wanted ? wantedLine : null} />
           ) : (
             <div className="review-empty">{git === null ? 'Reading the changes' : files.length === 0 ? 'Nothing to review' : ''}</div>
           )}
@@ -325,7 +327,7 @@ function NestedRepo({ file }: { file: ReviewFile }) {
 // The general comment, for what is not about a line: a line under the
 // header that grows into the box on click, so an empty textarea does not
 // read as an unfinished form every time the tab opens.
-function GeneralLine({ sessionId, open, text }: { sessionId: string; open: boolean; text: string }) {
+export function GeneralLine({ sessionId, open, text }: { sessionId: string; open: boolean; text: string }) {
   const set = (patch: { general?: string; generalOpen?: boolean }) => updateReview(sessionId, (s) => ({ ...s, ...patch }));
   if (!open && text.trim() === '') {
     return (

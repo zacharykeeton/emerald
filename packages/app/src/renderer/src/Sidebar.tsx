@@ -59,6 +59,7 @@ import { TokensText } from './TokensText.tsx';
 import { LoadMark } from './LoadMark.tsx';
 import { ConflictMark } from './ConflictMark.tsx';
 import { conflictLines } from './conflict-model.ts';
+import { branchText } from './branch-text.ts';
 
 // M9 fix 787: the badge's tooltip while an Exited row counts down.
 const REMOVAL_TITLE = 'Closed: removed from the list when the count ends. Hover the row to hold it, Resume to keep it';
@@ -1219,7 +1220,7 @@ function Row({ session, now, loadCeiling, shown, renaming, commenting, prompting
         {session.branch !== null && (
           <span className="sidebar-row-branch" title={`Branch of ${session.cwd}`}>
             <BranchIcon />
-            <span className="sidebar-row-branch-name">{session.branch}</span>
+            <span className="sidebar-row-branch-name">{branchText(session.branch)}</span>
           </span>
         )}
         {/* The roster (M46): what the session sent out, after the branch and before the model and the percent. */}

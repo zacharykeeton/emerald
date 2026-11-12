@@ -134,7 +134,10 @@ export const PROTOCOL_VERSION = 1;
 //  80: M9 fix 1084, claude on the hello, whether the daemon finds a claude (~/.local/bin, then PATH) at its start and again at each app hello on the registry's PATH, by which the empty pane refuses a Claude session on a host without one
 //  81: M9 fix 1094, claude.auth, whether the daemon's claude is signed in and when its stored claude.ai sign-in ends, off claude auth status --json, for the empty pane's sign-in line on a remote host
 //  82: M9 fix 1125, the mod's prompt channel a long poll on the hook sink (POST /channel) in place of emmer mod-channel, whose mod.channel request this daemon refuses as unknown
-export const DAEMON_FEATURE_LEVEL = 82;
+//  83: M9 fix 1166, kitStage on a host record, the id of the stage the host's kit was assembled from, which a daemon before 83 drops
+//  83: M9 fix 1167, host on session.spawn, carried to one app window at level 83 as the host.requested push and answered by its host.done, so emmer new --host and emmer shell --host start a session on a remote host through the window
+//  83: M9 fix 1168, host on session.list, carried to the window the same way, so emmer ls --host lists a remote host's sessions
+export const DAEMON_FEATURE_LEVEL = 83;
 
 // The level at which the daemon keeps the remote hosts record and pushes
 // hosts.changed (M9 fix 1080).
@@ -155,6 +158,7 @@ export interface HostRecord {
   home?: string;                      // the host's home folder, absolute, in the host's spelling
   nodeVersion?: string;               // the kit's Node on the host, once copied
   kitVersion?: string;                // the emerald version on the host, once copied
+  kitStage?: string;                  // the id of the stage the host's kit was assembled from (M9 fix 1166), a sha256 hex
   addedAt: number;                    // epoch ms, when added by hand or first contacted
 }
 
@@ -238,10 +242,12 @@ export interface Requests {
   'hello':          { req: { client: 'app' | 'cli'; protocolVersion: number; featureLevel?: number; token?: string };            res: { daemonPid: number; daemonStartedAt?: number; home?: string; daemonVersion: string; featureLevel?: number; feed?: { dir: string; port: number } | null; shells?: ShellOption[]; claude?: boolean } };
   // removed (M57): the removed sessions after the listed ones, each with
   // its removedAt, for the Commits tab's lanes and the activity timeline.
-  'session.list':   { req: { removed?: boolean };                                          res: { sessions: SessionInfo[] } };
+  // host (M9 fix 1168) names a remote host whose list the window fetches through host.requested, each session stamped with the host.
+  'session.list':   { req: { removed?: boolean; host?: string };                                       res: { sessions: SessionInfo[] } };
   // shell (M9 fix 624) picks one of the hello's shells for kind shell, the
   // first when left out; args go to that shell.
-  'session.spawn':  { req: { kind: SessionKind; cwd: string; name?: string; args?: string[]; shell?: ShellId; cols: number; rows: number }; res: { session: SessionInfo } };
+  // host (M9 fix 1167) names a remote host: this daemon starts nothing, carries the request to a window at level 83 as host.requested and replies with that window's host.done; its cwd is an absolute path in the host's spelling or ~.
+  'session.spawn':  { req: { kind: SessionKind; cwd: string; name?: string; args?: string[]; shell?: ShellId; cols: number; rows: number; host?: string }; res: { session: SessionInfo } };
   // remove: forget the session once its PTY has exited, so a closed shell
   // leaves the list on its own rather than sitting in the exited group.
   'session.kill':   { req: { sessionId: string; remove?: boolean };                        res: {} };
@@ -401,6 +407,8 @@ export interface Requests {
   'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer } };
   // The window's answer to a browser.requested push (M9 fix 672).
   'browser.done':   { req: { runId: number; answer: BrowserAnswer };             res: {} };
+  // The window's answer to a host.requested push (M9 fix 1167): the session the host's daemon started, the sessions it lists (M9 fix 1168), or the one line that says why neither came.
+  'host.done':      { req: { relayId: number; session?: SessionInfo; sessions?: SessionInfo[]; error?: string }; res: {} };
   // Whether a Test event carrying this test_id reached the hook sink
   // within the last minute (M9 fix 606); emmer hooks status --test posts
   // one through the installed hook and then asks; a daemon older than 59
@@ -452,6 +460,12 @@ export type Reply<K extends RequestType = RequestType> =
   | { type: 'reply'; id: number; ok: true;  result: Requests[K]['res'] }
   | { type: 'reply'; id: number; ok: false; error: { code: string; message: string } };
 
+// M9 fix 1167: what a request naming a host carries to the window, its body without the host.
+export type HostAsk =
+  | { type: 'session.spawn'; body: Omit<Requests['session.spawn']['req'], 'host'> }
+  // M9 fix 1168: emmer ls --host.
+  | { type: 'session.list'; body: Omit<Requests['session.list']['req'], 'host'> };
+
 export type ServerMessage =
   | Reply
   | { type: 'pty.output';      sessionId: string; data: string /* base64 */; replay?: true }
@@ -498,4 +512,6 @@ export type ServerMessage =
   // A command for a browser pane's page relayed from emmer browser (M9 fix
   // 672), to the app-topic windows at level 63 alone; the window answers
   // with browser.done and the runId.
-  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter };
+  | { type: 'browser.requested'; runId: number; paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }
+  // A request naming a remote host (M9 fix 1167), to one app window at level 83 alone; the window runs it on the host and answers with host.done and the relayId.
+  | { type: 'host.requested'; relayId: number; host: string; ask: HostAsk };

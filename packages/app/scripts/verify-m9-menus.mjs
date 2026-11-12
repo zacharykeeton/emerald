@@ -607,12 +607,12 @@ try {
   const nameOf1131 = async (id) => (await listed1131()).find((x) => x.id === id)?.name ?? null;
   const faceOf1131 = () => s.evalJs(`document.querySelector(${JSON.stringify('.pane' + pane1131(soloPaneId))})?.dataset.face ?? null`);
   // A hook post on the sink, daemon.json read per post.
-  const post1131 = async (id, event) => {
+  const post1131 = async (id, event, extra = {}) => {
     const daemon = JSON.parse(fs.readFileSync(path.join(emeraldHome, 'daemon.json'), 'utf8'));
     const res = await fetch(`http://127.0.0.1:${daemon.hookPort}/hook`, {
       method: 'POST',
       headers: { 'X-Emerald-Token': daemon.hookToken, 'X-Emerald-Session': id },
-      body: JSON.stringify({ session_id: 'sim-' + id.slice(0, 8), cwd: dir1131, hook_event_name: event, ...(event === 'SessionStart' ? { source: 'startup' } : {}) }),
+      body: JSON.stringify({ session_id: 'sim-' + id.slice(0, 8), cwd: dir1131, hook_event_name: event, ...(event === 'SessionStart' ? { source: 'startup' } : {}), ...extra }),
     });
     expect(res.status === 204, `fix 1131: the hook sink answered 204 to ${event}, got ${res.status}`);
   };
@@ -713,20 +713,46 @@ try {
   expect(!(await listed1131()).some((x) => x.id === c1131), 'fix 1146: C is gone from session.list');
   step('fix 1146: a replaced Claude that exits while the dialog is up, its box ticked, is forgotten by Start');
 
+  // M9 fix 1158: D, idle, replaced with the box unticked, leaves by /exit while the dialog is up; its pane drops to a shell, and Start closes that shell whatever the box says.
+  await settle1131(d1131);
+  await openReplace1131();
+  box1131now = await box1131();
+  expect(box1131now !== null && box1131now.checked === true && box1131now.busy === null, `fix 1158: the box reads ticked for idle D, got ${JSON.stringify(box1131now)}`);
+  await s.evalJs(`document.querySelector('.dialog-close-old input[name=closeOld]').click()`);
+  await s.waitFor(`document.querySelector('.dialog-close-old input[name=closeOld]')?.checked === false`, 'the Close box unticked for D');
+  await post1131(d1131, 'SessionEnd', { reason: 'prompt_input_exit' });
+  await zreq(s, 'session.kill', { sessionId: d1131 });
+  let shell1158 = null;
+  for (const end = Date.now() + 10_000; shell1158 === null && Date.now() < end; await sleep(250)) {
+    const on = await paneSession1131(soloPaneId);
+    if (on !== null && on !== d1131 && (await listed1131()).find((x) => x.id === on)?.kind === 'shell') shell1158 = on;
+  }
+  expect(shell1158 !== null, 'fix 1158: the /exit dropped the pane to a shell under the dialog');
+  expect((await s.evalJs(`!!document.querySelector('.dialog.new-session')`)) === true, 'fix 1158: the dialog is still up after the drop');
+  await startDialog1131();
+  const e1131 = await waitNewSession1131(soloPaneId, shell1158, 'Claude E in the solo pane');
+  let shellGone1158 = false;
+  for (const end = Date.now() + 8000; !shellGone1158 && Date.now() < end; await sleep(250)) shellGone1158 = !(await listed1131()).some((x) => x.id === shell1158);
+  expect(shellGone1158, 'fix 1158: the dropped shell is gone from session.list after Start');
+  // D's own count, armed by its /exit, removes it; a hand remove could race it.
+  await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(d1131))})`, "D's row counted away", 20_000);
+  expect(!(await listed1131()).some((x) => x.id === d1131), 'fix 1158: D is gone from session.list');
+  step('fix 1158: a replaced Claude that leaves by /exit while the dialog is up, its box unticked, has the shell it dropped into the pane closed by Start');
+
   // (4) A session also shown in another pane is offered no box.
   const mirror1131 = await getLayout(s);
   const withMirror1131 = (node) =>
-    node.kind === 'pane' ? (node.id === second1131 ? { ...node, sessionId: d1131, view: null } : node) : { ...node, first: withMirror1131(node.first), second: withMirror1131(node.second) };
+    node.kind === 'pane' ? (node.id === second1131 ? { ...node, sessionId: e1131, view: null } : node) : { ...node, first: withMirror1131(node.first), second: withMirror1131(node.second) };
   await zreq(s, 'layout.set', { layout: { ...mirror1131, root: withMirror1131(mirror1131.root), focusedPaneId: soloPaneId } });
-  for (const end = Date.now() + 8000; Date.now() < end && (await paneSession1131(second1131)) !== d1131; ) await sleep(200);
+  for (const end = Date.now() + 8000; Date.now() < end && (await paneSession1131(second1131)) !== e1131; ) await sleep(200);
   await openReplace1131();
   expect((await box1131()) === null, 'fix 1131 (4): no Close box over a session shown in another pane');
   await escapeDialog1131();
   step('fix 1131 (4): a session shown in another pane is offered no box');
 
   // Clean-up: every session of the block removed, back to one empty pane.
-  for (const id of [a1131, b1131, d1131]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
-  for (const id of [a1131, b1131, d1131]) await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(id))})`, "the block's rows gone", 8000);
+  for (const id of [a1131, b1131, e1131]) await zreq(s, 'session.kill', { sessionId: id, remove: true });
+  for (const id of [a1131, b1131, e1131]) await s.waitFor(`!document.querySelector(${JSON.stringify(row1131(id))})`, "the block's rows gone", 8000);
   await s.waitFor(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}) !== null`, 'the second pane empties');
   await s.evalJs(`document.querySelector(${JSON.stringify(pane1131(second1131) + ' .empty-close')}).click()`);
   await s.waitFor(`document.querySelectorAll('.pane').length === 1 && !!document.querySelector('.empty-pane')`, 'one empty pane after fix 1131');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EMPTY_CONFLICTS, findPane, splitPane } from '@emerald/shared';
 import type { Layout, LayoutNode, RemoteHost } from '@emerald/shared';
 import type { DaemonInfo } from '../../preload/api.ts';
-import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, dropHostSessions, effectiveState, focusedHost, hostOfPane, hostState, paneHost, splitPaneOnHost, withPaneHosts } from './hosts-model.ts';
+import { applyHostChanged, applyHostSetup, applyRemoteHosts, daemonFor, dropHostSessions, effectiveState, focusedHost, hostOfPane, hostOutdatedText, hostState, outdatedHosts, paneHost, splitPaneOnHost, withPaneHosts } from './hosts-model.ts';
 import type { HostState } from './hosts-model.ts';
 import type { State } from './store.ts';
 import { aSession } from './test-support.ts';
@@ -232,4 +232,31 @@ test('dropHostSessions leaves out one host\'s sessions and answers the same map 
   assert.deepEqual([...dropHostSessions(map, 'wfs-db').keys()], ['local', 'o1']);
   assert.equal(dropHostSessions(map, 'nowhere'), map);
   assert.equal(map.size, 4, 'the map handed in is left as it was');
+});
+
+test('outdatedHosts names an up host whose daemon is not its record\'s kit, by name, and hostOutdatedText words it (M9 fix 1165)', () => {
+  const old: DaemonInfo = { ...remoteDaemon, version: '0.1.1157' };
+  const cur: DaemonInfo = { ...remoteDaemon, version: '0.1.1158' };
+  const entry = (name: string, state: HostState['state'], daemon: DaemonInfo | null, kitVersion: string | undefined): HostState => {
+    const record: RemoteHost = { ...wfs, name };
+    if (kitVersion !== undefined) record.kitVersion = kitVersion;
+    else delete record.kitVersion;
+    return hostEntry(state, { record, daemon });
+  };
+  const hosts = new Map<string, HostState>([
+    ['b', entry('b', 'up', { ...old, pid: 2 }, '0.1.1158')],
+    ['a', entry('a', 'up', { ...old, pid: 1 }, '0.1.1158')],
+    ['c', entry('c', 'up', cur, '0.1.1158')],
+    ['d', entry('d', 'lost', old, '0.1.1158')],
+    ['e', entry('e', 'up', old, undefined)],
+  ]);
+  const rows = outdatedHosts(hosts);
+  assert.deepEqual(rows, [
+    { name: 'a', pid: 1, running: '0.1.1157', ships: '0.1.1158' },
+    { name: 'b', pid: 2, running: '0.1.1157', ships: '0.1.1158' },
+  ]);
+  assert.equal(
+    hostOutdatedText(rows[0]!),
+    'emmerd on a runs the 0.1.1157 kit, and this app ships 0.1.1158. Restart it to get the new features; running sessions on a come back as exited and can be resumed.',
+  );
 });

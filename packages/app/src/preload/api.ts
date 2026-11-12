@@ -1120,6 +1120,9 @@ export interface EmeraldApi {
   // Kills the setup's running scp or ssh (M9 fix 1084, A5's Cancel); the
   // setup ends failed with the line cancelled.
   hostCancelSetup(name: string): Promise<void>;
+  // M9 fix 1165: the banner's Restart for a host whose daemon runs another
+  // kit: stopped over its own line, then contacted again at once.
+  hostRestart(name: string): Promise<void>;
   // host names a remote host's daemon (M9 fix 1081); without it a body's
   // sessionId on a host goes there, anything else to this PC's daemon.
   request<K extends RequestType>(type: K, body: Requests[K]['req'], host?: string | null): Promise<Requests[K]['res']>;

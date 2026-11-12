@@ -30,6 +30,7 @@ import { browserToolbarSupported, graphRemotesSupported, graphScaleSupported, he
 import { activityView } from './view-state.ts';
 import type { ActivitySnapshot } from './view-state.ts';
 import { closePicker, FONT_SIZE_DEFAULT, openFileTab, openPicker, resetFontSize, toggleZoom, useUi } from './ui.ts';
+import { paneDropLight } from './drop-zone-model.ts';
 import { paneTextVars } from './pane-text.ts';
 import { usePaneWheel } from './pane-wheel.ts';
 import { defaultView } from './tabs-model.ts';
@@ -120,7 +121,10 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
   };
   const pickerOpen = pickerPaneId === paneId;
   const zoomed = zoomedPaneId === paneId;
-  const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
+  // M9 fix 1162: a view has no session, so every drop on it goes by zone
+  // (an edge opens beside, the centre replaces the view), a known file from
+  // Explorer included, and the overlay says which.
+  const drop = paneDropLight(sessionDrag, paneId, false);
   // M9 fix 902: on pointerdown, which a scrollbar's preventDefault does not stop, where it cancels the mousedown that would follow.
   const onPressDown = () => {
     if (focused) return;
@@ -424,7 +428,8 @@ export function ViewPane({ paneId, view, focused, onlyPane, shown }: Props) {
           <EmptyPane paneId={paneId} onDone={closePicker} />
         </div>
       )}
-      {dropZone !== null && <div className="drop-overlay" data-drop-zone={dropZone} />}
+      {/* A browser pane's word is drawn by its frame's copy of the overlay, over the page (BrowserLayer.tsx), so it shows once. */}
+      {drop !== null && <div className="drop-overlay" data-drop-zone={drop.zone} data-drop-word={view.kind === 'browser' ? undefined : (drop.word ?? undefined)} />}
     </div>
   );
 }

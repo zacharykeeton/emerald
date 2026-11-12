@@ -12,6 +12,7 @@ import { CommitsView } from './CommitsView.tsx';
 import { StatsView } from './StatsView.tsx';
 import { FileView } from './FileView.tsx';
 import { ReviewTab } from './ReviewTab.tsx';
+import { PlanTab } from './PlanTab.tsx';
 import { reviewFolder, reviewSessionId } from './review-model.ts';
 import { useGitWatchRoots } from './git-watch.ts';
 import { focusTerminal, treeKeepsKeysOnPanes } from './focus.ts';
@@ -28,8 +29,9 @@ import { Sidebar } from './Sidebar.tsx';
 import { SplitView } from './SplitView.tsx';
 import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
-import { PANES, commitsFolder, isDocument, isWhatsNew, statsFolder } from './tabs-model.ts';
-import { getState, start, useStore } from './store.ts';
+import { PANES, commitsFolder, isDocument, isWhatsNew, planSessionId, statsFolder } from './tabs-model.ts';
+import { openListenGate, type OpenListenGate } from './open-listen.ts';
+import { SYNC_WAIT_MS, getState, start, useStore } from './store.ts';
 import { adoptWindowTabs, clearZoom, flashCornerNote, openWhatsNewOnStart, pruneChatPanes, pruneFontSizes, pruneShaded, pruneSplitFolders, pruneWindowTabs, useUi } from './ui.ts';
 import { WhatsNewView } from './WhatsNewView.tsx';
 
@@ -38,6 +40,7 @@ export function App() {
   const { zoomedPaneId, tabs } = useUi();
   const fileTab = tabs.active === PANES ? null : tabs.active;
   const firstTab = useRef(true);
+  const openGate = useRef<OpenListenGate | null>(null);
   useGitWatchRoots();
 
   useEffect(() => {
@@ -52,16 +55,24 @@ export function App() {
     const uninstallUseRecord = installUseRecord();
     const uninstallDrop = installExplorerDrop();
     // A file from outside (M9 fix 341): emmer open, or a launch with one, recorded apart (fix 700), or a folder from Explorer's menu (fix 853).
-    const uninstallOpen = window.emerald.files.onOpen((path, pane, extra) => {
-      const use = outsideOpenUse(extra);
-      recordUse(use.name, use.from);
-      void (extra.kind === undefined ? openFileFromOutside(path, pane, extra) : openFolderFromOutside(path, extra.kind)).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
-    });
+    // The listener goes in once this window's tabs are adopted (fix 1159, below); the main process holds an open till then.
+    const gate = openListenGate(
+      () =>
+        window.emerald.files.onOpen((path, pane, extra) => {
+          const use = outsideOpenUse(extra);
+          recordUse(use.name, use.from);
+          void (extra.kind === undefined ? openFileFromOutside(path, pane, extra) : openFolderFromOutside(path, extra.kind)).catch((err: unknown) => console.warn('[emerald] open from outside failed', err));
+        }),
+      SYNC_WAIT_MS,
+      () => console.warn('[emerald] no window id after 15 s; listening for files from outside anyway'),
+    );
+    openGate.current = gate;
     return () => {
       uninstallKeys();
       uninstallUseRecord();
       uninstallDrop();
-      uninstallOpen();
+      gate.dispose();
+      openGate.current = null;
     };
   }, []);
 
@@ -98,12 +109,13 @@ export function App() {
 
   // This window's file tabs under its own key (M9 fix 867), once the main
   // process has said which window this page is; the release notes (fix 227)
-  // open after that, so they land in the key the window keeps (fix 1144).
+  // open after that, so they land in the key the window keeps (fix 1144), and the listener for files from outside goes in here for the same reason (fix 1159).
   const notesChecked = useRef(false);
   useEffect(() => {
     if (windowId === null) return;
     const all = getState().allLayout;
     adoptWindowTabs(windowId, all === null ? new Set([FIRST_WINDOW_ID]) : new Set(windowsOf(all).map((w) => w.id)));
+    openGate.current?.ready();
     if (notesChecked.current) return;
     notesChecked.current = true;
     openWhatsNewOnStart();
@@ -158,7 +170,7 @@ export function App() {
                 and a folder's can be open side by side, and one component
                 switching between them kept the first's pinned base, its
                 selection and its Sent banner for the second. */}
-            {fileTab !== null && (reviewSessionId(fileTab) !== null || reviewFolder(fileTab) !== null ? <ReviewTab key={fileTab} path={fileTab} /> : commitsFolder(fileTab) !== null ? <CommitsView path={fileTab} /> : statsFolder(fileTab) !== null ? <StatsView key={fileTab} path={fileTab} /> : isWhatsNew(fileTab) ? <WhatsNewView path={fileTab} /> : isDocument(fileTab) ? <ActivityTab path={fileTab} /> : <FileView path={fileTab} />)}
+            {fileTab !== null && (reviewSessionId(fileTab) !== null || reviewFolder(fileTab) !== null ? <ReviewTab key={fileTab} path={fileTab} /> : commitsFolder(fileTab) !== null ? <CommitsView path={fileTab} /> : statsFolder(fileTab) !== null ? <StatsView key={fileTab} path={fileTab} /> : isWhatsNew(fileTab) ? <WhatsNewView path={fileTab} /> : planSessionId(fileTab) !== null ? <PlanTab key={fileTab} path={fileTab} /> : isDocument(fileTab) ? <ActivityTab path={fileTab} /> : <FileView path={fileTab} />)}
           </div>
         </div>
         <FilesRail />

@@ -30,12 +30,17 @@ const BOX_PX = 74;
 
 type Side = { kind: 'text'; text: string } | { kind: 'binary' } | { kind: 'missing' } | { kind: 'error'; error: string };
 
-export function ReviewDiff({ sessionId, folder, file, baseHash, baseName, branch }: { sessionId: string; folder: string; file: ReviewFile; baseHash: string | null; baseName: string; branch: string | null }) {
+export function ReviewDiff({ sessionId, folder, file, baseHash, baseName, branch, line }: { sessionId: string; folder: string; file: ReviewFile; baseHash: string | null; baseName: string; branch: string | null; line: number | null }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
   const modelsRef = useRef<{ original: monaco.editor.ITextModel; modified: monaco.editor.ITextModel } | null>(null);
   const [base, setBase] = useState<Side | null>(null);
   const [work, setWork] = useState<Side | null>(null);
+  // M9 fix 1170: the line a findings card opened the diff at, revealed
+  // once per ask (a poll's re-read does not scroll back to it) and marked.
+  const revealed = useRef<number | null>(null);
+  const findingMark = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+  const [shownLine, setShownLine] = useState<number | null>(null);
   const review = useReview(sessionId);
   const comments = review.comments.filter((c) => c.rel === file.rel);
   const draft = review.draft !== null && review.draft.rel === file.rel ? review.draft : null;
@@ -177,6 +182,20 @@ export function ReviewDiff({ sessionId, folder, file, baseHash, baseName, branch
     }
   }, [base, work, baseHash, file.rel]);
 
+  // M9 fix 1170: after the models, so the line is there to reveal; a line
+  // past the work tree's end waits for a read that has it.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor === null || modelsRef.current === null || line === null || line === revealed.current) return;
+    if (line > modelsRef.current.modified.getLineCount()) return;
+    revealed.current = line;
+    const modified = editor.getModifiedEditor();
+    modified.revealLineInCenter(line);
+    modified.setPosition({ lineNumber: line, column: 1 });
+    (findingMark.current ??= modified.createDecorationsCollection()).set([{ range: new monaco.Range(line, 1, line, 1), options: { isWholeLine: true, className: 'review-finding-line' } }]);
+    setShownLine(line);
+  }, [line, base, work]);
+
   // The marks and the zones follow the comments and the draft's place.
   // The draft's text is not a dependency: the box is built once per line
   // and writes the store on every keystroke (the header's count reads
@@ -232,7 +251,7 @@ export function ReviewDiff({ sessionId, folder, file, baseHash, baseName, branch
 
   const note = (side: Side | null, what: string) => (side === null ? `Reading the ${what}` : side.kind === 'binary' ? `Binary at ${what}` : side.kind === 'missing' ? `Not at ${what}` : side.kind === 'error' ? side.error : null);
   return (
-    <div className="review-diff" data-rel={file.rel} data-state={base !== null && work !== null ? 'ready' : 'loading'} data-comments={comments.length} data-draft={draftLine ?? undefined} data-new-file={newFile || undefined}>
+    <div className="review-diff" data-rel={file.rel} data-state={base !== null && work !== null ? 'ready' : 'loading'} data-comments={comments.length} data-draft={draftLine ?? undefined} data-new-file={newFile || undefined} data-finding-line={shownLine ?? undefined}>
       <div className="review-captions">
         <span className="review-caption" title={baseHash ?? undefined}>
           base {baseName}

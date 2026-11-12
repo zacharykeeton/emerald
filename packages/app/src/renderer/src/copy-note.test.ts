@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { actionIn, copiedNote, copyCancelIn, noteIn } from './copy-note.ts';
+import { actionIn, cancelCopyTitle, copiedNote, copyCancelIn, noteIn } from './copy-note.ts';
+
+// M9 fix 1163: the copy note's Cancel names its keyboard route in its tooltip.
+test("cancelCopyTitle: the palette's chord, then the row's name, by platform", () => {
+  assert.equal(cancelCopyTitle('win32'), 'Or Ctrl+Shift+P, then Cancel the copy');
+  assert.equal(cancelCopyTitle('darwin'), 'Or Cmd+Shift+P, then Cancel the copy');
+});
 
 test('copiedNote: a text within one line is counted in characters, by code point (M9 fix 806)', () => {
   assert.equal(copiedNote('abc'), 'Copied 3 characters');

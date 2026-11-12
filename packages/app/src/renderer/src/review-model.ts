@@ -65,8 +65,8 @@ export const EMPTY_REVIEW: ReviewState = { comments: [], draft: null, general: '
 // way a commits document's is), and a tab opened with no session in the
 // folder (a view pane's rail) is keyed by the folder instead:
 // `emerald://review/folder/<encoded path>`.
-export function reviewPath(sessionId: string, file?: string): string {
-  return withQuery(`${DOCUMENT_SCHEME}review/${sessionId}`, reviewFileQuery(file));
+export function reviewPath(sessionId: string, file?: string, line?: number): string {
+  return withQuery(`${DOCUMENT_SCHEME}review/${sessionId}`, reviewFileQuery(file, line));
 }
 
 export function reviewFolderPath(folder: string, file?: string): string {
@@ -102,8 +102,22 @@ export function reviewFile(pathOrQuery: string | null): string | null {
   return file === null || file === '' ? null : file;
 }
 
-function reviewFileQuery(file: string | undefined): string | undefined {
-  return file === undefined || file === '' ? undefined : `file=${encodeURIComponent(file)}`;
+// M9 fix 1170: the line a findings card asked the tab to show, beside its file; null for none.
+export function reviewLine(pathOrQuery: string | null): number | null {
+  if (pathOrQuery === null) return null;
+  const query = pathOrQuery.startsWith(DOCUMENT_SCHEME) ? documentQuery(pathOrQuery) : pathOrQuery;
+  if (query === null) return null;
+  const raw = new URLSearchParams(query).get('line');
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  const line = Number(raw);
+  return line >= 1 ? line : null;
+}
+
+// Since M9 fix 1170 a line rides after the file; a line with no file is
+// dropped, since the tab would not know whose line it is.
+function reviewFileQuery(file: string | undefined, line?: number): string | undefined {
+  if (file === undefined || file === '') return undefined;
+  return line === undefined ? `file=${encodeURIComponent(file)}` : `file=${encodeURIComponent(file)}&line=${line}`;
 }
 
 // The key a folder review's comments live under in review-state.ts, so

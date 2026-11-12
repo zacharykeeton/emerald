@@ -230,6 +230,7 @@ const api: EmeraldApi = {
   hostForget: (name) => ipcRenderer.invoke('emerald:host-forget', name),
   hostAdd: (destination) => ipcRenderer.invoke('emerald:host-add', destination),
   hostCancelSetup: (name) => ipcRenderer.invoke('emerald:host-cancel-setup', name),
+  hostRestart: (name) => ipcRenderer.invoke('emerald:host-restart', name),
   on: (handler) => rendererPush.add(handler),
 };
 

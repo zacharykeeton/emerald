@@ -448,6 +448,29 @@ try {
   expect(r.code === 0, 'rm cmdrow');
   log('M9 fix 624: emmer shell --shell cmd starts cmd, an unknown id and --shell on emmer new are usage errors');
 
+  // M9 fix 1167: --host is refused on the command line before the pipe for
+  // a relative folder, a blank name and an unknown shell, and with no
+  // window on this daemon the start is exit 69 and the daemon's one line.
+  r = emerald('shell', '--host', 'stub', 'relative-1167');
+  expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: a folder on stub is an absolute path or ~, got "relative-1167"', `shell --host with a relative folder: usage, got ${r.code} ${JSON.stringify(r.err)}`);
+  expect(/^usage: emmer shell <dir> \[--host <name>\] \[--name <label>\] \[--shell pwsh\|powershell\|gitbash\|cmd\] \[--json\] \[-- <shell args>\]$/m.test(r.err), `shell usage names --host, got ${JSON.stringify(r.err)}`);
+  expect(/^--host <name> starts it on that remote host through the window, which must be open; <dir> is then an absolute path there or ~$/m.test(r.err), `shell usage's --host line, got ${JSON.stringify(r.err)}`);
+  r = emerald('new', '--host', '', '~');
+  expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: --host needs a host name, as the window lists it', `new --host '': usage, got ${r.code} ${JSON.stringify(r.err)}`);
+  r = emerald('shell', '--host', 'stub', '~', '--shell', 'frob');
+  expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: --shell must be one of pwsh, powershell, gitbash, cmd, zsh, bash, sh, got "frob"', `shell --host --shell frob: usage, got ${r.code} ${JSON.stringify(r.err)}`);
+  r = emerald('new', '--host', 'stub', '~');
+  expect(r.code === 69 && r.err.trim() === 'emmer: no window answered; open the Emerald app, which holds the line to every host', `new --host with no window: exit 69 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+  r = emerald('help', 'new');
+  expect(r.code === 0 && /^emmer new <dir> \[--host <name>\] \[--name <label>\] \[--json\] \[-- <claude args>\]$/m.test(r.out), `help new names --host, got ${r.code} ${JSON.stringify(r.out)}`);
+  // M9 fix 1168: emmer ls --host the same way.
+  r = emerald('ls', '--host', 'stub');
+  expect(r.code === 69 && r.err.trim() === 'emmer: no window answered; open the Emerald app, which holds the line to every host', `ls --host with no window: exit 69 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+  r = emerald('ls', '--host', '');
+  expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: --host needs a host name, as the window lists it', `ls --host '': usage, got ${r.code} ${JSON.stringify(r.err)}`);
+  expect(/^usage: emmer ls \[--host <name>\] \[--by-state\] \[--team\] \[--json\]$/m.test(r.err), `ls usage names --host, got ${JSON.stringify(r.err)}`);
+  log('M9 fixes 1167 and 1168: --host refuses a relative folder, a blank name and an unknown shell before the pipe, and with no window answers exit 69 and one line');
+
   r = emerald('kill', 'nope');
   expect(r.code === 1 && /no session matches "nope"/.test(r.err), 'kill an unknown reference: exit 1');
   r = emerald('rm', 'alpha');

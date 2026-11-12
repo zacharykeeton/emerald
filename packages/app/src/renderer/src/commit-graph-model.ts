@@ -1,6 +1,7 @@
 import { colorForKey, farthestSessionColor, hexOfOklab, markKind, oklabOf } from '@emerald/shared';
 import type { SessionCommit, SessionInfo, SessionSpan, TeamMember } from '@emerald/shared';
 import { commitOwners } from './commit-lanes-model.ts';
+import { isDetachedName } from './branch-text.ts';
 import type { GitCheckout, GraphCommit, HistoryTranscript } from '../../preload/api.ts';
 
 // The commit graph's model (M65, after M51's lane-per-branch walk): the
@@ -735,6 +736,19 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
   commits.forEach((c, i) => {
     for (const r of c.refs) if (!refRow.has(r)) refRow.set(r, i);
   });
+  // M9 fix 1160: a detached HEAD's branch is its commit's seven-hex short
+  // id (branch-text.ts), which no ref carries; it sits on the one commit
+  // in the log whose hash starts with it. A ref that carries the name
+  // wins, and a short id two commits in the log share sits nowhere, as a
+  // name past the window does. Every read of where a session's or a
+  // member's branch sits goes through here but the squares' walk, which
+  // stays on refs: a detached chain is no branch the session owns.
+  const shortRow = new Map<string, number | null>();
+  commits.forEach((c, i) => {
+    const k = c.hash.slice(0, 7);
+    shortRow.set(k, shortRow.has(k) ? null : i);
+  });
+  const branchRow = (name: string): number | undefined => refRow.get(name) ?? (isDetachedName(name) ? (shortRow.get(name) ?? undefined) : undefined);
   // A member gone with its worktree (M9 fix 946, rule 7): it has reported
   // back, its branch is no longer in the log and its folder is no
   // checkout of the repository any more (the sweep's worktree remove and
@@ -746,7 +760,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
   // live member with a branch always has its folder (the branch is read
   // off it); one with none is the replay's stand-in, rebuilt from the
   // record of a batch long swept, and keeps its row there.
-  const isGone = (m: TeamMember): boolean => m.outcome === 'returned' && m.branch !== null && !refRow.has(m.branch) && m.cwd !== null && !roots.some((r) => underFolder(m.cwd, r));
+  const isGone = (m: TeamMember): boolean => m.outcome === 'returned' && m.branch !== null && branchRow(m.branch) === undefined && m.cwd !== null && !roots.some((r) => underFolder(m.cwd, r));
   // The squares (M9 fix 945, rule 5): a commit nobody here made that lies
   // on a live session's home-branch first-parent chain between the commit
   // it started on and its branch's head is inside the session's span, so
@@ -856,13 +870,13 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // trunk, a session's own commits, or the start bar a session with
     // a row of its own gets; a member's lane under a session with none
     // of those ends under a bar instead.
-    const start = b.session === null ? undefined : (startIndexOf(b.session) ?? (b.session.branch === null ? undefined : refRow.get(b.session.branch)));
+    const start = b.session === null ? undefined : (startIndexOf(b.session) ?? (b.session.branch === null ? undefined : branchRow(b.session.branch)));
     const hasOwn = mine.some((i) => commitMember[i] === null);
     // Where the session sits (M9 fix 151): the head of its branch when
     // the log holds it, else its own commits, else its start. A member
     // with no branch forks from there, and the walk is asked about the
     // row when the block has no commit of its own on the line.
-    const head = b.session === null || b.session.branch === null ? undefined : refRow.get(b.session.branch);
+    const head = b.session === null || b.session.branch === null ? undefined : branchRow(b.session.branch);
     const seat = head ?? (hasOwn ? undefined : start);
     const withRow = b.session !== null && hasOwnRow(b.session) && inRepo(b.session, roots);
     const trunkDrawn = b.session === null || hasOwn || ((start !== undefined || head !== undefined) && withRow);
@@ -893,7 +907,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     const placedMembers = new Set(mine.map((i) => commitMember[i]).filter((m): m is string => m !== null));
     // A gone member with nothing in the block (M9 fix 946) gets no lane.
     const unplaced = b.session === null ? [] : agentsOf(b.session).filter((m) => !placedMembers.has(m.id) && !onLine(b.sessionId, m.id) && !isGone(m)).sort((x, y) => x.startedAt - y.startedAt);
-    const watch = unplaced.map((m) => (m.branch === null ? undefined : refRow.get(m.branch)) ?? seat).filter((r): r is number => r !== undefined);
+    const watch = unplaced.map((m) => (m.branch === null ? undefined : branchRow(m.branch)) ?? seat).filter((r): r is number => r !== undefined);
     if (seedHead && !mine.includes(head)) watch.push(head);
     const walk = blockTopology(mine, commits, rowOf, seed, (i) => b.sessionId === null || commitMember[i] === null, watch, trunkDrawn);
     walkOf.set(bi, walk);
@@ -907,7 +921,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // block, so the walk above reads the same with the member unplaced.
     const hint = new Map<number, string>();
     for (const m of unplaced) {
-      for (let i = m.branch === null ? undefined : refRow.get(m.branch); i !== undefined; ) {
+      for (let i = m.branch === null ? undefined : branchRow(m.branch); i !== undefined; ) {
         if (commitSession[i] !== b.sessionId || commitMember[i] !== null || (walk.laneOf.get(i) ?? 0) === 0 || hint.has(i)) break;
         hint.set(i, m.id);
         const fp = commits[i]!.parents[0];
@@ -1014,7 +1028,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // the start commit. A session with commits of its own is anchored
     // above its newest, and its line runs down to the start (below).
     const started = startIndexOf(s);
-    const start = started !== undefined ? started : s.branch === null ? undefined : refRow.get(s.branch);
+    const start = started !== undefined ? started : s.branch === null ? undefined : branchRow(s.branch);
     // The star sits over the head of the branch the session is on (M9
     // fix 151), usually main's tip, wherever that commit is drawn: its
     // own newest commit is the head's usual place and keeps its kind,
@@ -1022,7 +1036,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
     // makes the two one for a record with no start kept); any other
     // head, a member's commit main was fast-forwarded to or someone
     // else's on top, is the `head` kind.
-    const head = s.branch === null ? undefined : refRow.get(s.branch);
+    const head = s.branch === null ? undefined : branchRow(s.branch);
     const anchor: Pick<Placed, 'above' | 'kind'> = head !== undefined && head !== own && (own !== -1 || head !== start) ? { above: head, kind: 'head' } : own !== -1 ? { above: own, kind: 'tip' } : start !== undefined ? { above: start, kind: 'start' } : { above: null, kind: 'bottom' };
     // Every row sits right above the commit it is on (M9 fix 1155, the
     // user's pick at the plan of fixes 1139 to 1157, superseding fix 944's
@@ -1038,7 +1052,7 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
       // A member's star sits over its branch's head whoever made it (M9
       // fix 944, rule 2): the lead's fix-up in a seat's worktree is the
       // seat's head, on the seat's line, and the seat's row goes over it.
-      const ref = m.branch === null ? undefined : refRow.get(m.branch);
+      const ref = m.branch === null ? undefined : branchRow(m.branch);
       if (ref !== undefined && commitSession[ref] === sessionId && !lineOnly(sessionId) && slotOfCommit(ref) === laneOf(sessionId, m.id)) {
         placeMember(m, ref, 'tip');
         continue;
@@ -1052,11 +1066,11 @@ export function sessionGraph(commits: readonly GraphCommit[], given: readonly Gr
       // bottom with the session rows whose commit is there too. Only a
       // member with a folder; the replay's stand-in names a branch the
       // sweep took with no folder, and forks from its session's commit.
-      if (m.branch !== null && m.cwd !== null && refRow.get(m.branch) === undefined && !onLine(sessionId, m.id)) {
+      if (m.branch !== null && m.cwd !== null && branchRow(m.branch) === undefined && !onLine(sessionId, m.id)) {
         placed.push({ sessionId, session: s, member: m, above: null, kind: 'bottom' });
         continue;
       }
-      const fork = (m.branch === null ? undefined : refRow.get(m.branch)) ?? anchor.above ?? undefined;
+      const fork = (m.branch === null ? undefined : branchRow(m.branch)) ?? anchor.above ?? undefined;
       if (fork !== undefined && !lineOnly(sessionId) && !onLine(sessionId, m.id)) {
         placeMember(m, fork, 'fork');
         continue;

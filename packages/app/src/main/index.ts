@@ -5,7 +5,7 @@ import type { HostRecord, RemoteHost, SessionInfo } from '@emerald/shared';
 import { HostClient } from './host-client.ts';
 import { cancelSetup, pruneOldKits, setupHost, spawnRunner } from './host-setup.ts';
 import type { ConnectRefusal } from './host-setup.ts';
-import { assembleKit, kitRoot } from './remote-kit.ts';
+import { assembleKit, kitRoot, kitSources, stageEntries, stageId } from './remote-kit.ts';
 import type { KitArch, KitOs } from './remote-kit.ts';
 import { Readable } from 'node:stream';
 import { answerLocalPage, LOCAL_PAGE_HEADERS, localRequestAllowed, localRootIn } from './local-page.ts';
@@ -79,6 +79,7 @@ import type { OpenRequest } from './file-open-relay.ts';
 import { launchArgument, launchLabel } from './launch-argument.ts';
 import type { LaunchKind } from './launch-argument.ts';
 import { wireBrowserDriver } from './browser-driver.ts';
+import { wireCliHostRelay } from './cli-host-relay.ts';
 import { wireDesignMode } from './design-wire.ts';
 import { SWEEP_HELD_LINE, sweepGiveUpLine, sweepHeld, sweepLine, sweepPending, updaterCacheDir } from './updater-cache.ts';
 import { pruneShots } from './shot-prune.ts';
@@ -346,6 +347,8 @@ client.on('message', (msg: ServerMessage) => {
   // The browser driver's (M9 fix 672); an eval or a fill can carry a
   // secret the renderer has no need to hold.
   if (msg.type === 'browser.requested') return;
+  // The CLI's requests naming a host (M9 fix 1167), run by main alone.
+  if (msg.type === 'host.requested') return;
   pushToRenderer(msg);
 });
 // The last crash the window heard (M9 fix 832), for a renderer that reloads
@@ -471,6 +474,10 @@ const hostClients = new Map<string, HostClient>();
 const hostMaking = new Map<string, Promise<HostClient>>();
 const hostSessions = new Map<string, Map<string, SessionInfo>>();
 const hostLast = new Map<string, HostChanged>();
+// M9 fix 1165: the hosts whose daemon a Restart is stopping and starting
+// again; their connecting and lost states are not pushed, so a restart the
+// person asked for does not read as a lost line.
+const hostRestarting = new Set<string>();
 // What always goes to this PC's daemon, whatever host a request names.
 const LOCAL_ONLY = /^(layout|window|folders|hosts|prompts|conflicts)\./;
 
@@ -534,6 +541,7 @@ async function remoteHosts(): Promise<RemoteHost[]> {
 
 function pushHostState(c: HostClient): void {
   if (c.state === 'idle') return;
+  if (hostRestarting.has(c.name) && (c.state === 'connecting' || c.state === 'lost')) return;
   const body: HostChanged = { host: c.name, state: c.state, daemon: c.daemon, since: c.since, retryIn: c.retryIn, refusal: c.refusal };
   hostLast.set(c.name, body);
   pushToRenderer({ type: 'host.changed', ...body });
@@ -651,8 +659,39 @@ async function hostConnect(name: string): Promise<void> {
     await setUpHost(c);
     return;
   }
+  if (stageMoved(c.record)) {
+    await restageHost(c);
+    return;
+  }
   await c.connect();
   if (c.state === 'refused' && c.refusal?.kind === 'nokit') await setUpHost(c);
+}
+
+// M9 fix 1166: in a build that is not packaged, whether the stage has moved
+// since the host's kit was assembled (a rebuild and npm run stage at the
+// same version). A record with no kitStage (set up before this fix, under a
+// daemon before 83, or written by hand as verify:remote's stub is) is not
+// compared, nor is a packaged build, whose stage never moves at one version.
+function stageMoved(record: RemoteHost): boolean {
+  if (app.isPackaged || record.kitStage === undefined) return false;
+  try {
+    return record.kitStage !== stageId(stageEntries(kitSources(kitRootHere())));
+  } catch {
+    // No stage to read: the setup's own refusal names it when one runs.
+    return false;
+  }
+}
+
+// M9 fix 1166: a moved stage's re-setup: the host's daemon stopped first
+// (fix 1165's stopDaemon), since Windows' tar cannot replace the pty.node
+// and conpty.dll a running daemon has loaded, then the setup, whose relay
+// starts the new files' daemon. A separate function, so hostConnect's
+// narrowing of c.state does not reach it.
+async function restageHost(c: HostClient): Promise<void> {
+  log(`host ${c.name}: the stage moved since its kit was copied, setting it up again`);
+  await c.connect();
+  if (c.state === 'up') await c.stopDaemon();
+  if (c.state === 'idle' || (c.state === 'refused' && c.refusal?.kind === 'nokit')) await setUpHost(c);
 }
 
 // The remote kit (M9 fix 1083) and the setup that copies it (fix 1084):
@@ -661,8 +700,14 @@ async function hostConnect(name: string): Promise<void> {
 // packages/app/stage in a checkout, or under EMERALD_KIT_STAGE.
 const remoteRunner = spawnRunner(runner);
 
+// The stage-shaped tree the kit is assembled from (M9 fix 1083), shared by
+// kitFor and fix 1166's compare.
+function kitRootHere(): string {
+  return kitRoot({ daemonMain: resolveDaemonMain(), checkoutStage: path.resolve(__dirname, '..', '..', 'stage'), env: process.env, packaged: app.isPackaged });
+}
+
 function kitFor(kitOs: KitOs, arch: KitArch) {
-  const root = kitRoot({ daemonMain: resolveDaemonMain(), checkoutStage: path.resolve(__dirname, '..', '..', 'stage'), env: process.env });
+  const root = kitRootHere();
   return assembleKit({ os: kitOs, arch, appVersion: appVersion(), cacheRoot: path.join(app.getPath('userData'), 'remote-kits'), root, env: process.env, log });
 }
 
@@ -717,6 +762,26 @@ async function hostForget(name: string): Promise<void> {
   if (record?.source === 'added') await client.request('hosts.remove', { name });
 }
 
+// M9 fix 1165: the banner's Restart for a host: its daemon stopped over its
+// own line, then a connect at once (not the 2 s backoff), through which the
+// relay starts the kit's own daemon; the old kit goes at that connect
+// (pruneOldKits, once per daemon). The renderer keeps the host up
+// throughout, so no lost band; a daemon that does not exit is met again
+// and the row stays.
+async function hostRestart(name: string): Promise<void> {
+  const c = hostClients.get(name);
+  if (c === undefined || c.state !== 'up' || c.daemon === null) throw new Error(`${name} is not up`);
+  log(`host ${name}: restart asked, emmerd pid ${c.daemon.pid} runs ${c.daemon.version}`);
+  hostRestarting.add(name);
+  try {
+    await c.stopDaemon();
+    await hostConnect(name);
+  } finally {
+    hostRestarting.delete(name);
+    pushHostState(c);
+  }
+}
+
 async function hostAdd(destination: string): Promise<RemoteHost> {
   const dest = destination.trim();
   const name = hostNameOf(dest);
@@ -735,6 +800,7 @@ ipcMain.on('emerald:host-try-now', (_e, name: string) => hostClients.get(name)?.
 ipcMain.handle('emerald:host-forget', (_e, name: string) => hostForget(name));
 ipcMain.handle('emerald:host-add', (_e, destination: string) => hostAdd(destination));
 ipcMain.handle('emerald:host-cancel-setup', (_e, name: string) => cancelSetup(name));
+ipcMain.handle('emerald:host-restart', (_e, name: string) => hostRestart(name));
 
 // version: the app's own, from its package.json (M9 fix 234, the app
 // menu's What's new hint), which the docs commit of every batch bumps.
@@ -800,6 +866,21 @@ const openRelay = wireFileOpenRelay(client, {
 ipcMain.on('emerald:open-file-ready', (event) => {
   listening.add(event.sender.id);
   openRelay.ready();
+});
+
+// emmer new --host and emmer shell --host (M9 fix 1167, cli-host-relay.ts)
+// and emmer ls --host (M9 fix 1168): the daemon's host.requested run here,
+// where the host clients live, and the session, the list or the line sent
+// back as host.done.
+wireCliHostRelay(client, {
+  hosts: remoteHosts,
+  connect: hostConnect,
+  record: (name) => hostClients.get(name)?.record,
+  // 0: no page asked; hostRequest reads the id for pty.attach and pty.detach alone.
+  spawn: (name, body) => hostRequest(0, name, 'session.spawn', body) as Promise<{ session: SessionInfo }>,
+  // hostRequest stamps each listed session with the host.
+  list: (name, body) => hostRequest(0, name, 'session.list', body) as Promise<{ sessions: SessionInfo[] }>,
+  log,
 });
 
 // emmer browser's driver (M9 fix 672, browser-driver.ts): a command from

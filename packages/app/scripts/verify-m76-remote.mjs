@@ -24,13 +24,20 @@
 // Block `kit` (fixes 1083 and 1084, needs relay; last, since it replaces
 // the stub's daemon): a first contact that copies the kit from local
 // fixtures (a stage, a Node zip, a node-pty tarball) and starts the kit's
-// own daemon, then the Linux refusal. Block clip (fix 1091, needs nothing;
-// last): a local shell's OSC 52 write on the window's held clipboard with
+// own daemon, then a file restaged at the same version reaching the host
+// through a re-setup that stops the host's daemon first (fix 1166), then
+// the Linux refusal. Block restart (fix 1165, needs relay and kit, after
+// kit): an older kit's daemon started through its own relay under a record
+// naming this kit, read as a row of the daemon banner, its Restart bringing
+// the new kit's daemon up with no lost band and the old kit removed.
+// Block clip (fix 1091, needs nothing):
+// a local shell's OSC 52 write on the window's held clipboard with
 // its note, an OSC 8 link wrapped over two rows opened by a Ctrl+click on its
 // second, and a reload's replay copying nothing. The store, row, marks and kit
 // blocks read what the other branches of the batch build; they were
 // written from the plan's contracts (C4 to C7) and run first at the
 // batch's close-out on the merged tree.
+// Block cli (fixes 1167 and 1168, needs nothing; last): emmer shell --host stub and emmer ls --host stub from the harness's CLI, carried by its daemon to this window and run on the stub, then the refusals that need the window.
 // Run: npm run verify:remote -w @emerald/app [-- --only relay]
 import { createHash } from 'node:crypto';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
@@ -49,8 +56,11 @@ const { block, blocksRun } = blockRunner([
   { name: 'row', fixes: ['1087', '1088', '1094', '1095'], needs: ['relay'] },
   { name: 'marks', fixes: ['1089', '1090', '1096', '1097'], needs: ['relay'] },
   // Replaces the stub's daemon with the kit's, so it stays last.
-  { name: 'kit', fixes: ['1083', '1084'], needs: ['relay'] },
+  { name: 'kit', fixes: ['1083', '1084', '1166'], needs: ['relay'] },
+  // Starts where kit ends (the kit's own daemon on R), so it follows it.
+  { name: 'restart', fixes: ['1165'], needs: ['relay', 'kit'] },
   { name: 'clip', fixes: ['1091'], needs: [] },
+  { name: 'cli', fixes: ['1167', '1168'], needs: [] },
 ]);
 
 let app = null;
@@ -767,7 +777,12 @@ try {
     const layout = await getTabs(s);
     const tab = layout.tabs.find((t) => t.id === layout.currentTabId);
     const holder = leaves(tab).find((p) => p.sessionId !== null) ?? leaves(tab)[0];
-    const kitPane = await splitEmpty(holder.id);
+    // Run with --only (relay then kit), the tab is one empty pane, which
+    // draws no title row and so no split button: that pane is the kit's
+    // (M9 fix 1166, which first ran the block that way).
+    await s.waitFor(`!!${q(paneSel(holder.id))}`, 'the holder pane drawn');
+    const holderEmpty = await s.evalJs(`!!${q(paneSel(holder.id) + ' .empty-pane')} && !${q(paneSel(holder.id) + ' .pane-split-right')}`);
+    const kitPane = holderEmpty ? holder.id : await splitEmpty(holder.id);
     const K = paneSel(kitPane);
     await s.evalJs(`${q(K + ' .empty-kind[data-kind="shell"]')}.click()`);
     await s.evalJs(`${q(K + ' .empty-host[data-host="stub"]')}.click()`);
@@ -815,7 +830,36 @@ try {
     expect(kitNodePath !== '' && fs.existsSync(kitNodePath), `the relay ran the kit's own node, ${kitNodePath}`);
     step("fix 1083 (6): a shell through the kit's own node, relay and daemon read back kit-1083");
 
-    // 7. A Linux host.
+    // 7. M9 fix 1166: a file restaged at the same version reaches the host.
+    // The setup wrote the stage's id on the record; a file added to the
+    // stage moves it, so the next contact stops the kit's daemon (started
+    // through WMI by step 5's relay) and sets the host up again.
+    const rec1166 = (await zreq(s, 'hosts.list', {})).hosts.find((x) => x.name === 'stub');
+    expect(/^[0-9a-f]{64}$/.test(rec1166?.kitStage ?? ''), `the record carries the stage's id, got ${JSON.stringify(rec1166)}`);
+    const pid1166 = daemonRecord(R)?.pid;
+    const assembled = () => (s.logs.join('').match(/remote kit win32-\S+ \S+: .* assembled in /g) ?? []).length;
+    const before1166 = assembled();
+    fs.writeFileSync(path.join(kitStage, 'daemon', 'dist', 'stage-1166.txt'), 'restaged-1166\n');
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    const from1166 = await pushCount();
+    await s.evalJs(`void window.emerald.hostConnect('stub')`);
+    const restagedFile = path.join(R, appVersion, 'daemon', 'dist', 'stage-1166.txt');
+    const fileBy = Date.now() + 120_000;
+    while (!fs.existsSync(restagedFile) && Date.now() < fileBy) await sleep(300);
+    expect(fs.existsSync(restagedFile), `the restaged file reached the host at ${restagedFile}`);
+    const up1166 = await waitPush(from1166, (m) => m.state === 'up' && m.daemon?.pid !== pid1166, 'stub up on the restaged kit', 120_000);
+    const mainLog = s.logs.join('');
+    expect(assembled() === before1166 + 1, `the kit assembled once more (${assembled()} against ${before1166})`);
+    expect(mainLog.includes('host stub: the stage moved since its kit was copied, setting it up again'), 'main logged the moved stage');
+    expect(mainLog.includes(`host stub: emmerd pid ${pid1166} kept`), `main logged the kit daemon pid ${pid1166} stopped first`);
+    expect(daemonRecord(R)?.pid === up1166.daemon.pid, `the host's daemon.json names the new daemon (${daemonRecord(R)?.pid} against ${up1166.daemon.pid})`);
+    const rec1166b = (await zreq(s, 'hosts.list', {})).hosts.find((x) => x.name === 'stub');
+    expect(/^[0-9a-f]{64}$/.test(rec1166b?.kitStage ?? '') && rec1166b.kitStage !== rec1166.kitStage, `the record's stage id moved, got ${rec1166b?.kitStage} after ${rec1166.kitStage}`);
+    const scp1166 = fs.readFileSync(path.join(H, 'stub-scp.log'), 'utf8').trim().split('\n');
+    expect(scp1166.length === 3 && scp1166[2].includes(`emerald-${appVersion}.tgz`), `a third copy, the emerald archive alone, got ${JSON.stringify(scp1166)}`);
+    step('fix 1166 (7): a file restaged at the same version reached the host: assembled again, the host daemon stopped first, the emerald archive copied alone and unpacked, a new daemon on it');
+
+    // 8. A Linux host.
     setModes({ stub: 'linux' });
     await s.evalJs(`window.emerald.hostForget('stub')`);
     await zreq(s, 'hosts.set', { host: { name: 'stub', destination: 'stub', home: H, addedAt: Date.now() } });
@@ -833,7 +877,75 @@ try {
       throw new Error(`${err.message}: errors ${JSON.stringify(shown)}, sub ${JSON.stringify(sub)}, record ${JSON.stringify(rec)}, ssh log ${JSON.stringify(tail)}`);
     }
     expect(!(await s.evalJs(`!!${q(L + ' .empty-error-act')}`)), 'the Linux refusal has no button');
-    step('fix 1084 (7): a Linux host is refused with no button');
+    step('fix 1084 (8): a Linux host is refused with no button');
+  });
+
+  await block('restart', async () => {
+    // M9 fix 1165: an older kit's daemon on the host, read as a row of the
+    // daemon banner, and its Restart. The window as kit leaves it: stub
+    // forgotten and written back bare, modes { stub: 'linux' }, the kit's
+    // daemon (fix 1166's re-setup started it through WMI) on R's pipe.
+    // 1. The old kit beside this one, its daemon started through its own
+    // relay, as an older app's first contact would.
+    await s.evalJs(`window.emerald.hostForget('stub')`);
+    setModes({});
+    const kitRec = daemonRecord(R);
+    killDaemonIfSame(kitRec);
+    await sleep(500);
+    const oldV = appVersion.replace(/\d+$/, (n) => String(Number(n) - 1));
+    fs.rmSync(path.join(R, oldV), { recursive: true, force: true });
+    fs.cpSync(path.join(R, appVersion), path.join(R, oldV), { recursive: true });
+    const oldPkgFile = path.join(R, oldV, 'daemon', 'package.json');
+    fs.writeFileSync(oldPkgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(oldPkgFile, 'utf8')), version: oldV }, null, 2));
+    // stub-ssh.mjs's own env, so the pipe is the one R gives.
+    const relayEnv = { ...process.env, USERPROFILE: H, HOME: H, HOMEPATH: H, SSH_CONNECTION: '127.0.0.1 50022 127.0.0.1 22', CLAUDE_CONFIG_DIR: path.join(H, '.claude'), CLAUDE_SETTINGS: path.join(H, '.claude', 'settings.json') };
+    delete relayEnv.EMERALD_HOME;
+    delete relayEnv.EMERALD_PIPE;
+    // The empty stdin ends the relay once it has started the daemon through WMI.
+    const oldRelay = spawnSync(path.join(R, `node-${kitNode}`, 'node.exe'), [path.join(R, oldV, 'cli', 'dist', 'main.js'), 'relay', '--home', R], { env: relayEnv, input: '', encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+    expect(oldRelay.status === 0 && daemonRecord(R) !== null, `the old kit's relay started its daemon (${oldRelay.status}: ${oldRelay.stdout}${oldRelay.stderr})`);
+    step(`fix 1165 (1): the old kit ${oldV} beside ${appVersion} under R, its daemon started through its own relay`);
+
+    // 2. A record naming this kit, with no kitStage so fix 1166's compare is
+    // skipped; the connect meets the old daemon.
+    await zreq(s, 'hosts.set', { host: stubRecord() });
+    let from = await pushCount();
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    const old = await waitPush(from, (m) => m.state === 'up', 'stub up on the old kit', 30_000);
+    expect(old.daemon.version === oldV && old.daemon.pid === daemonRecord(R)?.pid, `up on the old kit's daemon, got ${JSON.stringify(old.daemon)} against ${JSON.stringify(daemonRecord(R))}`);
+    const shell1165 = await startSession(s, { kind: 'shell', cwd: H, host: 'stub' });
+    const row = '.daemon-banner[data-host="stub"]';
+    const text1165 = `emmerd on stub runs the ${oldV} kit, and this app ships ${appVersion}. Restart it to get the new features; running sessions on stub come back as exited and can be resumed.`;
+    try {
+      await s.waitFor(
+        `(() => { const r = ${q(row)}; return !!r && r.dataset.reason === 'host' && r.dataset.daemonPid === ${JSON.stringify(String(old.daemon.pid))} && r.querySelector('.daemon-banner-text')?.textContent === ${JSON.stringify(text1165)} && r.querySelector('.daemon-restart')?.textContent === 'Restart emmerd' && r.querySelector('.daemon-dismiss')?.textContent === 'Not now'; })()`,
+        "stub's row of the daemon banner",
+        10_000,
+      );
+    } catch (err) {
+      const seen = await s.evalJs(`[...document.querySelectorAll('.daemon-banner')].map((b) => ({ ...b.dataset, text: b.textContent }))`);
+      throw new Error(`${err.message}: banners ${JSON.stringify(seen)}`);
+    }
+    expect(fs.existsSync(path.join(R, oldV)), 'the old kit still there before the Restart');
+    step(`fix 1165 (2): stub up on the ${oldV} kit's daemon under a record naming ${appVersion}, its banner row with Restart, the old kit still there`);
+
+    // 3. The Restart, watched for a lost band.
+    await s.evalJs(`(() => { window.__band1165 = false; new MutationObserver(() => { if (document.querySelector('.host-lost-note')) window.__band1165 = true; }).observe(document.body, { subtree: true, childList: true }); return true; })()`);
+    const prunedBefore = s.logs.join('').split('host stub: old kits removed').length;
+    from = await pushCount();
+    await s.evalJs(`${q(row + ' .daemon-restart')}.click()`);
+    const back = await waitPush(from, (m) => m.state === 'up' && m.daemon?.pid !== old.daemon.pid, 'stub up on a new daemon', 30_000);
+    expect(back.daemon.version === appVersion && back.daemon.pid === daemonRecord(R)?.pid, `up on the new kit's daemon, got ${JSON.stringify(back.daemon)} against ${JSON.stringify(daemonRecord(R))}`);
+    const since = await s.evalJs(`window.__hostPushes.slice(${from}).filter((m) => m.host === 'stub').map((m) => m.state)`);
+    expect(!since.includes('lost') && !since.includes('connecting'), `no lost or connecting push through the Restart, got ${JSON.stringify(since)}`);
+    expect((await s.evalJs(`window.__band1165`)) === false, 'no lost band drawn through the Restart');
+    await s.waitFor(`!${q(row)}`, "stub's row gone", 5000);
+    const prunedBy = Date.now() + 15_000;
+    while ((s.logs.join('').split('host stub: old kits removed').length <= prunedBefore || fs.existsSync(path.join(R, oldV))) && Date.now() < prunedBy) await sleep(300);
+    const prunedLogged = s.logs.join('').split('host stub: old kits removed').length > prunedBefore;
+    expect(prunedLogged && !fs.existsSync(path.join(R, oldV)), `the old kit removed at the new daemon's connect (logged ${prunedLogged}, folder there ${fs.existsSync(path.join(R, oldV))})`);
+    expect((await listed(shell1165))?.state === 'exited', `the shell came back exited, got ${(await listed(shell1165))?.state}`);
+    step("fix 1165 (3): Restart brought stub up on the new kit's daemon with no lost push or band, the row went, the old kit was removed and the shell came back exited");
   });
 
   await block('clip', async () => {
@@ -920,6 +1032,67 @@ try {
 
     // 6. The kept clipboard text back.
     await s.evalJs(`window.emerald.clipboard.write(${JSON.stringify(keptClipboard ?? '')})`);
+  });
+
+  await block('cli', async () => {
+    // M9 fixes 1167 and 1168: the CLI on the harness pair names the stub;
+    // its daemon carries the ask to this window, whose main holds the line
+    // to the host. A shell, never kind Claude: the stub's daemon runs on
+    // the person's registry PATH, so a Claude there would be their own.
+    // Run whole, the stub is up on the kit's own daemon (or the Linux mode
+    // and a bare record the kit block left); run alone, idle on the
+    // prelude's record. These two lines put either right and change
+    // nothing on an up stub.
+    setModes({});
+    await zreq(s, 'hosts.set', { host: stubRecord() });
+
+    // 1. emmer shell --host stub ~.
+    let r = cli(process.env, 'shell', '--host', 'stub', '~', '--shell', 'powershell', '--name', 'cli-1167', '--json');
+    expect(r.code === 0, `emmer shell --host stub exit 0, got ${r.code}: ${r.out}${r.err}`);
+    const cliShell = JSON.parse(r.out).session;
+    expect(cliShell.host === 'stub' && cliShell.kind === 'shell' && cliShell.name === 'cli-1167' && cliShell.shell === 'powershell', `the CLI-started session is a powershell named cli-1167 on stub, got ${JSON.stringify(cliShell)}`);
+    expect(fs.realpathSync.native(cliShell.spawnCwd).toLowerCase() === fs.realpathSync.native(H).toLowerCase(), `~ is the stub's home, got ${cliShell.spawnCwd}`);
+    expect((await layoutPane(cliShell.id)) === null, 'a CLI start has no pane');
+    await s.waitFor(`!!${q(`section.sidebar-host[data-host="stub"] .sidebar-row[data-session-id=${JSON.stringify(cliShell.id)}]`)}`, 'the CLI-started row in the stub section', 10_000);
+    expect(!cli(process.env, 'ls', '--json').out.includes(cliShell.id), 'plain emmer ls on the harness pair does not list it');
+    step('fix 1167 (1): emmer shell --host stub ~ started a powershell in the stub home, no pane, its row in the stub section');
+
+    // 2. Typed into through the window, by its id.
+    await sleep(1500);
+    await typeRaw(cliShell.id, 'echo cli-1167\r');
+    await screenHas(cliShell.id, 'cli-1167', 'cli-1167 on the CLI-started stub shell');
+    step('fix 1167 (2): typed into the CLI-started shell through the window and read back');
+
+    // 3. The refusals that need the window.
+    r = cli(process.env, 'shell', '--host', 'nosuch', '~');
+    expect(r.code === 1 && r.err.trim() === 'emmer: no host named nosuch; the window lists stub', `an unknown host: exit 1 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+    const missing = path.join(H, 'no-such-1167');
+    r = cli(process.env, 'shell', '--host', 'stub', missing);
+    expect(r.code === 1 && r.err.trim() === `emmer: stub: cwd does not exist: ${missing}`, `a missing folder on stub: exit 1 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+    step('fix 1167 (3): an unknown host and a missing folder on stub are one line each, exit 1');
+
+    // 4. M9 fix 1168: emmer ls --host stub, the JSON and the text.
+    r = cli(process.env, 'ls', '--host', 'stub', '--json');
+    expect(r.code === 0, `emmer ls --host stub --json exit 0, got ${r.code}: ${r.err}`);
+    const rows = JSON.parse(r.out).sessions;
+    const row = rows.find((x) => x.id === cliShell.id);
+    expect(row?.host === 'stub' && row.name === 'cli-1167', `ls --host stub lists cli-1167 stamped stub, got ${JSON.stringify(row)}`);
+    expect(rows.every((x) => x.host === 'stub'), `every row of ls --host stub is the stub's, got ${JSON.stringify(rows.map((x) => x.host))}`);
+    r = cli(process.env, 'ls', '--host', 'stub');
+    expect(r.code === 0 && !r.out.includes('\u0000'), `emmer ls --host stub exit 0 with no NUL, got ${r.code} ${JSON.stringify(r.out)}`);
+    const textLines = r.out.split(/\r?\n/);
+    expect(textLines.some((l) => l === row.groupCwd || l.startsWith(`${row.groupCwd}  `)), `a heading of the folder ${row.groupCwd}, got ${JSON.stringify(textLines)}`);
+    expect(textLines.some((l) => l.startsWith(`  ${cliShell.id.slice(0, 8)}  `) && / shell +cli-1167$/.test(l)), `the cli-1167 row, got ${JSON.stringify(textLines)}`);
+    step('fix 1168 (1): emmer ls --host stub lists the stub\'s sessions, the CLI-started shell among them, headed by its folder with no NUL');
+
+    // 5. An unknown host.
+    r = cli(process.env, 'ls', '--host', 'nosuch');
+    expect(r.code === 1 && r.err.trim() === 'emmer: no host named nosuch; the window lists stub', `ls --host nosuch: exit 1 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+    step('fix 1168 (2): ls --host on an unknown host is the one line, exit 1');
+
+    // The clean-up: the shell exits, so the block leaves the stub as it found it.
+    await typeRaw(cliShell.id, 'exit\r');
+    await s.waitFor(`(async () => (await window.emerald.request('session.list', { removed: true })).sessions.find((x) => x.id === ${JSON.stringify(cliShell.id)})?.state === 'exited')()`, 'the cli-1167 shell listed exited', 10_000);
   });
 
   step(`PASS (${blocksRun()})`);

@@ -857,6 +857,9 @@ export function installExitToShell(): () => void {
   });
 }
 
+// M9 fix 1158: the shell dropToShell started for each Claude, by the Claude's id, recorded when the spawn answers so a Start that replaces it under the New Claude session dialog finds it whichever edit lands first. An id is never reused, so an entry left behind can match no pane but its own shell's.
+const droppedShells = new Map<string, string>();
+
 // The shell takes the pane only while the pane still shows the exited
 // Claude; a pane closed, refilled or resumed during the spawn's round trip
 // keeps what it has and the shell is killed, so none is left stray. No
@@ -871,11 +874,23 @@ async function dropToShell(sessionId: string, paneId: string): Promise<void> {
   try {
     // M9 fix 1086: the shell starts on the exited Claude's host.
     const { session: shell } = await window.emerald.request('session.spawn', { kind: 'shell', cwd: claude.spawnCwd, cols: 120, rows: 30 }, claude.host);
+    droppedShells.set(sessionId, shell.id);
     const tab = await editTab((t) => (findPane(t, paneId)?.sessionId === sessionId && getState().sessions.get(sessionId)?.state === 'exited' ? setPaneHost(setPaneSession(t, paneId, shell.id), paneId, shell.host) : t), paneId);
-    if (findPane(tab, paneId)?.sessionId !== shell.id) await killSessionUnrecorded(shell.id, true);
+    if (findPane(tab, paneId)?.sessionId !== shell.id) {
+      if (droppedShells.get(sessionId) === shell.id) droppedShells.delete(sessionId);
+      await killSessionUnrecorded(shell.id, true);
+    }
   } finally {
     setDropping(sessionId, false);
   }
+}
+
+// M9 fix 1158: Start in the New Claude session dialog pushed replacedId off the pane; when that is the shell an /exit of claudeId dropped there while the dialog was up, it is closed and removed, as the stray kill above closes one. Unrecorded: the person asked for none of it.
+export async function closeDroppedShell(claudeId: string, replacedId: string | null): Promise<void> {
+  const shellId = droppedShells.get(claudeId);
+  if (shellId === undefined || replacedId !== shellId) return;
+  droppedShells.delete(claudeId);
+  await killSessionUnrecorded(shellId, true);
 }
 
 // The row's hover holds the count and the leave lets it run on from where

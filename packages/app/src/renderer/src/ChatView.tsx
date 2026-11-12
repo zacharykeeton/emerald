@@ -9,6 +9,9 @@ import { shellWords } from './chat-model.ts';
 import { LEARNED_ALIASES, MODEL_LEARN_MS, modelToLearn } from './chat-model.ts';
 import { loadModelNames, rememberModelName } from './model-names.ts';
 import { rcOf, rcUrlOf } from './chat-model.ts';
+// M9 fix 1170, the /code-review findings card.
+import { findingPlace, findingsHead, findingsOf, fixPrompt, isReviewPrompt } from './chat-findings.ts';
+import type { Finding, FindingsReply } from './chat-findings.ts';
 // M9 fix 1005, the side strip.
 import { BTW_OPEN_MS, SIDE_CLOSE_MS, SIDE_STILL_OPEN, sideCloseSends } from './chat-model.ts';
 import { btwPanel } from './screen-prompt-model.ts';
@@ -23,7 +26,7 @@ import { ChevronIcon, MentionMenu, PaperclipIcon, SlashMenu } from './ChatMenus.
 import { editKey, isPasteKey } from './keys-model.ts';
 import type { MentionRow } from './ChatMenus.tsx';
 import type { SkillEntry, TailMark } from '../../preload/api.ts';
-import { parentPath } from './files-model.ts';
+import { parentPath, relativePath } from './files-model.ts';
 import { ChatPromptText, ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
 import { openWebLink } from './ChatParts.tsx';
 import { ChatBash, ChatCompact } from './ChatParts.tsx';
@@ -31,6 +34,9 @@ import { pendingEdit } from './chat-hunk.ts';
 import { LIVE_ROWS_CAP, dropTaken, liveTurns } from './chat-feed.ts';
 import type { LiveRow } from './chat-feed.ts';
 import type { PendingEdit } from './chat-hunk.ts';
+import { pendingPlan } from './plan-doc-model.ts';
+import type { PendingPlan } from './plan-doc-model.ts';
+import { PlanCardHead } from './PlanTab.tsx';
 import { resolveIn } from './chat-paths.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuHeading, MenuItem, MenuSegments } from './Menu.tsx';
@@ -52,7 +58,7 @@ import { TrustCard } from './TrustCard.tsx';
 // M9 fix 974: the usage band.
 import { usageWarning } from './usage-model.ts';
 import { dismissUsageWarning, usageAgeText, useUsageAge, useUsageReading, useUsageWarningDismissed } from './usage-reading.ts';
-import { acknowledgeAttention, getUiState, openReviewTab, setChatFace, setChatMode, useUi } from './ui.ts';
+import { acknowledgeAttention, getUiState, openFileTab, openReviewTab, setChatFace, setChatMode, useUi } from './ui.ts';
 import { getState } from './store.ts';
 
 // M9 fix 689: a Claude session's chat face, the conversation drawn from
@@ -760,6 +766,18 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
       if (gone) send(t);
       else setRefusal(SIDE_STILL_OPEN);
     });
+  };
+  // M9 fix 1170: a findings card's prompt, sent as the box sends one but leaving the box's own text alone; false when an ask holds the session, so the card marks nothing sent.
+  const sendFromCard = (text: string): boolean => {
+    if (asking) return false;
+    lastSent.current = Date.now();
+    if (side === null) dispatch(text, false, false);
+    else
+      void closeSide().then((gone) => {
+        if (gone) dispatch(text, false, false);
+        else setRefusal(SIDE_STILL_OPEN);
+      });
+    return true;
   };
   // M9 fix 754: a queued message taken back from Claude Code's queue the
   // way its own keys do it, by QUEUE_PICK: on 'all' (2.1.301) one Up pulls
@@ -1488,11 +1506,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             </div>
           )}
           {turns.map((turn, i) => (
-            <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} />
+            <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} onSend={sendFromCard} />
           ))}
           {/* M9 fix 808: a starting Claude says so until its first word or its trust dialog. */}
           {session.state === 'starting' && <div className="chat-starting">{`Starting Claude in ${folderName(session.cwd) || session.cwd}…`}</div>}
-          {asking && (session.needsInputReason === 'trust' ? <TrustCard session={session} screen={askScreen} rootRef={askRef} /> : <AskCard session={session} screen={askScreen} rootRef={askRef} paneId={paneId} edit={pendingEdit(turns)} />)}
+          {asking && (session.needsInputReason === 'trust' ? <TrustCard session={session} screen={askScreen} rootRef={askRef} /> : <AskCard session={session} screen={askScreen} rootRef={askRef} paneId={paneId} edit={pendingEdit(turns)} plan={pendingPlan(turns)} />)}
           {working && (
             <div className="chat-live">
               <span className="chat-live-mark">
@@ -1904,7 +1922,7 @@ interface Screen {
 // Since fix 922 every tab but the current one is a button that moves the
 // dialog there, and the card keeps the tab it moved to as current while the
 // dialog draws its question.
-function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionInfo; screen: (Screen & { sentAt: number }) | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null }) {
+function AskCard({ session, screen, rootRef, paneId, edit, plan }: { session: SessionInfo; screen: (Screen & { sentAt: number }) | null; rootRef: React.RefObject<HTMLDivElement | null>; paneId: string; edit: PendingEdit | null; plan: PendingPlan | null }) {
   // M9 fix 717: a permission for the Edit the transcript wrote last is the
   // edit card, its file a path link like any other.
   const links = usePathLinks(paneId);
@@ -1945,6 +1963,10 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
   }, [liveVisit, visit]);
   const askTabs = ask === null ? [] : visitedTabs(ask.tabs, liveVisit);
   const editCard = edit !== null && session.needsInputReason === 'permission' && ask === null && review === null ? edit : null;
+  // M9 fix 1169: a plan waiting for approval heads the card with its title
+  // and Open the plan in place of the screen's excerpt; the options stay as
+  // the screen reads them.
+  const planCard = plan !== null && editCard === null && session.needsInputReason === 'permission' && review === null ? plan : null;
   const [answer, setAnswer] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const excerpt = shown === null ? [] : promptExcerpt(shown.rows, shown.cursor);
@@ -2106,6 +2128,8 @@ function AskCard({ session, screen, rootRef, paneId, edit }: { session: SessionI
       <div className="chat-ask" {...links.handlers}>
         {editCard !== null ? (
           <EditCardHead session={session} edit={editCard} />
+        ) : planCard !== null ? (
+          <PlanCardHead session={session} plan={planCard} />
         ) : review !== null ? (
           <>
             <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
@@ -2249,7 +2273,7 @@ function foldAnchorIn(timeline: Element, turn: number): HTMLElement | null {
   return replies[replies.length - 1] ?? (rows[at] as HTMLElement);
 }
 
-function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void }) {
+function ChatTurn({ index, turn, paneId, session, mode, open, onToggle, onSend }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void; onSend: (text: string) => boolean }) {
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   const stamp = when !== null || length !== null ? [when, length].filter((x) => x !== null).join(' · ') : null;
@@ -2258,6 +2282,8 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
   const links = usePathLinks(paneId);
   const bare = imageOnlyPrompt(turn.prompt, turn.images);
   const items = timelineItems(turn.steps, mode, open);
+  // M9 fix 1170: a command's note in a /code-review turn may be its findings.
+  const reviewTurn = isReviewPrompt(turn.prompt);
   return (
     <div className="chat-turn" data-turn-index={index} {...links.handlers}>
       {/* M9 fix 798: a bare turn holds a command's note made before the first prompt. */}
@@ -2285,7 +2311,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle }: { inde
               </Fragment>
             ) : (
               <Fragment key={i}>
-                <ChatStep step={item.step} paneId={paneId} session={session} time={item.step === turn.steps[0] ? bashStamp : null} />
+                <ChatStep step={item.step} paneId={paneId} session={session} time={item.step === turn.steps[0] ? bashStamp : null} reviewTurn={reviewTurn} onSend={onSend} />
                 <ChatThumbRow step={item.step} />
               </Fragment>
             ),
@@ -2315,7 +2341,83 @@ function ChatFold({ fold, onToggle }: { fold: FoldItem; onToggle: () => void }) 
   );
 }
 
-function ChatStep({ step, paneId, session, time }: { step: Step; paneId: string; session: SessionInfo; time: string | null }) {
+// M9 fix 1170: the findings a card has sent, per session and reply text, for the window's run; never on disk, so a reload forgets them.
+const findingsSent = new Map<string, ReadonlySet<number>>();
+
+// M9 fix 1170: a /code-review reply as a card. A finding's place opens the
+// review on the session's start at its line (a place outside the folder
+// opens the file itself); Fix this one types a prompt naming that finding
+// and Apply fixes one naming every finding not sent yet. No element here
+// carries data-path, so the turn's path handlers never act on the card.
+function FindingsCard({ reply, text, session, onSend }: { reply: FindingsReply; text: string; session: SessionInfo; onSend: (text: string) => boolean }) {
+  const key = `${session.id}\n${text}`;
+  const [sent, setSent] = useState<ReadonlySet<number>>(() => findingsSent.get(key) ?? new Set());
+  const markSent = (ns: number[]) => {
+    const next = new Set([...(findingsSent.get(key) ?? []), ...ns]);
+    findingsSent.set(key, next);
+    setSent(next);
+  };
+  const open = reply.findings.filter((f) => !sent.has(f.n));
+  const openAt = (f: Finding) => {
+    const abs = resolveIn(session.cwd, f.file);
+    if (abs === null) return;
+    const rel = relativePath(session.cwd, abs);
+    if (rel !== abs) openReviewTab(session.id, rel.replace(/\\/g, '/'), 'session', f.line ?? undefined);
+    else openFileTab(abs, f.line ?? undefined);
+  };
+  const first = reply.findings.find((f) => f.line !== null);
+  return (
+    <div className="chat-step chat-findings" data-kind="findings" data-shape={reply.shape} data-count={reply.findings.length}>
+      <div className="chat-findings-head">
+        <span className="chat-findings-title">{findingsHead(reply.findings.length)}</span>
+        {first !== undefined && (
+          <button type="button" className="chat-findings-walk" title="Open the review at the first finding" onClick={() => openAt(first)}>
+            Walk through in diff
+          </button>
+        )}
+      </div>
+      {reply.findings.map((f) => {
+        const done = sent.has(f.n);
+        return (
+          <div key={f.n} className="chat-finding" data-n={f.n} data-file={f.file} data-line={f.line ?? undefined} data-sent={done || undefined}>
+            <span className="chat-finding-n">{f.n}.</span>
+            <button type="button" className="chat-finding-place" title={f.line === null ? 'Open in the review' : `Open in the review at line ${f.line}`} onClick={() => openAt(f)}>
+              {findingPlace(f)}
+            </button>
+            <span className="chat-finding-summary">{f.summary}</span>
+            {f.scenario !== null && <div className="chat-finding-scenario">{f.scenario}</div>}
+            <button
+              type="button"
+              className="chat-finding-fix"
+              disabled={done}
+              title="Ask the session to fix this finding"
+              onClick={() => {
+                if (onSend(fixPrompt([f]))) markSent([f.n]);
+              }}
+            >
+              {done ? 'Sent' : 'Fix this one'}
+            </button>
+          </div>
+        );
+      })}
+      <div className="chat-findings-foot">
+        <button
+          type="button"
+          className="chat-findings-apply"
+          disabled={open.length === 0}
+          title="Ask the session to fix every finding not sent yet"
+          onClick={() => {
+            if (open.length > 0 && onSend(fixPrompt(open))) markSent(open.map((f) => f.n));
+          }}
+        >
+          Apply fixes
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ChatStep({ step, paneId, session, time, reviewTurn, onSend }: { step: Step; paneId: string; session: SessionInfo; time: string | null; reviewTurn: boolean; onSend: (text: string) => boolean }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
@@ -2328,6 +2430,9 @@ function ChatStep({ step, paneId, session, time }: { step: Step; paneId: string;
     return <ChatReply step={step} paneId={paneId} session={session} time={timeOf(step.at)} fullTime={fullTimeOf(step.at)} />;
   }
   if (step.kind === 'command') {
+    // M9 fix 1170: a /code-review turn's reply in one of the two shapes is a card of its findings.
+    const reply = reviewTurn ? findingsOf(step.text) : null;
+    if (reply !== null) return <FindingsCard reply={reply} text={step.text} session={session} onSend={onSend} />;
     // M9 fix 798: what a command printed, its first line as a centred
     // divider across the rail, the whole of it in the tooltip.
     const [first = ''] = step.text.split('\n');
@@ -2381,6 +2486,10 @@ function ChatStep({ step, paneId, session, time }: { step: Step; paneId: string;
     );
   }
   if (step.kind === 'notification') {
+    // M9 fix 1170: a background /code-review's end carries the fork's
+    // findings as its report; in a /code-review turn they draw as the card.
+    const reply = reviewTurn && step.source === 'task' && step.report !== undefined ? findingsOf(step.report) : null;
+    if (reply !== null) return <FindingsCard reply={reply} text={step.report ?? ''} session={session} onSend={onSend} />;
     // M9 fix 805: a task's end, an agent's report or another session's
     // message as one line; the output link opens like any chat path.
     return (

@@ -89,7 +89,15 @@ async function setDropFiles(s, paths) {
   await s.send('DOM.setFileInputFiles', { files: paths, objectId: r.result.objectId });
 }
 const dragOn = (s) => s.evalJs(`document.body.classList.contains('dragging-session')`);
+// M9 fix 1161: a drag from Explorer wears dragging-files, so a browser pane's page keeps the pointer; the mouse drags keep dragging-session.
+const filesOn = (s) => s.evalJs(`document.body.classList.contains('dragging-files')`);
 const zoneOn = (s, paneId) => s.evalJs(`document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .drop-overlay')?.dataset.dropZone ?? null`);
+// M9 fix 1162: the words on a pane's overlay and the text its ::after draws (Chromium hands a string content back in double quotes).
+const wordOn = (s, paneId) => s.evalJs(`(() => { const o = document.querySelector('[data-pane-id=${JSON.stringify(paneId)}] .drop-overlay'); return o === null ? null : { word: o.dataset.dropWord ?? null, shown: getComputedStyle(o, '::after').content }; })()`);
+const expectWord = async (s, paneId, word, what) => {
+  const w = await wordOn(s, paneId);
+  expect(w !== null && w.word === word && w.shown === JSON.stringify(word), `fix 1162: ${what} says ${JSON.stringify(word)}, got ${JSON.stringify(w)}`);
+};
 const overlays = (s) => s.evalJs(`document.querySelectorAll('.drop-overlay').length`);
 const boxOf = (s, paneId) =>
   s.evalJs(`(() => { const r = document.querySelector('[data-pane-id=${JSON.stringify(paneId)}]').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
@@ -177,8 +185,10 @@ try {
   ];
   for (const [zone, p] of bands) {
     await hover(s, p);
-    expect(await dragOn(s), `the drag is on over the ${zone} band`);
+    expect(await filesOn(s), `the drag is on over the ${zone} band`);
+    expect(!(await dragOn(s)), 'an Explorer drag leaves dragging-session off');
     expect((await zoneOn(s, first)) === zone, `the ${zone} zone is previewed, got ${await zoneOn(s, first)}`);
+    await expectWord(s, first, zone === 'center' ? 'Open here, or type the path' : 'Open beside, or type the path', `a folder over the shell's ${zone}`);
   }
   expect(!(await s.evalJs(`!!document.querySelector('.drag-ghost')`)), 'no ghost: the OS draws its own');
   await s.screenshot('m12-drop-preview.png');
@@ -187,10 +197,10 @@ try {
   // Over the sidebar nothing is previewed.
   const header = await centerOf(s, '.sidebar-header');
   await drag(s, 'dragover', header);
-  expect((await dragOn(s)) && (await overlays(s)) === 0, 'over the sidebar the drag is on and nothing is previewed');
+  expect((await filesOn(s)) && (await overlays(s)) === 0, 'over the sidebar the drag is on and nothing is previewed');
   // Leaving the window takes the drag down.
   await drag(s, 'dragleave', header);
-  expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'a dragleave out of the window ends the drag');
+  expect(!(await filesOn(s)) && (await overlays(s)) === 0, 'a dragleave out of the window ends the drag');
   step('over the sidebar nothing lights up; leaving the window clears the drag');
 
   // The drop: a row split with a shell in the folder on the right.
@@ -200,7 +210,7 @@ try {
   expect((await zoneOn(s, first)) === 'right', 'the right band is previewed again');
   await drag(s, 'drop', rightBand);
   await s.waitFor(`document.querySelectorAll('.pane').length === 2 && document.querySelectorAll('.term-host').length === 2`, 'two panes with terminals after the drop');
-  expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone after the drop');
+  expect(!(await filesOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone after the drop');
   layout = await getLayout(s);
   const root = layout.root;
   expect(root.kind === 'split' && root.direction === 'row' && root.first.id === first && root.second.sessionId !== null, 'a row split: the old pane left, a new session right');
@@ -225,13 +235,15 @@ try {
   const edge = { x: Math.round(b.x + b.width * 0.9), y: m.y };
   await hover(s, edge);
   expect((await zoneOn(s, newPane)) === 'file', `the whole pane is lit for a file over the right band, got ${await zoneOn(s, newPane)}`);
+  await expectWord(s, newPane, 'Type the path', "a known file over the shell's right band");
   await hover(s, m);
   expect((await zoneOn(s, newPane)) === 'file', 'and over the middle');
+  await expectWord(s, newPane, 'Type the path', "a known file over the shell's middle");
   await s.screenshot('m12-drop-file-preview.png');
   await usage727.on();
   await drag(s, 'drop', m);
   await sleep(800);
-  expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'the preview is cleared');
+  expect(!(await filesOn(s)) && (await overlays(s)) === 0, 'the preview is cleared');
   expect((await sessionCount(s)) === before + 1, 'no session started for a file');
   expect((await getLayout(s)).revision === revision, 'the layout did not change');
   const quoted = `"${seedFile}"`;
@@ -269,9 +281,10 @@ try {
 
   await hover(s, eRight);
   expect((await zoneOn(s, emptyPane)) === 'right', `the right band is previewed over the empty pane, got ${await zoneOn(s, emptyPane)}`);
+  await expectWord(s, emptyPane, 'Open the file beside', "a known file over the empty pane's right band");
   await drag(s, 'drop', eRight);
   await s.waitFor(`document.querySelectorAll('.pane').length === 4`, 'a fourth pane after the edge drop');
-  expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone');
+  expect(!(await filesOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone');
   expect((await sessionCount(s)) === before + 1, 'no session started for the file');
   expect(await isEmptyPane(emptyPane), 'the pane dropped on is still empty');
   const edgeFilePane = (await getLayout(s)).focusedPaneId;
@@ -287,10 +300,11 @@ try {
   const em2 = { x: Math.round(eb2.x + eb2.width / 2), y: Math.round(eb2.y + eb2.height / 2) };
   await hover(s, em2);
   expect((await zoneOn(s, emptyPane)) === 'center', `the centre is previewed over the empty pane, got ${await zoneOn(s, emptyPane)}`);
+  await expectWord(s, emptyPane, 'Open the file here', "a known file over the empty pane's centre");
   await drag(s, 'drop', em2);
   await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id="${emptyPane}"] .empty-pane`)})`, 'the pane dropped on is no longer empty');
   expect((await s.evalJs(`document.querySelectorAll('.pane').length`)) === 4, 'still four panes, no split for the middle');
-  expect(!(await dragOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone');
+  expect(!(await filesOn(s)) && (await overlays(s)) === 0, 'the preview and the drag state are gone');
   expect((await sessionCount(s)) === before + 1, 'still no session started');
   const centerView = await fileViewOf(emptyPane);
   expect(centerView !== null && centerView.view === 'file' && centerView.path === seedFile, `the pane itself opened the file, got ${JSON.stringify(centerView)}`);
@@ -318,6 +332,7 @@ try {
   const fm = { x: Math.round(fb.x + fb.width / 2), y: Math.round(fb.y + fb.height / 2) };
   await hover(s, fm);
   expect((await zoneOn(s, focusPaneId)) === 'center', `the centre is previewed over the empty pane, got ${await zoneOn(s, focusPaneId)}`);
+  await expectWord(s, focusPaneId, 'Open the file here', "a known file over an empty pane's centre");
   await drag(s, 'drop', fm);
   await s.waitFor(`!document.querySelector(${JSON.stringify(`[data-pane-id="${focusPaneId}"] .empty-pane`)})`, 'the pane dropped on took the file');
   await s.waitFor(focusedPaneIs(focusPaneId), 'the centre drop focused the pane it landed on');
@@ -361,6 +376,7 @@ try {
   expect((await s.evalJs(`document.querySelector('.drag-ghost')?.textContent ?? null`)) === movedName, `the ghost names the session, got ${await s.evalJs(`document.querySelector('.drag-ghost')?.textContent ?? null`)}`);
   expect((await titleDragging(first)) !== null, 'the title it came from is marked as dragging');
   expect((await zoneOn(s, newPane)) === 'right', `the right half of the other pane is previewed, got ${await zoneOn(s, newPane)}`);
+  expect((await wordOn(s, newPane))?.word === null, `fix 1162: a pane's own drag says nothing, got ${JSON.stringify(await wordOn(s, newPane))}`);
   await s.screenshot('m12-drop-title-preview.png');
   await s.mouse('mouseReleased', bRight.x, bRight.y);
   await s.waitFor(`!document.querySelector('[data-pane-id=${JSON.stringify(first)}]') && document.querySelectorAll('.pane').length === ${panesBefore}`, 'the old pane gone and the moved session in a new one');
@@ -595,11 +611,11 @@ try {
   for (const sel of ['.tab-strip']) {
     const spot = await centerOf(s, sel);
     await hover(s, spot);
-    expect((await dragOn(s)) && (await overlays(s)) === 0, `a file over ${sel} is a drag with no pane overlay`);
+    expect((await filesOn(s)) && (await overlays(s)) === 0, `a file over ${sel} is a drag with no pane overlay`);
     expect(JSON.stringify(await litOutside()) === JSON.stringify([sel.slice(1)]), `${sel} is lit for the file, got ${JSON.stringify(await litOutside())}`);
     await drag(s, 'drop', spot);
     await s.waitFor(`document.querySelectorAll('.tab-file').length === 1 && document.querySelector('.tab-file[data-active]') !== null && !document.querySelector('.tab-file[data-preview]')`, `the drop on ${sel} opened the file as a pinned, active tab`, 5000);
-    expect(JSON.stringify(await litOutside()) === '[]' && !(await dragOn(s)), `${sel} is unlit and the drag over after the drop`);
+    expect(JSON.stringify(await litOutside()) === '[]' && !(await filesOn(s)), `${sel} is unlit and the drag over after the drop`);
     const opened = await fileTabs();
     expect(opened.length === 1 && !opened[0].preview && opened[0].active, `one pinned active file tab, got ${JSON.stringify(opened)}`);
     const want727 = 1;
@@ -622,6 +638,7 @@ try {
   const centerNewPane = { x: Math.round(boxNewPane.x + boxNewPane.width / 2), y: Math.round(boxNewPane.y + boxNewPane.height / 2) };
   await hover(s, centerNewPane);
   expect((await zoneOn(s, newPane)) === 'center', `an untyped file previews a zone over a shell pane, got ${await zoneOn(s, newPane)}`);
+  await expectWord(s, newPane, 'Open here, or type the path', "an untyped file over the shell's centre");
   const stripSpotUnknown = await centerOf(s, '.tab-strip');
   await hover(s, stripSpotUnknown);
   expect(JSON.stringify(await litOutside()) === JSON.stringify(['tab-strip']), `the strip lights for the untyped file too, got ${JSON.stringify(await litOutside())}`);
@@ -1136,6 +1153,9 @@ try {
     'the byte note inside the second of three 60 MB files',
     60000,
   );
+  // M9 fix 1163: the note's Cancel names the palette's route in its tooltip.
+  const title1163 = await s.evalJs(`document.querySelector('.corner-note .corner-note-action')?.title ?? null`);
+  expect(title1163 === 'Or Ctrl+Shift+P, then Cancel the copy', `fix 1163: the copy's Cancel names its keyboard route (${JSON.stringify(title1163)})`);
   await s.key('P', 'KeyP', 80, CTRL | SHIFT);
   const row1153 = '.picker-overlay .action-row[data-kind="note"][data-action="cancel-copy"]';
   await s.waitFor(`!!document.querySelector(${JSON.stringify(row1153)})`, 'the palette lists Cancel the copy', 5000);

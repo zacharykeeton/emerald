@@ -67,7 +67,7 @@ const BLOCKS = [
   { name: 'fix-353', fixes: ['fix-353'], needs: [] },
   { name: 'fix-869', fixes: ['fix-869', 'fix-868', 'fix-905', 'fix-906', 'fix-907'], needs: [] },
   { name: 'fix-944', fixes: ['fix-944', 'fix-945', 'fix-946'], needs: [] },
-  { name: 'fix-1155', fixes: ['fix-1155'], needs: [] },
+  { name: 'fix-1155', fixes: ['fix-1155', 'fix-1160'], needs: [] },
 ];
 const { block, blocksRun, partial, flags } = blockRunner(BLOCKS);
 
@@ -5098,11 +5098,12 @@ try {
     const rwHead = gitRw('rev-parse', 'main').trim();
     const rwNear = gitRw('rev-parse', 'main~3').trim();
     const rwRoot = gitRw('rev-list', '--max-parents=0', 'main').trim();
+    const rwLoose = gitRw('rev-parse', 'main~5').trim();
     const rwWts = {};
-    for (const [key, args] of [['near', ['-b', 'm9-seat-near']], ['far', ['-b', 'm9-seat-far']], ['detached', ['--detach']]]) {
+    for (const [key, args] of [['near', ['-b', 'm9-seat-near']], ['far', ['-b', 'm9-seat-far']], ['detached', ['--detach']], ['loose', ['--detach']]]) {
       const short = path.join(os.tmpdir(), 'emerald-verify', `m51-rows-${key}-${process.pid}`);
       fs.rmSync(short, { recursive: true, force: true });
-      gitRw('worktree', 'add', '-q', ...args, short, key === 'near' ? 'main~3' : rwRoot);
+      gitRw('worktree', 'add', '-q', ...args, short, key === 'near' ? 'main~3' : key === 'loose' ? 'main~5' : rwRoot);
       rwWts[key] = fs.realpathSync.native(short);
       fixDirs.push(rwWts[key]);
     }
@@ -5128,12 +5129,12 @@ try {
     await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="active"]').click()`);
     await s.waitFor(`document.querySelector(${JSON.stringify(rwPanel)})?.dataset.draw === 'active'`, 'the graph draws the active blocks alone', 5000);
     await s.waitFor(`!!document.querySelector(${JSON.stringify(ownRowSel(rwLead.id))})`, "the rows lead's own row", 10000);
-    for (const key of ['near', 'far']) {
+    for (const key of ['near', 'far', 'loose']) {
       await post(rwLead.id, { cwd: rwRepo, hook_event_name: 'SubagentStart', agent_id: key, agent_type: 'fork' });
       await post(rwLead.id, { cwd: rwRepo, hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { description: key, subagent_type: 'fork' }, tool_response: { agentId: key, description: key, status: 'async_launched' } });
       await post(rwLead.id, { cwd: rwWts[key], agent_id: key, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } });
       await post(rwLead.id, { cwd: rwWts[key], agent_id: key, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } });
-      await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const m = r.sessions.find(x => x.id === ${JSON.stringify(rwLead.id)})?.team.find(m => m.id === ${JSON.stringify(key)}); return m?.branch === ${JSON.stringify(`m9-seat-${key}`)}; })()`, `${key}'s folder maps to its branch`, 8000);
+      await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); const m = r.sessions.find(x => x.id === ${JSON.stringify(rwLead.id)})?.team.find(m => m.id === ${JSON.stringify(key)}); return m?.branch === ${JSON.stringify(key === 'loose' ? rwLoose.slice(0, 7) : `m9-seat-${key}`)}; })()`, `${key}'s folder maps to its branch`, 8000);
     }
     const rwDetached = (await zreq(s, 'session.spawn', { kind: 'shell', cwd: rwWts.detached, name: 'Rows detached', cols: 100, rows: 24 })).session;
     await s.waitFor(`(async () => { const r = await window.emerald.request('session.list', {}); return r.sessions.some(x => x.id === ${JSON.stringify(rwDetached.id)}); })()`, 'the detached session listed', 8000);
@@ -5141,13 +5142,11 @@ try {
     await post(rwDetached.id, { cwd: rwWts.detached, hook_event_name: 'SessionStart', source: 'startup' });
     await sleep(1500);
     const detachedRecord = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === rwDetached.id);
-    // The daemon reads a detached HEAD's branch as its short hash (seen at
-    // the branch's first run), a name no ref carries, so the row has no
-    // head to sit over either way.
+    // The daemon reads a detached HEAD's branch as its short hash, a name no ref carries; the graph places it on the commit the hash names (M9 fix 1160), and this one's, the root, is past the window, so its row sits at the bottom either way.
     const keepDetached = detachedRecord?.startHead === rwRoot && (detachedRecord?.branch === null || rwRoot.startsWith(detachedRecord?.branch ?? '-'));
     if (!keepDetached) console.log(`[verify] note: fix 1155: the detached session reads branch ${detachedRecord?.branch} and start ${detachedRecord?.startHead}; its bottom row is left to the unit test`);
     else await s.waitFor(`!!document.querySelector(${JSON.stringify(`.files-rail ${ownRowSel(rwDetached.id)}`)})`, "the detached session's row", 10000);
-    await s.waitFor(`document.querySelectorAll('.files-rail .commits-agent-row[data-member]').length === 2 && document.querySelector(${JSON.stringify(rwPanel)})?.dataset.graph === 'ready'`, 'the two subagent rows', 10000);
+    await s.waitFor(`document.querySelectorAll('.files-rail .commits-agent-row[data-member]').length === 3 && document.querySelector(${JSON.stringify(rwPanel)})?.dataset.graph === 'ready'`, 'the three subagent rows', 10000);
     await sleep(1500);
     // The frames first, before any expect: the top as it stands and the
     // bottom after the rows' scrolling box is at its end. The bottom frame
@@ -5188,6 +5187,8 @@ try {
     expect(rwIds[0] === 'lead' && rwIds[1] === rwHead, `the lead's own row first, right above main's head (${rwPic.slice(0, 200)})`);
     const nearAt = rwIds.indexOf('near');
     expect(nearAt !== -1 && rwIds[nearAt + 1] === rwNear, `near's row right above main~3's (${rwPic.slice(0, 200)})`);
+    const looseAt = rwIds.indexOf('loose');
+    expect(looseAt !== -1 && rwIds[looseAt + 1] === rwLoose && !rwRead.rows[looseAt].beyond, `loose, a subagent detached at main~5, right above main~5's row and not past the window (M9 fix 1160) (${rwPic.slice(0, 200)})`);
     const lastCommit = rwRead.rows.map((r) => r.commit).lastIndexOf(true);
     const tail = rwRead.rows.slice(lastCommit + 1);
     const wantTail = keepDetached ? ['detached', 'far'] : ['far'];
@@ -5197,6 +5198,12 @@ try {
     const strayBeyond = rwRead.rows.filter((r) => r.beyond && !wantTail.includes(r.id));
     expect(strayBeyond.length === 0 && rwRead.stubs === wantTail.length, `no other row says beyond, and one stub per row past the window (${JSON.stringify(strayBeyond)} ${rwRead.stubs})`);
     step("M9 fix 1155: a session row sits right above the commit it is on: the lead over main's head, a subagent over its branch's head below it, and a subagent and a session whose commit is past the log's window at the bottom under the last commit, each with a bare stub");
+    const loosePill = await s.evalJs(`document.querySelector('.files-rail .commits-agent-row[data-member="loose"] .commits-pill-text')?.textContent ?? null`);
+    expect(loosePill === `detached at ${rwLoose.slice(0, 7)}`, `loose's pill in the graph reads detached at its short id (${loosePill})`);
+    if (keepDetached && detachedRecord?.branch !== null) {
+      await s.waitFor(`document.querySelector(${JSON.stringify(`.sidebar-row[data-session-id=${JSON.stringify(rwDetached.id)}] .sidebar-row-branch-name`)})?.textContent === ${JSON.stringify(`detached at ${detachedRecord.branch}`)}`, "the detached session's sidebar pill reads detached at its short id", 5000);
+    } else console.log(`[verify] note: fix 1160: the detached session reads branch ${detachedRecord?.branch}; its sidebar pill is left to the unit test`);
+    step('M9 fix 1160: a subagent in a worktree detached at main~5 sits right above that commit, not past the window, and the graph\'s pill and the detached session\'s sidebar pill read detached at the short id');
     await removeSession(rwDetached.id);
     await removeSession(rwLead.id);
     await s.evalJs(`document.querySelector('.files-rail .commits-draw [data-draw="all"]')?.click()`);

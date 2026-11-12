@@ -68,7 +68,7 @@ export function PrefixIndicator() {
       <div className="corner-note">
         <span className="corner-note-text">{text}</span>
         {action !== null && (
-          <button type="button" className="corner-note-action" onMouseDown={(e) => e.preventDefault()} onClick={action.run}>
+          <button type="button" className="corner-note-action" title={action.title} onMouseDown={(e) => e.preventDefault()} onClick={action.run}>
             {action.label}
           </button>
         )}

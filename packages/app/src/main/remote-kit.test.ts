@@ -14,6 +14,8 @@ import {
   ptyUrl,
   shasumOf,
   shasumsUrl,
+  stageEntries,
+  stageId,
   tarEntries,
   writeTgz,
   zipEntry,
@@ -162,21 +164,37 @@ function fixture(opts: { os?: 'win32' | 'darwin'; arch?: 'x64' | 'arm64'; badSum
   return { root, read, calls, kitOs, arch, cacheRoot: tmp() };
 }
 
-test('kitRoot takes EMERALD_KIT_STAGE, then the installed resources, then the checkout stage, and names the first tried when none holds pins', () => {
+test('kitRoot takes EMERALD_KIT_STAGE, then the installed resources, then the checkout stage, and names the first tried when none holds pins, the checkout stage when not packaged (M9 fix 1166)', () => {
   const resources = tmp();
   const daemonMain = path.join(resources, 'daemon', 'dist', 'main.js');
   const checkout = tmp();
   const forced = tmp();
   put(path.join(forced, 'kit-pins.json'), '{}');
-  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: { EMERALD_KIT_STAGE: forced } }), forced);
-  assert.throws(() => kitRoot({ daemonMain, checkoutStage: checkout, env: { EMERALD_KIT_STAGE: checkout } }), {
+  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: { EMERALD_KIT_STAGE: forced }, packaged: true }), forced);
+  assert.throws(() => kitRoot({ daemonMain, checkoutStage: checkout, env: { EMERALD_KIT_STAGE: checkout }, packaged: true }), {
     message: `the remote kit's sources are missing: no kit-pins.json in ${checkout} (run npm run stage -w @emerald/app, or set EMERALD_KIT_STAGE)`,
   });
-  assert.throws(() => kitRoot({ daemonMain, checkoutStage: checkout, env: {} }), { message: new RegExp(`no kit-pins.json in ${resources.replace(/\\/g, '\\\\')} `) });
+  assert.throws(() => kitRoot({ daemonMain, checkoutStage: checkout, env: {}, packaged: true }), { message: new RegExp(`no kit-pins.json in ${resources.replace(/\\/g, '\\\\')} `) });
+  assert.throws(() => kitRoot({ daemonMain, checkoutStage: checkout, env: {}, packaged: false }), {
+    message: `the remote kit's sources are missing: no kit-pins.json in ${checkout} (run npm run stage -w @emerald/app, or set EMERALD_KIT_STAGE)`,
+  });
   put(path.join(checkout, 'kit-pins.json'), '{}');
-  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: {} }), checkout);
+  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: {}, packaged: true }), checkout);
   put(path.join(resources, 'kit-pins.json'), '{}');
-  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: {} }), resources);
+  assert.equal(kitRoot({ daemonMain, checkoutStage: checkout, env: {}, packaged: true }), resources);
+});
+
+test('stageId is the same for the same files and moves with a byte or a name (M9 fix 1166)', () => {
+  const root = stageTree('sha512-x');
+  const id = (): string => stageId(stageEntries(kitSources(root)));
+  const first = id();
+  assert.match(first, /^[0-9a-f]{64}$/);
+  assert.equal(id(), first);
+  put(path.join(root, 'daemon', 'dist', 'main.js'), 'daemoN');
+  const second = id();
+  assert.notEqual(second, first);
+  fs.renameSync(path.join(root, 'daemon', 'dist', 'main.js'), path.join(root, 'daemon', 'dist', 'main2.js'));
+  assert.notEqual(id(), second);
 });
 
 test('kitSources reads a stage-shaped tree and refuses one missing cli/package.json', () => {
@@ -267,6 +285,14 @@ test('assembleKit builds the win32 kit: node.exe repacked flat, the host prebuil
   assert.ok(!fs.existsSync(kit.dir));
   assert.deepEqual(fs.readdirSync(path.join(f.cacheRoot, 'win32-x64')).sort(), ['0.1.1091', `node-${V}.tgz`]);
   assert.match(logs.at(-1)!, new RegExp(`node-${V}\\.tgz \\(cached\\), emerald-0\\.1\\.1091\\.tgz`));
+
+  // M9 fix 1166: a file restaged at the same version misses the cache.
+  put(path.join(f.root, 'daemon', 'dist', 'stage-1166.txt'), 'restaged');
+  const restaged = await assembleKit({ os: 'win32', arch: 'x64', appVersion: '0.1.1091', cacheRoot: f.cacheRoot, root: f.root, env, log: (m) => logs.push(m), read: f.read });
+  assert.notEqual(logs.at(-1), 'remote kit win32-x64 0.1.1091: cached');
+  assert.match(restaged.manifest.emerald.stage, /^[0-9a-f]{64}$/);
+  assert.notEqual(restaged.manifest.emerald.stage, next.manifest.emerald.stage);
+  assert.ok(tarEntries(fs.readFileSync(restaged.emeraldArchive)).some((e) => e.name === 'daemon/dist/stage-1166.txt'));
 });
 
 test('assembleKit builds the darwin kit: bin/node at 0755, spawn-helper at 0755', async () => {

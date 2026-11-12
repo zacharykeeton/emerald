@@ -25,7 +25,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'm11-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-m11';
-const { ALT, CTRL, SHIFT, expect, focusedPaneIs, freshPort, getLayout, getTabs, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, startSession, startShellByKey, step, stopDaemon, emeraldHome, windowPage, zreq } = await import('./cdp.mjs');
+const { ALT, CTRL, SHIFT, connect, expect, focusedPaneIs, freshPort, getLayout, getTabs, harnessClaudeHome, killTree, launch, leaves, profileOf, repoRoot, setInput, sleep, startSession, startShellByKey, step, stopDaemon, emeraldHome, windowPage, zreq } = await import('./cdp.mjs');
 
 let app = null;
 // 27 to 32 s quiet; it fired once at step 30 of 38 under a batch's load
@@ -2261,6 +2261,67 @@ try {
   expect(!text1144.split('\n').some((l) => l.includes('"ev":"view-close"') && l.includes('"view":"whats-new-tab"')), `the usage record wrote no close of the notes: ${text1144}`);
   await pickUsage700('Usage record: on');
   step('fix 1144: on a layout whose only window is not first, the release notes open after the bind into that window\'s key and stay, the bare emerald.tabs key is dropped, and the usage record writes no close of them');
+
+  // M9 fix 1159. A launch with a file and no window up, on a layout whose only window is not first: the file lands as a pinned tab after the bind, in that window's key, and stays. The window closes as fix 1144's did; the launch is a spawn of its own, as fix 342's is, with the file as the last argument and a devtools port to drive it, since launch takes no arguments.
+  const L1159 = await getTabs(s);
+  await s.send('Page.close').catch(() => {});
+  s.close();
+  const exitBy1159 = Date.now() + 15000;
+  while (s.child.exitCode === null && s.child.signalCode === null && Date.now() < exitBy1159) await sleep(200);
+  killTree(s.child);
+  process.env['EMERALD_KEEP_PROFILE'] = '1';
+  stopDaemon();
+  delete process.env['EMERALD_KEEP_PROFILE'];
+  const daemonBy1159 = Date.now() + 20000;
+  while (fs.existsSync(path.join(emeraldHome, 'daemon.json')) && Date.now() < daemonBy1159) await sleep(200);
+  await sleep(1000);
+  fs.writeFileSync(path.join(emeraldHome, 'state.json'), JSON.stringify({ version: 1, layout: { ...L1159, windows: [{ id: 'solo1159', tabIds: L1159.tabs.map((t) => t.id), currentTabId: L1159.currentTabId }] } }, null, 2));
+  const logFrom1159 = mainLog867().length;
+  let port1159 = freshPort();
+  const env1159 = { ...process.env, EMERALD_WINDOW: 'background', EMERALD_WHATS_NEW: 'off', EMERALD_SKIN: 'classic', EMERALD_THEME: 'dark', EMERALD_CLAUDE_HOME: harnessClaudeHome(emeraldHome), CLAUDE_SETTINGS: process.env['CLAUDE_SETTINGS'] ?? path.join(emeraldHome, 'claude-settings.json'), EMERALD_SSH_CONFIG: path.join(emeraldHome, 'ssh-config') };
+  let child1159 = null;
+  const logs1159 = [];
+  let page1159 = null;
+  for (let attempt1159 = 0; attempt1159 < 2 && page1159 === null; attempt1159++) {
+    child1159 = spawn(path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe'), [`--remote-debugging-port=${port1159}`, `--user-data-dir=${profileOf(emeraldHome)}`, '--force-device-scale-factor=1', path.join(repoRoot, 'packages', 'app', 'out', 'main', 'index.js'), hello], { stdio: ['ignore', 'pipe', 'pipe'], env: env1159 });
+    child1159.stdout.on('data', (d) => logs1159.push(String(d)));
+    child1159.stderr.on('data', (d) => logs1159.push(String(d)));
+    const by1159 = Date.now() + 20000;
+    while (page1159 === null && Date.now() < by1159) {
+      if (logs1159.join('').includes('Cannot start http server for devtools')) break;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port1159}/json`, { signal: AbortSignal.timeout(2000) });
+        const pages1159 = (await res.json()).filter((p) => p.type === 'page' && !p.url.startsWith('about:'));
+        page1159 = pages1159.find((p) => !new URL(p.url).searchParams.has('window')) ?? pages1159[0] ?? null;
+      } catch {
+        // Electron is still starting.
+      }
+      if (page1159 === null) await sleep(200);
+    }
+    if (page1159 === null) {
+      killTree(child1159);
+      port1159 += 1;
+      await sleep(1500);
+    }
+  }
+  if (page1159 === null) throw new Error(`fix 1159: the launch with a file showed no page: ${logs1159.join('')}`);
+  s = await connect(page1159.webSocketDebuggerUrl);
+  s.child = child1159;
+  s.logs = logs1159;
+  s.port = port1159;
+  app = s;
+  await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await s.waitFor(`!!document.querySelector('.tab[data-tab="panes"]')`, 'the layout synced on the launch with a file for fix 1159', 20000);
+  expect(JSON.stringify((await getTabs(s)).windows?.map((w) => w.id)) === '["solo1159"]', `the daemon read the solo1159 layout: ${JSON.stringify((await getTabs(s)).windows)}`);
+  const log1159 = mainLog867().slice(logFrom1159);
+  expect(log1159.includes(`single-instance lock held, launched with ${hello}`), 'main.log says the launch read the file and kept the lock');
+  expect(log1159.includes("window bound to solo1159, the layout's first window"), 'main.log says the startup window bound to solo1159');
+  await sleep(1500);
+  await s.waitFor(`document.querySelectorAll('.tab-file').length === 1 && document.querySelector('.tab-file[data-active]')?.dataset.tab === ${JSON.stringify(hello)} && !document.querySelector('.tab-file[data-active][data-preview]')`, "the launch's file a pinned, active tab after the bind", 5000);
+  const own1159 = JSON.parse(await s.evalJs(`localStorage.getItem('emerald.tabs:solo1159')`) ?? 'null');
+  expect(own1159 !== null && own1159.files.includes(hello), `the file is in the window's own key: ${JSON.stringify(own1159)}`);
+  expect((await s.evalJs(`localStorage.getItem('emerald.tabs')`)) === null, 'the bare emerald.tabs key is empty');
+  step("fix 1159: a launch with a file and no window up, on a layout whose only window is not first, opens the file as a pinned tab after the bind, in that window's key, and it stays");
 
   step('PASS');
 } catch (err) {

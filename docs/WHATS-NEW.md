@@ -2,6 +2,28 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1158 to 1170, 2026-11-12
+
+Thirteen fixes: Explorer drags that reach a web page and say what a drop will do, a Restart for a remote host's old daemon, `emmer new --host` and `emmer ls --host`, a plan you can read and comment on before you approve it, and `/code-review` findings as a card. The daemon goes to level 83; the update stops the old one, so nothing asks for a restart, and your sessions come back through Resume.
+
+### Highlights
+
+**Upload a file to a web page by dragging it.** A file dragged from Explorer onto the page in a browser pane goes to the page, for an upload box, rather than replacing the page with the file. The pane's own title and toolbar rows take no drop at all.
+
+**A drop says what it will do.** While you drag from Explorer or the Files tab over a pane, the lit part names what letting go there does: `Open here`, `Open beside`, `Type the path`, `Open the file here` and the rest. A folder or a file of no known type over a session's pane says `Open here, or type the path`, since its path is typed whatever part you drop on. Windows' own `Copy` beside the pointer is the system's word for the drag and stays.
+
+**Read the plan before you approve it.** When a Claude session asks you to approve a plan, its ask card has `Open the plan`, which opens the plan as a document cut into its parts. Comment on any part as you would in a review, then `Send comments` types them into the dialog as your answer, and Claude keeps planning with them.
+
+**`/code-review` findings as a card.** A `/code-review` reply draws as a card headed `Code review · N findings`. Each finding's place opens the code at that line, `Fix this one` asks Claude to fix that finding, and `Apply fixes` asks for every finding not sent yet.
+
+**A remote host's old daemon gets a Restart.** When a host's daemon runs an older kit than this build ships, a row under the daemon banner says so, `emmerd on <name> runs the <old> kit, and this app ships <new>`, and its Restart brings the new kit's daemon up and removes the old kit, with no lost band in between. The kit's Node is now 24.22.3, a security release.
+
+### Details
+
+**Remote hosts from the command line.** `emmer new --host <name> <dir>` and `emmer shell --host <name> <dir>` start a session on a remote host through the open window, the folder an absolute path there or `~`; `emmer ls --host <name>` lists that host's sessions. Plain `emmer ls` stays local. With no window open they say `no window answered`.
+
+**Small ones.** The shell an `/exit` drops into a pane while the New Claude session dialog is open now goes when you press Start, whether or not the Close box is ticked. A file opened from Explorer while emerald is closed stays open as a tab on a profile whose first window was closed in an earlier run; it used to vanish as the window came up. A detached HEAD reads `detached at <hash>` on every branch pill, and the graph puts a session on a detached HEAD beside its own commit. The copy note's Cancel button says in its tooltip that the action palette's `Cancel the copy` does the same.
+
 ## Fixes 1139 to 1157, 2026-11-11
 
 Nineteen fixes: what the last install found, a model menu that keeps up with Claude Code, each subagent's row beside its own commit on the graph, a chat pane that fits a narrow column, and about 11 MB less for every terminal. The daemon stays at level 82, so nothing asks for a restart.

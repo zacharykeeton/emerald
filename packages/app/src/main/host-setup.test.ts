@@ -75,7 +75,7 @@ function fakeKit(): AssembledKit {
   fs.mkdirSync(path.dirname(emeraldArchive));
   fs.writeFileSync(nodeArchive, Buffer.alloc(3000));
   fs.writeFileSync(emeraldArchive, Buffer.alloc(1000));
-  return { dir: path.dirname(emeraldArchive), manifest: { version: V, node: { version: '24.20.0', url: '', sha256: '' }, pty: { version: '1.1.0', integrity: '' }, emerald: { files: [], sha256: '' } }, nodeArchive, emeraldArchive };
+  return { dir: path.dirname(emeraldArchive), manifest: { version: V, node: { version: '24.20.0', url: '', sha256: '' }, pty: { version: '1.1.0', integrity: '' }, emerald: { files: [], sha256: '', stage: 'stage-1166' } }, nodeArchive, emeraldArchive };
 }
 
 function deps(run: RemoteRunner, over: Partial<SetupDeps> = {}) {
@@ -171,8 +171,8 @@ test("a first contact on wfs-db's shape probes twice, copies both archives, unpa
   assert.deepEqual(pushes.map((p) => p.bytes), [0, 0, 4000, 4000, 4000, 4000]);
   assert.ok(pushes.every((p) => p.host === 'wfs-db' && p.line === null));
   const probed = { name: 'wfs-db', destination: 'zacha@192.0.2.7', addedAt: 0, os: 'win32', arch: 'x64', shell: 'powershell', home: WFS_HOME };
-  assert.deepEqual(records, [probed, { ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION }]);
-  assert.deepEqual(connected, [{ ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION }]);
+  assert.deepEqual(records, [probed, { ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION, kitStage: 'stage-1166' }]);
+  assert.deepEqual(connected, [{ ...probed, kitVersion: V, nodeVersion: KIT_NODE_VERSION, kitStage: 'stage-1166' }]);
 });
 
 test('an added host is reached by its destination, and a second run with Node there copies the emerald archive alone', async () => {
@@ -185,6 +185,33 @@ test('an added host is reached by its destination, and a second run with Node th
   assert.deepEqual(scps, [`emerald-${V}.tgz`]);
   assert.ok(!calls.some((c) => c.args.at(-1)!.includes('node-24.20.0.tgz')), 'no Node untar or remove');
   assert.deepEqual(pushes.map((p) => p.bytes), [0, 0, 1000, 1000, 1000, 1000]);
+});
+
+test('a same-version unpack over a held pty.node is tried again and goes through, and three failures end failed with tar\'s line (M9 fix 1166)', async () => {
+  const held: RunOutcome = { code: 1, stdout: '', stderrLast: 'tar.exe: Error exit delayed from previous errors' };
+  const emUntar = (args: readonly string[]): boolean => args.at(-1)!.startsWith('tar -xzf') && args.at(-1)!.includes(`emerald-${V}.tgz`);
+  const failing = (times: number) => {
+    let left = times;
+    const base = wfsAnswers(true);
+    return (tool: string, args: readonly string[]): RunOutcome => {
+      if (tool === 'ssh' && emUntar(args) && left > 0) {
+        left--;
+        return held;
+      }
+      return base(tool, args);
+    };
+  };
+
+  const once = fakeRunner(failing(1));
+  const a = deps(once.run, { sleep: async () => {} });
+  assert.equal((await setupHost(wfs, a.d)).ok, true);
+  assert.equal(once.calls.filter((c) => emUntar(c.args)).length, 2);
+  assert.ok(a.logs.includes('host wfs-db: unpack failed (exit 1): tar.exe: Error exit delayed from previous errors; trying again in 2 s'));
+
+  const thrice = fakeRunner(failing(3));
+  const b = deps(thrice.run, { sleep: async () => {} });
+  assert.deepEqual(await setupHost(wfs, b.d), { ok: false, line: 'tar.exe: Error exit delayed from previous errors' });
+  assert.equal(thrice.calls.filter((c) => emUntar(c.args)).length, 3);
 });
 
 test('a Linux host ends failed with the pinned line after the record says linux', async () => {
@@ -268,7 +295,7 @@ test('a second setup while one runs shares its promise', async () => {
   assert.equal((await a).ok, true);
 });
 
-test('the old kits are pruned once per run, at a connect whose daemon is the recorded kit, never on an older one', async () => {
+test('the old kits are pruned once per run, at a connect whose daemon is the recorded kit, never on an older one, and again for a new daemon (M9 fix 1165)', async () => {
   resetPruned();
   const { run, calls } = fakeRunner(() => ok());
   const logs: string[] = [];
@@ -280,4 +307,7 @@ test('the old kits are pruned once per run, at a connect whose daemon is the rec
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.args.at(-1), pruneCommand({ home: WFS_HOME, shell: 'powershell', nodeVersion: '24.20.0', kitVersion: V }, V, '24.20.0'));
   assert.deepEqual(logs, ['host wfs-db: old kits removed']);
+  assert.equal(await pruneOldKits(host, { ...DAEMON, pid: 8, startedAt: 2 }, { run, log: (m) => void logs.push(m) }), true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(logs, ['host wfs-db: old kits removed', 'host wfs-db: old kits removed']);
 });

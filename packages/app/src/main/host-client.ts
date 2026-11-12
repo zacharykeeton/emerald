@@ -27,6 +27,8 @@ export const RETRY_EVERY_S = 60;
 export const HOST_HELLO_TIMEOUT_MS = 15_000;
 // How long a request on a client not up waits for it.
 export const HOST_REQUEST_WAIT_MS = 10_000;
+// M9 fix 1165: how long stopDaemon waits for the line to drop after the daemon took daemon.stop, above the daemon's own forced exit (stopExitGraceMs, 2 s) and its reaper (4 s).
+export const HOST_STOP_DROP_MS = 10_000;
 const STDERR_KEEP = 20;
 
 export const HOST_KEY_FAILED = 'Host key verification failed.';
@@ -93,6 +95,8 @@ export class HostClient extends EventEmitter {
   private child: ChildProcess | null = null;
   private running = false;
   private stopped = false;
+  private quietStop = false;
+  private runDone: Promise<void> = Promise.resolve();
   private cutWait: (() => void) | null = null;
   state: HostClientState = 'idle';
   daemon: DaemonInfo | null = null;
@@ -136,7 +140,7 @@ export class HostClient extends EventEmitter {
     if (this.state === 'lost') this.tryNow();
     else if (!this.running) {
       this.stopped = false;
-      void this.run();
+      this.runDone = this.run();
     }
     return settled;
   }
@@ -155,6 +159,32 @@ export class HostClient extends EventEmitter {
     this.tryNow();
     this.killChild();
     this.conn?.destroy();
+  }
+
+  // M9 fix 1165: asks the host's daemon to stop over this line and waits
+  // for the line to drop, leaving the client idle with nothing announced,
+  // so the caller's next connect() starts afresh and the relay, finding no
+  // daemon, starts the kit's own. Resolves with the screens the daemon
+  // kept; rejects when not up or when the daemon refuses. A daemon that
+  // takes the request and keeps the line past HOST_STOP_DROP_MS has the
+  // line cut here; the next connect meets it again.
+  async stopDaemon(): Promise<number> {
+    if (!(this.state === 'up' && this.conn !== null && this.daemon !== null)) throw new Error(`${this.name} is not up`);
+    const pid = this.daemon.pid;
+    this.opts.log(`host ${this.name}: asking emmerd pid ${pid} to stop`);
+    const { kept } = await this.conn.request('daemon.stop', {});
+    // The reply precedes the drop on the one stream, so a drop before the
+    // reply is a real loss and is announced as one.
+    this.quietStop = true;
+    const timedOut = await Promise.race([this.runDone.then(() => false), (this.opts.sleep ?? defaultSleep)(HOST_STOP_DROP_MS).then(() => true)]);
+    if (timedOut && this.running) {
+      this.opts.log(`host ${this.name}: emmerd pid ${pid} took daemon.stop and kept the line ${HOST_STOP_DROP_MS / 1000} s; cutting it`);
+      this.killChild();
+      this.conn?.destroy();
+      await this.runDone;
+    }
+    this.opts.log(`host ${this.name}: emmerd pid ${pid} kept ${kept} screen${kept === 1 ? '' : 's'} and stopped`);
+    return kept;
   }
 
   request<K extends RequestType>(type: K, body: Requests[K]['req']): Promise<Requests[K]['res']> {
@@ -224,6 +254,14 @@ export class HostClient extends EventEmitter {
           tries = 0;
         });
         if (outcome.kind === 'stopped' || this.stopped) return;
+        // M9 fix 1165: a drop stopDaemon asked for ends the run quietly: idle, no disconnected, no lost, no retry.
+        if (this.quietStop) {
+          this.quietStop = false;
+          this.daemon = null;
+          this.retryIn = null;
+          this.setState('idle');
+          return;
+        }
         if (outcome.kind === 'refused') {
           // Before any hello, or a changed key while lost: refused, never
           // retried blindly. ssh and nokit while lost wait on.

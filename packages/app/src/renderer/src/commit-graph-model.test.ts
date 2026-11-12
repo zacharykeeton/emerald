@@ -1399,3 +1399,38 @@ test('sessionGraph (M9 fix 1155): two sessions on two branches each sit right ab
   assert.equal(ownRow('m'), rowOfHash(g, 'M1') - 1, "m's row right above main's head");
   assert.equal(ownRow('f'), rowOfHash(g, 'F1') - 1, "f's row right above feat's head");
 });
+
+const M3 = 'd3d3d3d0000000000000000000000000000000d3';
+const M2 = 'c2c2c2c0000000000000000000000000000000c2';
+const M1 = 'b1b1b1b0000000000000000000000000000000b1';
+const M0 = 'a0a0a0a0000000000000000000000000000000a0';
+
+test('sessionGraph (M9 fix 1160): a subagent in a detached worktree with no commit of its own sits right above the commit its short id names; a short id two commits share, or a name a ref carries, reads as before', () => {
+  const log = [c(M3, ['main'], null, [M2]), c(M2, [], null, [M1]), c(M1, [], null, [M0]), c(M0)];
+  const roots = ['C:/repo', 'C:/repo-wt/loose'];
+  const loose = member({ id: 'loose', branch: M1.slice(0, 7), cwd: 'C:/repo-wt/loose' });
+  const lead = claude({ id: 'lead', createdAt: 5, startHead: M3, team: [loose] });
+  const g = sessionGraph(log, [lead], 'graph', roots, 'main');
+  assert.equal(rowOfMember(g, 'loose'), rowOfHash(g, M1) - 1, "loose right above the commit its short id names");
+  const it = g.items[rowOfMember(g, 'loose')]!;
+  assert.ok(it.kind === 'agent' && it.pending && it.beyond === undefined && it.forkRow === rowOfHash(g, M1), 'pending, not past the window, forking from that commit');
+  const twin = 'b1b1b1b0000000000000000000000000000000ff';
+  const log2 = [c(M3, ['main'], null, [M2]), c(M2, [], null, [twin]), c(twin, [], null, [M1]), c(M1, [], null, [M0]), c(M0)];
+  const g2 = sessionGraph(log2, [lead], 'graph', roots, 'main');
+  const it2 = g2.items[rowOfMember(g2, 'loose')]!;
+  assert.ok(it2.kind === 'agent' && it2.beyond === true && rowOfMember(g2, 'loose') === g2.items.length - 1, 'a short id two commits share sits last, past the window');
+  const log3 = [c(M3, ['main'], null, [M2]), c(M2, [M1.slice(0, 7)], null, [M1]), c(M1, [], null, [M0]), c(M0)];
+  const g3 = sessionGraph(log3, [lead], 'graph', roots, 'main');
+  assert.equal(rowOfMember(g3, 'loose'), rowOfHash(g3, M2) - 1, 'a ref that carries the name wins');
+});
+
+test('sessionGraph (M9 fix 1160): a session whose detached HEAD moved above its start sits right above that commit as its head; the commits between stay nobody\'s, the squares staying on refs', () => {
+  const log = [c(M3, ['main'], null, [M2]), c(M2, [], null, [M1]), c(M1, [], null, [M0]), c(M0)];
+  const roots = ['C:/repo', 'C:/repo-wt/loose'];
+  const d = claude({ id: 'd', createdAt: 6, branch: M2.slice(0, 7), startHead: M0 });
+  const g = sessionGraph(log, [d], 'graph', roots, 'main');
+  assert.equal(rowOfMember(g, null), rowOfHash(g, M2) - 1, "d's row right above its detached head");
+  const it = g.items[rowOfMember(g, null)]!;
+  assert.ok(it.kind === 'agent' && it.tipRow === rowOfHash(g, M2) && it.startRow === rowOfHash(g, M0), 'tip on the head, start on the start commit');
+  assert.ok(!g.items.some((x) => x.kind === 'commit' && x.foreign === true), 'no commit is foreign');
+});

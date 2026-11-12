@@ -52,6 +52,7 @@ import { commitsQuery, commitsView } from './view-state.ts';
 import { editLayout, getState, useDaemonFor, useStore } from './store.ts';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, clearRevealFile, closeFileTabsUnder, flashCornerNote, keepSearchScopeUnder, openFileTab, openFolderReviewTab, openPreviewTab, openReviewTab, pinFileTab, renameFileTabs, setFilesChanged, setFilesWidth, setRailTab, setSearchMode, setSearchScope, toggleFiles, useUi } from './ui.ts';
 import type { RailTab } from './ui.ts';
+import { branchText } from './branch-text.ts';
 
 // The file tree of the folder the focused pane's session is in, at the
 // right edge, like Orca's. It follows the session's live cwd, so it moves
@@ -1066,7 +1067,7 @@ export function FilesRail() {
         {model.root !== null && git.head !== null && (
           <span className="files-branch" title={`Branch of ${model.root}`}>
             <BranchIcon />
-            <span className="files-branch-name">{git.head}</span>
+            <span className="files-branch-name">{branchText(git.head)}</span>
           </span>
         )}
         <button className="files-button" title="Collapse all folders" onClick={() => setModel(collapseAll)} onMouseDown={(ev) => ev.preventDefault()}>

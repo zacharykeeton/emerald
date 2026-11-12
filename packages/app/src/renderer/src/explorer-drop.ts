@@ -7,7 +7,7 @@ import type { DropKeys, RailDrop } from './files-drop-model.ts';
 import { zoneAt } from './drop-zone-model.ts';
 import { getState } from './store.ts';
 import { recordUse } from './use-record.ts';
-import { beginSessionDrag, endSessionDrag, getUiState, setSessionDragFile, setSessionDropTarget } from './ui.ts';
+import { beginExplorerDrag, endSessionDrag, getUiState, setSessionDragFile, setSessionDropTarget } from './ui.ts';
 import type { DropTarget } from './ui.ts';
 
 // A folder or a file dragged in from Explorer and dropped on a pane. The
@@ -49,6 +49,11 @@ import type { DropTarget } from './ui.ts';
 // The Files rail is no longer an opener (M9 fix 953): a drop there moves
 // or copies into the folder under the mouse, the rail's own side
 // (setRailDrop) lighting that folder and answering the effect.
+//
+// M9 fix 1161: the body wears dragging-files, not the mouse drags'
+// dragging-session, so a browser pane's page keeps the pointer and
+// Chromium hands the drag to the page; the browser pane itself is never
+// a target, its title and toolbar rows included.
 
 // Chromium repeats dragover every few hundred milliseconds while a drag
 // hovers, so a drag that ended without a dragleave (a cancelled one, say)
@@ -90,12 +95,16 @@ const paneHasSession = (paneId: string): boolean => {
   const tab = paneTab(paneId);
   return tab !== null && findPane(tab, paneId)?.sessionId != null;
 };
+const paneIsBrowser = (paneId: string): boolean => {
+  const tab = paneTab(paneId);
+  return tab !== null && findPane(tab, paneId)?.view?.kind === 'browser';
+};
 
 function begin(): void {
   if (active) return;
   active = true;
-  beginSessionDrag(null);
-  document.body.classList.add('dragging-session');
+  beginExplorerDrag();
+  document.body.classList.add('dragging-files');
 }
 
 function end(): void {
@@ -105,7 +114,7 @@ function end(): void {
   rail?.leave();
   if (!active) return;
   active = false;
-  document.body.classList.remove('dragging-session');
+  document.body.classList.remove('dragging-files');
   endSessionDrag();
 }
 
@@ -170,11 +179,14 @@ function onOver(e: DragEvent): void {
 }
 
 // dragleave fires between elements too; only leaving the window (no
-// related target inside the document) ends the drag.
+// related target inside the document) ends the drag. M9 fix 1161: so does
+// crossing onto a browser pane's page, which takes the drag from there, so
+// a pane lit beside it clears at once rather than after QUIET_MS; the
+// quiet timer stays the floor whichever related target Chromium gives.
 function onLeave(e: DragEvent): void {
   if (!active) return;
   const to = e.relatedTarget;
-  if (to === null || !(to instanceof Node) || !document.contains(to)) end();
+  if (to === null || !(to instanceof Node) || !document.contains(to) || (to instanceof Element && to.closest('.browser-frame') !== null)) end();
 }
 
 function onDrop(e: DragEvent): void {
@@ -250,10 +262,12 @@ async function dropFile(file: File, target: DropTarget): Promise<void> {
 
 // The pane under the point and the half of it the mouse is in, as in
 // pane-drag.ts. A pane under a file tab is hidden, so nothing is found.
+// A browser pane is never a target for a drag from outside (M9 fix 1161):
+// its page takes the drop, and its title and toolbar rows take none.
 function targetAt(x: number, y: number): DropTarget | null {
   const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-pane-id]') ?? null;
   const paneId = el?.dataset['paneId'];
-  if (el === null || paneId === undefined) return null;
+  if (el === null || paneId === undefined || paneIsBrowser(paneId)) return null;
   const zone = zoneAt(el.getBoundingClientRect(), { x, y });
   return zone === null ? null : { paneId, zone };
 }

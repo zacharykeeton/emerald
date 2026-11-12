@@ -193,7 +193,8 @@ export type Step =
   // Claude read mid-turn; `at` is its send time.
   | { kind: 'queued'; text: string; at: number | null }
   // M9 fix 805: a line Claude Code wrote for itself, a background task's end, an agent's report or another session's message, read as one line in the open turn.
-  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null }
+  // M9 fix 1170: a task's `report` is its <result>, where a background /code-review's findings land.
+  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null; report?: string }
   // M9 fix 920: a compaction, its note's words (compactNoteText) and the summary Claude Code wrote after it, null until that line lands.
   | { kind: 'compact'; text: string; summary: string | null; at: number | null }
   // M9 fix 921: a bash-mode run (a `!` command), its output null until the output line lands.
@@ -989,7 +990,12 @@ function taskNote(text: string, at: number | null): Step {
   const status = field('status');
   const summary = field('summary');
   const shown = summary ?? (status !== null ? `Background task ${status}` : 'Background task finished');
-  return { kind: 'notification', source: 'task', text: shown, tone: status === 'failed' || status === 'killed' ? 'error' : 'quiet', output: field('output-file'), title: shown, at };
+  const step: Step = { kind: 'notification', source: 'task', text: shown, tone: status === 'failed' || status === 'killed' ? 'error' : 'quiet', output: field('output-file'), title: shown, at };
+  // M9 fix 1170: Claude Code 2.1.322 runs /code-review as a background
+  // fork, whose reply (a JSON array of findings) arrives here as the
+  // result; the chat view reads it in a /code-review turn.
+  const report = field('result');
+  return report === null ? step : { ...step, report };
 }
 
 // M9 fix 977: what /rename prints, and the turn's last note of it.

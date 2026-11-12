@@ -3,6 +3,7 @@ import type { FileClash, MoveOutcome } from '../../preload/api.ts';
 import { folderName, refusalWords, renamedPath, sessionInFolder } from './files-model.ts';
 import { copyingNote, modeFor, moveNote } from './files-drop-model.ts';
 import type { DropKeys } from './files-drop-model.ts';
+import { cancelCopyTitle } from './copy-note.ts';
 import type { CornerAction } from './copy-note.ts';
 import { dirtyFiles, isDirty } from './file-edits.ts';
 import { dropFileSchemes, renameFileSchemes } from './file-scheme-store.ts';
@@ -85,6 +86,7 @@ export async function dropIntoFolder(paths: readonly string[], dir: string, keys
   let cancelling = false;
   const cancel: CornerAction = {
     label: 'Cancel',
+    title: cancelCopyTitle(),
     run: () => {
       if (cancelling || settled) return;
       cancelling = true;

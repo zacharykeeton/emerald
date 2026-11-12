@@ -100,6 +100,22 @@ export function hostNameOf(destination: string): string {
   return d;
 }
 
+// M9 fix 1167: a folder named for a remote host from this PC's CLI. An
+// absolute path in either spelling (/srv/app, C:\src, C:/src, \\box\share)
+// or the host's home, ~ alone or ~ and a separator; a relative one is
+// refused, since this PC's working folder means nothing there. hostFolder
+// turns ~ into the record's home, joined in the host's spelling, and leaves
+// any other folder as given.
+export function isHostFolder(dir: string): boolean {
+  return /^(~([\\/].*)?|\/.*|[A-Za-z]:[\\/].*|\\\\.+)$/s.test(dir);
+}
+
+export function hostFolder(dir: string, h: HostPlace): string {
+  if (dir === '~' || dir === '~/' || dir === '~\\') return h.home;
+  if (dir.startsWith('~/') || dir.startsWith('~\\')) return join(h, h.home, dir.slice(2));
+  return dir;
+}
+
 // The config's hosts first, in file order, each carrying the facts first
 // contact wrote into a record of the same name; then every record whose
 // name no config host has, by addedAt.
@@ -127,7 +143,7 @@ export function mergeRemoteHosts(
   return out;
 }
 
-const OPTIONAL_STRINGS = ['arch', 'home', 'nodeVersion', 'kitVersion'] as const;
+const OPTIONAL_STRINGS = ['arch', 'home', 'nodeVersion', 'kitVersion', 'kitStage'] as const;
 
 // The first field of a would-be host record that fails, or null when it is
 // one: name a non-empty single word, destination a non-empty word, os and
@@ -160,5 +176,6 @@ export function cleanHostRecord(r: HostRecord): HostRecord {
   if (r.home !== undefined) out.home = r.home;
   if (r.nodeVersion !== undefined) out.nodeVersion = r.nodeVersion;
   if (r.kitVersion !== undefined) out.kitVersion = r.kitVersion;
+  if (r.kitStage !== undefined) out.kitStage = r.kitStage;
   return out;
 }

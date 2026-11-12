@@ -20,8 +20,10 @@ import zlib from 'node:zlib';
 
 // The one copy of the kit's Node version: stage.mjs cannot import this file,
 // and two copies of the number would drift. The tests and verify:remote read
-// it from here (M9 fix 1118), so a move is this one line.
-export const KIT_NODE_VERSION = '24.22.2';
+// it from here (M9 fix 1118); a move is this line, plus the node-<version>
+// path written out in README.md's uninstall line and the handbook's remote
+// pane paragraph (M9 fix 1164).
+export const KIT_NODE_VERSION = '24.22.3';
 
 // M9 fix 1156's conout files, laid over npm's node-pty in a Windows kit. The
 // mark and the paths repeat scripts/patch-node-pty.mjs's CONOUT_MARK and
@@ -43,7 +45,7 @@ export interface KitManifest {
   version: string;
   node: { version: string; url: string; sha256: string };
   pty: { version: string; integrity: string; overlay?: string };
-  emerald: { files: string[]; sha256: string };
+  emerald: { files: string[]; sha256: string; stage: string };
 }
 
 export interface AssembledKit {
@@ -77,7 +79,7 @@ function missing(where: string): Error {
 // verify's own stage), else resources/ in the installed app (two above the
 // daemon main's folder), else packages/app/stage in a checkout once
 // npm run stage has run. The first holding kit-pins.json wins.
-export function kitRoot(opts: { daemonMain: string; checkoutStage: string; env: NodeJS.ProcessEnv }): string {
+export function kitRoot(opts: { daemonMain: string; checkoutStage: string; env: NodeJS.ProcessEnv; packaged: boolean }): string {
   const forced = opts.env['EMERALD_KIT_STAGE'];
   if (forced !== undefined && forced !== '') {
     if (!fs.existsSync(path.join(forced, 'kit-pins.json'))) throw missing(forced);
@@ -87,7 +89,10 @@ export function kitRoot(opts: { daemonMain: string; checkoutStage: string; env: 
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, 'kit-pins.json'))) return c;
   }
-  throw missing(candidates[0]!);
+  // M9 fix 1166: a checkout names its own stage folder, where npm run stage
+  // writes; installed, the resources folder (naming both would print a path
+  // inside app.asar).
+  throw missing(opts.packaged ? candidates[0]! : opts.checkoutStage);
 }
 
 export function kitSources(root: string): KitSources {
@@ -102,6 +107,35 @@ export function kitSources(root: string): KitSources {
   if (!fs.existsSync(pinsFile)) throw missing(root);
   const pins = JSON.parse(fs.readFileSync(pinsFile, 'utf8')) as KitPins;
   return { daemon, cli, shared, headless, ptyLib: path.join(root, 'node_modules', 'node-pty'), pins };
+}
+
+// M9 fix 1166: the emerald part's files, the four folders step (3) packs,
+// read once and sorted by name; the stage id is made from them before the
+// cache is read, and a miss packs these same bytes.
+export function stageEntries(sources: KitSources): TarEntry[] {
+  const parts: [string, string][] = [
+    [sources.daemon, 'daemon'],
+    [sources.cli, 'cli'],
+    [sources.shared, 'node_modules/@emerald/shared'],
+    [sources.headless, 'node_modules/@xterm/headless'],
+  ];
+  const entries: TarEntry[] = [];
+  for (const [from, to] of parts) {
+    for (const f of walkFiles(from)) entries.push({ name: `${to}/${f.rel}`, mode: 0o644, data: fs.readFileSync(f.abs) });
+  }
+  return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+// M9 fix 1166: the stage's id, a sha256 over each entry's name, its length
+// and its bytes in name order: the same files give the same id on every
+// assembly, unlike emerald.sha256, whose tar headers carry the clock.
+export function stageId(entries: readonly TarEntry[]): string {
+  const h = createHash('sha256');
+  for (const e of entries) {
+    h.update(`${e.name}\0${e.data.length}\0`);
+    h.update(e.data);
+  }
+  return h.digest('hex');
 }
 
 function base(value: string | undefined, fallback: string): string {
@@ -329,11 +363,14 @@ export async function assembleKit(opts: {
   const emeraldArchive = path.join(dir, `emerald-${appVersion}.tgz`);
   const manifestFile = path.join(dir, 'manifest.json');
   const label = `remote kit ${os}-${arch} ${appVersion}`;
+  const stage = stageEntries(sources);
+  const stageHash = stageId(stage);
 
   const cached = readManifest(manifestFile);
   if (
     cached !== null &&
     cached.version === appVersion &&
+    cached.emerald?.stage === stageHash &&
     cached.node?.version === v &&
     cached.pty?.integrity === pins.integrity &&
     (os !== 'win32' || cached.pty?.overlay === PTY_OVERLAY) &&
@@ -419,16 +456,8 @@ export async function assembleKit(opts: {
     }
   }
 
-  // (3) The emerald part, as the stage left it.
-  const parts: [string, string][] = [
-    [sources.daemon, 'daemon'],
-    [sources.cli, 'cli'],
-    [sources.shared, 'node_modules/@emerald/shared'],
-    [sources.headless, 'node_modules/@xterm/headless'],
-  ];
-  for (const [from, to] of parts) {
-    for (const f of walkFiles(from)) entries.push({ name: `${to}/${f.rel}`, mode: 0o644, data: fs.readFileSync(f.abs) });
-  }
+  // (3) The emerald part, as the stage left it (read above, for its id).
+  entries.push(...stage);
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   // (4) The emerald archive, then the manifest last, which marks it cached.
@@ -437,7 +466,7 @@ export async function assembleKit(opts: {
     version: appVersion,
     node: { version: v, url, sha256: nodeSha },
     pty: { version: pins.version, integrity: pins.integrity, ...(os === 'win32' ? { overlay: PTY_OVERLAY } : {}) },
-    emerald: { files: entries.map((e) => e.name), sha256: sha256Hex(fs.readFileSync(emeraldArchive)) },
+    emerald: { files: entries.map((e) => e.name), sha256: sha256Hex(fs.readFileSync(emeraldArchive)), stage: stageHash },
   };
   fs.writeFileSync(`${manifestFile}.tmp`, JSON.stringify(manifest, null, 2));
   fs.renameSync(`${manifestFile}.tmp`, manifestFile);

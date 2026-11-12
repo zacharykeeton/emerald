@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   relayCommand, remoteHomeOf, kitDirOf, nodeDirOf, mkdirCommand, removeCommand, untarCommand,
-  hostNameOf, mergeRemoteHosts, isHostRecord, hostRecordProblem,
+  hostNameOf, mergeRemoteHosts, isHostRecord, hostRecordProblem, isHostFolder, hostFolder,
 } from './remote.ts';
 import type { HostRecord } from './protocol.ts';
 
@@ -56,6 +56,25 @@ test('hostNameOf drops ssh://, the user and the port (M9 fix 1080)', () => {
   assert.equal(hostNameOf('a@b@host:22'), 'host');
 });
 
+test('isHostFolder takes an absolute path in either spelling or ~ and refuses a relative one (M9 fix 1167)', () => {
+  for (const d of ['~', '~/src', '~\\src', '/srv/app', '/', 'C:\\src', 'c:/src', '\\\\box\\share']) {
+    assert.equal(isHostFolder(d), true, d);
+  }
+  for (const d of ['src', './src', '..', '~user', 'C:', 'C:src', '\\src', '']) {
+    assert.equal(isHostFolder(d), false, d);
+  }
+});
+
+test('hostFolder puts the record\'s home for ~ in the host\'s spelling (M9 fix 1167)', () => {
+  const w = { home: 'C:\\Users\\v', shell: 'powershell' as const };
+  const s = { home: '/home/v', shell: 'sh' as const };
+  assert.equal(hostFolder('~', w), 'C:\\Users\\v');
+  assert.equal(hostFolder('~/', w), 'C:\\Users\\v');
+  assert.equal(hostFolder('~/proj', w), 'C:\\Users\\v\\proj');
+  assert.equal(hostFolder('~\\proj', s), '/home/v/proj');
+  assert.equal(hostFolder('/srv', s), '/srv');
+});
+
 test('mergeRemoteHosts: config hosts first with their record facts, then the added ones by addedAt (M9 fix 1080)', () => {
   const records: HostRecord[] = [
     { name: 'late', destination: 'u@late', addedAt: 30 },
@@ -76,7 +95,7 @@ test('mergeRemoteHosts: config hosts first with their record facts, then the add
 });
 
 test('isHostRecord: a good record, then each bad field named (M9 fix 1080)', () => {
-  const good: HostRecord = { name: 'stub', destination: 'verify@stub', os: 'win32', arch: 'x64', shell: 'powershell', home: 'C:\\h', nodeVersion: '24.20.0', kitVersion: '0.1.1079', addedAt: 1 };
+  const good: HostRecord = { name: 'stub', destination: 'verify@stub', os: 'win32', arch: 'x64', shell: 'powershell', home: 'C:\\h', nodeVersion: '24.20.0', kitVersion: '0.1.1079', kitStage: 'ab12', addedAt: 1 };
   assert.equal(isHostRecord(good), true);
   assert.equal(isHostRecord({ name: 'a', destination: 'a', addedAt: 0 }), true);
   const bad: [Record<string, unknown>, string][] = [
@@ -90,6 +109,7 @@ test('isHostRecord: a good record, then each bad field named (M9 fix 1080)', () 
     [{ ...good, home: 3 }, 'home'],
     [{ ...good, nodeVersion: '' }, 'nodeVersion'],
     [{ ...good, kitVersion: '' }, 'kitVersion'],
+    [{ ...good, kitStage: '' }, 'kitStage'],
     [{ ...good, addedAt: Number.NaN }, 'addedAt'],
   ];
   for (const [rec, field] of bad) {

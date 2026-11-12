@@ -13,7 +13,7 @@ import { emptyFocusHistory, recordFocus, stepFocus } from './focus-history-model
 import type { FocusEntry, FocusHistory } from './focus-history-model.ts';
 import type { ChimeMode } from '../../preload/api.ts';
 import { isDirty } from './file-edits.ts';
-import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, rawAtLine, emptyTabs, isDocument, openFile, pinTab, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
+import { PANES, WHATS_NEW_PATH, activate, closeAll, closeFile, closeOthers, defaultView, rawAtLine, emptyTabs, isDocument, openFile, pinTab, planPath, renameTabs, setTabQuery, setView, tabKey, tabsFromJson } from './tabs-model.ts';
 import { renamedPath } from './files-model.ts';
 import { TABS_KEY, dropsBareKey, tabsKeyFor, windowIdFromSearch, windowOfTabsKey } from './window-keys.ts';
 import { cycleKeys, currentKey, layoutTabOf, moveKey, orderFromJson, orderWithNew, replaceKey, stripOrder } from './tab-order.ts';
@@ -301,6 +301,8 @@ export interface SessionDrag {
   // folder, so a pane with a session lights whole (its path will be typed)
   // and not by band (a shell would split it).
   file: boolean;
+  // M9 fix 1161: true for a drag from outside the window (explorer-drop.ts), false for every drag of the window's own; fix 1162's overlay words read it.
+  explorer: boolean;
 }
 
 export const FONT_SIZE_DEFAULT = 14;
@@ -554,11 +556,17 @@ export function closeFind(paneId: string): void {
 }
 
 export function beginSessionDrag(sessionId: string | null, file = false): void {
-  setState({ ...state, sessionDrag: { sessionId, view: null, target: null, tabTarget: null, file } });
+  setState({ ...state, sessionDrag: { sessionId, view: null, target: null, tabTarget: null, file, explorer: false } });
 }
 
 export function beginViewDrag(view: PaneView): void {
-  setState({ ...state, sessionDrag: { sessionId: null, view, target: null, tabTarget: null, file: false } });
+  setState({ ...state, sessionDrag: { sessionId: null, view, target: null, tabTarget: null, file: false, explorer: false } });
+}
+
+// M9 fix 1161: a drag from outside the window, a folder or a file from
+// Explorer; explorer-drop.ts is its one caller.
+export function beginExplorerDrag(): void {
+  setState({ ...state, sessionDrag: { sessionId: null, view: null, target: null, tabTarget: null, file: false, explorer: true } });
 }
 
 // The explorer drag learns what it carries as it goes (the kind is read
@@ -1337,10 +1345,11 @@ export function openTranscriptTab(path: string, view: 'turns' | 'raw'): void {
 // opens on that file, or moves to it when the tab is already open.
 // M9 fix 790: with a base the review is put on it first (the chat view's
 // diff chip asks for the session's start); with none the tab keeps the
-// base the review holds.
-export function openReviewTab(sessionId: string, file?: string, base?: ReviewBase): void {
+// base the review holds. M9 fix 1170: with a line the file's diff opens
+// scrolled to it, marked.
+export function openReviewTab(sessionId: string, file?: string, base?: ReviewBase, line?: number): void {
   if (base !== undefined) updateReview(sessionId, (s) => ({ ...s, base }));
-  setTabs(openFile(state.tabs, reviewPath(sessionId, file)));
+  setTabs(openFile(state.tabs, reviewPath(sessionId, file, line)));
 }
 
 // The review of a folder no session is in (M9 fix 199): a view pane's
@@ -1354,6 +1363,12 @@ export function openFolderReviewTab(folder: string, file?: string): void {
 // action; one tab however often it is asked for.
 export function openWhatsNewTab(): void {
   setTabs(openFile(state.tabs, WHATS_NEW_PATH));
+}
+
+// M9 fix 1169: a session's plan at its approval as a tab, from the ask
+// card's Open the plan; one tab per session, its file carried as the query.
+export function openPlanTab(sessionId: string, file?: string): void {
+  setTabs(openFile(state.tabs, planPath(sessionId, file)));
 }
 
 // At a start, once the notes have read: the tab opens pinned and active

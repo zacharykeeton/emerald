@@ -109,6 +109,28 @@ export function isWhatsNew(path: string): boolean {
   return documentKey(path) === WHATS_NEW_PATH;
 }
 
+// M9 fix 1169: a session's plan at its approval, a document keyed by the
+// session, the plan's file as its query (?file=<path>) so a restart reads
+// it again.
+export function planPath(sessionId: string, file?: string): string {
+  return withQuery(`${DOCUMENT_SCHEME}plan/${sessionId}`, file === undefined || file === '' ? undefined : `file=${encodeURIComponent(file)}`);
+}
+
+export function planSessionId(path: string): string | null {
+  const m = /^emerald:\/\/plan\/([^/?]+)$/.exec(documentKey(path));
+  return m === null ? null : m[1]!;
+}
+
+// The plan's file off a path with a query or off the query alone (what
+// tabQuery hands back), as reviewFile reads a review's; null for none.
+export function planFile(pathOrQuery: string | null): string | null {
+  if (pathOrQuery === null) return null;
+  const query = pathOrQuery.startsWith(DOCUMENT_SCHEME) ? documentQuery(pathOrQuery) : pathOrQuery;
+  if (query === null) return null;
+  const file = new URLSearchParams(query).get('file');
+  return file === null || file === '' ? null : file;
+}
+
 // The key a tab is listed under: a file's normalized path, a document's
 // URL without its query.
 export function tabKey(path: string): string {
@@ -416,6 +438,7 @@ export function tabName(path: string, titles?: ReadonlyMap<string, string>): str
   if (folder !== null) return `Commits · ${folderName(folder) || folder}`;
   const statsOf = statsFolder(path);
   if (statsOf !== null) return `Statistics · ${folderName(statsOf) || statsOf}`;
+  if (planSessionId(path) !== null) return 'Plan';
   if (isWhatsNew(path)) return "What's new";
   if (isTranscript(path)) return folderName(path).replace(/\.jsonl$/i, '');
   return isDocument(path) ? path.slice(DOCUMENT_SCHEME.length) : folderName(path);

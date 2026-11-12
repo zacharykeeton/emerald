@@ -66,6 +66,27 @@ export function daemonFor(state: State, host: string | undefined): DaemonInfo | 
   return state.hosts.get(host)?.daemon ?? null;
 }
 
+// M9 fix 1165: the hosts whose daemon runs another kit than the record
+// names, each a row of the daemon banner: up, the record's kitVersion set,
+// the daemon's version another. By name. The compare is by version, as the
+// prune's: every update is a new kit even at the same level, and only a
+// version compare frees the old folder.
+export type OutdatedHost = { name: string; pid: number; running: string; ships: string };
+
+export function outdatedHosts(hosts: ReadonlyMap<string, HostState>): OutdatedHost[] {
+  const rows: OutdatedHost[] = [];
+  for (const [name, h] of hosts) {
+    if (h.state === 'up' && h.daemon !== null && h.record.kitVersion !== undefined && h.daemon.version !== h.record.kitVersion) {
+      rows.push({ name, pid: h.daemon.pid, running: h.daemon.version, ships: h.record.kitVersion });
+    }
+  }
+  return rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+export function hostOutdatedText(h: OutdatedHost): string {
+  return `emmerd on ${h.name} runs the ${h.running} kit, and this app ships ${h.ships}. Restart it to get the new features; running sessions on ${h.name} come back as exited and can be resumed.`;
+}
+
 export function hostState(state: State, host: string | undefined): HostState | null {
   if (host === undefined) return null;
   return state.hosts.get(host) ?? null;

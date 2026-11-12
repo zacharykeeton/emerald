@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CRASHED_TEXT, crashedTitle, daemonOutdated, otherHomeText, outdatedText } from './daemon-model.ts';
+import { hostOutdatedText, outdatedHosts } from './hosts-model.ts';
 import { dismissCrash, useStore } from './store.ts';
 
 // Shown while the window is connected to a daemon older than itself, which
@@ -15,7 +16,21 @@ import { dismissCrash, useStore } from './store.ts';
 // A daemon the window started that ended on a crash code (M9 fix 815) is
 // said after the home banner and before the level one, once the restarted
 // daemon is up; Not now clears it in the store.
+//
+// A host whose daemon runs another kit than this app's (M9 fix 1165) gets a
+// row of its own after the local one, keyed by host and pid, with the same
+// two buttons; Restart stops that daemon over its own line and the relay
+// starts the new kit's.
 export function DaemonBanner() {
+  return (
+    <>
+      <LocalDaemonBanner />
+      <HostDaemonRows />
+    </>
+  );
+}
+
+function LocalDaemonBanner() {
   const { daemon, crashed } = useStore('daemon', 'crashed');
   // Both keyed by pid: the banner stays mounted across a restart when the
   // new daemon is old too (a script does that), and must not stay disabled
@@ -70,5 +85,50 @@ export function DaemonBanner() {
         Not now
       </button>
     </div>
+  );
+}
+
+// One row per host whose daemon runs an older kit (M9 fix 1165). Both sets
+// are keyed `${name}:${pid}`, so a reconnect that meets the same old daemon
+// shows its row again with Restart live, and a new old daemon is not
+// dismissed by the last one's Not now.
+function HostDaemonRows() {
+  const { hosts } = useStore('hosts');
+  const [restarting, setRestarting] = useState<ReadonlySet<string>>(new Set());
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  const rows = outdatedHosts(hosts).filter((h) => !dismissed.has(`${h.name}:${h.pid}`));
+  if (rows.length === 0) return null;
+  return (
+    <>
+      {rows.map((h) => {
+        const key = `${h.name}:${h.pid}`;
+        const busy = restarting.has(key);
+        const restart = async () => {
+          setRestarting((s) => new Set(s).add(key));
+          try {
+            await window.emerald.hostRestart(h.name);
+          } catch (err) {
+            console.warn('[emerald] host daemon restart failed', err);
+          } finally {
+            setRestarting((s) => {
+              const next = new Set(s);
+              next.delete(key);
+              return next;
+            });
+          }
+        };
+        return (
+          <div className="daemon-banner" key={h.name} data-reason="host" data-host={h.name} data-daemon-pid={h.pid}>
+            <span className="daemon-banner-text">{hostOutdatedText(h)}</span>
+            <button className="daemon-restart" onClick={() => void restart()} disabled={busy}>
+              {busy ? 'Restarting' : 'Restart emmerd'}
+            </button>
+            <button className="secondary daemon-dismiss" onClick={() => setDismissed((s) => new Set(s).add(key))} disabled={busy}>
+              Not now
+            </button>
+          </div>
+        );
+      })}
+    </>
   );
 }

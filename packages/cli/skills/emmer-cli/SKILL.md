@@ -24,11 +24,13 @@ The sidebar's rows: grouped by folder, most urgent first, exited last. Each row 
 ## Start a session
 
 ```
-emmer new <dir> [--name x] [--json] [-- --model opus]
-emmer shell <dir> [--name x] [--json]
+emmer new <dir> [--host <name>] [--name x] [--json] [-- --model opus]
+emmer shell <dir> [--host <name>] [--name x] [--json]
 ```
 
 A Claude session or a plain shell in a folder, listed in the sidebar at once. Arguments after `--` go to `claude` (or to PowerShell). The reply carries the new id.
+
+With `--host <name>` the session starts on that remote host, one the window lists, through the open window; `<dir>` is then an absolute path on the host or `~`, and `emmer ls --host <name>` lists that host's sessions. The other commands reach this PC's sessions only.
 
 ## Type into a session
 

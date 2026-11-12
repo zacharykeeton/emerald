@@ -10,6 +10,7 @@ import { askUsageLive, useConversationUsage } from './commit-usage.ts';
 import { PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
 import { SessionMark } from './session-mark.tsx';
+import { branchText } from './branch-text.ts';
 
 // The card on an agent's marker in the Commits graph (M65): the
 // stepping glyph, the agent's name and state, its branch off the
@@ -90,7 +91,7 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
             <span className="agent-card-state">{label.text}</span>
           </span>
         </div>
-        {session.branch !== null && <div className="agent-card-branch">⑂ {session.branch}</div>}
+        {session.branch !== null && <div className="agent-card-branch">⑂ {branchText(session.branch)}</div>}
         <div className="agent-card-session">
           session {session.name} · {label.text} for {formatDuration(session.stateSince, now)}
         </div>
@@ -144,7 +145,7 @@ export function AgentCard({ member, session, now, anchorId, anchor, onClose, onE
           {usd !== null && <span className="agent-card-price">{formatUsd(usd)}</span>}
         </span>
       </div>
-      {member.branch !== null ? <div className="agent-card-branch">⑂ {member.branch}</div> : <div className="agent-card-branch" data-folder="">in the session's folder</div>}
+      {member.branch !== null ? <div className="agent-card-branch">⑂ {branchText(member.branch)}</div> : <div className="agent-card-branch" data-folder="">in the session's folder</div>}
       {commits !== null && <div className="agent-card-commits">{commits}</div>}
       <div className="agent-card-session">
         session {session.name} · {elapsed}

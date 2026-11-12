@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isShellId, shellIdsFor } from '@emerald/shared';
+import { SHELL_IDS, isHostFolder, isShellId, shellIdsFor } from '@emerald/shared';
 import type { SessionInfo, SessionKind, ShellId } from '@emerald/shared';
 import { parse, positionals } from './args.ts';
 import { CliError, usageError } from './cli-error.ts';
@@ -8,11 +8,14 @@ import { printJson, println } from './command.ts';
 import { connectHello, withDaemon } from './connect.ts';
 import { shortId } from './resolve.ts';
 import { shellIdsOf } from './shell-words.ts';
+import { viaHost } from './via-host.ts';
 
 const options = {
   json: { type: 'boolean', default: false },
   // The sidebar label; the folder name when omitted, as in the app.
   name: { type: 'string' },
+  // M9 fix 1167: a remote host the window lists; the folder is then the host's.
+  host: { type: 'string' },
 } as const;
 
 // emmer shell's own: which installed shell (M9 fix 624). emmer new does
@@ -33,6 +36,14 @@ export function parseShellId(value: string | undefined, platform: string = proce
   throw usageError(`--shell must be one of ${shellIdsOf(platform).join(', ')}, got ${JSON.stringify(value)}`);
 }
 
+// --shell with --host (M9 fix 1167): any id of either platform, since the
+// host's own daemon refuses one its platform does not run.
+export function parseHostShellId(value: string | undefined): ShellId | undefined {
+  if (value === undefined) return undefined;
+  if (isShellId(value)) return value;
+  throw usageError(`--shell must be one of ${SHELL_IDS.join(', ')}, got ${JSON.stringify(value)}`);
+}
+
 // A session started from the CLI has no pane yet, so it gets the same size
 // the app uses for a resume; the pane that later shows it resizes it.
 export const SPAWN_COLS = 120;
@@ -45,12 +56,16 @@ export async function spawnCommand(kind: SessionKind, argv: string[]): Promise<v
   let parsed: ReturnType<typeof parse<typeof options>>;
   if (kind === 'shell') {
     const own = parse(argv, shellOptions);
-    shell = parseShellId(own.values.shell);
+    shell = own.values.host === undefined ? parseShellId(own.values.shell) : parseHostShellId(own.values.shell);
     parsed = own;
   } else {
     parsed = parse(argv, options);
   }
   const { dir } = positionals(parsed, ['dir']);
+  if (parsed.values.host !== undefined) {
+    await spawnOnHost(kind, parsed.values.host, dir, shell, parsed);
+    return;
+  }
   const cwd = path.resolve(dir);
   let stat: fs.Stats;
   try {
@@ -86,7 +101,34 @@ export async function spawnCommand(kind: SessionKind, argv: string[]): Promise<v
   }
 }
 
+// M9 fix 1167: a session on a remote host, started by the window, which
+// holds the line to it. The folder is the host's, sent as typed with no
+// look on this PC; ~ is the host's home, filled in by the window.
+async function spawnOnHost(
+  kind: SessionKind,
+  host: string,
+  dir: string,
+  shell: ShellId | undefined,
+  parsed: { values: { json: boolean; name?: string | undefined }; rest: string[] },
+): Promise<void> {
+  if (host.trim() === '') throw usageError('--host needs a host name, as the window lists it');
+  if (!isHostFolder(dir)) throw usageError(`a folder on ${host} is an absolute path or ~, got ${JSON.stringify(dir)}`);
+  const req = {
+    kind,
+    cwd: dir,
+    cols: SPAWN_COLS,
+    rows: SPAWN_ROWS,
+    host,
+    ...(parsed.values.name !== undefined ? { name: parsed.values.name } : {}),
+    ...(parsed.rest.length > 0 ? { args: parsed.rest } : {}),
+    ...(shell !== undefined ? { shell } : {}),
+  };
+  const { session } = await viaHost(`emmer ${kind === 'claude' ? 'new' : 'shell'} --host`, 'session.spawn', req);
+  printSession(session, parsed.values.json);
+}
+
 export function printSession(session: SessionInfo, json: boolean): void {
   if (json) printJson({ session });
-  else println(`${shortId(session.id)}  ${session.state}  ${session.kind}  ${session.name}  ${session.id}`);
+  // A remote session (M9 fix 1167) says which host it is on.
+  else println(`${shortId(session.id)}  ${session.state}  ${session.kind}  ${session.name}  ${session.id}${session.host !== undefined ? `  on ${session.host}` : ''}`);
 }

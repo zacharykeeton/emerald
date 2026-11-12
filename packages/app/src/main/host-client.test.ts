@@ -28,8 +28,10 @@ class FakeChild extends EventEmitter {
   }
 }
 
-// The host daemon behind the relay: answers hello, subscribe and the list.
-function daemon(child: FakeChild, pid: number, sessions: unknown[] = []): void {
+// The host daemon behind the relay: answers hello, subscribe and the list,
+// and daemon.stop (M9 fix 1165) with two kept screens and its exit, or,
+// with stopExits false, with none and a line it keeps.
+function daemon(child: FakeChild, pid: number, sessions: unknown[] = [], stopExits = true): void {
   let buf = '';
   child.stdin.setEncoding('utf8');
   child.stdin.on('data', (d: string) => {
@@ -43,8 +45,10 @@ function daemon(child: FakeChild, pid: number, sessions: unknown[] = []): void {
       const msg = JSON.parse(line) as { id: number; type: string };
       const result =
         msg.type === 'hello' ? { daemonPid: pid, daemonVersion: '0.1.1079', featureLevel: 80, claude: true } :
-        msg.type === 'session.list' ? { sessions } : {};
+        msg.type === 'session.list' ? { sessions } :
+        msg.type === 'daemon.stop' ? { kept: stopExits ? 2 : 0 } : {};
       child.stdout.write(JSON.stringify({ type: 'reply', id: msg.id, ok: true, result }) + '\n');
+      if (msg.type === 'daemon.stop' && stopExits) setImmediate(() => child.exit(0));
     }
   });
 }
@@ -60,7 +64,7 @@ const stub: RemoteHost = { name: 'stub', destination: 'verify@stub.invalid', sou
 
 type Behaviour = (child: FakeChild) => void;
 
-function harness(behaviours: Behaviour[], host: RemoteHost = stub) {
+function harness(behaviours: Behaviour[], host: RemoteHost = stub, sleep?: (ms: number) => Promise<void>) {
   const calls: { exe: string; args: readonly string[] }[] = [];
   const children: FakeChild[] = [];
   const events: string[] = [];
@@ -69,8 +73,9 @@ function harness(behaviours: Behaviour[], host: RemoteHost = stub) {
     runner: 'node',
     log: () => {},
     env: {},
-    // Never resolves: a wait ends only by tryNow, so the test drives the clock.
-    sleep: () => new Promise(() => {}),
+    // Never resolves unless a test hands one in: a wait ends only by tryNow,
+    // so the test drives the clock.
+    sleep: sleep ?? (() => new Promise(() => {})),
     spawn: (exe, args) => {
       calls.push({ exe, args });
       const child = new FakeChild();
@@ -216,4 +221,33 @@ test('a request on a lost client goes through on the reconnect it starts (M9 fix
   assert.equal(h.calls.length, 2);
   assert.equal(h.client.state, 'up');
   h.client.stop();
+});
+
+test('stopDaemon asks daemon.stop, waits for the drop and leaves the client idle with no lost, and the next connect starts afresh (M9 fix 1165)', async () => {
+  const h = harness([(c) => daemon(c, 10), (c) => daemon(c, 11)]);
+  await h.client.connect();
+  assert.equal(await h.client.stopDaemon(), 2);
+  assert.equal(h.client.state, 'idle');
+  assert.equal(h.client.daemon, null);
+  assert.ok(h.children[0]!.lines.some((l) => (JSON.parse(l) as { type: string }).type === 'daemon.stop'));
+  assert.deepEqual(h.events, ['up 10']);
+  await h.client.connect();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.client.state, 'up');
+  assert.deepEqual(h.events, ['up 10', 'up 11']);
+  h.client.stop();
+});
+
+test('stopDaemon cuts a line the daemon keeps past HOST_STOP_DROP_MS (M9 fix 1165)', async () => {
+  const h = harness([(c) => daemon(c, 10, [], false)], stub, () => Promise.resolve());
+  await h.client.connect();
+  assert.equal(await h.client.stopDaemon(), 0);
+  assert.notEqual(h.children[0]!.exitCode, null);
+  assert.equal(h.client.state, 'idle');
+  assert.deepEqual(h.events, ['up 10']);
+});
+
+test('stopDaemon rejects on a client that is not up (M9 fix 1165)', async () => {
+  const h = harness([]);
+  await assert.rejects(h.client.stopDaemon(), { message: 'stub is not up' });
 });

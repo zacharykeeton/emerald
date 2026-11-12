@@ -79,6 +79,21 @@
 // Block `exited` (fix 804) kills a stub on the chat face, restarts the
 // daemon and reads the conversation kept, dimmed, under the notice, then
 // Resume carrying on.
+// Block `plan-doc` (fix 1169) plays a plan's approval with a shell whose
+// transcript ends on a pending ExitPlanMode and whose screen draws the
+// plan dialog: the card's title and Open the plan, the tab reading the
+// plan's file, a comment and Send comments typing it into No, keep
+// planning; then a real Claude in plan mode, a short real turn of its
+// own, whose plan is commented on and the comment read back as the
+// dialog's feedback in its transcript.
+// Block `findings` (fix 1170) plays Claude with a shell over a fixture
+// holding four /code-review replies, the formatter's list, the fork's own
+// lines, `No findings.` and a background review's JSON in its task
+// notification: all but the third draw as cards, a place opens the
+// review at its line, Fix this one and Apply fixes type their prompts.
+// Block `findings-real` (fix 1170) runs a real `/code-review medium` on a
+// seeded diff and reads its reply drawn as a card naming the file; it
+// removes its folder and the project folder Claude Code made for it.
 // Run: npm run verify:chat -w @emerald/app [-- --only stub,ask]
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -126,17 +141,22 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'trust', fixes: ['808', '847', '881'], needs: [] },
   { name: 'remote', fixes: ['889', '890', '923'], needs: [] },
   { name: 'narrow', fixes: ['1147'], needs: [] },
-  // Restarts the daemon, so it stays the list's last entry.
+  // Restarts the daemon; the blocks after it start their own sessions on the new one.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
+  { name: 'plan-doc', fixes: ['1169'], needs: [] },
+  // M9 fix 1170: after fix 1169's plan-doc, each binding its own session into the first pane.
+  { name: 'findings', fixes: ['1170'], needs: [] },
+  { name: 'findings-real', fixes: ['1170'], needs: [] },
 ]);
 
 let app = null;
+// M9 fix 1170: 900 s, since findings-real waits up to 240 s on a real review.
 setTimeout(() => {
-  console.error('[verify] WATCHDOG: run exceeded 600 s');
+  console.error('[verify] WATCHDOG: run exceeded 900 s');
   if (app !== null) killTree(app.child);
   stopDaemon();
   setTimeout(() => process.exit(3), 500);
-}, 600000);
+}, 900000);
 
 const home = os.homedir();
 // Fix 721's attach button: the file chooser answers this path.
@@ -355,6 +375,15 @@ let trustDir = null;
 let remoteId = null;
 // M9 fix 1147: the narrow block's stub.
 let narrowId = null;
+// M9 fix 1169: the plan-doc block's stub and its real Claude.
+let planId = null;
+let planRealId = null;
+// M9 fix 1170: the findings stub, and the real Claude reviewing a seeded repository with its folder and project folder.
+let findingsId = null;
+let findingsPane = null;
+let reviewRealId = null;
+let reviewRealDir = null;
+let reviewRealProject = null;
 try {
   await s.waitFor(`!!document.querySelector('.empty-pane .empty-start')`, 'empty pane');
 
@@ -5682,6 +5711,481 @@ try {
     step("fix 861 (e): the exited card's Close, titled as the title bar's ×, forgot the stub and closed its pane");
   });
 
+  await block('plan-doc', async () => {
+    // M9 fix 1169: a plan waiting for approval. The stub half: a shell
+    // playing Claude whose transcript ends on a pending ExitPlanMode and
+    // whose screen draws the plan dialog. The plan's file holds a Tests
+    // section the transcript's text does not, so a Tests part in the tab
+    // proves the file was read. `exited` may have restarted the daemon and
+    // an earlier block's tab may still be open, so this block sets its own
+    // layout and reads by selector, never by a tab count.
+    const planDir = path.join(emeraldHome, 'chat-1169');
+    fs.mkdirSync(planDir, { recursive: true });
+    const transcriptText = '# Plan 1169\n\n## Steps\n\n1. Add the reader.\n2. Wire the card.\n';
+    const planMd = path.join(planDir, 'plan-1169.md');
+    fs.writeFileSync(planMd, `${transcriptText}\n## Tests\n\n- One unit test.\n`);
+    const feedback = path.join(planDir, 'feedback.txt');
+    fs.rmSync(feedback, { force: true });
+    const planFixture = path.join(planDir, 'fixture.jsonl');
+    fs.writeFileSync(planFixture, [userLine('plan it', 0), asstLine([{ type: 'text', text: 'Planning.' }], 1)].join('\n') + '\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: planDir, cols: 120, rows: 30 });
+    planId = spawned.session.id;
+    await zreq(s, 'layout.set', { layout: { ...(await getLayout(s)), focusedPaneId: 'p1169', root: { kind: 'pane', id: 'p1169', sessionId: planId, view: null } } });
+    // An earlier block's file tab may be in front of the panes.
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}?.click()`);
+    const PP = paneSel('p1169');
+    await s.waitFor(`!!${q(PP + ' .term-host')}`, 'the plan stub in its pane', 10000);
+    const postPlan = hookPoster(planId, { simId: 'sim-chat-1169', cwd: planDir, transcript: planFixture });
+    await startStub(postPlan, planId, 'plan it');
+    await s.waitFor(`!!${q(PP + ' .pane-face-toggle')}`, 'the face button on the plan stub', 10000);
+    await toChat('p1169');
+    fs.appendFileSync(planFixture, [userLine('write the plan', 10), asstLine([useOf('x1169', 'ExitPlanMode', { plan: transcriptText, planFilePath: planMd })], 11)].join('\n') + '\n');
+    await postPlan({ hook_event_name: 'UserPromptSubmit', prompt: 'write the plan' });
+    await postPlan({ hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode', tool_input: {} });
+    await waitRecord(planId, (r) => r.state === 'working', 'the plan stub working', 5000);
+    // The dialog as Claude Code 2.1.322 draws it, in raw mode: a 3 moves
+    // the pointer to the field (its placeholder drawn), then every chunk is
+    // kept, and an Enter on its own over a second after the last chunk
+    // writes what came to feedback.txt; an Escape before the 3 writes ESC.
+    const dialogScript = path.join(planDir, 'plan-dialog.mjs');
+    fs.writeFileSync(
+      dialogScript,
+      [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        'const out = path.join(path.dirname(process.argv[1]), "feedback.txt");',
+        `const head = ${JSON.stringify([' Ready to code?', " Here is Claude's plan:", ' # Plan 1169', ' Claude has written up a plan and is ready to execute. Would you like to proceed?'])};`,
+        `const foot = ${JSON.stringify(['      shift+tab to approve with this feedback', ' ctrl+g to edit in Notepad · plan-1169.md'])};`,
+        'const draw = (opts) => process.stdout.write("\\x1b[2J\\x1b[H" + [...head, ...opts, ...foot].join("\\r\\n") + "\\r\\n");',
+        `draw(${JSON.stringify(['> 1. Yes, and auto-accept edits', '  2. Yes, and manually approve edits', '  3. No, keep planning'])});`,
+        'process.stdin.setRawMode(true);',
+        "process.stdin.setEncoding('utf8');",
+        'let moved = false;',
+        "let got = '';",
+        'let last = 0;',
+        'const end = (text) => { fs.writeFileSync(out, text); process.stdin.setRawMode(false); process.exit(0); };',
+        "process.stdin.on('data', (chunk) => {",
+        '  const now = Date.now();',
+        '  if (!moved) {',
+        '    if (chunk === "\\x1b") end("ESC");',
+        `    else if (chunk.includes('3')) { moved = true; last = now; draw(${JSON.stringify(['  1. Yes, and auto-accept edits', '  2. Yes, and manually approve edits', '> 3. Tell Claude what to change'])}); }`,
+        '    return;',
+        '  }',
+        '  if (chunk === "\\r" && now - last > 1000) end(got);',
+        '  got += chunk;',
+        '  last = now;',
+        '});',
+      ].join('\n') + '\n',
+    );
+    await typeRaw(planId, `node "${dialogScript}"\r`);
+    const dialogUntil = Date.now() + 10000;
+    const dialogUp = async () => (await screen(planId)).rows.some((r) => r.trimEnd().endsWith('3. No, keep planning'));
+    while (Date.now() < dialogUntil && !(await dialogUp())) await sleep(200);
+    expect(await dialogUp(), `the stub's plan dialog drawn, rows ${JSON.stringify((await screen(planId)).rows.filter((x) => x.trim() !== '').slice(-8))}`);
+    await postPlan({ hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', tool_input: {} });
+    const card = q(PP + ' .chat-step[data-kind="ask"]');
+    await s.waitFor(`!!${card}?.querySelector('.chat-ask-plan-open')`, 'fix 1169: the plan card with Open the plan', 5000);
+    // The options wait for the first screen read after the ask (as edit-ask waits).
+    await s.waitFor(`!!${card}?.querySelector('.chat-ask-option[data-key="3"]')`, 'the plan card with its options', 5000);
+    const c = await s.evalJs(
+      `(() => { const c = ${card}; return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, title: c.querySelector('.chat-ask-plan-title')?.textContent ?? null, open: c.querySelector('.chat-ask-plan-open')?.textContent ?? null, screen: !!c.querySelector('.chat-ask-screen'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key).join(',') }; })()`,
+    );
+    expect(c.heading === "Claude's plan is ready", `fix 1169: the heading, got ${JSON.stringify(c)}`);
+    expect(c.title === 'Plan 1169', `fix 1169: the plan's title, got ${JSON.stringify(c)}`);
+    expect(c.open === 'Open the plan' && !c.screen, `fix 1169: Open the plan and no screen excerpt, got ${JSON.stringify(c)}`);
+    expect(c.keys === '1,2,3,esc', `fix 1169: the options, got ${JSON.stringify(c)}`);
+    await s.screenshot('m9-chat-plan-card.png');
+    step('fix 1169: a plan waiting for approval heads the card with its title and Open the plan');
+
+    await s.evalJs(`${card}.querySelector('.chat-ask-plan-open').click()`);
+    const tabSel = (id) => `.plan-tab[data-session-id=${JSON.stringify(id)}]`;
+    const TP = tabSel(planId);
+    await s.waitFor(`${q(TP)}?.dataset.source === 'file'`, 'fix 1169: the plan tab reading the file', 5000);
+    const name1169 = (await record(planId)).name;
+    const tabName1169 = `Plan · ${name1169}`;
+    try {
+      await s.waitFor(`${q('.tab[data-tab^="emerald://plan/"] .tab-name')}?.textContent === ${JSON.stringify(tabName1169)}`, 'the plan tab titled', 3000);
+    } catch {}
+    const t = await s.evalJs(
+      `(() => { const t = ${q(TP)}; return { lines: [...t.querySelectorAll('.plan-block')].map((b) => b.dataset.line).join(','), h2: [...t.querySelectorAll('.plan-block h2')].map((h) => h.textContent), name: ${q('.tab[data-tab^="emerald://plan/"] .tab-name')}?.textContent ?? null }; })()`,
+    );
+    expect(t.lines === '1,3,5,6,8,10', `fix 1169: the parts' lines, got ${JSON.stringify(t)}`);
+    expect(t.h2.includes('Tests'), `fix 1169: the file's Tests part (the transcript's text has none), got ${JSON.stringify(t)}`);
+    expect(t.name === tabName1169, `fix 1169: the tab's name, want ${JSON.stringify(tabName1169)}, got ${JSON.stringify(t)}`);
+    step(`fix 1169: Open the plan opens the plan's file as a tab cut into six parts, titled ${tabName1169}`);
+
+    // A comment on the second step, a general one, then Send comments.
+    await s.evalJs(`${q(TP + ' .plan-block[data-line="6"] .plan-block-comment')}.click()`);
+    await s.waitFor(`document.activeElement === ${q(TP + ' .review-comment-input')}`, 'the comment box focused', 3000);
+    await s.type('Wire it after the reader.');
+    await s.key('Enter', 'Enter', 13, CTRL);
+    await s.waitFor(`${q(TP)}?.dataset.comments === '1' && !!${q(TP + ' .review-comment[data-line="6"]')}`, 'the comment kept on line 6', 3000);
+    await s.evalJs(`${q(TP + ' .review-general-line')}.click()`);
+    await s.waitFor(`document.activeElement === ${q(TP + ' .review-general-box')}`, 'the general box focused', 3000);
+    await s.type('Keep it to one commit.');
+    await s.evalJs(`${q(TP + ' .plan-send')}.click()`);
+    const sentUntil = Date.now() + 10000;
+    while (Date.now() < sentUntil && !fs.existsSync(feedback)) await sleep(200);
+    expect(fs.existsSync(feedback), `fix 1169: the stub's dialog took an answer within 10 s, rows ${JSON.stringify((await screen(planId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+    await sleep(200);
+    const got1169 = fs.readFileSync(feedback, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const want1169 = 'Comments on the plan:\n\nLine 6: 2. Wire the card.\nWire it after the reader.\n\nOverall: Keep it to one commit.';
+    expect(got1169 === want1169, `fix 1169: the dialog's field got the comments and the general line, want ${JSON.stringify(want1169)}, got ${JSON.stringify(got1169)}`);
+    await s.waitFor(`${q(TP + ' .plan-sent')}?.dataset.outcome === 'sent' && ${q(TP)}?.dataset.comments === '0'`, 'the Sent line and the comments cleared', 5000);
+    step('fix 1169: Send comments moved to the No, keep planning row, typed the comments and the general line, then Enter alone');
+    await zreq(s, 'session.kill', { sessionId: planId });
+    planId = null;
+
+    // The real half: one real Claude in plan mode, two short turns, which
+    // proves what the stub cannot: that today's Claude Code writes the plan
+    // into the recorded input, that planFeedback reads its real dialog, and
+    // that the text lands in the field whole.
+    const real = await zreq(s, 'session.spawn', { kind: 'claude', cwd: repoRoot, args: ['--permission-mode', 'plan'], cols: 120, rows: 30 });
+    planRealId = real.session.id;
+    await bindPane('p1169', planRealId, { focus: false });
+    // The stub's plan tab is in front; the box takes the keyboard only with the panes shown.
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}?.click()`);
+    await waitRecord(planRealId, (r) => r.state === 'idle' && r.claudeSessionId !== null, 'the real Claude idle in plan mode', 30000);
+    await s.waitFor(`!!${q(PP + ' .pane-face-toggle')}`, 'the face button on the real Claude', 10000);
+    await toChat('p1169');
+    await sleep(2000);
+    await s.evalJs(`${q(PP + ' .chat-box')}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(PP + ' .chat-box')}`, 'the box holds the keyboard', 5000);
+    // The plan's own words ("then present the plan for approval") had a
+    // real Opus 5.5 answer with the plan as text and no ExitPlanMode at its
+    // first run, so the tool is named.
+    await s.type('Do not read, search or run anything. Plan how to add a file named hello-1169.txt holding the word hi: one heading and two numbered steps, nothing else, then call the ExitPlanMode tool to present the plan for approval.');
+    await s.key('Enter', 'Enter', 13);
+    const askUntil = Date.now() + 120000;
+    let opened = false;
+    while (Date.now() < askUntil && !opened) {
+      opened = await s.evalJs(`!!${q(PP + ' .chat-ask-plan-open')}`);
+      if (!opened) await sleep(500);
+    }
+    if (!opened) {
+      const r = await record(planRealId);
+      expect(false, `fix 1169: no plan card on the real Claude in 120 s, record ${JSON.stringify({ state: r.state, reason: r.needsInputReason, askedFor: r.askedFor ?? null })}, last rows ${JSON.stringify((await screen(planRealId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+    }
+    const transcriptPath = (await record(planRealId)).transcriptPath;
+    const toolUses = fs
+      .readFileSync(transcriptPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          const o = JSON.parse(l);
+          return Array.isArray(o.message?.content) ? o.message.content.filter((p) => p?.type === 'tool_use' && p.name === 'ExitPlanMode') : [];
+        } catch {
+          return [];
+        }
+      });
+    const use = toolUses.at(-1);
+    expect(use !== undefined, 'fix 1169: the real transcript holds an ExitPlanMode tool_use');
+    console.log(`[verify] note: fix 1169: the real plan's input carries plan ${typeof use.input?.plan === 'string' ? use.input.plan.length : 'no'} chars, planFilePath ${use.input?.planFilePath ?? 'none'}`);
+    console.log(`[verify] note: fix 1169: the real dialog's rows ${JSON.stringify((await screen(planRealId)).rows.filter((x) => x.trim() !== ''))}`);
+    await s.evalJs(`${q(PP + ' .chat-ask-plan-open')}.click()`);
+    const RT = tabSel(planRealId);
+    await s.waitFor(`!!${q(RT)} && ${q(RT)}.dataset.source !== 'none'`, 'fix 1169: the real plan tab with a source', 5000);
+    console.log(`[verify] note: fix 1169: the real plan tab reads its ${await s.evalJs(`${q(RT)}.dataset.source`)}`);
+    await s.evalJs(`[...document.querySelectorAll(${JSON.stringify(RT + ' .plan-block')})].at(-1).querySelector('.plan-block-comment').click()`);
+    await s.waitFor(`document.activeElement === ${q(RT + ' .review-comment-input')}`, 'the real comment box focused', 3000);
+    const realComment = 'Name the file hello-1169.md instead.';
+    await s.type(realComment);
+    await s.key('Enter', 'Enter', 13, CTRL);
+    await s.waitFor(`${q(RT)}?.dataset.comments === '1'`, 'the real comment kept', 3000);
+    await s.evalJs(`${q(RT + ' .plan-send')}.click()`);
+    const backUntil = Date.now() + 30000;
+    const fedBack = () =>
+      fs
+        .readFileSync(transcriptPath, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .some((l) => {
+          try {
+            const o = JSON.parse(l);
+            return Array.isArray(o.message?.content) && o.message.content.some((p) => p?.type === 'tool_result' && p.tool_use_id === use.id && JSON.stringify(p.content).includes(realComment));
+          } catch {
+            return false;
+          }
+        });
+    let back = fedBack();
+    while (Date.now() < backUntil && !back) {
+      await sleep(500);
+      back = fedBack();
+    }
+    expect(back, `fix 1169: the comment came back to Claude as the dialog's feedback within 30 s, last rows ${JSON.stringify((await screen(planRealId)).rows.filter((x) => x.trim() !== '').slice(-8))}, sent ${JSON.stringify(await s.evalJs(`${q(RT + ' .plan-sent')}?.dataset.outcome ?? null`))}`);
+    step('fix 1169: on a real plan the comment went into No, keep planning and came back to Claude as the dialog\'s feedback');
+    await zreq(s, 'session.kill', { sessionId: planRealId });
+    planRealId = null;
+  });
+
+  await block('findings', async () => {
+    // M9 fix 1170: a shell playing Claude in a fixture repository whose
+    // session committed an edit, over a fixture holding three /code-review
+    // replies as Claude Code 2.1.322 writes a forked review's result: the
+    // formatter's list, the fork's own lines, and No findings.
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the panes tab in front for the findings block', 5000);
+    const dir1170 = path.join(emeraldHome, 'chat-1170');
+    fs.rmSync(dir1170, { recursive: true, force: true });
+    fs.mkdirSync(dir1170, { recursive: true });
+    const repo1170 = fs.realpathSync.native(dir1170);
+    const git1170 = (...args) => execFileSync('git', args, { cwd: repo1170, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    git1170('init', '-q', '-b', 'main');
+    git1170('config', 'user.name', 'emerald verify');
+    git1170('config', 'user.email', 'verify@example.com');
+    git1170('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(repo1170, 'notes.txt'), 'one\n');
+    git1170('add', '.');
+    git1170('commit', '-q', '-m', 'seed');
+    const fixture1170 = path.join(fs.realpathSync.native(emeraldHome), 'chat-1170.jsonl');
+    fs.writeFileSync(fixture1170, '');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'shell', cwd: repo1170, cols: 120, rows: 30 });
+    findingsId = spawned.session.id;
+    findingsPane = leaves(await getLayout(s))[0].id;
+    await bindPane(findingsPane, findingsId);
+    await s.waitFor(`!!${q(paneSel(findingsPane) + ' .term-host')}`, 'the 1170 stub in the first pane', 10000);
+    const post1170 = hookPoster(findingsId, { simId: 'sim-chat-1170', cwd: repo1170, transcript: fixture1170 });
+    await post1170({ hook_event_name: 'SessionStart', source: 'startup' });
+    const start1170 = (await waitRecord(findingsId, (r) => (r.spans?.at(-1)?.startHead ?? null) !== null, 'the span read its start commit', 10000)).spans.at(-1).startHead;
+    fs.writeFileSync(path.join(repo1170, 'notes.txt'), 'one\ntwo\nthree\n');
+    git1170('commit', '-q', '-am', 'session work');
+    const LIST =
+      '3 findings, most severe first:\n\n' +
+      '1. `notes.txt:2`: The second line is never read.\n\n   Failure scenario: A two-line file stops the loop at line 1.\n\n' +
+      '2. `notes.txt:3`: The last line is dropped.\n\n   Failure scenario: Three lines read as two.\n\n' +
+      '3. `src/a.ts`: The save is not awaited.';
+    const LINES = 'Reviewed the diff.\n- `notes.txt:2` — The loop stops one line early.\nsrc/b.ts:7 — The save is not awaited.';
+    const review = (args, text, t) => [
+      userLine('<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>', t, { isMeta: true }),
+      userLine(`<command-name>/code-review</command-name>\n            <command-message>code-review</command-message>\n            <command-args>${args}</command-args>`, t),
+      line({ type: 'system', subtype: 'local_command', content: `<local-command-stdout>${text}</local-command-stdout>`, level: 'info', isMeta: false, timestamp: at(t + 1) }),
+    ];
+    // The shape the first real run met (findings-real, 2026-11-12): the
+    // review in the background, its launch line carrying a
+    // <forked-skill-launch> tail, and the fork's JSON as the <result> of
+    // the task notification that ends it.
+    const RESULT = '```json\n[\n  {\n    "file": "notes.txt",\n    "line": 3,\n    "summary": "The last line is dropped.",\n    "failure_scenario": "Three lines read as two."\n  }\n]\n```\n\nThe diff changes one file. It is the only real bug.';
+    const background = [
+      userLine("<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>", 40, { isMeta: true }),
+      userLine('/code-review medium', 40),
+      line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Running in the background as @code-review</local-command-stdout>\n<forked-skill-launch>{"agentId":"a1170","skillName":"code-review","description":"/code-review medium"}</forked-skill-launch>', level: 'info', isMeta: false, timestamp: at(41) }),
+      userLine(`<task-notification>\n<task-id>a1170</task-id>\n<status>completed</status>\n<summary>Agent "/code-review medium" finished</summary>\n<result>${RESULT}</result>\n<usage><tool_uses>1</tool_uses></usage>\n</task-notification>`, 50, { origin: { kind: 'task-notification', producer: 'session-task', runId: 'r1170' } }),
+      asstLine([{ type: 'text', text: 'The review found one bug.' }], 51),
+    ];
+    fs.writeFileSync(
+      fixture1170,
+      [userLine('change the notes', 0), asstLine([{ type: 'text', text: 'Changed.' }], 1), ...review('high', LIST, 10), ...review('low', LINES, 20), ...review('', 'No findings.', 30), ...background].join('\n') + '\n',
+    );
+    await post1170({ hook_event_name: 'UserPromptSubmit', prompt: 'change the notes' });
+    await post1170({ hook_event_name: 'Stop', stop_hook_active: false });
+    await waitRecord(findingsId, (r) => r.transcriptPath !== null && ['idle', 'done'].includes(r.state), 'the 1170 stub bound with its transcript', 10000);
+    await s.waitFor(`!!${q(paneSel(findingsPane) + ' .pane-face-toggle')}`, 'the face button on the 1170 stub', 10000);
+    await toChat(findingsPane);
+    const FP = paneSel(findingsPane);
+
+    // (a) Both shapes draw as cards, No findings. as the divider.
+    const readCards = () =>
+      s.evalJs(`(() => {
+        const p = ${q(FP)};
+        if (!p) return null;
+        return {
+          cards: [...p.querySelectorAll('.chat-findings')].map((c) => ({
+            shape: c.dataset.shape ?? null,
+            title: c.querySelector('.chat-findings-title')?.textContent ?? null,
+            rows: [...c.querySelectorAll('.chat-finding')].map((r) => [r.dataset.n ?? null, r.dataset.file ?? null, r.dataset.line ?? null, r.querySelector('.chat-finding-place')?.textContent ?? null, r.querySelector('.chat-finding-summary')?.textContent ?? null, r.querySelector('.chat-finding-scenario')?.textContent ?? null, r.querySelector('.chat-finding-fix')?.textContent ?? null]),
+          })),
+          notes: [...p.querySelectorAll('.chat-command-note-text')].map((e) => e.textContent),
+        };
+      })()`);
+    const wantCards = [
+      {
+        shape: 'list',
+        title: 'Code review · 3 findings',
+        rows: [
+          ['1', 'notes.txt', '2', 'notes.txt:2', 'The second line is never read.', 'A two-line file stops the loop at line 1.', 'Fix this one'],
+          ['2', 'notes.txt', '3', 'notes.txt:3', 'The last line is dropped.', 'Three lines read as two.', 'Fix this one'],
+          ['3', 'src/a.ts', null, 'src/a.ts', 'The save is not awaited.', null, 'Fix this one'],
+        ],
+      },
+      {
+        shape: 'lines',
+        title: 'Code review · 2 findings',
+        rows: [
+          ['1', 'notes.txt', '2', 'notes.txt:2', 'The loop stops one line early.', null, 'Fix this one'],
+          ['2', 'src/b.ts', '7', 'src/b.ts:7', 'The save is not awaited.', null, 'Fix this one'],
+        ],
+      },
+      {
+        shape: 'json',
+        title: 'Code review · 1 finding',
+        rows: [['1', 'notes.txt', '3', 'notes.txt:3', 'The last line is dropped.', 'Three lines read as two.', 'Fix this one']],
+      },
+    ];
+    const cardsOk = (r) => r !== null && JSON.stringify(r.cards) === JSON.stringify(wantCards) && r.notes.at(-1) === 'No findings.';
+    let cards = await readCards();
+    for (const end = Date.now() + 5000; Date.now() < end && !cardsOk(cards); await sleep(200)) cards = await readCards();
+    expect(cardsOk(cards), `fix 1170 (a): three cards and the divider, got ${JSON.stringify(cards)}`);
+    step("fix 1170 (a): a /code-review reply draws as a card in each of its three shapes (the formatter's list, the fork's lines, a background review's JSON), and No findings. as the divider");
+
+    // (b) A place opens the review on the session's start at its line;
+    // Walk through in diff at the first finding's.
+    const card1 = `${FP} .chat-findings[data-shape="list"]`;
+    const row = (n) => `${card1} .chat-finding[data-n="${n}"]`;
+    await s.evalJs(`${q(row(2) + ' .chat-finding-place')}.click()`);
+    const tabRead = `(() => { const t = document.querySelector('.review-tab'); const d = document.querySelector('.review-diff'); return t === null ? null : { state: t.dataset.state ?? null, base: t.dataset.base ?? null, baseHash: t.dataset.baseHash ?? null, selected: t.dataset.selected ?? null, line: d?.dataset.findingLine ?? null }; })()`;
+    const waitTab = async (line, what) => {
+      const ok = `(() => { const r = ${tabRead}; return r !== null && r.state === 'ready' && r.base === 'session' && r.selected === 'notes.txt' && r.line === ${JSON.stringify(line)}; })()`;
+      try {
+        await s.waitFor(ok, what, 10000);
+      } catch (err) {
+        throw new Error(`${err.message}: got ${JSON.stringify(await s.evalJs(tabRead))}`);
+      }
+    };
+    await waitTab('3', "fix 1170 (b): row 2's place opens the review at line 3");
+    const opened = await s.evalJs(tabRead);
+    expect(opened.baseHash === start1170, `fix 1170 (b): the review is on the session's start ${start1170}, got ${JSON.stringify(opened)}`);
+    await s.evalJs(`${q(card1 + ' .chat-findings-walk')}.click()`);
+    await waitTab('2', 'fix 1170 (b): Walk through in diff opens at the first finding, line 2');
+    await s.key('w', 'KeyW', 87, CTRL);
+    await s.waitFor(`!document.querySelector('.review-tab')`, 'the review tab closed');
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'back on the panes tab after the review', 5000);
+    step("fix 1170 (b): a finding's place opens the review on the session's start at its line, and Walk through in diff at the first finding's");
+
+    // (c) Fix this one types its finding; Apply fixes the two still open.
+    const pendingRead = `[...document.querySelectorAll(${JSON.stringify(FP + ' .chat-prompt-pending-text')})].map((e) => e.textContent)`;
+    const sentRead = `[...document.querySelectorAll(${JSON.stringify(card1 + ' .chat-finding')})].map((r) => ({ n: r.dataset.n, sent: r.dataset.sent === 'true' || r.dataset.sent === '', fix: r.querySelector('.chat-finding-fix').textContent, disabled: r.querySelector('.chat-finding-fix').disabled }))`;
+    const waitSent = async (text, sentNs, what) => {
+      const bubble = `${pendingRead}.includes(${JSON.stringify(text)})`;
+      try {
+        await s.waitFor(bubble, `${what}: the bubble`, 5000);
+      } catch (err) {
+        throw new Error(`${err.message}: got ${JSON.stringify(await s.evalJs(pendingRead))}`);
+      }
+      const squeezed = text.replace(/\s+/g, '');
+      let typed = false;
+      for (const end = Date.now() + 5000; Date.now() < end && !typed; ) {
+        typed = (await screen(findingsId)).rows.join('').replace(/\s+/g, '').includes(squeezed);
+        if (!typed) await sleep(200);
+      }
+      expect(typed, `${what}: the text typed into the stub, last rows ${JSON.stringify((await screen(findingsId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+      const want = (r) => r.every((x) => (sentNs.includes(Number(x.n)) ? x.sent && x.disabled && x.fix === 'Sent' : !x.sent && !x.disabled && x.fix === 'Fix this one'));
+      let rows = await s.evalJs(sentRead);
+      for (const end = Date.now() + 3000; Date.now() < end && !want(rows); await sleep(200)) rows = await s.evalJs(sentRead);
+      expect(want(rows), `${what}: rows ${JSON.stringify(sentNs)} marked sent, got ${JSON.stringify(rows)}`);
+    };
+    await s.evalJs(`${q(row(2) + ' .chat-finding-fix')}.click()`);
+    await waitSent('Fix finding 2 of the code review above. 2: notes.txt:3, The last line is dropped.', [2], 'fix 1170 (c): Fix this one on row 2');
+    await s.evalJs(`${q(card1 + ' .chat-findings-apply')}.click()`);
+    await waitSent('Fix findings 1 and 3 of the code review above. 1: notes.txt:2, The second line is never read. 3: src/a.ts, The save is not awaited.', [1, 2, 3], 'fix 1170 (c): Apply fixes');
+    expect(await s.evalJs(`${q(card1 + ' .chat-findings-apply')}.disabled === true`), 'fix 1170 (c): Apply fixes disabled once every finding is sent');
+    step('fix 1170 (c): Fix this one types its finding, and Apply fixes one prompt naming the two still open');
+  });
+
+  await block('findings-real', async () => {
+    // M9 fix 1170: a real Claude runs /code-review medium on a seeded
+    // diff in a folder under the checkout (its trust, as fix 722's
+    // folder), with git, Read, Grep and Glob allowed and never a bypass
+    // mode. The first read of a real review's reply: a failure here is
+    // Claude Code printing something neither reader takes.
+    await s.evalJs(`${q('.tab[data-tab="panes"]')}.click()`);
+    await s.waitFor(`document.querySelector('.tab-strip')?.dataset.activeTab === 'panes'`, 'the panes tab in front for the real review', 5000);
+    const stamp = Date.now().toString(36);
+    reviewRealDir = path.join(repoRoot, '.chat-review-' + stamp);
+    fs.mkdirSync(reviewRealDir);
+    const gitR = (...args) => execFileSync('git', args, { cwd: reviewRealDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    gitR('init', '-q', '-b', 'main');
+    gitR('config', 'user.name', 'emerald verify');
+    gitR('config', 'user.email', 'verify@example.com');
+    gitR('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(reviewRealDir, 'even.js'), 'export function isEven(n) {\n  return n % 2 === 0;\n}\n');
+    gitR('add', '.');
+    gitR('commit', '-q', '-m', 'seed');
+    fs.writeFileSync(path.join(reviewRealDir, 'even.js'), 'export function isEven(n) {\n  return n % 2 === 1;\n}\n');
+    const spawned = await zreq(s, 'session.spawn', { kind: 'claude', cwd: reviewRealDir, args: ['--allowedTools', 'Bash(git:*)', 'Read', 'Grep', 'Glob'], cols: 120, rows: 30 });
+    reviewRealId = spawned.session.id;
+    const realPane = leaves(await getLayout(s))[0].id;
+    await bindPane(realPane, reviewRealId);
+    const RP = paneSel(realPane);
+    const trustYes = `${RP} .chat-ask-step[data-kind="trust"] [data-pick="yes"]`;
+    let trusted = false;
+    let rec = null;
+    for (const end = Date.now() + 45000; Date.now() < end; ) {
+      rec = await record(reviewRealId);
+      if (rec !== undefined && rec.state === 'idle' && rec.claudeSessionId !== null && rec.transcriptPath) break;
+      if ((await s.evalJs(`${q(RP)}?.dataset.face ?? null`)) !== 'chat' && (await s.evalJs(`!!${q(RP + ' .pane-face-toggle')}`))) await toChat(realPane);
+      if (!trusted && (await s.evalJs(`${q(trustYes)}?.disabled === false`))) {
+        trusted = true;
+        await sleep(1000);
+        await s.evalJs(`${q(trustYes)}.click()`);
+        console.log("[verify] note: the trust dialog showed in the review folder; answered by the card's Yes");
+      }
+      await sleep(200);
+    }
+    expect(rec !== undefined && rec.state === 'idle' && rec.claudeSessionId !== null && !!rec.transcriptPath, `the reviewing Claude idle with its transcript path, got ${JSON.stringify(rec)?.slice(0, 300)}`);
+    reviewRealProject = path.dirname(rec.transcriptPath);
+    await toChat(realPane);
+    await sleep(1500);
+    await s.evalJs(`${q(RP + ' .chat-box')}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(RP + ' .chat-box')}`, 'the box holds the keyboard');
+    await s.type('/code-review medium');
+    await s.key('Enter', 'Enter', 13);
+    // The turn whose prompt reads /code-review medium, holding a card or
+    // a divider. A permission the review asks for is answered Yes and
+    // logged; the read is the reply's shape, not the review's tools.
+    const turnRead = `(() => {
+      const p = ${q(RP)};
+      if (!p) return null;
+      const turn = [...p.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent.trim() === '/code-review medium');
+      if (!turn) return { turn: false };
+      const card = turn.querySelector('.chat-findings');
+      const note = turn.querySelector('.chat-command-note');
+      return { turn: true, card: card === null ? null : { shape: card.dataset.shape, files: [...card.querySelectorAll('.chat-finding')].map((r) => r.dataset.file) }, note: note === null ? null : note.title };
+    })()`;
+    let got = null;
+    let answered = 0;
+    const reviewBy = Date.now() + 240000;
+    while (Date.now() < reviewBy) {
+      got = await s.evalJs(turnRead);
+      const r = await record(reviewRealId);
+      // A divider alone ends the wait only once the turn is over, since a
+      // note the review prints on its way is not its reply.
+      if (got !== null && got.turn && (got.card !== null || (got.note !== null && ['idle', 'done'].includes(r?.state)))) break;
+      if (r?.state === 'needs-input' && answered < 6) {
+        answered += 1;
+        console.log(`[verify] note: fix 1170 real review asked ${JSON.stringify(r.askedFor ?? r.needsInputReason ?? null)}; Enter on its first option`);
+        await sleep(800);
+        await typeRaw(reviewRealId, '\r');
+        await sleep(1500);
+      }
+      await sleep(1000);
+    }
+    // The transcript from the /code-review line on, logged in short form
+    // and kept under the harness home, since the finally removes the
+    // project folder: this block is the first read of a real review's
+    // reply, and its shape is the finding whatever the expects say.
+    const realTranscript = (await record(reviewRealId))?.transcriptPath ?? rec.transcriptPath;
+    if (fs.existsSync(realTranscript)) {
+      fs.copyFileSync(realTranscript, path.join(emeraldHome, 'chat-1170-real.jsonl'));
+      const lines = fs.readFileSync(realTranscript, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const from = lines.findLastIndex((o) => JSON.stringify(o.message?.content ?? '').includes('<command-name>/code-review'));
+      for (const o of lines.slice(Math.max(0, from))) {
+        const c = o.message?.content;
+        const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((p) => (p.type === 'text' ? p.text : p.type === 'tool_use' ? `[tool_use ${p.name}]` : `[${p.type}]`)).join(' ') : (o.content ?? '');
+        console.log(`[verify] note: fix 1170 real transcript ${o.type}${o.subtype ? '/' + o.subtype : ''}${o.isMeta ? ' meta' : ''}${o.isSidechain ? ' side' : ''}: ${JSON.stringify(String(text).slice(0, 1200))}`);
+      }
+    } else console.log(`[verify] note: fix 1170 real transcript not found at ${realTranscript}`);
+    const tail = (await screen(reviewRealId)).rows.filter((x) => x.trim() !== '').slice(-12);
+    console.log(`[verify] note: fix 1170 real review printed ${JSON.stringify(got?.card !== null && got?.card !== undefined ? `a card, shape ${got.card.shape}, files ${JSON.stringify(got.card.files)}` : got?.note ?? null)}`);
+    expect(got !== null && got.turn && (got.card !== null || got.note !== null), `fix 1170 (d): the /code-review medium turn drew a card or a divider in 240 s, got ${JSON.stringify(got)}, last rows ${JSON.stringify(tail)}`);
+    expect(got.card !== null && got.card.files.some((f) => f.endsWith('even.js')), `fix 1170 (d): the real reply draws as a card naming even.js, got ${JSON.stringify(got)}`);
+    step(`fix 1170 (d): a real /code-review medium on a seeded diff draws as a card naming even.js (shape ${got.card.shape})`);
+    await zreq(s, 'session.kill', { sessionId: reviewRealId }).catch(() => {});
+    await waitRecord(reviewRealId, (r) => r.state === 'exited', 'the reviewing Claude exited', 10000);
+    reviewRealId = null;
+  });
+
   step(`PASS (${blocksRun()})`);
 } catch (err) {
   console.error('[verify] FAIL', err);
@@ -5708,6 +6212,10 @@ try {
   if (trustId !== null) await zreq(s, 'session.kill', { sessionId: trustId }).catch(() => {});
   if (remoteId !== null) await zreq(s, 'session.kill', { sessionId: remoteId }).catch(() => {});
   if (narrowId !== null) await zreq(s, 'session.kill', { sessionId: narrowId }).catch(() => {});
+  if (planId !== null) await zreq(s, 'session.kill', { sessionId: planId }).catch(() => {});
+  if (planRealId !== null) await zreq(s, 'session.kill', { sessionId: planRealId }).catch(() => {});
+  if (findingsId !== null) await zreq(s, 'session.kill', { sessionId: findingsId }).catch(() => {});
+  if (reviewRealId !== null) await zreq(s, 'session.kill', { sessionId: reviewRealId }).catch(() => {});
   s.close();
   killTree(s.child);
   stopDaemon();
@@ -5738,6 +6246,25 @@ try {
           console.log(`[verify] note: left ${freshProject} (${err.message})`);
         }
       } else console.log(`[verify] note: left ${freshProject}`);
+    }
+  }
+  // M9 fix 1170's folder under the checkout, and the project folder
+  // Claude Code made for it, only when its name holds the folder's stamp.
+  if (reviewRealDir !== null) {
+    await sleep(1000);
+    try {
+      fs.rmSync(reviewRealDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (err) {
+      console.log(`[verify] note: left ${reviewRealDir} (${err.message})`);
+    }
+    if (reviewRealProject !== null && fs.existsSync(reviewRealProject)) {
+      if (path.basename(reviewRealProject).toLowerCase().includes(path.basename(reviewRealDir).slice('.chat-review-'.length))) {
+        try {
+          fs.rmSync(reviewRealProject, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+        } catch (err) {
+          console.log(`[verify] note: left ${reviewRealProject} (${err.message})`);
+        }
+      } else console.log(`[verify] note: left ${reviewRealProject}`);
     }
   }
   setTimeout(() => process.exit(process.exitCode ?? 0), 500);

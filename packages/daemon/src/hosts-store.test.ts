@@ -55,6 +55,17 @@ test('set upserts by name and writes, remove writes, a bad entry in the file is 
   assert.deepEqual(again.list(), [{ ...stub, kitVersion: '0.1.1079' }]);
 });
 
+test('kitStage round-trips through the store and its file (M9 fix 1166)', () => {
+  const file = tempFile();
+  const store = new HostsStore(file, silentLogger);
+  store.load();
+  assert.equal(store.set({ ...stub, kitVersion: '0.1.1158', kitStage: 'f00d' }), true);
+  assert.equal(store.list()[0]!.kitStage, 'f00d');
+  const again = new HostsStore(file, silentLogger);
+  again.load();
+  assert.equal(again.list()[0]!.kitStage, 'f00d');
+});
+
 test('an unchanged set writes and emits nothing, a bad record is refused (M9 fix 1080)', () => {
   const store = new HostsStore(tempFile(), silentLogger);
   store.load();

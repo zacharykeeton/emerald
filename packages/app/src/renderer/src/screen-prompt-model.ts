@@ -23,7 +23,7 @@ const FRAME = /[─-╿▀-▟]/g;
 // not fill the card.
 const MAX_ROWS = 14;
 
-function bare(row: string): string {
+export function bare(row: string): string {
   return row.replace(FRAME, ' ').trim();
 }
 

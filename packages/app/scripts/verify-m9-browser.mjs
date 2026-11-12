@@ -319,6 +319,62 @@ try {
   await guest.waitFor(`document.readyState === 'complete' && location.pathname === '/'`, 'the guest loaded again');
   step('(e) Reload reaches the server, and a right-click on it is a hard reload with no pane menu');
 
+  // (e2) M9 fix 1161: a file dragged from Explorer over the pane's title
+  // row and toolbar lights nothing, and dropped on the page goes to the
+  // page. The drags are CDP's on the window's own target, which follow the
+  // same hit test as an OS drag: on the code before the fix the title's
+  // dragEnter set dragging-session, the frame lost the pointer and the drop
+  // replaced the page with a file view (the probe of fix 1161, its P2). A
+  // real drag from Explorer onto an upload box is the click-through's. The
+  // host reads of the first drag (dragging-files, no overlay, the frame's
+  // pointer, no file view after the drop) are the ones that fail before
+  // the fix.
+  const drop1161 = path.join(os.tmpdir(), 'emerald-verify', `browser-drop-1161-${process.pid}.txt`);
+  fs.mkdirSync(path.dirname(drop1161), { recursive: true });
+  fs.writeFileSync(drop1161, 'dropped\n');
+  const dragAt1161 = (type, p) => s.send('Input.dispatchDragEvent', { type, x: p.x, y: p.y, data: { items: [], files: [drop1161], dragOperationsMask: 19 } });
+  const center1161 = (sel) => s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  const title1161 = await center1161(`${browserPane} .pane-title`);
+  const toolbar1161 = await center1161(`${browserPane} .browser-toolbar`);
+  const page1161 = await center1161('.browser-frame');
+  const hostRead1161 = () =>
+    s.evalJs(
+      `(() => { const pe = (sel) => { const el = document.querySelector(sel); return el === null ? null : getComputedStyle(el).pointerEvents; }; return { files: document.body.classList.contains('dragging-files'), session: document.body.classList.contains('dragging-session'), overlays: document.querySelectorAll('.drop-overlay').length, frame: pe('.browser-frame'), page: pe('.browser-page'), fileView: !!document.querySelector('.pane[data-view="file"]') }; })()`,
+    );
+  // First with no handler on the page: nothing lights, the drop navigates nowhere.
+  await dragAt1161('dragEnter', title1161);
+  await dragAt1161('dragOver', title1161);
+  let read1161 = await hostRead1161();
+  expect(read1161.files && !read1161.session && read1161.overlays === 0, `over the title row: dragging-files on, dragging-session off, no overlay (${JSON.stringify(read1161)})`);
+  await dragAt1161('dragOver', toolbar1161);
+  read1161 = await hostRead1161();
+  expect(read1161.overlays === 0, `over the toolbar no overlay (${JSON.stringify(read1161)})`);
+  await dragAt1161('dragOver', page1161);
+  read1161 = await hostRead1161();
+  expect(read1161.frame === 'auto' && read1161.page === 'auto', `over the page the frame and the page keep the pointer (${JSON.stringify(read1161)})`);
+  await dragAt1161('drop', page1161);
+  await sleep(500);
+  const href1161 = await guest.evalJs(`location.href`);
+  read1161 = await hostRead1161();
+  expect(href1161 === home && (await recordUrls()).join() === home && !read1161.fileView, `a drop on a page with no handler navigates nowhere and opens no file view (${href1161}, ${await recordUrls()}, ${JSON.stringify(read1161)})`);
+  await s.waitFor(`!document.body.classList.contains('dragging-files') && document.querySelectorAll('.drop-overlay').length === 0`, 'the drag over after the drop', 2000);
+  // Then the page's own handler takes the file. CDP's drag picks the
+  // widget it goes to at its dragEnter and never crosses from the window
+  // into the page mid-drag (fix 1161's probe on the fixed build: a drag
+  // entered on the title row gave the page no event at all, one entered on
+  // the page gave it all four), so this drag enters on the page; the
+  // crossing an OS drag makes is the click-through's.
+  await guest.evalJs(
+    `(() => { window.__dropped = null; addEventListener('dragover', (e) => e.preventDefault()); addEventListener('drop', (e) => { e.preventDefault(); window.__dropped = [...e.dataTransfer.files].map((f) => f.name); }); })()`,
+  );
+  await dragAt1161('dragEnter', page1161);
+  await dragAt1161('dragOver', page1161);
+  await dragAt1161('drop', page1161);
+  await guest.waitFor(`JSON.stringify(window.__dropped) === ${JSON.stringify(JSON.stringify([path.basename(drop1161)]))}`, "the file's name in the page's drop handler");
+  expect(!(await hostRead1161()).fileView, 'no file view after the drop on the page');
+  fs.rmSync(drop1161, { force: true });
+  step("(e2) M9 fix 1161: a file dragged from Explorer over the browser pane's title row and toolbar lights nothing, and dropped on the page goes to the page: no navigation with no handler, the file's name in the page's own drop handler");
+
   // (f) A new window goes to the system browser.
   const popup = `${origin}/popup`;
   const blank = `${origin}/blank-target`;

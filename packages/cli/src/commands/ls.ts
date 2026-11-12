@@ -2,15 +2,19 @@ import { EXITED_GROUP, describeState, folderRollup, formatDuration, groupSession
 import type { FolderLabel, Layout, SessionInfo, SidebarOrder } from '@emerald/shared';
 import type { PipeClient } from '@emerald/shared/pipe-client';
 import { parse, positionals } from '../args.ts';
+import { usageError } from '../cli-error.ts';
 import { printJson, println } from '../command.ts';
 import type { Command } from '../command.ts';
 import { withDaemon } from '../connect.ts';
 import { shortId } from '../resolve.ts';
+import { viaHost } from '../via-host.ts';
 
 const options = {
   json: { type: 'boolean', default: false },
   'by-state': { type: 'boolean', default: false },
   team: { type: 'boolean', default: false },
+  // M9 fix 1168: a remote host the window lists, whose sessions are listed in place of this PC's.
+  host: { type: 'string' },
 } as const;
 
 // The same rows the sidebar shows by default: grouped by the live folder
@@ -63,16 +67,27 @@ export function tabsShowing(layout: Layout): Map<string, string> {
 const command: Command = {
   name: 'ls',
   summary: 'list sessions in sidebar order',
-  usage: 'emmer ls [--by-state] [--team] [--json]',
+  usage: 'emmer ls [--host <name>] [--by-state] [--team] [--json]\n--host <name> lists that remote host\'s sessions through the window, which must be open',
   async run(argv) {
     const parsed = parse(argv, options);
     positionals(parsed, []);
     const order: SidebarOrder = parsed.values['by-state'] ? 'state' : 'created';
-    const { sessions, layout, labels } = await withDaemon(async (client) => ({
-      ...(await client.request('session.list', {})),
-      ...(await client.request('layout.get', {})),
-      labels: await folderLabels(client),
-    }));
+    const host = parsed.values.host;
+    if (host !== undefined && host.trim() === '') throw usageError('--host needs a host name, as the window lists it');
+    // M9 fix 1168: a host's sessions come through the window; its panes
+    // are in this PC's layout, so the tab names still read, and a folder
+    // label is this PC's record, which titles no remote group.
+    const { sessions, layout, labels } = host !== undefined
+      ? {
+        sessions: (await viaHost('emmer ls --host', 'session.list', { host })).sessions,
+        ...(await withDaemon((c) => c.request('layout.get', {}))),
+        labels: new Map<string, string>(),
+      }
+      : await withDaemon(async (client) => ({
+        ...(await client.request('session.list', {})),
+        ...(await client.request('layout.get', {})),
+        labels: await folderLabels(client),
+      }));
     const now = Date.now();
     const tabs = tabsShowing(layout);
     if (parsed.values.json) {
@@ -101,7 +116,8 @@ const command: Command = {
       // A labelled folder (M9 fix 194) leads with the label, as the
       // heading does, and keeps the path after it so a script still
       // finds the group by its folder.
-      const heading = labels.has(group.key) ? `${group.title}  ${group.key}` : group.key;
+      // A remote group (M9 fix 1168) is headed by its folder alone; its key holds a NUL between the host and the folder.
+      const heading = group.host !== '' ? group.folder : labels.has(group.key) ? `${group.title}  ${group.key}` : group.key;
       println([heading, label, units].filter((part) => part !== null && part !== '').join('  '));
       const width = Math.max(...group.sessions.map((s) => describeState(s, now).text.length));
       for (const s of group.sessions) {

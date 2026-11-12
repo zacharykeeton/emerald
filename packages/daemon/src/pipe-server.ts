@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, HOSTS_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, isSessionColor, isSessionPhase, isShellId, isUpdateState, shellIdsFor, updateText } from '@emerald/shared';
-import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, HostRecord, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
+import { BROWSER_ARG_CHARS, BROWSER_ELEMENT_REF, BROWSER_OPENER, BROWSER_FILTER_CHARS, BROWSER_FILTER_REF, BROWSER_TIMEOUT_MAX_MS, BROWSER_TIMEOUT_MIN_MS, BROWSER_VERBS, DAEMON_FEATURE_LEVEL, HOSTS_LEVEL, Limits, activityTotals, browserUrl, pagePoint, isBrowserAnswer, PROTOCOL_VERSION, SESSION_PHASES, SHELL_IDS, isHostFolder, isSessionColor, isSessionPhase, isShellId, isUpdateState, shellIdsFor, updateText } from '@emerald/shared';
+import type { BrowserAnswer, BrowserFilter, BrowserVerb, ClientMessage, ConflictReport, FolderLabel, HostAsk, HostRecord, KeptScreen, Layout, ModRow, Reply, Request, RequestType, Requests, ServerMessage, SessionInfo, SessionPhase, UpdateState, UsageLimit } from '@emerald/shared';
 import type { ActivityLog } from './activity.ts';
 import type { PresenceKind, UsageEdge } from '@emerald/shared';
 import type { UnhostedSessions } from './unhosted.ts';
@@ -83,6 +83,8 @@ export interface PipeServerOptions {
   // How long past a browser.run's own budget the daemon holds the reply
   // (M9 fix 672); the tests shorten it.
   browserRunSlackMs?: number;
+  // How long a request naming a host waits for the window (M9 fix 1167); the tests shorten it.
+  hostRelayWaitMs?: number;
   // The hook sink's memory of Test events (M9 fix 606); a server without
   // one (the tests) answers false.
   hookTestArrived?: (testId: string) => boolean;
@@ -136,6 +138,10 @@ interface ServerHooks {
   // hold the reply for the first browser.done, or the deadline.
   requestBrowserRun: (req: BrowserRunAsk) => Promise<BrowserRunAnswer>;
   browserRunDone: (runId: number, answer: BrowserAnswer) => void;
+  // Push host.requested to one window at level 83 (M9 fix 1167) and hold
+  // the reply for its host.done, or the deadline.
+  requestHostRelay: (host: string, ask: HostAsk) => Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }>;
+  hostRelayDone: (relayId: number, answer: HostRelayAnswer) => void;
   // A session.submit, handed to the session's mod over its poll (M9 fix
   // 741, the poll since M9 fix 1125).
   submitToMod: (req: Requests['session.submit']['req']) => Promise<Requests['session.submit']['res']>;
@@ -147,6 +153,7 @@ type FileOpenAsk = Requests['file.open']['req'];
 type FileOpenAnswer = Requests['file.open']['res'];
 type BrowserRunAsk = Requests['browser.run']['req'];
 type BrowserRunAnswer = Requests['browser.run']['res'];
+type HostRelayAnswer = Omit<Requests['host.done']['req'], 'relayId'>;
 
 // How long a file.open that waits waits for the window's answer
 // before replying with the count alone (M9 fix 375): a window that
@@ -174,6 +181,10 @@ export const BROWSER_POINT_LEVEL = 74;
 export const BROWSER_CLICK_POINT_LEVEL = 75;
 // The first app level whose driver takes upload with a CSS selector in place of a ref (M9 fix 970); one to an older window is counted as no driver, since a window at 63 to 75 would refuse #file as a bad ref.
 export const BROWSER_UPLOAD_SELECTOR_LEVEL = 76;
+// The first app level whose main process runs a request naming a remote host (M9 fix 1167); an older window never gets the push.
+export const HOST_RELAY_LEVEL = 83;
+// How long a request naming a host waits for the window's host.done (M9 fix 1167): a first contact that copies the kit took 20.7 s on wfs-db.
+export const HOST_RELAY_WAIT_MS = 60_000;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -339,6 +350,10 @@ export class PipeServer {
   // 672), by the runId the push carried.
   private runSeq = 0;
   private readonly runWaits = new Map<number, (answer: BrowserAnswer) => void>();
+  // The requests naming a host held for the window's host.done (M9 fix
+  // 1167), by the relayId the push carried.
+  private relaySeq = 0;
+  private readonly relayWaits = new Map<number, (answer: HostRelayAnswer) => void>();
   // The sessions whose channel has been up once (M9 fix 776), so one whose
   // channel died goes straight to typed; emptied of a session on its exit,
   // so a resumed one waits again. And the sends waiting for a channel.
@@ -496,6 +511,14 @@ export class PipeServer {
         const resolve = this.runWaits.get(runId);
         if (resolve === undefined) return;
         this.runWaits.delete(runId);
+        resolve(answer);
+      },
+      requestHostRelay: (host, ask) => this.requestHostRelay(host, ask),
+      hostRelayDone: (relayId, answer) => {
+        // An unknown or late relayId is dropped, as browserRunDone drops one.
+        const resolve = this.relayWaits.get(relayId);
+        if (resolve === undefined) return;
+        this.relayWaits.delete(relayId);
         resolve(answer);
       },
       submitToMod: (req) => this.submitToMod(req),
@@ -756,6 +779,45 @@ export class PipeServer {
       this.runWaits.set(runId, (answer) => {
         clearTimeout(timer);
         resolve({ apps, drivers: drivers.length, answered: true, answer });
+      });
+    });
+  }
+
+  // The relay of a request naming a remote host (M9 fix 1167): the daemon
+  // holds no line to a host, the window's main process does, so the ask
+  // goes to one window on the app topic at level 83, never two, since two
+  // would each start the session, and the reply waits for its host.done.
+  private requestHostRelay(host: string, ask: HostAsk): Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }> {
+    const apps = this.subscribedCount('app');
+    const target = [...this.clients].find((c) => c.isApp && c.subscribed('app') && c.appLevel >= HOST_RELAY_LEVEL);
+    if (apps === 0) {
+      this.opts.log.info(`host: ${ask.type} on ${host} with no window open`);
+      return Promise.reject(new SessionError('no-window', 'no window answered; open the Emerald app, which holds the line to every host'));
+    }
+    if (target === undefined) {
+      this.opts.log.info(`host: no window at level ${HOST_RELAY_LEVEL} for ${ask.type} on ${host}`);
+      return Promise.reject(new SessionError('no-window', `no window answered; the open window is older than level ${HOST_RELAY_LEVEL}`));
+    }
+    const relayId = ++this.relaySeq;
+    this.opts.log.info(`host: ${ask.type} on ${host} relayed to the app`);
+    target.send({ type: 'host.requested', relayId, host, ask });
+    const ms = this.opts.hostRelayWaitMs ?? HOST_RELAY_WAIT_MS;
+    return new Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.relayWaits.delete(relayId)) return;
+        this.opts.log.info(`host: no answer from the window for ${ask.type} on ${host} within ${ms} ms`);
+        const waited = `no window answered within ${Math.ceil(ms / 1000)} s`;
+        // A list started nothing, so it has no tail (M9 fix 1168).
+        reject(new SessionError('no-answer', ask.type === 'session.spawn' ? `${waited}; the session may still start on ${host}` : waited));
+      }, ms);
+      this.relayWaits.set(relayId, (answer) => {
+        clearTimeout(timer);
+        if (answer.error !== undefined) reject(new SessionError('host', answer.error));
+        else if (ask.type === 'session.list') {
+          if (answer.sessions !== undefined) resolve({ sessions: answer.sessions });
+          else reject(new SessionError('host', `the window's answer for ${host} held no sessions`));
+        } else if (answer.session !== undefined) resolve({ session: answer.session });
+        else reject(new SessionError('host', `the window's answer for ${host} held no session`));
       });
     });
   }
@@ -1062,11 +1124,42 @@ class ClientConnection {
           });
         });
       }
-      case 'session.list':
+      case 'session.list': {
+        if (req.host !== undefined) {
+          // M9 fix 1168: a remote host's list, which only the window can fetch.
+          const host = expectString(req, 'host');
+          if (host.trim() === '') throw new SessionError('bad-request', 'host must name a host');
+          return this.hooks.requestHostRelay(host, { type: 'session.list', body: req.removed === undefined ? {} : { removed: expectBoolean(req, 'removed') } });
+        }
         return { sessions: this.manager.list({ removed: req.removed === undefined ? false : expectBoolean(req, 'removed') }) };
+      }
       case 'session.spawn': {
         const kind = expectString(req, 'kind');
         if (kind !== 'claude' && kind !== 'shell') throw new SessionError('bad-request', `unknown session kind ${kind}`);
+        if (req.host !== undefined) {
+          // M9 fix 1167: a session on a remote host; only the window holds a line to it, so the request is carried there.
+          const host = expectString(req, 'host');
+          if (host.trim() === '') throw new SessionError('bad-request', 'host must name a host');
+          if (req.shell !== undefined) {
+            // The host's own daemon checks the ids its platform runs.
+            if (!isShellId(req.shell)) throw new SessionError('bad-request', `unknown shell ${String(req.shell)}; one of ${SHELL_IDS.join(', ')}`);
+            if (kind === 'claude') throw new SessionError('bad-request', 'shell is for kind shell, not claude');
+          }
+          const cwd = expectString(req, 'cwd');
+          if (!isHostFolder(cwd)) throw new SessionError('bad-request', `cwd on a host is an absolute path or ~, got ${cwd}`);
+          return this.hooks.requestHostRelay(host, {
+            type: 'session.spawn',
+            body: {
+              kind,
+              cwd,
+              cols: expectNumber(req, 'cols'),
+              rows: expectNumber(req, 'rows'),
+              ...(req.name !== undefined ? { name: expectName(req) } : {}),
+              ...(req.args !== undefined ? { args: expectStringArray(req, 'args') } : {}),
+              ...(req.shell !== undefined ? { shell: req.shell } : {}),
+            },
+          });
+        }
         // M9 fix 624: one of the hello's shells, for a plain shell alone.
         if (req.shell !== undefined) {
           // M9 fix 1018: the ids this platform runs, so a Mac takes zsh and
@@ -1276,6 +1369,28 @@ class ClientConnection {
         const answer = (req as Record<string, unknown>)['answer'];
         if (!isBrowserAnswer(answer)) throw new SessionError('bad-request', 'answer must be { ok, text } with a reason when not ok');
         this.hooks.browserRunDone(runId, answer);
+        return {};
+      }
+      case 'host.done': {
+        // M9 fix 1167: the window's answer to a host.requested; the shape
+        // of a session is checked alone, as for file.open.done.
+        const relayId = expectNumber(req, 'relayId');
+        const raw = req as Record<string, unknown>;
+        const answer: HostRelayAnswer = {};
+        if (raw['error'] !== undefined) answer.error = expectString(req, 'error');
+        if (raw['session'] !== undefined) {
+          const session = raw['session'];
+          if (typeof session !== 'object' || session === null) throw new SessionError('bad-request', 'session must be a session');
+          answer.session = session as SessionInfo;
+        }
+        // M9 fix 1168: a host's list.
+        if (raw['sessions'] !== undefined) {
+          if (!Array.isArray(raw['sessions'])) throw new SessionError('bad-request', 'sessions must be a list');
+          answer.sessions = raw['sessions'] as SessionInfo[];
+        }
+        const given = [answer.error, answer.session, answer.sessions].filter((x) => x !== undefined).length;
+        if (given !== 1) throw new SessionError('bad-request', 'host.done takes one of session, sessions or error');
+        this.hooks.hostRelayDone(relayId, answer);
         return {};
       }
       case 'session.submit': {

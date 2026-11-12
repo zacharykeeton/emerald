@@ -12336,8 +12336,10 @@ body.dragging-session .browser-page {
    move re-parents the pane and not the page. The panes view is the
    layer's anchor; nothing between it and a pane is positioned but the
    gutter, which is relative, so no other box changes its anchor. The
-   layer takes no pointer; a frame does, except while something is
-   dragged, so the drop hit test reaches the pane under the page. */
+   layer takes no pointer; a frame does, except while a drag of the
+   window's own is on (a row, a title, a tree row, a gutter), so the drop
+   hit test reaches the pane under the page. A drag from Explorer leaves
+   the page its pointer, so the page takes the drop (M9 fix 1161). */
 .panes-view {
   position: relative;
 }
@@ -16006,4 +16008,313 @@ div.rail-context-head-row:hover {
   .chat-stop::before {
     content: '\25A0';
   }
+}
+
+/* M9 fix 1162: what a drop on the lit part of a pane does, from the
+   overlay's data-drop-word, in the middle of the lit part. No pointer (the
+   overlay has none) and no animation. */
+.drop-overlay[data-drop-word]::after {
+  content: attr(data-drop-word);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: calc(100% - 16px);
+  padding: 2px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--page-ground);
+  border: 1px solid var(--path);
+  color: var(--path);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.drop-overlay[data-drop-zone='file'][data-drop-word]::after {
+  border-color: var(--done);
+  color: var(--done);
+}
+
+/* M9 fix 1169: the plan tab and the plan card. */
+.chat-ask-plan-open {
+  flex: none;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: none;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.chat-ask-plan-open:hover {
+  background: var(--row-hover);
+  color: var(--text-hi);
+}
+
+.chat-ask-plan-title {
+  font-size: 12px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plan-tab {
+  overflow: hidden;
+}
+
+.plan-header {
+  gap: 8px;
+  padding: 5px 10px;
+  color: var(--fg);
+}
+
+.plan-name {
+  font-weight: 600;
+  color: var(--text-hi);
+}
+
+.plan-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.plan-spacer {
+  flex: 1;
+}
+
+.plan-count {
+  flex: none;
+  color: var(--muted);
+}
+
+.plan-count:not([data-count="0"]) {
+  color: var(--fg);
+}
+
+.plan-note {
+  flex: none;
+  color: var(--blocked);
+  font-size: 11px;
+}
+
+.plan-send {
+  flex: none;
+  background: var(--focus-fill);
+  color: var(--focus-ink);
+  border: none;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.plan-send:hover:not(:disabled) {
+  background: var(--focus-hover);
+}
+
+.plan-send:disabled {
+  background: var(--gutter);
+  color: var(--muted);
+  cursor: default;
+}
+
+.plan-sent {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--done);
+  border-bottom: 1px solid var(--gutter);
+}
+
+.plan-sent[data-outcome="not-moved"] {
+  color: var(--blocked);
+}
+
+.plan-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The Markdown tab's reading width, each part in a two-column grid: the
+   comment button's gutter, then the text and its comment. */
+.plan-doc {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 32px 48px 10px;
+}
+
+.plan-block {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 0;
+}
+
+.plan-block-comment {
+  align-self: start;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.plan-block:hover .plan-block-comment,
+.plan-block[data-commented] .plan-block-comment,
+.plan-block[data-drafting] .plan-block-comment {
+  visibility: visible;
+}
+
+.plan-block-comment:hover {
+  color: var(--text-hi);
+  background: var(--row-hover);
+}
+
+.plan-block-main {
+  min-width: 0;
+}
+
+/* Each part is its own Markdown block, so the spacing between parts is
+   the blocks' own, and one-item lists sit as one list. */
+.plan-block-text.markdown {
+  max-width: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.plan-block-text > :first-child {
+  margin-top: 0;
+}
+
+.plan-block-text > :last-child {
+  margin-bottom: 0;
+}
+
+.plan-empty {
+  padding: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* M9 fix 1170: the /code-review findings card, on the ask card's surface, and the review's line it opens at. */
+.chat-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--title-bg);
+  border: 1px solid var(--line-strong);
+}
+
+.chat-findings-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.chat-findings-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+}
+
+.chat-finding-n {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-findings-walk,
+.chat-finding-place,
+.chat-findings-apply,
+.chat-finding-fix {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-findings-walk {
+  margin-left: auto;
+}
+
+.chat-finding-place {
+  color: var(--focus);
+  font-family: Consolas, 'Cascadia Mono', monospace;
+}
+
+.chat-finding-summary {
+  flex: 1 1 200px;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.chat-finding-fix {
+  margin-left: auto;
+}
+
+.chat-findings-walk:hover,
+.chat-finding-place:hover,
+.chat-findings-apply:hover:not(:disabled),
+.chat-finding-fix:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.chat-finding-place:hover {
+  color: var(--focus);
+}
+
+.chat-findings-apply:disabled,
+.chat-finding-fix:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.chat-finding-scenario {
+  flex-basis: 100%;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.chat-finding[data-sent] .chat-finding-summary {
+  opacity: 0.6;
+}
+
+.chat-findings-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.review-editor .review-finding-line {
+  background: var(--review-hover);
 }

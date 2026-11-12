@@ -35,6 +35,7 @@ import type { DrawMode } from './graph-filter-model.ts';
 import type { CardLayout, CardLines } from './LaneCard.tsx';
 import { useGitPoll } from './git-poll.ts';
 import { ensureHistoryTranscripts, useHistoryTranscripts } from './history-index.ts';
+import { branchText } from './branch-text.ts';
 import { Menu } from './Menu.tsx';
 import type { MenuItem } from './Menu.tsx';
 import { useStore } from './store.ts';
@@ -1278,8 +1279,8 @@ function AgentRow({ item, session, color, model, now, card, replay }: { item: Ag
           {replay === undefined ? (member.activity ?? agentLabel(member)) : agentLabel(member)}
         </span>
         {item.pending && member.branch !== null && (
-          <span className="commits-pill" data-branch={member.branch} data-pending="" title={`${member.branch}: ${agentLabel(member)}'s worktree, nothing committed yet`}>
-            <span className="commits-pill-text">{member.branch}</span>
+          <span className="commits-pill" data-branch={member.branch} data-pending="" title={`${branchText(member.branch)}: ${agentLabel(member)}'s worktree, nothing committed yet`}>
+            <span className="commits-pill-text">{branchText(member.branch)}</span>
           </span>
         )}
         {replay === undefined && (
@@ -1699,12 +1700,6 @@ function useFresh(graph: GitGraph): ReadonlySet<string> {
     return () => clearTimeout(timer);
   }, [graph]);
   return fresh;
-}
-
-// The daemon reads a detached HEAD as its short id (git-branch.ts), which
-// the row shows as it is; here the word says what that is.
-function branchText(branch: string): string {
-  return /^[0-9a-f]{7}$/.test(branch) ? `detached at ${branch}` : branch;
 }
 
 // A commit's row. The hash, coloured by the block, is the block's handle

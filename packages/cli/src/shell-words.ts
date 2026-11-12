@@ -17,5 +17,5 @@ export function shellSummary(platform: string = process.platform): string {
 }
 
 export function shellUsage(platform: string = process.platform): string {
-  return `emmer shell <dir> [--name <label>] [--shell ${shellIdsOf(platform).join('|')}] [--json] [-- <shell args>]`;
+  return `emmer shell <dir> [--host <name>] [--name <label>] [--shell ${shellIdsOf(platform).join('|')}] [--json] [-- <shell args>]\n--host <name> starts it on that remote host through the window, which must be open; <dir> is then an absolute path there or ~`;
 }

@@ -8,6 +8,7 @@ import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
 import { editTab, getState, useStore } from './store.ts';
 import { useUi } from './ui.ts';
+import { paneDropLight } from './drop-zone-model.ts';
 
 type NavigateEvent = Event & { url: string; isMainFrame?: boolean };
 type TitleEvent = Event & { title: string };
@@ -130,8 +131,9 @@ export function BrowserLayer() {
     <div className="browser-layer" ref={hostRef}>
       {orderRef.current.map((frameId) => {
         const paneId = paneOf.get(frameId)!;
-        const dropZone = sessionDrag?.target?.paneId !== paneId ? null : sessionDrag.file ? 'file' : sessionDrag.target.zone;
-        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} zoom={zoomOf.get(paneId)} dropZone={dropZone} />;
+        // M9 fix 1162: the zone and the words a drop here would take.
+        const drop = paneDropLight(sessionDrag, paneId, false);
+        return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} zoom={zoomOf.get(paneId)} dropZone={drop?.zone ?? null} dropWord={drop?.word ?? null} />;
       })}
     </div>
   );
@@ -152,6 +154,8 @@ interface FrameProps {
   // page's first dom-ready.
   zoom: number | undefined;
   dropZone: string | null;
+  // M9 fix 1162: what a drop on the lit part does, drawn over the page.
+  dropWord: string | null;
 }
 
 // One page. The webview is made once, imperatively, on mount, so a
@@ -159,7 +163,7 @@ interface FrameProps {
 // never reloads it, as a React-managed src would. The main process holds
 // the element to its partition and strips node and a preload from it
 // (browser-guard.ts); a page's new window goes to the system browser.
-function Frame({ frameId, paneId, url, root, profile, zoom, dropZone }: FrameProps) {
+function Frame({ frameId, paneId, url, root, profile, zoom, dropZone, dropWord }: FrameProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<WebviewLike | null>(null);
   const profileRef = useRef(profile);
@@ -375,7 +379,7 @@ function Frame({ frameId, paneId, url, root, profile, zoom, dropZone }: FramePro
           in this box, so it never reorders around the page. */}
       <div className="browser-host" ref={hostRef} />
       {error !== null && <div className="browser-error">{error}</div>}
-      {dropZone !== null && <div className="drop-overlay" data-drop-zone={dropZone} />}
+      {dropZone !== null && <div className="drop-overlay" data-drop-zone={dropZone} data-drop-word={dropWord ?? undefined} />}
     </div>
   );
 }

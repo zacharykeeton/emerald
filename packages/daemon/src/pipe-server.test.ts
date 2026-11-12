@@ -443,6 +443,111 @@ test('browser.run relays a command to a window at level 63 and holds the reply (
   }
 });
 
+// M9 fix 1167: a session.spawn naming a host starts nothing here; it goes
+// to one window at level 83 as host.requested, the body without the host,
+// and the window's host.done answers it.
+test('session.spawn naming a host relays to one window at level 83 and holds the reply (M9 fix 1167)', async () => {
+  const pipe = `${PIPE}-host-spawn`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, hostRelayWaitMs: 300 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const ask = { kind: 'shell' as const, cwd: '~', cols: 80, rows: 24, shell: 'zsh' as const, host: 'stub' };
+    await assert.rejects(cli.request('session.spawn', ask), { code: 'no-window', message: 'no window answered; open the Emerald app, which holds the line to every host' });
+    await assert.rejects(cli.request('session.spawn', { ...ask, cwd: 'src' }), { code: 'bad-request', message: 'cwd on a host is an absolute path or ~, got src' });
+    await assert.rejects(cli.request('session.spawn', { ...ask, host: ' ' }), { code: 'bad-request', message: 'host must name a host' });
+    await assert.rejects(cli.request('session.spawn', { ...ask, shell: 'frob' } as never), { code: 'bad-request', message: 'unknown shell frob; one of pwsh, powershell, gitbash, cmd, zsh, bash, sh' });
+
+    // An older window is never pushed to.
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 82 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    await assert.rejects(cli.request('session.spawn', ask), { code: 'no-window', message: 'no window answered; the open window is older than level 83' });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'host.requested'), []);
+    const oldGone = new Promise<void>((resolve) => {
+      const tick = () => (own.clientCount === 1 ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    old.close();
+    await oldGone;
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 83 });
+    await app.request('subscribe', { topics: ['app'] });
+    let requested = waitFor(app, (m) => m.type === 'host.requested');
+    let reply = cli.request('session.spawn', ask);
+    let push = await requested;
+    const relayId = (push as { relayId: number }).relayId;
+    assert.deepEqual(push, { type: 'host.requested', relayId, host: 'stub', ask: { type: 'session.spawn', body: { kind: 'shell', cwd: '~', cols: 80, rows: 24, shell: 'zsh' } } });
+    const session = { id: 'remote-1', kind: 'shell', name: 'x', host: 'stub' } as unknown as SessionInfo;
+    await app.request('host.done', { relayId, session });
+    assert.deepEqual(await reply, { session });
+    // A late or unknown relayId is answered and dropped.
+    assert.deepEqual(await app.request('host.done', { relayId: relayId + 99, session }), {});
+
+    requested = waitFor(app, (m) => m.type === 'host.requested');
+    reply = cli.request('session.spawn', ask);
+    push = await requested;
+    await app.request('host.done', { relayId: (push as { relayId: number }).relayId, error: 'stub: cwd does not exist: /x' });
+    await assert.rejects(reply, { code: 'host', message: 'stub: cwd does not exist: /x' });
+
+    await assert.rejects(app.request('host.done', { relayId: 1 }), { code: 'bad-request', message: 'host.done takes one of session, sessions or error' });
+
+    // Nobody answers: the deadline, then no-answer.
+    const started = Date.now();
+    await assert.rejects(cli.request('session.spawn', ask), { code: 'no-answer', message: 'no window answered within 1 s; the session may still start on stub' });
+    const took = Date.now() - started;
+    assert.ok(took >= 290 && took < 3000, `no-answer after ${took} ms`);
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 1168: a session.list naming a host goes the same way, and its
+// answer is the host's sessions.
+test('session.list naming a host relays to a window at level 83 and answers its sessions (M9 fix 1168)', async () => {
+  const pipe = `${PIPE}-host-list`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, hostRelayWaitMs: 300 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    await assert.rejects(cli.request('session.list', { host: 'stub' }), { code: 'no-window', message: 'no window answered; open the Emerald app, which holds the line to every host' });
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 83 });
+    await app.request('subscribe', { topics: ['app'] });
+    const ask = async (): Promise<{ reply: Promise<unknown>; relayId: number; push: ServerMessage }> => {
+      const requested = waitFor(app, (m) => m.type === 'host.requested');
+      const reply = cli.request('session.list', { host: 'stub' });
+      reply.catch(() => {});
+      const push = await requested;
+      return { reply, relayId: (push as { relayId: number }).relayId, push };
+    };
+    let a = await ask();
+    assert.deepEqual(a.push, { type: 'host.requested', relayId: a.relayId, host: 'stub', ask: { type: 'session.list', body: {} } });
+    await app.request('host.done', { relayId: a.relayId, sessions: [] });
+    assert.deepEqual(await a.reply, { sessions: [] });
+
+    a = await ask();
+    await app.request('host.done', { relayId: a.relayId, session: { id: 'x' } as unknown as SessionInfo });
+    await assert.rejects(a.reply, { code: 'host', message: "the window's answer for stub held no sessions" });
+
+    await assert.rejects(app.request('host.done', { relayId: 1, sessions: 'x' } as never), { code: 'bad-request', message: 'sessions must be a list' });
+
+    await assert.rejects(cli.request('session.list', { host: 'stub' }), { code: 'no-answer', message: 'no window answered within 1 s' });
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
 test('browser.run relays drag to a window at level 72 alone (M9 fix 874)', async () => {
   const pipe = `${PIPE}-browser-drag`;
   const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });

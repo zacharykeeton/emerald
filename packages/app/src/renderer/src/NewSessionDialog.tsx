@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionKind } from '@emerald/shared';
 import { findPane, setPaneHost, setPaneSession, tabHolding } from '@emerald/shared';
-import { removeSession, retireReplaced, roomBesideFocused } from './actions.ts';
+import { closeDroppedShell, removeSession, retireReplaced, roomBesideFocused } from './actions.ts';
 import { closeOldOffer, panesShowing, replacedFate, splitArgs } from './new-session-model.ts';
 import { loadRecent, rememberFolderUsed } from './recent-folders.ts';
 import { editTab, getState, useStore } from './store.ts';
@@ -99,8 +99,14 @@ function Dialog({ paneId, preset, replace }: { paneId: string; preset: NewSessio
       .request('session.spawn', { kind, cwd: folder, cols: 120, rows: 30, ...(extra.length > 0 ? { args: extra } : {}) }, host)
       .then(async ({ session }) => {
         const target = preset?.split === true ? await roomBesideFocused() : paneId;
-        await editTab((t) => setPaneHost(setPaneSession(t, target, session.id), target, session.host), target);
+        let replaced: string | null = null;
+        await editTab((t) => {
+          replaced = findPane(t, target)?.sessionId ?? null;
+          return setPaneHost(setPaneSession(t, target, session.id), target, session.host);
+        }, target);
         if (chat) setChatFace(target, session.id, true);
+        // M9 fix 1158: the shell an /exit under the dialog dropped into this pane goes with Start, whatever the box says.
+        if (old !== undefined) void closeDroppedShell(old.id, replaced).catch((err: unknown) => console.warn('[emerald] could not close the shell left by the replaced session', err));
         // M9 fix 1131: not awaited, so a kill that fails leaves the dialog
         // closed and the new session in place. A working session's untick is
         // not remembered, so the next idle replace reads the person's own default.
