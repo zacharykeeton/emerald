@@ -62,6 +62,8 @@ import { setFileScheme } from './file-scheme-store.ts';
 import { recordUse } from './use-record.ts';
 import { flashCornerNote } from './ui.ts';
 import { copiedNote } from './copy-note.ts';
+import { refusalReason, refusedText, type RefusedVerb } from './toast-model.ts';
+import { showToast } from './toast-store.ts';
 import { FREE_MOVE_WAIT_MS, askQuestion, freeAnswerKeys, freeOption, submitMoves } from './screen-prompt-model.ts';
 
 // Layout and session actions shared by the sidebar, the picker and the
@@ -940,14 +942,24 @@ export function removeSession(sessionId: string): Promise<void> {
   return window.emerald.request('session.remove', { sessionId }).then(() => undefined);
 }
 
+// The end of a batch of requests (Clear exited, Resume all, a folder's
+// sweep): the first rejection is thrown, so the callers' console lines stay.
+function sayRefused(verb: RefusedVerb, results: readonly PromiseSettledResult<unknown>[]): void {
+  // M9 fix 1181: a refused one is said on screen with the count, not in the console alone.
+  const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  const first = rejected[0];
+  if (first === undefined) return;
+  showToast(refusedText(verb, rejected.length, results.length, refusalReason(first.reason)));
+  throw first.reason;
+}
+
 // Removes every exited session, one request each so a failure on one (say
 // it was resumed a moment ago) leaves the rest removed.
 export async function clearExited(): Promise<void> {
   recordUse('clear-exited');
   const exited = [...getState().sessions.values()].filter((s) => s.state === 'exited');
   const results = await Promise.allSettled(exited.map((s) => removeSession(s.id)));
-  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  if (failed !== undefined) throw failed.reason;
+  sayRefused('clear', results);
 }
 
 // Resumes every exited session (M9 fix 290), one request each as
@@ -959,8 +971,7 @@ export async function resumeAll(): Promise<void> {
   recordUse('resume-all');
   const exited = [...getState().sessions.values()].filter((s) => s.state === 'exited');
   const results = await Promise.allSettled(exited.map((s) => window.emerald.request('session.resume', { sessionId: s.id, cols: 120, rows: 30 })));
-  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  if (failed !== undefined) throw failed.reason;
+  sayRefused('resume', results);
 }
 
 // The gentle close (M9 fix 193): the program's own exit typed into the
@@ -1012,8 +1023,7 @@ export async function sweepSessions(sessionIds: readonly string[], mode: SweepMo
   }
   const one =(id: string) => (mode === 'close' ? closeSessionGently(id) : killSessionUnrecorded(id, mode === 'remove'));
   const results = await Promise.allSettled(sessionIds.map(one));
-  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-  if (failed !== undefined) throw failed.reason;
+  sayRefused(mode, results);
 }
 
 // The pane-level edits behind the title bar buttons, the empty pane's

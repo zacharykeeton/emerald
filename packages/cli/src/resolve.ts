@@ -10,7 +10,9 @@ import { CliError } from './cli-error.ts';
 // sessions.json entries when the daemon is down.
 export type Resolvable = Pick<SessionInfo, 'id' | 'name' | 'state'>;
 
-export function resolveSession<S extends Resolvable>(sessions: readonly S[], ref: string): S {
+// see names the command that lists what was searched (M9 fix 1182: a
+// host's list is emmer ls --host <name>).
+export function resolveSession<S extends Resolvable>(sessions: readonly S[], ref: string, see = 'emmer ls'): S {
   const wanted = ref.trim();
   if (wanted === '') throw new CliError('empty session reference');
 
@@ -26,7 +28,7 @@ export function resolveSession<S extends Resolvable>(sessions: readonly S[], ref
   if (byPrefix.length === 1) return byPrefix[0]!;
   if (byPrefix.length > 1) throw ambiguous(wanted, byPrefix);
 
-  throw new CliError(`no session matches ${JSON.stringify(wanted)} (see emmer ls)`);
+  throw new CliError(`no session matches ${JSON.stringify(wanted)} (see ${see})`);
 }
 
 function ambiguous(ref: string, matches: readonly Resolvable[]): CliError {

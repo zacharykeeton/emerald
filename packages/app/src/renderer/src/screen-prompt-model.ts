@@ -138,17 +138,20 @@ const YES_NO = /\((?:y\/n|Y\/n|y\/N)\)|\[(?:y\/n|Y\/n|y\/N)\]/;
 // "2. Yes, and don't ask again for ...", "3. No"), the number being the
 // key its dialog takes; else a y/n pair when a row asks that way; else
 // none, and the card offers Esc and, for a question, a box.
+// M9 fix 1175: the run counting up from the last option 1, as promptExcerpt bounds the dialog, so a plan's numbered steps above the options are never buttons.
 export function answerOptions(rows: readonly string[]): AnswerOption[] {
   const numbered: AnswerOption[] = [];
-  for (const row of rows) {
-    const m = NUMBERED.exec(bare(row));
-    if (m === null) continue;
-    const key = m[1] ?? '';
-    const label = m[2] ?? '';
-    // A dialog lists its options once; a second "1." is another dialog's
-    // leftover higher up the screen, so the later list wins.
-    if (numbered.some((o) => o.key === key)) numbered.length = 0;
-    numbered.push({ key, label });
+  const one = optionOne(rows);
+  if (one >= 0) {
+    const first = NUMBERED.exec(bare(rows[one]!));
+    numbered.push({ key: '1', label: first?.[2] ?? '' });
+    let next = 2;
+    for (let i = one + 1; i < rows.length && i - one <= DIALOG_REACH; i++) {
+      const m = NUMBERED.exec(bare(rows[i]!));
+      if (m?.[1] !== String(next)) continue;
+      numbered.push({ key: m[1], label: m[2] ?? '' });
+      next += 1;
+    }
   }
   if (numbered.length > 0) return numbered;
   if (rows.some((row) => YES_NO.test(row))) {

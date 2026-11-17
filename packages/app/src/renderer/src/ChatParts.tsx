@@ -134,16 +134,21 @@ export function usePathLinks(paneId: string): { handlers: { onClick: (ev: MouseE
 // own stamp, shows under its right edge on hover, the date and time in
 // its tooltip (M9 fix 979).
 export function ChatReply({ step, session, time, fullTime }: { step: Extract<Step, { kind: 'text' | 'update' }>; paneId: string; session: SessionInfo; time: string | null; fullTime: string | null }) {
-  // Bumped when a stat lands, so the paths it settled are drawn as links.
-  const [version, setVersion] = useState(0);
-  const { html, ask } = useMemo(() => renderReply(step.text, session.cwd, knownPath), [step.text, session.cwd, version]);
-  useStatAsks(ask, setVersion);
   // The clicks are the turn's (usePathLinks), which this sits inside.
   return (
     <div className="chat-step chat-reply" data-kind={step.kind} data-time={time ?? undefined} title={fullTime ?? undefined}>
-      <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />
+      <ChatMarkdown text={step.text} cwd={session.cwd} />
     </div>
   );
+}
+
+// M9 fix 1177: a reply's body, split out so a background agent's result is drawn the same way under its notification.
+export function ChatMarkdown({ text, cwd }: { text: string; cwd: string }) {
+  // Bumped when a stat lands, so the paths it settled are drawn as links.
+  const [version, setVersion] = useState(0);
+  const { html, ask } = useMemo(() => renderReply(text, cwd, knownPath), [text, cwd, version]);
+  useStatAsks(ask, setVersion);
+  return <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 // The paths a draw asked about, each statted once into `known`, then the

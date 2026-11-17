@@ -127,6 +127,25 @@ export async function findSession(client: PipeClient, ref: string): Promise<Sess
   return resolveSession(sessions, ref);
 }
 
+// M9 fix 1182: a reference that matches nothing here may be a remote host's
+// session; the line says how to reach one when the daemon's record lists any
+// host. A daemon that cannot list hosts leaves the line as it was.
+export async function findSessionHinted(client: PipeClient, ref: string): Promise<SessionInfo> {
+  try {
+    return await findSession(client, ref);
+  } catch (err) {
+    if (!(err instanceof CliError) || !err.message.startsWith('no session matches')) throw err;
+    let hosts: number;
+    try {
+      hosts = (await client.request('hosts.list', {})).hosts.length;
+    } catch {
+      throw err;
+    }
+    if (hosts === 0) throw err;
+    throw new CliError(`${err.message}; a session on a remote host needs --host <name>`, err.exitCode);
+  }
+}
+
 // Runs one command body against a connected daemon and always closes the
 // pipe, so a thrown CliError still lets the process exit promptly.
 export async function withDaemon<T>(body: (client: PipeClient) => Promise<T>): Promise<T> {

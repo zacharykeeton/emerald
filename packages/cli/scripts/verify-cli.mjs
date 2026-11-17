@@ -469,7 +469,14 @@ try {
   r = emerald('ls', '--host', '');
   expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: --host needs a host name, as the window lists it', `ls --host '': usage, got ${r.code} ${JSON.stringify(r.err)}`);
   expect(/^usage: emmer ls \[--host <name>\] \[--by-state\] \[--team\] \[--json\]$/m.test(r.err), `ls usage names --host, got ${JSON.stringify(r.err)}`);
-  log('M9 fixes 1167 and 1168: --host refuses a relative folder, a blank name and an unknown shell before the pipe, and with no window answers exit 69 and one line');
+  // M9 fix 1182: emmer kill --host and emmer rm --host the same way.
+  r = emerald('kill', '--host', '', 'x');
+  expect(r.code === 64 && r.err.split(/\r?\n/)[0] === 'emmer: --host needs a host name, as the window lists it', `kill --host '': usage, got ${r.code} ${JSON.stringify(r.err)}`);
+  expect(/^usage: emmer kill <session> \[--host <name>\]$/m.test(r.err), `kill usage names --host, got ${JSON.stringify(r.err)}`);
+  expect(/^--host <name> ends that remote host's session through the window, which must be open$/m.test(r.err), `kill usage's --host line, got ${JSON.stringify(r.err)}`);
+  r = emerald('rm', '--host', 'stub', 'x');
+  expect(r.code === 69 && r.err.trim() === 'emmer: no window answered; open the Emerald app, which holds the line to every host', `rm --host with no window: exit 69 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+  log('M9 fixes 1167, 1168 and 1182: --host refuses a relative folder, a blank name and an unknown shell before the pipe, and with no window answers exit 69 and one line');
 
   r = emerald('kill', 'nope');
   expect(r.code === 1 && /no session matches "nope"/.test(r.err), 'kill an unknown reference: exit 1');

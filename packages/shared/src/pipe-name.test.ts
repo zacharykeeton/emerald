@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { foldsCase, isNoDaemon, pipePathOf, pipeUser, readPipeToken, sameHome, emeraldHomeOf } from './pipe-name.ts';
+import { foldsCase, isNoDaemon, pipePathOf, pipeUser, readPipeInfo, readPipeToken, sameHome, emeraldHomeOf } from './pipe-name.ts';
 import { mkTemp, removeTemps } from './test-temp.ts';
 
 after(async () => {
@@ -100,4 +100,26 @@ test("readPipeToken answers daemon.json's pipeToken and nothing else", () => {
   const good = mkTemp('emerald-token-');
   fs.writeFileSync(path.join(good, 'daemon.json'), JSON.stringify({ pid: 1, pipeToken: 'c'.repeat(64), hookToken: 'x' }));
   assert.equal(readPipeToken(good), 'c'.repeat(64));
+});
+
+// M9 fix 1183: the token with its daemon's startedAt, for a relay that
+// started the daemon and must not take an older daemon's file.
+test('readPipeInfo answers the token and a numeric startedAt, undefined where readPipeToken is', () => {
+  const none = mkTemp('emerald-info-');
+  assert.equal(readPipeInfo(none), undefined, 'no file');
+  const garbled = mkTemp('emerald-info-');
+  fs.writeFileSync(path.join(garbled, 'daemon.json'), 'not json');
+  assert.equal(readPipeInfo(garbled), undefined, 'not JSON');
+  const old = mkTemp('emerald-info-');
+  fs.writeFileSync(path.join(old, 'daemon.json'), JSON.stringify({ pid: 1, hookToken: 'x', startedAt: 5 }));
+  assert.equal(readPipeInfo(old), undefined, 'no pipeToken');
+  const empty = mkTemp('emerald-info-');
+  fs.writeFileSync(path.join(empty, 'daemon.json'), JSON.stringify({ pid: 1, pipeToken: '', startedAt: 5 }));
+  assert.equal(readPipeInfo(empty), undefined, 'an empty pipeToken');
+  const whole = mkTemp('emerald-info-');
+  fs.writeFileSync(path.join(whole, 'daemon.json'), JSON.stringify({ pid: 1, pipeToken: 'c'.repeat(64), startedAt: 1234 }));
+  assert.deepEqual(readPipeInfo(whole), { token: 'c'.repeat(64), startedAt: 1234 });
+  const stringy = mkTemp('emerald-info-');
+  fs.writeFileSync(path.join(stringy, 'daemon.json'), JSON.stringify({ pid: 1, pipeToken: 'c'.repeat(64), startedAt: '1234' }));
+  assert.deepEqual(readPipeInfo(stringy), { token: 'c'.repeat(64) }, 'a string startedAt is left off');
 });

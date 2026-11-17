@@ -29,6 +29,7 @@ import { Sidebar } from './Sidebar.tsx';
 import { SplitView } from './SplitView.tsx';
 import { TabStrip } from './TabStrip.tsx';
 import { TitleBar } from './TitleBar.tsx';
+import { Toast } from './Toast.tsx';
 import { PANES, commitsFolder, isDocument, isWhatsNew, planSessionId, statsFolder } from './tabs-model.ts';
 import { openListenGate, type OpenListenGate } from './open-listen.ts';
 import { SYNC_WAIT_MS, getState, start, useStore } from './store.ts';
@@ -180,6 +181,7 @@ export function App() {
       <MoveClashDialog />
       <CheatSheet />
       <PrefixIndicator />
+      <Toast />
     </div>
   );
 }

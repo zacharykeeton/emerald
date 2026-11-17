@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { HooksStatus } from '../preload/api.ts';
-import { HOOKS_WATCH_DEBOUNCE_MS, HooksWatch, ownSha256, parseHooksStatus } from './hooks-watch.ts';
+import { HOOKS_WATCH_DEBOUNCE_MS, HooksInstallGate, HooksWatch, ownSha256, parseHooksStatus } from './hooks-watch.ts';
 import type { HooksReply } from './hooks-watch.ts';
 
 // M9 fix 606: the settings watcher behind the hooks banner.
@@ -143,4 +143,64 @@ test('a follow on a file in a missing folder throws nothing and says so', () => 
   h.watch.follow({ status: status({ settings: missing }), written: h.written });
   assert.ok(h.logs.some((l) => l.startsWith('hooks watch not started on ')), h.logs.join(' | '));
   h.watch.close();
+});
+
+// M9 fix 1179: the gate the window's first hooks status read waits on.
+// Whether a promise has settled by the time a setImmediate marker runs.
+async function settledBeforeTick(p: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void p.then(() => {
+    done = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  return done;
+}
+
+function held(): { run: Promise<string>; resolve: () => void; reject: () => void } {
+  let resolve = () => {};
+  let reject = () => {};
+  const run = new Promise<string>((res, rej) => {
+    resolve = () => res('ok');
+    reject = () => rej(new Error('install failed'));
+  });
+  return { run, resolve, reject };
+}
+
+test('HooksInstallGate (M9 fix 1179): wait() with nothing tracked answers false', async () => {
+  assert.equal(await new HooksInstallGate().wait(), false);
+});
+
+test('HooksInstallGate (M9 fix 1179): wait() holds while the run is open and answers true once it settles', async () => {
+  const gate = new HooksInstallGate();
+  const h = held();
+  gate.track(h.run);
+  const w = gate.wait();
+  assert.equal(await settledBeforeTick(w), false);
+  h.resolve();
+  assert.equal(await w, true);
+  assert.equal(await gate.wait(), false);
+});
+
+test('HooksInstallGate (M9 fix 1179): a rejected run still lets wait() through, with nothing unhandled', async () => {
+  const gate = new HooksInstallGate();
+  const h = held();
+  gate.track(h.run);
+  const w = gate.wait();
+  h.reject();
+  assert.equal(await w, true);
+  assert.equal(await gate.wait(), false);
+});
+
+test('HooksInstallGate (M9 fix 1179): a second track while the first is open makes wait() follow the second', async () => {
+  const gate = new HooksInstallGate();
+  const a = held();
+  const b = held();
+  gate.track(a.run);
+  gate.track(b.run);
+  const w = gate.wait();
+  a.resolve();
+  assert.equal(await settledBeforeTick(w), false);
+  b.resolve();
+  assert.equal(await w, true);
+  assert.equal(await gate.wait(), false);
 });

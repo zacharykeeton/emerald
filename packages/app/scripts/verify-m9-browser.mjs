@@ -248,6 +248,86 @@ try {
   expect(bridge === 'undefined,undefined,undefined', `the page has no emerald, require or process (${bridge})`);
   step('(c) the page has no bridge, no require and no process');
 
+  // (c1) M9 fix 1178: a right-click in the page opens emerald's own menu.
+  // It runs here, before (c2), and not after (i): once (c2)'s two held
+  // loads have failed and the page is back on the fixture, no press
+  // reaches the page, on the window's session or the guest's own (a
+  // mousedown counter read 0 for both), until step (j) hides and shows
+  // the frame. Two nodes go into the page's DOM alone, so no fixture route
+  // changes and (c2)'s loads drop them. Copy and Paste go through the
+  // window's held clipboard (any EMERALD_HOME), never the person's.
+  const paneId1178 = await s.evalJs(`document.querySelector(${JSON.stringify(browserPane)}).dataset.paneId`);
+  const page1178 = `.browser-frame[data-browser-pane="${paneId1178}"] .browser-page`;
+  await guest.evalJs(`document.body.insertAdjacentHTML('beforeend', '<p id="words1178">copy these words</p><input id="field1178">')`);
+  const at1178 = async (id) => {
+    const f = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(page1178)}).getBoundingClientRect(); return { x: r.x, y: r.y }; })()`);
+    const r = await guest.evalJs(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+    return { x: f.x + r.x + r.width / 2, y: f.y + r.y + r.height / 2 };
+  };
+  const rows1178 = () => s.evalJs(`[...document.querySelectorAll('.browser-guest-menu .menu-item')].map((b) => ({ label: b.querySelector('.menu-label').textContent, disabled: b.disabled }))`);
+  const labels1178 = async () => (await rows1178()).map((r) => r.label).join();
+  const clickRow1178 = (label) => s.evalJs(`[...document.querySelectorAll('.browser-guest-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === ${JSON.stringify(label)}).click()`);
+  const menuOpen1178 = (what) => s.waitFor(`!!document.querySelector('.browser-guest-menu')`, what, 3000);
+  const menuGone1178 = (what) => s.waitFor(`!document.querySelector('.browser-guest-menu')`, what, 3000);
+  const selectWords1178 = () => guest.evalJs(`getSelection().selectAllChildren(document.getElementById('words1178'))`);
+  // A selection in the page: Copy and Select all, at the press.
+  await selectWords1178();
+  const wordsAt = await at1178('words1178');
+  await guest.evalJs(`window.__cm1178 = 0; addEventListener('contextmenu', () => { window.__cm1178++; }, true)`);
+  await s.rightClick(wordsAt.x, wordsAt.y);
+  await menuOpen1178('fix 1178: the page menu opened on a right-click over a selection').catch(async (err) => {
+    // What the press met: the page's own contextmenu count and the element at the point.
+    console.error(`[verify] note: fix 1178: the page saw ${await guest.evalJs('window.__cm1178')} contextmenu; the press at ${JSON.stringify(wordsAt)} met ${await s.evalJs(`document.elementFromPoint(${wordsAt.x}, ${wordsAt.y})?.outerHTML.slice(0, 100) ?? null`)}`);
+    throw err;
+  });
+  expect((await labels1178()) === 'Copy,Select all', `fix 1178: a selection's menu reads Copy, Select all (${await labels1178()})`);
+  const placed = await s.evalJs(`(() => { const m = document.querySelector('.browser-guest-menu'); const r = m.getBoundingClientRect(); return { pane: m.dataset.pane, x: r.x, y: r.y }; })()`);
+  expect(placed.pane === paneId1178, `fix 1178: the menu names the page's pane (${placed.pane}, ${paneId1178})`);
+  expect(Math.abs(placed.x - wordsAt.x) <= 4 && Math.abs(placed.y - wordsAt.y) <= 4, `fix 1178: the menu's top-left at the press (${JSON.stringify(placed)} against ${JSON.stringify(wordsAt)})`);
+  await clickRow1178('Copy');
+  await menuGone1178('the menu closed after Copy');
+  const copied = await s.evalJs('window.emerald.clipboard.read()');
+  expect(copied.text === 'copy these words', `fix 1178: Copy wrote the selection to the window's clipboard (${JSON.stringify(copied)})`);
+  // A field with nothing selected: Cut and Copy off, Paste on.
+  await guest.evalJs(`document.getElementById('field1178').focus()`);
+  const fieldAt = await at1178('field1178');
+  await s.rightClick(fieldAt.x, fieldAt.y);
+  await menuOpen1178('fix 1178: the page menu opened on a right-click in a field');
+  const fieldRows = await rows1178();
+  expect(fieldRows.map((r) => r.label).join() === 'Cut,Copy,Paste,Select all', `fix 1178: a field's menu reads Cut, Copy, Paste, Select all (${JSON.stringify(fieldRows)})`);
+  expect(fieldRows[0].disabled && fieldRows[1].disabled && !fieldRows[2].disabled, `fix 1178: Cut and Copy disabled with nothing selected, Paste enabled (${JSON.stringify(fieldRows)})`);
+  console.log(`[1178] Select all in an empty field: ${fieldRows[3].disabled ? 'disabled' : 'enabled'}`);
+  await clickRow1178('Paste');
+  await menuGone1178('the menu closed after Paste');
+  await guest.waitFor(`document.getElementById('field1178').value === 'copy these words'`, 'fix 1178: Paste put the copied words into the field', 3000);
+  // A link: its address, through the same clipboard.
+  const linkAt = await at1178('next');
+  await s.rightClick(linkAt.x, linkAt.y);
+  await menuOpen1178('fix 1178: the page menu opened on a right-click over a link');
+  const linkLabels = await labels1178();
+  console.log(`[1178] the link's menu: ${linkLabels}`);
+  expect(linkLabels.endsWith('Copy link address') && !linkLabels.includes('Copy image address'), `fix 1178: a link's menu ends Copy link address (${linkLabels})`);
+  await clickRow1178('Copy link address');
+  await menuGone1178('the menu closed after Copy link address');
+  const linkCopied = await s.evalJs('window.emerald.clipboard.read()');
+  expect(linkCopied.text === origin + '/two', `fix 1178: Copy link address wrote the link (${JSON.stringify(linkCopied)})`);
+  // The closes: a press in the page, then a key in the page.
+  await selectWords1178();
+  await s.rightClick(wordsAt.x, wordsAt.y);
+  await menuOpen1178('fix 1178: the page menu opened again');
+  // Left of the menu, which opens down and right from the press point and covers it.
+  await s.click(wordsAt.x - 100, wordsAt.y);
+  await menuGone1178('fix 1178: a press in the page closed its menu');
+  await selectWords1178();
+  await s.rightClick(wordsAt.x, wordsAt.y);
+  await menuOpen1178('fix 1178: the page menu opened once more');
+  // guestKey lands in the window's focused widget (cdp.mjs), so the page holds it first.
+  await s.evalJs(`document.querySelector(${JSON.stringify(page1178)}).focus()`);
+  await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'fix 1178: the page holds the keyboard before the key', 3000);
+  await guest.guestKey('Escape', 'Escape', 27);
+  await menuGone1178('fix 1178: a key in the page closed its menu');
+  step('(c1) M9 fix 1178: a right-click in the page opens emerald\'s menu at the press; Copy, Paste and Copy link address go through the window\'s clipboard, and a press or a key in the page closes it');
+
   // (c2) M9 fix 667: a bare host loads over https and words go to the
   // search engine. No bare host is servable by the fixture, so the loads
   // are held at the guest's network layer and the record is read.

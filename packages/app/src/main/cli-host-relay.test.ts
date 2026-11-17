@@ -13,23 +13,41 @@ function spawnAsk(cwd: string): HostAsk {
 }
 
 // Fakes for main's host side, recording what reached them.
-function fakeDeps(over: Partial<CliHostDeps> = {}): CliHostDeps & { connected: string[]; spawned: Array<{ host: string; cwd: string }>; listed: unknown[] } {
+function fakeDeps(over: Partial<CliHostDeps> = {}): CliHostDeps & { connected: string[]; spawned: Array<{ host: string; cwd: string }>; listed: unknown[]; ended: Array<{ act: string; host: string; body: unknown }> } {
   const connected: string[] = [];
   const spawned: Array<{ host: string; cwd: string }> = [];
   const listed: unknown[] = [];
+  const ended: Array<{ act: string; host: string; body: unknown }> = [];
   return {
     connected,
     spawned,
     listed,
+    ended,
     hosts: async () => [stub],
     connect: async (h) => { connected.push(h); },
     record: () => stub,
     spawn: async (host, body) => { spawned.push({ host, cwd: body.cwd }); return { session }; },
     list: async (_host, body) => { listed.push(body); return { sessions: [session] }; },
+    kill: async (host, body) => { ended.push({ act: 'kill', host, body }); },
+    remove: async (host, body) => { ended.push({ act: 'remove', host, body }); },
     log: () => {},
     ...over,
   };
 }
+
+test('a kill or a remove ask reaches its dep after the connect and answers done; a refusal is its line (M9 fix 1182)', async () => {
+  const d = fakeDeps();
+  assert.deepEqual(await answerHostAsk('stub', { type: 'session.kill', body: { sessionId: 's1' } }, d), { done: true });
+  assert.deepEqual(await answerHostAsk('stub', { type: 'session.remove', body: { sessionId: 's2' } }, d), { done: true });
+  assert.deepEqual(d.connected, ['stub', 'stub']);
+  assert.deepEqual(d.ended, [
+    { act: 'kill', host: 'stub', body: { sessionId: 's1' } },
+    { act: 'remove', host: 'stub', body: { sessionId: 's2' } },
+  ]);
+  assert.deepEqual(d.spawned, [], 'neither is read as a spawn');
+  const refused = fakeDeps({ kill: async () => { throw encodeRequestError(Object.assign(new Error('no session s1'), { code: 'not-found' })); } });
+  assert.deepEqual(await answerHostAsk('stub', { type: 'session.kill', body: { sessionId: 's1' } }, refused), { error: 'stub: no session s1' });
+});
 
 test('a list ask reaches list after the connect and answers its sessions; a refusal is its line (M9 fix 1168)', async () => {
   const d = fakeDeps();

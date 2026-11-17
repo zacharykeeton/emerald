@@ -421,3 +421,18 @@ test('an idle host.changed drops that host\'s sessions and removed ones, and a l
   push({ type: 'session.removed', sessionId: 'remote-1097' });
   push({ type: 'session.removed', sessionId: 'local-1097' });
 });
+
+test('a pushed record with removedAt goes to removed and leaves the list, live or new (M9 fix 1181)', () => {
+  push(hostChanged('up'));
+  push({ type: 'session.changed', session: aSession({ id: 'gone-1181', host: 'wfs-db', state: 'exited', removedAt: 5 }) });
+  assert.equal(getState().sessions.has('gone-1181'), false, 'a new removed record is not listed');
+  assert.equal(getState().removed.get('gone-1181')?.removedAt, 5);
+  push({ type: 'session.changed', session: aSession({ id: 'live-1181', host: 'wfs-db', state: 'exited' }) });
+  assert.ok(getState().sessions.has('live-1181'), 'a record with no removedAt is listed');
+  push({ type: 'session.changed', session: aSession({ id: 'live-1181', host: 'wfs-db', state: 'exited', removedAt: 6 }) });
+  assert.equal(getState().sessions.has('live-1181'), false, 'the listed one left the list');
+  assert.equal(getState().removed.get('live-1181')?.removedAt, 6);
+  push(hostChanged('idle'));
+  assert.equal(getState().removed.has('gone-1181'), false);
+  assert.equal(getState().removed.has('live-1181'), false);
+});

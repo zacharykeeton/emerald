@@ -7,6 +7,7 @@ import type { ChatMode, TimelineItem } from './chat-model.ts';
 import type { SlashRow } from './chat-model.ts';
 import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { freshPaste, pasteChipLabel, pastedMarkers, pastesOnly, promptRowPastes } from './chat-model.ts';
+import { promptInput } from './chat-model.ts';
 import { rcOf, rcUrlOf, sideCloseSends } from './chat-model.ts';
 import { modelToLearn, parseModelNames } from './chat-model.ts';
 
@@ -1001,6 +1002,63 @@ test('pastedMarkers, freshPaste, pasteChipLabel and pastesOnly: Claude Code\'s p
   assert.equal(pastesOnly([rule, '❯ [Pasted text #3 +23 lines]', '  second row', rule]), null);
   assert.deepEqual(carryRead({ rows: at('❯ [...Truncated text #2 +40 lines...]'), cursor: { x: 2, y: 1 } }), { kind: 'blocked' });
   assert.deepEqual(carryRead({ rows: at('❯ [✦ Team setup guide #1 +5 lines]'), cursor: { x: 2, y: 1 } }), { kind: 'blocked' });
+});
+
+test('promptRowPastes, promptRowImages and pastesOnly read a marker Claude Code wrapped onto a second row of its box (M9 fix 1172)', () => {
+  // The real readings, Claude Code 2.1.325 in a 40 and a 30 column pty,
+  // a 24-line bracketed paste typed raw, the second after `fix this `.
+  const real40 = [
+    ' ▐▛███▛█   Claude Code v2.1.325',
+    '▝▜██████▀  Opus 5.5 · Claude Ultra',
+    ' ▝▝   ▝▝   ~\\code\\emerald-wt\\fix-ch…',
+    '',
+    '',
+    '────────────────────────────────────────',
+    '❯ [Pasted text #1 +23 lines]',
+    '────────────────────────────────────────',
+    '  paste again to expand',
+    '                    ◐ medium · /effort',
+  ];
+  const real30 = [
+    '           Claude Code',
+    '           v2.1.325',
+    ' ▐▛███▛█   Opus 5.5',
+    '▝▜██████▀  Claude Ultra',
+    ' ▝▝   ▝▝   ~\\code\\emerald-wt\\f',
+    '           …',
+    '',
+    '',
+    '──────────────────────────────',
+    '❯ fix this [Pasted text #1',
+    '  +23 lines]',
+    '──────────────────────────────',
+    '  paste again to expand',
+    '          ◐ medium · /effort',
+  ];
+  assert.deepEqual(promptRowPastes(real40), [{ n: 1, lines: 23, truncated: false }]);
+  assert.deepEqual(pastesOnly(real40), [{ n: 1, lines: 23, truncated: false }]);
+  assert.deepEqual(promptRowPastes(real30), [{ n: 1, lines: 23, truncated: false }], 'the marker across two rows');
+  assert.equal(pastesOnly(real30), null, 'words beside the marker');
+  // A break at a space, the space gone.
+  const rule = '─'.repeat(30);
+  assert.deepEqual(promptRowPastes([rule, '❯ [Pasted text #1 +23', '  lines]', rule]), [{ n: 1, lines: 23, truncated: false }]);
+  assert.deepEqual(pastesOnly([rule, '❯ [Pasted text #1 +23', '  lines]', rule]), [{ n: 1, lines: 23, truncated: false }]);
+  // A full row broken inside a word.
+  const full = '❯ [Pasted text #3 +2';
+  assert.deepEqual(promptRowPastes(['─'.repeat(full.length + 2), full, '  3 lines]', '─'.repeat(full.length + 2)]), [{ n: 3, lines: 23, truncated: false }]);
+  assert.deepEqual(promptRowImages([rule, '❯ look at [Image', '  #4]', rule]), [4]);
+  // A marker under the bottom rule is not the input's.
+  assert.deepEqual(promptRowPastes([rule, '❯ hello', rule, '  [Pasted text #9 +2 lines]']), []);
+  assert.deepEqual(promptRowImages([rule, '❯ hello', rule, '  [Image #9]']), []);
+});
+
+test('promptInput joins the prompt row with the rows under it up to the bottom rule or a blank row (M9 fix 1172)', () => {
+  const rule = '─'.repeat(30);
+  // Claude Code 2.1.325 at 30 columns: a word of 70 letters, the full rows two short of the rule.
+  assert.equal(promptInput([rule, '❯ ' + 'x'.repeat(26), '  ' + 'x'.repeat(26), '  ' + 'x'.repeat(18), rule, '  ⏵⏵ auto mode on (shift+tab']), '❯ ' + 'x'.repeat(70));
+  assert.equal(promptInput([rule, '❯ one', '', '  two']), '❯ one');
+  assert.equal(promptInput(['$ ls', '❯ stub prompt', 'next row']), '❯ stub prompt', 'no top rule: the row alone');
+  assert.equal(promptInput(['no prompt here']), null);
 });
 
 test('a send after a pasted chip is matched by its words at the end of the landed prompt (M9 fix 1136)', () => {

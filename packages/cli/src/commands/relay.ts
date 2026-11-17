@@ -3,7 +3,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Duplex, Readable, Writable } from 'node:stream';
 import { encodeJsonLine } from '@emerald/shared/jsonlines';
-import { isNoDaemon, readPipeToken } from '@emerald/shared/pipe-name';
+import { isNoDaemon, readPipeInfo } from '@emerald/shared/pipe-name';
 import { parse } from '../args.ts';
 import { usageError } from '../cli-error.ts';
 import type { Command } from '../command.ts';
@@ -95,6 +95,26 @@ function connectOnce(pipe: string): Promise<net.Socket> {
   });
 }
 
+// The token to say on the app's hello (M9 fix 1183). The daemon claims the
+// pipe before it writes daemon.json, so a relay that started it and
+// connected in that gap would read a file an older daemon left (one that
+// died without unlinking it) and its hello would be refused wrong token;
+// the relay cannot retry, since it rewrites one hello and pipes the rest.
+// With since null (the daemon was already running) the first token there
+// is taken, waiting only while there is none. With since a number it waits
+// for a file whose startedAt is at or after since; when the time runs out
+// with only an older file there it answers that file's token, so a relay
+// that raced another to start one daemon is no worse off than before.
+export async function waitForToken(home: string, since: number | null, timeoutMs: number, pauseMs = 100): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const info = readPipeInfo(home);
+    if (info !== undefined && (since === null || (info.startedAt !== undefined && info.startedAt >= since))) return info.token;
+    if (Date.now() >= deadline) return info?.token;
+    await sleep(pauseMs);
+  }
+}
+
 class NoDaemon extends Error {}
 
 // Connects to this machine's emmerd, starting it detached from the ssh
@@ -103,10 +123,13 @@ class NoDaemon extends Error {}
 async function reachDaemon(): Promise<{ socket: net.Socket; token: string | undefined }> {
   const pipe = pipePath();
   let socket: net.Socket;
+  // Null when a daemon already held the pipe: its daemon.json is the one to read.
+  let since: number | null = null;
   try {
     socket = await connectOnce(pipe);
   } catch (err) {
     if (!isNoDaemon((err as NodeJS.ErrnoException).code)) throw new NoDaemon((err as Error).message);
+    since = Date.now();
     try {
       // The ssh session's SSH_CONNECTION goes to the daemon (M9 fix 1091), so
       // its sessions see ssh as a real login's do; none passes nothing, and
@@ -122,12 +145,7 @@ async function reachDaemon(): Promise<{ socket: net.Socket; token: string | unde
       throw new NoDaemon((again as Error).message);
     }
   }
-  const deadline = Date.now() + TOKEN_WAIT_MS;
-  let token = readPipeToken(emeraldHome());
-  while (token === undefined && Date.now() < deadline) {
-    await sleep(100);
-    token = readPipeToken(emeraldHome());
-  }
+  const token = await waitForToken(emeraldHome(), since, TOKEN_WAIT_MS);
   if (token === undefined) {
     socket.destroy();
     throw new NoDaemon(`no daemon.json after ${TOKEN_WAIT_MS / 1000} s`);

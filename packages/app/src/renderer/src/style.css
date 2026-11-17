@@ -16318,3 +16318,54 @@ div.rail-context-head-row:hover {
 .review-editor .review-finding-line {
   background: var(--review-hover);
 }
+
+/* M9 fix 1177: a background agent's result opens in a fold under its notification line. */
+.chat-notification[data-has-result] {
+  flex-wrap: wrap;
+}
+
+.chat-notification-fold {
+  flex: none;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.chat-notification-fold:hover {
+  text-decoration: underline;
+}
+
+.chat-notification-report {
+  flex: 0 0 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 8px 12px;
+  white-space: normal;
+  color: var(--fg);
+  background: var(--row-selected);
+  border-radius: var(--bubble-radius);
+  overflow-wrap: anywhere;
+}
+
+/* M9 fix 1181: the toast, a refused clear, resume or sweep. Above the
+   panes and the browser layer; a click dismisses it. */
+.app-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--warn-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  z-index: 200;
+  cursor: pointer;
+}

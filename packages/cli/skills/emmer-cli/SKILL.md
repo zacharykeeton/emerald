@@ -30,7 +30,7 @@ emmer shell <dir> [--host <name>] [--name x] [--json]
 
 A Claude session or a plain shell in a folder, listed in the sidebar at once. Arguments after `--` go to `claude` (or to PowerShell). The reply carries the new id.
 
-With `--host <name>` the session starts on that remote host, one the window lists, through the open window; `<dir>` is then an absolute path on the host or `~`, and `emmer ls --host <name>` lists that host's sessions. The other commands reach this PC's sessions only.
+With `--host <name>` the session starts on that remote host, one the window lists, through the open window; `<dir>` is then an absolute path on the host or `~`, and `emmer ls --host <name>` lists that host's sessions, `emmer kill --host <name>` and `emmer rm --host <name>` end and forget one of them. The other commands reach this PC's sessions only.
 
 ## Type into a session
 
@@ -119,7 +119,7 @@ emmer read fix-login --screen
 
 `prompt` exits 1 if the session is asking something, 3 if the text never took, 2 on the timeout; `emmer explain fix-login` says why in each case.
 
-`emmer focus <session>` shows a session in the focused pane for the person watching, or switches to the layout tab and pane already showing it (`ls --json` names that tab as `tab`). `emmer kill|resume|rm <session>` end a session, start it again under the same id (a Claude session resumes its conversation), or forget an exited one.
+`emmer focus <session>` shows a session in the focused pane for the person watching, or switches to the layout tab and pane already showing it (`ls --json` names that tab as `tab`). `emmer kill|resume|rm <session>` end a session, start it again under the same id (a Claude session resumes its conversation), or forget an exited one; kill and rm take `--host <name>` for a remote host's session.
 
 `emmer open <path>` opens a file in the window as a pinned tab for the person watching (`--pane` puts it in a pane beside the focused one), so a report or a diff you wrote can be put in front of them without a paste; `emmer open localhost:3000` (or any http or https URL) puts that page in a browser pane beside the focused one, so a dev server you started can sit in front of the person; `emmer open page.html --browser` renders an `.html` or `.htm` file you wrote in a browser pane, served from the Files rail's folder when the file is under it, else from its own, so its stylesheets and links resolve; exit 69 means no window is open, the same for `emmer update`; exit 75 means the window is there and did not answer within 3 s (a reload, say), and the open may still land.
 

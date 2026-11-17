@@ -494,7 +494,7 @@ test('session.spawn naming a host relays to one window at level 83 and holds the
     await app.request('host.done', { relayId: (push as { relayId: number }).relayId, error: 'stub: cwd does not exist: /x' });
     await assert.rejects(reply, { code: 'host', message: 'stub: cwd does not exist: /x' });
 
-    await assert.rejects(app.request('host.done', { relayId: 1 }), { code: 'bad-request', message: 'host.done takes one of session, sessions or error' });
+    await assert.rejects(app.request('host.done', { relayId: 1 }), { code: 'bad-request', message: 'host.done takes one of session, sessions, done or error' });
 
     // Nobody answers: the deadline, then no-answer.
     const started = Date.now();
@@ -542,6 +542,178 @@ test('session.list naming a host relays to a window at level 83 and answers its 
 
     await assert.rejects(cli.request('session.list', { host: 'stub' }), { code: 'no-answer', message: 'no window answered within 1 s' });
     app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 1182: a kill or a remove naming a host goes to a window at 84
+// alone, since a window at 83 reads any ask it does not know as a spawn,
+// and is answered by host.done's done.
+test('session.kill and session.remove naming a host relay to a window at level 84 alone and answer on done (M9 fix 1182)', async () => {
+  const pipe = `${PIPE}-host-end`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, hostRelayWaitMs: 300 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    await assert.rejects(cli.request('session.kill', { sessionId: 's1182', host: 'stub' }), { code: 'no-window', message: 'no window answered; open the Emerald app, which holds the line to every host' });
+    await assert.rejects(cli.request('session.kill', { sessionId: 's1182', host: ' ' }), { code: 'bad-request', message: 'host must name a host' });
+
+    const old = await PipeClient.connect(pipe);
+    await old.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 83 });
+    await old.request('subscribe', { topics: ['app'] });
+    const heardOld: ServerMessage[] = [];
+    old.on('message', (m: ServerMessage) => heardOld.push(m));
+    await assert.rejects(cli.request('session.kill', { sessionId: 's1182', host: 'stub' }), { code: 'no-window', message: 'no window answered; the open window is older than level 84' });
+    await assert.rejects(cli.request('session.remove', { sessionId: 's1182', host: 'stub' }), { code: 'no-window', message: 'no window answered; the open window is older than level 84' });
+    assert.deepEqual(heardOld.filter((m) => m.type === 'host.requested'), []);
+
+    const app = await PipeClient.connect(pipe);
+    await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 84 });
+    await app.request('subscribe', { topics: ['app'] });
+    const ask = async (type: 'session.kill' | 'session.remove'): Promise<{ reply: Promise<unknown>; relayId: number; push: ServerMessage }> => {
+      const requested = waitFor(app, (m) => m.type === 'host.requested');
+      const reply = cli.request(type, { sessionId: 's1182', host: 'stub' });
+      reply.catch(() => {});
+      const push = await requested;
+      return { reply, relayId: (push as { relayId: number }).relayId, push };
+    };
+    let a = await ask('session.kill');
+    assert.deepEqual(a.push, { type: 'host.requested', relayId: a.relayId, host: 'stub', ask: { type: 'session.kill', body: { sessionId: 's1182' } } });
+    await app.request('host.done', { relayId: a.relayId, done: true });
+    assert.deepEqual(await a.reply, {});
+
+    a = await ask('session.remove');
+    assert.deepEqual(a.push, { type: 'host.requested', relayId: a.relayId, host: 'stub', ask: { type: 'session.remove', body: { sessionId: 's1182' } } });
+    await app.request('host.done', { relayId: a.relayId, done: true });
+    assert.deepEqual(await a.reply, {});
+
+    a = await ask('session.kill');
+    await app.request('host.done', { relayId: a.relayId, session: { id: 'x' } as unknown as SessionInfo });
+    await assert.rejects(a.reply, { code: 'host', message: "the window's answer for stub held no done" });
+
+    await assert.rejects(app.request('host.done', { relayId: 1, done: 'x' } as never), { code: 'bad-request', message: 'done must be true' });
+
+    await assert.rejects(cli.request('session.kill', { sessionId: 's1182', host: 'stub' }), { code: 'no-answer', message: 'no window answered within 1 s; the session may still end on stub' });
+    old.close();
+    app.close();
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// Waits until the server holds n clients, so a close has been seen.
+function clientsAt(own: PipeServer, n: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const tick = () => (own.clientCount === n ? resolve() : setTimeout(tick, 20));
+    tick();
+  });
+}
+
+// Whether a promise has settled after a short wait, without consuming its
+// rejection.
+async function settledWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let settled = false;
+  p.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await new Promise((r) => setTimeout(r, ms));
+  return settled;
+}
+
+// M9 fix 1184: a host ask is settled the moment the one window it went to
+// closes, not at its deadline; a window it did not go to closing leaves it.
+test('a host ask whose window closes fails no-answer at once, with the spawn tail and none for a list (M9 fix 1184)', async () => {
+  const pipe = `${PIPE}-host-closed`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, hostRelayWaitMs: 10_000 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const window = async (): Promise<PipeClient> => {
+      const app = await PipeClient.connect(pipe);
+      await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 83 });
+      await app.request('subscribe', { topics: ['app'] });
+      return app;
+    };
+    const first = await window();
+    const second = await window();
+    const ask = { kind: 'shell' as const, cwd: '~', cols: 80, rows: 24, shell: 'zsh' as const, host: 'stub' };
+
+    // The first window is the target; the second closing leaves the ask held.
+    let requested = waitFor(first, (m) => m.type === 'host.requested');
+    const held = cli.request('session.spawn', ask);
+    held.catch(() => {});
+    let push = await requested;
+    second.close();
+    await clientsAt(own, 2);
+    assert.equal(await settledWithin(held, 200), false, 'the ask is still held after a window it did not go to closed');
+    const session = { id: 'remote-1', kind: 'shell', name: 'x', host: 'stub' } as unknown as SessionInfo;
+    await first.request('host.done', { relayId: (push as { relayId: number }).relayId, session });
+    assert.deepEqual(await held, { session });
+
+    // The target closes: no-answer at once, with the spawn's tail.
+    requested = waitFor(first, (m) => m.type === 'host.requested');
+    const spawn = cli.request('session.spawn', ask);
+    spawn.catch(() => {});
+    push = await requested;
+    let started = Date.now();
+    first.close();
+    await assert.rejects(spawn, { code: 'no-answer', message: 'the window closed before it answered; the session may still start on stub' });
+    let took = Date.now() - started;
+    assert.ok(took < 2000, `no-answer after ${took} ms`);
+
+    // A list started nothing, so its line has no tail.
+    const third = await window();
+    requested = waitFor(third, (m) => m.type === 'host.requested');
+    const list = cli.request('session.list', { host: 'stub' });
+    list.catch(() => {});
+    await requested;
+    started = Date.now();
+    third.close();
+    await assert.rejects(list, { code: 'no-answer', message: 'the window closed before it answered' });
+    took = Date.now() - started;
+    assert.ok(took < 2000, `no-answer after ${took} ms`);
+    cli.close();
+  } finally {
+    await own.close();
+  }
+});
+
+// M9 fix 1184: a browser run goes to every driver, so it is settled when the
+// last of them closes, answering closed.
+test('a browser run is answered closed the moment the last driver window closes (M9 fix 1184)', async () => {
+  const pipe = `${PIPE}-browser-closed`;
+  const own = new PipeServer(manager, layouts, { pipePath: pipe, daemonVersion: 'test', log: silentLogger, browserRunSlackMs: 100 });
+  await own.listen();
+  try {
+    const cli = await PipeClient.connect(pipe);
+    await cli.request('hello', { client: 'cli', protocolVersion: PROTOCOL_VERSION });
+    const driver = async (): Promise<PipeClient> => {
+      const app = await PipeClient.connect(pipe);
+      await app.request('hello', { client: 'app', protocolVersion: PROTOCOL_VERSION, featureLevel: 63 });
+      await app.request('subscribe', { topics: ['app'] });
+      return app;
+    };
+    const a = await driver();
+    const b = await driver();
+    const pushedA = waitFor(a, (m) => m.type === 'browser.requested');
+    const pushedB = waitFor(b, (m) => m.type === 'browser.requested');
+    const reply = cli.request('browser.run', { paneId: 'pane-1234567890', verb: 'snapshot' as const, args: [], by: 'alpha', timeoutMs: 10_000 });
+    await pushedA;
+    await pushedB;
+    a.close();
+    await clientsAt(own, 2);
+    assert.equal(await settledWithin(reply, 200), false, 'the run is still held while one driver is open');
+    const started = Date.now();
+    b.close();
+    assert.deepEqual(await reply, { apps: 2, drivers: 2, answered: false, closed: true });
+    const took = Date.now() - started;
+    assert.ok(took < 2000, `closed after ${took} ms`);
     cli.close();
   } finally {
     await own.close();

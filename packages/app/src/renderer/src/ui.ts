@@ -555,8 +555,8 @@ export function closeFind(paneId: string): void {
   setState({ ...state, findOpen });
 }
 
-export function beginSessionDrag(sessionId: string | null, file = false): void {
-  setState({ ...state, sessionDrag: { sessionId, view: null, target: null, tabTarget: null, file, explorer: false } });
+export function beginSessionDrag(sessionId: string): void {
+  setState({ ...state, sessionDrag: { sessionId, view: null, target: null, tabTarget: null, file: false, explorer: false } });
 }
 
 export function beginViewDrag(view: PaneView): void {
@@ -567,6 +567,12 @@ export function beginViewDrag(view: PaneView): void {
 // Explorer; explorer-drop.ts is its one caller.
 export function beginExplorerDrag(): void {
   setState({ ...state, sessionDrag: { sessionId: null, view: null, target: null, tabTarget: null, file: false, explorer: true } });
+}
+
+// M9 fix 1185: a drag that can reach no pane, a Files tree folder row or a
+// picked set (fix 981); pane-drag.ts is its one caller.
+export function beginTreeDrag(): void {
+  setState({ ...state, sessionDrag: { sessionId: null, view: null, target: null, tabTarget: null, file: false, explorer: false } });
 }
 
 // The explorer drag learns what it carries as it goes (the kind is read

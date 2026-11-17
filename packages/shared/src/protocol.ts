@@ -137,7 +137,9 @@ export const PROTOCOL_VERSION = 1;
 //  83: M9 fix 1166, kitStage on a host record, the id of the stage the host's kit was assembled from, which a daemon before 83 drops
 //  83: M9 fix 1167, host on session.spawn, carried to one app window at level 83 as the host.requested push and answered by its host.done, so emmer new --host and emmer shell --host start a session on a remote host through the window
 //  83: M9 fix 1168, host on session.list, carried to the window the same way, so emmer ls --host lists a remote host's sessions
-export const DAEMON_FEATURE_LEVEL = 83;
+//  84: M9 fix 1184, a request naming a host and a browser.run settled at once when every window they went to closes, the host ask failing no-answer with the window closed before it answered and the run answering closed
+//  84: M9 fix 1182, host on session.kill and session.remove, carried to one app window at level 84 as host.requested and answered by its host.done with done, so emmer kill --host and emmer rm --host end and forget a remote host's session through the window
+export const DAEMON_FEATURE_LEVEL = 84;
 
 // The level at which the daemon keeps the remote hosts record and pushes
 // hosts.changed (M9 fix 1080).
@@ -250,13 +252,15 @@ export interface Requests {
   'session.spawn':  { req: { kind: SessionKind; cwd: string; name?: string; args?: string[]; shell?: ShellId; cols: number; rows: number; host?: string }; res: { session: SessionInfo } };
   // remove: forget the session once its PTY has exited, so a closed shell
   // leaves the list on its own rather than sitting in the exited group.
-  'session.kill':   { req: { sessionId: string; remove?: boolean };                        res: {} };
+  // host (M9 fix 1182) names a remote host: this daemon carries the request to a window at level 84 as host.requested and replies when its host.done says done.
+  'session.kill':   { req: { sessionId: string; remove?: boolean; host?: string };         res: {} };
   // New PTY for an exited session under the same id, in the folder of the
   // last conversation it hosted with claude --resume (typed into a shell
   // that hosted one), else a fresh claude or shell in spawnCwd (M48).
   'session.resume': { req: { sessionId: string; cols: number; rows: number };              res: { session: SessionInfo } };
   // Forgets an exited session: gone from the list, the file and every pane.
-  'session.remove': { req: { sessionId: string };                                          res: {} };
+  // host (M9 fix 1182) names a remote host: this daemon carries the request to a window at level 84 as host.requested and replies when its host.done says done.
+  'session.remove': { req: { sessionId: string; host?: string };                           res: {} };
   'session.rename': { req: { sessionId: string; name: string };                            res: {} };
   // The checkpoint: a field left out is unchanged, null clears it, and a
   // blank comment counts as null. color (M29) is one of SESSION_COLORS or
@@ -404,11 +408,13 @@ export interface Requests {
   // windows that can drive; answered is false when none answered by the
   // deadline, the verb's own timeoutMs and the daemon's slack. filter
   // (M9 fix 875) keeps a snapshot's printed rows to a name or a region.
-  'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer } };
+  // closed (M9 fix 1184) is set only when every driver window closed
+  // before any answered, so the CLI says so rather than its timeout's line.
+  'browser.run':    { req: { paneId: string; verb: BrowserVerb; args: string[]; by: string; timeoutMs: number; filter?: BrowserFilter }; res: { apps: number; drivers?: number; answered?: boolean; answer?: BrowserAnswer; closed?: true } };
   // The window's answer to a browser.requested push (M9 fix 672).
   'browser.done':   { req: { runId: number; answer: BrowserAnswer };             res: {} };
-  // The window's answer to a host.requested push (M9 fix 1167): the session the host's daemon started, the sessions it lists (M9 fix 1168), or the one line that says why neither came.
-  'host.done':      { req: { relayId: number; session?: SessionInfo; sessions?: SessionInfo[]; error?: string }; res: {} };
+  // The window's answer to a host.requested push (M9 fix 1167): the session the host's daemon started, the sessions it lists (M9 fix 1168), done for a kill or a remove (M9 fix 1182), or the one line that says why none came.
+  'host.done':      { req: { relayId: number; session?: SessionInfo; sessions?: SessionInfo[]; done?: true; error?: string }; res: {} };
   // Whether a Test event carrying this test_id reached the hook sink
   // within the last minute (M9 fix 606); emmer hooks status --test posts
   // one through the installed hook and then asks; a daemon older than 59
@@ -464,7 +470,10 @@ export type Reply<K extends RequestType = RequestType> =
 export type HostAsk =
   | { type: 'session.spawn'; body: Omit<Requests['session.spawn']['req'], 'host'> }
   // M9 fix 1168: emmer ls --host.
-  | { type: 'session.list'; body: Omit<Requests['session.list']['req'], 'host'> };
+  | { type: 'session.list'; body: Omit<Requests['session.list']['req'], 'host'> }
+  // M9 fix 1182: emmer kill --host and emmer rm --host.
+  | { type: 'session.kill'; body: Omit<Requests['session.kill']['req'], 'host'> }
+  | { type: 'session.remove'; body: Omit<Requests['session.remove']['req'], 'host'> };
 
 export type ServerMessage =
   | Reply

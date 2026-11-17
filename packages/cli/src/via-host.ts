@@ -8,13 +8,15 @@ import { connectHello } from './connect.ts';
 
 // The first daemon that does.
 export const HOST_LEVEL = 83;
+// The first daemon that carries a kill or a remove to the window (M9 fix 1182).
+export const HOST_END_LEVEL = 84;
 
-export async function viaHost<K extends 'session.spawn' | 'session.list'>(what: string, type: K, body: Requests[K]['req']): Promise<Requests[K]['res']> {
+export async function viaHost<K extends 'session.spawn' | 'session.list' | 'session.kill' | 'session.remove'>(what: string, type: K, body: Requests[K]['req'], need: number = HOST_LEVEL): Promise<Requests[K]['res']> {
   const { client, hello } = await connectHello();
   try {
-    // An older daemon would drop the field and start the session here.
+    // An older daemon would drop the field and act on this PC.
     const level = hello.featureLevel ?? 1;
-    if (level < HOST_LEVEL) throw new CliError(`emmerd ${hello.daemonVersion} is older than ${what} (level ${level}, needs ${HOST_LEVEL}); restart it from the app's banner`);
+    if (level < need) throw new CliError(`emmerd ${hello.daemonVersion} is older than ${what} (level ${level}, needs ${need}); restart it from the app's banner`);
     try {
       return await client.request(type, body);
     } catch (err) {

@@ -302,6 +302,18 @@ export function onPush(msg: RendererPush): void {
     }
     case 'session.changed': {
       const sessions = new Map(state.sessions);
+      // M9 fix 1181: a pushed record with a numeric removedAt is a removed
+      // session (a host's connect pushes its removed ones with the rest), so
+      // it goes to removed and leaves the list, as the full sync splits them.
+      if (typeof msg.session.removedAt === 'number') {
+        sessions.delete(msg.session.id);
+        const removed = new Map(state.removed);
+        removed.set(msg.session.id, normalizeSession(msg.session));
+        dropRate(msg.session.id);
+        const preview = state.preview?.sessionId === msg.session.id ? null : state.preview;
+        setState({ sessions, removed, preview });
+        return;
+      }
       sessions.set(msg.session.id, normalizeSession(msg.session));
       // The push a held preview waited for (M9 fix 157): whatever colour
       // it carries is the daemon's word, so the preview goes.

@@ -908,6 +908,26 @@ export function promptRow(rows: readonly string[]): string | null {
   return y < 0 ? null : rows[y]!;
 }
 
+// M9 fix 1172: Claude Code's input read across the rows a narrow pane
+// wraps it onto: the prompt row and each row under it, trimmed at its
+// start, until the box's bottom rule or a blank row. Joined with no
+// separator: a full row is two columns short of the rule (read on 2.1.325
+// at 30 columns), so a break inside a word and a break at a space look
+// alike, and the marker reads below allow space between their tokens. A
+// prompt row with no top rule above it (a stub shell) is read alone.
+export function promptInput(rows: readonly string[]): string | null {
+  const y = promptRowAt(rows);
+  if (y < 0) return null;
+  if (y === 0 || !rows[y - 1]!.trimStart().startsWith('─')) return rows[y]!;
+  let input = rows[y]!;
+  for (let i = y + 1; i < rows.length; i++) {
+    const t = rows[i]!.trim();
+    if (t === '' || t.startsWith('─')) break;
+    input += rows[i]!.trimStart();
+  }
+  return input;
+}
+
 // M9 fix 1059: the title of a notice Claude Code draws under its prompt
 // box with numbered choices, such as auto mode's "Teach auto mode about
 // your environment?", which holds the keys while it is drawn: the first
@@ -931,11 +951,16 @@ export function noticeRefusal(title: string): string {
   return `Claude Code is asking '${title}'; answer it in the terminal first`;
 }
 
-// The image numbers on the prompt row alone, so a sent prompt's marker in
-// the scrollback above is never taken for a fresh one (M9 fix 748).
+// M9 fix 1172: the image marker in promptInput's join, where a wrap may
+// have taken the space between its tokens or put none where one was.
+const IMAGE_MARKER_JOINED = /\[\s*Image\s*#\s*(\d+)\s*\]/g;
+
+// The image numbers in Claude Code's input alone, so a sent prompt's
+// marker in the scrollback above is never taken for a fresh one (M9 fix
+// 748), read across its wrapped rows (M9 fix 1172).
 export function promptRowImages(rows: readonly string[]): number[] {
-  const row = promptRow(rows);
-  return row === null ? [] : imageMarkers([row]);
+  const input = promptInput(rows);
+  return input === null ? [] : [...input.matchAll(IMAGE_MARKER_JOINED)].map((m) => Number(m[1]));
 }
 
 // The highest image number on the prompt row that no chip holds yet, else
@@ -954,10 +979,14 @@ export interface PastedMarker {
 // M9 fix 1136: Claude Code's marker for a pasted text (2.1.322): its id, and the line breaks it counts as lines, none for a single-line paste; the truncated form always counts.
 const PASTE_MARKER = /\[(?:Pasted text #(\d+)(?: \+(\d+) lines)?|\.\.\.Truncated text #(\d+) \+(\d+) lines\.\.\.)\]/g;
 
-export function pastedMarkers(rows: readonly string[]): PastedMarker[] {
+// M9 fix 1172: PASTE_MARKER for promptInput's join, space allowed between
+// its tokens.
+const PASTE_MARKER_JOINED = /\[\s*(?:Pasted\s*text\s*#\s*(\d+)(?:\s*\+\s*(\d+)\s*lines)?|\.\.\.\s*Truncated\s*text\s*#\s*(\d+)\s*\+\s*(\d+)\s*lines\s*\.\.\.)\s*\]/g;
+
+function markersBy(rows: readonly string[], marker: RegExp): PastedMarker[] {
   const out: PastedMarker[] = [];
   for (const row of rows) {
-    for (const m of row.matchAll(PASTE_MARKER)) {
+    for (const m of row.matchAll(marker)) {
       const truncated = m[3] !== undefined;
       const lines = truncated ? m[4] : m[2];
       out.push({ n: Number(truncated ? m[3] : m[1]), lines: lines === undefined ? null : Number(lines), truncated });
@@ -966,9 +995,15 @@ export function pastedMarkers(rows: readonly string[]): PastedMarker[] {
   return out;
 }
 
+export function pastedMarkers(rows: readonly string[]): PastedMarker[] {
+  return markersBy(rows, PASTE_MARKER);
+}
+
+// The paste markers in Claude Code's input, read across its wrapped rows
+// (M9 fix 1172).
 export function promptRowPastes(rows: readonly string[]): PastedMarker[] {
-  const row = promptRow(rows);
-  return row === null ? [] : pastedMarkers([row]);
+  const input = promptInput(rows);
+  return input === null ? [] : markersBy([input], PASTE_MARKER_JOINED);
 }
 
 // The prompt-row paste of highest id that no chip holds yet, else null.
@@ -988,17 +1023,15 @@ export function pasteChipLabel(m: PastedMarker): string {
 
 // The paste markers of an input that holds nothing else, else null: words
 // or an image beside a marker, a second input row, or an empty input all
-// answer null (M9 fix 1136).
+// answer null (M9 fix 1136). Read off the input joined across its wrapped
+// rows (M9 fix 1172), so words on a second row are words in the text.
 export function pastesOnly(rows: readonly string[]): PastedMarker[] | null {
-  const y = promptRowAt(rows);
-  if (y < 0) return null;
-  const text = rows[y]!.replace(CARRY_FRAME, ' ').trimStart().replace(/^❯/, '');
-  if (text.replace(PASTE_MARKER, '').trim() !== '') return null;
+  const input = promptInput(rows);
+  if (input === null) return null;
+  const text = input.replace(CARRY_FRAME, ' ').trimStart().replace(/^❯/, '');
+  if (text.replace(PASTE_MARKER_JOINED, '').trim() !== '') return null;
   const marks = promptRowPastes(rows);
-  if (marks.length === 0) return null;
-  const next = rows[y + 1];
-  if (next !== undefined && next.replace(CARRY_FRAME, '').trim() !== '') return null;
-  return marks;
+  return marks.length === 0 ? null : marks;
 }
 
 // M9 fix 754: the text in Claude Code's input, after the `❯`, trimmed;

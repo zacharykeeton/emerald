@@ -56,6 +56,25 @@ test('answerOptions keeps the last list when an older dialog is still on screen'
   ]);
 });
 
+test("answerOptions (M9 fix 1175): a plan's numbered steps above the dialog are not options", () => {
+  const dialog = [
+    '',
+    ' Would you like to proceed?',
+    '',
+    ' ❯ 1. Yes, and use auto mode',
+    '   2. Yes, manually approve edits',
+    '   3. Tell Claude what to change',
+  ];
+  const want = [
+    { key: '1', label: 'Yes, and use auto mode' },
+    { key: '2', label: 'Yes, manually approve edits' },
+    { key: '3', label: 'Tell Claude what to change' },
+  ];
+  assert.deepEqual(answerOptions(['  4. Wire the button', '  5. Add the test', '  6. Update the handbook', ...dialog]), want);
+  assert.deepEqual(answerOptions(['  2. Wire the button', '  3. Add the test', '  4. Update the handbook', ...dialog]), want);
+  assert.deepEqual(answerOptions(['  2. Two', '  3. Three']), []);
+});
+
 test('answerOptions gives a y/n pair for a yes-or-no question and nothing otherwise', () => {
   assert.deepEqual(answerOptions(['> 1. Yes', '  2. No']), [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], 'a plain > pointer');
   assert.deepEqual(answerOptions(['Overwrite the file? (y/n)']), [

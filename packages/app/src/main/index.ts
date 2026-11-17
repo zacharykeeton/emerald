@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron';
+import { app, BrowserWindow, ClipboardItem, Menu, clipboard, dialog, ipcMain, nativeImage, nativeTheme, powerMonitor, protocol, screen, session, shell, webContents } from 'electron';
 import type { WebContents } from 'electron';
 import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, HOSTS_LEVEL, hostNameOf, isLocalPageUrl, LOCAL_PAGE_SCHEME, mergeRemoteHosts, paneShowingIn, sshConfigHosts, windowHolding, windowsOf } from '@emerald/shared';
 import type { HostRecord, RemoteHost, SessionInfo } from '@emerald/shared';
@@ -21,7 +21,7 @@ import path from 'node:path';
 import type { ClientMessage, RequestType, Requests, ServerMessage, UsageEdge } from '@emerald/shared';
 import type { AttentionRequest, ChimeMode, DaemonCrash, FileStamp, GitChangesOptions, HooksInstallResult, HooksStatus, HooksTestResult, MoveMode, NotifyRequest, RendererPush, SearchMode, TailMark, TextFormat, UsageAsk, UsageWindow, UserConfig, WhatsNewRead } from '../preload/api.ts';
 import { runCliJson } from './cli.ts';
-import { HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
+import { HooksInstallGate, HooksWatch, isHookTestOutcome, parseHooksStatus } from './hooks-watch.ts';
 import { FolderWatchers, LIST_CAP, listFolder, openExternal, openFolder, openPath, readFile, readTail, revealPath, statPath } from './files.ts';
 import { realPath } from './real-path.ts';
 import { SearchRuns, searchContents, searchNames } from './search-files.ts';
@@ -92,6 +92,8 @@ import type { DaemonInfo } from './pipe-client.ts';
 import { claudeConfigDir } from '@emerald/shared/claude-home';
 import { claudeThemePaths, readClaudeTheme } from './claude-theme.ts';
 import type { ClaudeThemeRead } from '../preload/api.ts';
+import { guestMenuOf } from './guest-menu.ts';
+import type { GuestMenu, GuestMenuAct } from '../preload/api.ts';
 
 // Where emmerd's main.js lives. In development this file is bundled to
 // packages/app/out/main/index.js, so the daemon's build sits three levels up
@@ -869,9 +871,10 @@ ipcMain.on('emerald:open-file-ready', (event) => {
 });
 
 // emmer new --host and emmer shell --host (M9 fix 1167, cli-host-relay.ts)
-// and emmer ls --host (M9 fix 1168): the daemon's host.requested run here,
-// where the host clients live, and the session, the list or the line sent
-// back as host.done.
+// and emmer ls --host (M9 fix 1168), emmer kill --host and emmer rm --host
+// (M9 fix 1182): the daemon's host.requested run here, where the host
+// clients live, and the session, the list or the line sent back as
+// host.done.
 wireCliHostRelay(client, {
   hosts: remoteHosts,
   connect: hostConnect,
@@ -880,6 +883,8 @@ wireCliHostRelay(client, {
   spawn: (name, body) => hostRequest(0, name, 'session.spawn', body) as Promise<{ session: SessionInfo }>,
   // hostRequest stamps each listed session with the host.
   list: (name, body) => hostRequest(0, name, 'session.list', body) as Promise<{ sessions: SessionInfo[] }>,
+  kill: (name, body) => hostRequest(0, name, 'session.kill', body).then(() => undefined),
+  remove: (name, body) => hostRequest(0, name, 'session.remove', body).then(() => undefined),
   log,
 });
 
@@ -940,6 +945,9 @@ ipcMain.handle('emerald:update-act', () => updater.act());
 // verify script's private home) gets the stamp and no install, since the
 // install writes the person's Claude settings and a harness home must
 // never reach those on its own.
+// M9 fix 1179: the run is tracked, so the window's first hooks status read
+// waits for it rather than reading what it is about to replace.
+const hooksInstallGate = new HooksInstallGate();
 function installHooksOnFirstLaunch(): void {
   if (!app.isPackaged) return;
   const stamp = path.join(emeraldHomeOf(process.env), 'installed.json');
@@ -963,13 +971,15 @@ function installHooksOnFirstLaunch(): void {
     return;
   }
   log(`first launch of ${version} after ${last}: running emmer hooks install`);
-  runCliJson(cli, ['hooks', 'install', '--json']).then(
-    ({ code, json }) => {
-      const r = json as Record<string, unknown>;
-      log(`emmer hooks install exited ${code}${r['changed'] === true ? ', settings changed' : ''}`);
-      if (code === 0) write();
-    },
-    (err: unknown) => log(`emmer hooks install failed: ${err instanceof Error ? err.message : String(err)}`),
+  hooksInstallGate.track(
+    runCliJson(cli, ['hooks', 'install', '--json']).then(
+      ({ code, json }) => {
+        const r = json as Record<string, unknown>;
+        log(`emmer hooks install exited ${code}${r['changed'] === true ? ', settings changed' : ''}`);
+        if (code === 0) write();
+      },
+      (err: unknown) => log(`emmer hooks install failed: ${err instanceof Error ? err.message : String(err)}`),
+    ),
   );
 }
 
@@ -1116,6 +1126,7 @@ const hooksWatch = new HooksWatch(
 );
 
 ipcMain.handle('emerald:hooks-status', async (): Promise<HooksStatus> => {
+  if (await hooksInstallGate.wait()) log("hooks status waited for the first launch's hooks install");
   const reply = parseHooksStatus((await runCliJson(cli, ['hooks', 'status', '--json'])).json);
   hooksWatch.follow(reply);
   return reply.status;
@@ -1454,6 +1465,49 @@ function writeClipboardText(text: string): void {
   }
   clipboard.writeText(text);
 }
+// A page's last right-click by guest (M9 fix 1178): the selection and
+// the menu sent, so a row acts once on the right-click it came from and
+// a held clipboard gets the selection's text, which the guest's own copy
+// would put on the person's clipboard instead.
+const guestMenus = new Map<number, { selection: string; menu: GuestMenu }>();
+ipcMain.handle('emerald:guest-menu-act', async (event, webContentsId: number, act: GuestMenuAct, word?: string) => {
+  const contents = webContents.fromId(webContentsId);
+  if (contents === undefined || contents.isDestroyed() || contents.getType() !== 'webview' || contents.hostWebContents !== event.sender) return;
+  const kept = guestMenus.get(webContentsId);
+  if (kept === undefined) return;
+  guestMenus.delete(webContentsId);
+  switch (act) {
+    case 'cut':
+      if (heldClipboard !== null) {
+        writeClipboardText(kept.selection);
+        contents.delete();
+      } else contents.cut();
+      return;
+    case 'copy':
+      if (heldClipboard !== null) writeClipboardText(kept.selection);
+      else contents.copy();
+      return;
+    case 'paste':
+      if (heldClipboard !== null) {
+        if (heldClipboard.text !== '') await contents.insertText(heldClipboard.text);
+      } else contents.paste();
+      return;
+    case 'select-all':
+      contents.selectAll();
+      return;
+    case 'copy-link':
+      if (kept.menu.link !== '') writeClipboardText(kept.menu.link);
+      return;
+    case 'copy-image':
+      if (kept.menu.image !== '') writeClipboardText(kept.menu.image);
+      return;
+    case 'spell':
+      if (word !== undefined && kept.menu.suggestions.includes(word)) contents.replaceMisspelling(word);
+      return;
+    default:
+      return;
+  }
+});
 async function writeClipboardPng(png: Buffer): Promise<void> {
   if (heldClipboard !== null) {
     heldClipboard.text = '';
@@ -1997,6 +2051,17 @@ app.on('web-contents-created', (_event, contents) => {
       if (browserDriver.dispatching(contents)) return;
       host.send('emerald:guest-input', { webContentsId: contents.id, kind });
     });
+    // M9 fix 1178: a right-click in the page opens the window's own menu;
+    // Electron draws none of its own, so before this it did nothing.
+    contents.on('context-menu', (_e, params) => {
+      if (browserDriver.dispatching(contents)) return;
+      const host = contents.hostWebContents;
+      if (host === null || host === undefined || host.isDestroyed()) return;
+      const menu = guestMenuOf(contents.id, params, heldClipboard);
+      guestMenus.set(contents.id, { selection: params.selectionText, menu });
+      host.send('emerald:guest-menu', menu);
+    });
+    contents.once('destroyed', () => guestMenus.delete(contents.id));
     return;
   }
   // A sign-in window (M9 fix 894) follows links on the web as a guest does; it is added to the set at did-create-window, before any navigation its page makes, and the set is read at each navigation.

@@ -284,6 +284,23 @@ async function until(what, fn, timeoutMs = 10000) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+// The window's exit (M9 fix 1180, fix 671's catch made one): on a timeout it logs the main log's last five lines since logFrom, whatever they are (the updater's quit writes no window-all-closed line), and every live Emerald.exe under the unpacked exe, then rethrows the same error, so known-flaky.txt's "timed out waiting for app exited" still matches.
+// The lines read the same on a clean exit as on a stuck one; window-all-closed's `active resources` names no holder (fix 671), and the `quit, exit code` line says whether Electron reached its quit.
+async function untilAppExited(pid, logFile, logFrom, timeoutMs = 90000) {
+  await until('app exited', () => powershell(`(Get-Process -Id ${pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', timeoutMs).catch((err) => {
+    // Bytes, since the offsets are statSync sizes.
+    const since = fs.existsSync(logFile) ? fs.readFileSync(logFile).subarray(logFrom).toString('utf8') : '';
+    const lines = since
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '')
+      .slice(-5);
+    log(`the window's exit timed out; the main log's last ${lines.length} lines since the close: ${lines.join(' | ') || 'none'}`);
+    const list = powershell(`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Emerald.exe' -and $_.ExecutablePath -eq '${exe}' } | ForEach-Object { 'pid ' + $_.ProcessId + ' started ' + $_.CreationDate.ToString('HH:mm:ss.fff') + ': ' + $_.CommandLine }`).split(/\r?\n/).filter(Boolean).join('; ');
+    log(`Emerald.exe under ${exe}: ${list || 'none'}`);
+    throw err;
+  });
+}
+
 function readDaemonInfo() {
   try {
     return JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8'));
@@ -582,6 +599,8 @@ async function updaterHalf() {
   fs.copyFileSync(path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'whoami.exe'), pendingFile);
   const posterFile = path.join(home, 'install-poster.ps1');
   fs.rmSync(posterFile, { force: true });
+  // M9 fix 1180: the quit starts at the click, not at s.close().
+  const clickLogSize = fs.existsSync(mainLogFile) ? fs.statSync(mainLogFile).size : 0;
   s.evalJs(`window.emerald.update.act()`).catch(() => {});
   await until('the poster held in the main log', () => readMainLog().includes('install poster held (harness)'), 15000);
   const clickLog = readMainLog();
@@ -600,7 +619,7 @@ async function updaterHalf() {
   // The exit after a download took 8 s once and past 30 s twice on a
   // loaded box (Defender reads the 118 MB it just wrote), so the wait is
   // long.
-  await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000);
+  await untilAppExited(child.pid, mainLogFile, clickLogSize);
   child = null;
   expect(readMainLog().includes('updater: running the installer silently and relaunching'), 'the click reached the install step and the app quit on its own');
   expect(readMainLog().includes(`updater: Executing: ${pendingFile}`), 'the updater ran the stand-in installer');
@@ -688,9 +707,10 @@ async function installerGoneLaunch(env, stub, installer) {
   expect(heldLog.indexOf('connected to emmerd') >= 0 && heldLog.indexOf('connected to emmerd') < heldLog.indexOf(heldLine), 'the sweep was held after the daemon connected, on a cache outside the private home');
   expect(!/updater cache: (removed pending|could not remove)/.test(heldLog), 'and no sweep ran');
   expect(fs.existsSync(path.join(outsidePending, 'update-info.json')) && fs.existsSync(path.join(outsidePending, outsideName)), `and both seeded files are still in ${outsidePending}`);
+  const closeLogSize = fs.existsSync(mainLog) ? fs.statSync(mainLog).size : 0;
   await s.send('Page.close').catch(() => {});
   s.close();
-  await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000);
+  await untilAppExited(child.pid, mainLog, closeLogSize);
   child = null;
   const r = spawnSync('cmd.exe', ['/d', '/c', shim, 'daemon', 'stop'], { env, encoding: 'utf8', windowsHide: true });
   expect(r.status === 0 && /^stopped emmerd/.test(r.stdout), `daemon stop after the launch over a gone installer: ${r.stdout.trim()}`);
@@ -813,6 +833,9 @@ async function gapLaunches(env, stub) {
   const sweepRetryMs = 10000;
   const launchEnv = { ...env, EMERALD_SWEEP_RETRY_MS: String(sweepRetryMs) };
   const port = freshPort();
+  // M9 fix 1179: the main log from this launch on, for the order of the
+  // first launch's hooks install and the window's first hooks read.
+  const launchLogSize1179 = fs.existsSync(mainLog) ? fs.statSync(mainLog).size : 0;
   child = spawn(exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${path.join(home, 'electron-profile')}`], { env: launchEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   child.stdout.on('data', (d) => appLogs.push(d.toString()));
   child.stderr.on('data', (d) => appLogs.push(d.toString()));
@@ -857,6 +880,16 @@ async function gapLaunches(env, stub) {
   expect(fs.readFileSync(mainLog, 'utf8').includes(`first launch of ${version} after ${prior}: running emmer hooks install`), `the launch read the stamp as ${prior} and ran the hooks install`);
   await until('the hooks install to exit', () => /emmer hooks install exited \d+/.test(fs.readFileSync(mainLog, 'utf8')), 20000);
   expect(fs.readFileSync(mainLog, 'utf8').includes('emmer hooks install exited 0, settings changed'), 'the hooks install exited 0 and changed the private settings file');
+  // M9 fix 1179: the window's first hooks status read ran after that
+  // install, so it read the settings and the skill the install wrote.
+  const launchSlice1179 = () => fs.readFileSync(mainLog).subarray(launchLogSize1179).toString('utf8');
+  await until("the window's first hooks status read", () => launchSlice1179().includes('hooks watch on '), 20000);
+  const slice1179 = launchSlice1179();
+  expect(slice1179.indexOf('emmer hooks install exited') >= 0 && slice1179.indexOf('emmer hooks install exited') < slice1179.indexOf('hooks watch on '), "fix 1179: the window's first hooks read ran after the first launch's hooks install");
+  log(`[1179] the read waited: ${slice1179.includes("hooks status waited for the first launch's hooks install")}`);
+  // A wait, not one read: the read's answer reaches the renderer a moment
+  // after main logs the watch, and the banner draws `checking` till then.
+  await s.waitFor(`!document.querySelector('.hooks-banner')`, "fix 1179: no hooks banner after the first launch's install", 5000);
   // M9 fix 386: what that install wrote, the one path where the wrappers
   // are rendered with the installed Emerald.exe rather than a dev node.
   // The settings file is the run's private CLAUDE_SETTINGS, the hooks
@@ -890,21 +923,11 @@ async function gapLaunches(env, stub) {
   expect(stampAfter.version === version, `installed.json is stamped ${stampAfter.version} again`);
   await until("the fresh launch's daemon", () => readDaemonInfo() !== null, 20000);
   // M9 fix 631: closed the way a person closes the window, so the quit
-  // runs through window-all-closed. Its `active resources` line reads the
-  // same on a clean exit and names no holder (fix 671); the `quit, exit
-  // code` line says whether Electron reached its quit.
+  // runs through window-all-closed.
   const closeLogSize = fs.existsSync(mainLog) ? fs.statSync(mainLog).size : 0;
   await s.send('Page.close').catch(() => {});
   s.close();
-  await until('app exited', () => powershell(`(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue) -eq $null`) === 'True', 90000).catch((err) => {
-    const since = fs.existsSync(mainLog) ? fs.readFileSync(mainLog, 'utf8').slice(closeLogSize) : '';
-    const line = since.split(/\r?\n/).filter((l) => l.includes('window-all-closed; active resources:')).pop();
-    const quit = since.split(/\r?\n/).filter((l) => l.includes('quit, exit code')).pop();
-    log(`the window's exit timed out; main log since the close: ${line ?? 'no window-all-closed line'}; ${quit ?? 'no quit line'}`);
-    const list = powershell(`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Emerald.exe' -and $_.ExecutablePath -eq '${exe}' } | ForEach-Object { 'pid ' + $_.ProcessId + ' started ' + $_.CreationDate.ToString('HH:mm:ss.fff') + ': ' + $_.CommandLine }`).split(/\r?\n/).filter(Boolean).join('; ');
-    log(`Emerald.exe under ${exe}: ${list || 'none'}`);
-    throw err;
-  });
+  await untilAppExited(child.pid, mainLog, closeLogSize);
   child = null;
   const r = spawnSync('cmd.exe', ['/d', '/c', shim, 'daemon', 'stop'], { env, encoding: 'utf8', windowsHide: true });
   expect(r.status === 0 && /^stopped emmerd/.test(r.stdout), `daemon stop after the fresh launch: ${r.stdout.trim()}`);

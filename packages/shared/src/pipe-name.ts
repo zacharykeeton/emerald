@@ -109,11 +109,21 @@ export function isNoDaemon(code: string | undefined, platform: NodeJS.Platform =
 // non-empty string, else undefined (no file, not JSON, no field, a daemon
 // from before the fix). Every client says it on its hello.
 export function readPipeToken(home: string): string | undefined {
+  return readPipeInfo(home)?.token;
+}
+
+// The token with the daemon's startedAt beside it (M9 fix 1183), so a relay
+// that started the daemon can tell its file from one an older daemon left:
+// undefined on the same files readPipeToken answers undefined for, and
+// startedAt only when the file's is a finite number.
+export function readPipeInfo(home: string): { token: string; startedAt?: number } | undefined {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(home, 'daemon.json'), 'utf8')) as unknown;
     if (typeof info !== 'object' || info === null) return undefined;
     const token = (info as Record<string, unknown>)['pipeToken'];
-    return typeof token === 'string' && token !== '' ? token : undefined;
+    if (typeof token !== 'string' || token === '') return undefined;
+    const startedAt = (info as Record<string, unknown>)['startedAt'];
+    return typeof startedAt === 'number' && Number.isFinite(startedAt) ? { token, startedAt } : { token };
   } catch {
     return undefined;
   }

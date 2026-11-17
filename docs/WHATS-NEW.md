@@ -2,6 +2,28 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1171 to 1185, 2026-11-16
+
+Fifteen fixes, fourteen of them shipped: a right-click menu in a browser pane's page, a chat that jumps to what you just sent, the chat's cards for a background agent's result, Clear exited for a remote host's sessions, `emmer kill --host` and `emmer rm --host`, and a first contact with a host that is not refused. The daemon goes to level 84; the update stops the old one, so nothing asks for a restart, and your sessions come back through Resume.
+
+### Highlights
+
+**Copy from a web page.** A right-click in a browser pane's page opens a menu with Copy, Paste, Select all, the link's or picture's address and spelling suggestions; before, it did nothing. In a text field it offers Cut, Copy, Paste and Select all; on a misspelt word in a field it lists the suggestions first. It opens nothing while Design Mode is on.
+
+**The chat shows what you sent.** A prompt sent from the chat view moves the timeline to the end, so its Sending bubble is in view even when you were reading further up.
+
+**A background agent's result, in the chat.** A skill run in the background now shows its launch line, `Running in the background as @code-review`, and any background agent's result opens under its line behind `Show result`. A background `/code-review` whose findings land after your next prompt still draws them as a card, in whatever turn they arrive.
+
+**Clear exited works on a remote host.** Clear exited now clears a remote host's exited sessions, and they stay gone after the host reconnects. A clear, Resume all or sweep that fails says so at the bottom of the window with the count and the reason, `Could not clear 1 of 1 exited session: stub is unreachable`; a click dismisses it.
+
+### Details
+
+**Remote hosts from the command line.** `emmer kill --host <name> <session>` and `emmer rm --host <name> <session>` end and forget a remote host's session through the open window. A plain `emmer kill` that matches nothing here says a remote session needs `--host`. A host ask or an `emmer browser` step whose window closes before it answers now ends at once, `the window closed before it answered`, rather than at its timeout.
+
+**First contact with a host.** The first command to reach a host after an update or a reboot of it no longer fails with `setup failed ... still has no kit after the copy`; the relay waits for the daemon it started to write its own token.
+
+**Small ones.** A paste into a Claude in a narrow chat pane gets its chip even when Claude Code wraps the marker onto a second row. The ask card's buttons are the dialog's own options, never a plan's numbered steps drawn above them. The first launch after an update no longer asks you to install hooks that the update was installing itself.
+
 ## Fixes 1158 to 1170, 2026-11-12
 
 Thirteen fixes: Explorer drags that reach a web page and say what a drop will do, a Restart for a remote host's old daemon, `emmer new --host` and `emmer ls --host`, a plan you can read and comment on before you approve it, and `/code-review` findings as a card. The daemon goes to level 83; the update stops the old one, so nothing asks for a restart, and your sessions come back through Resume.

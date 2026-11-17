@@ -24,7 +24,8 @@
 // Block `kit` (fixes 1083 and 1084, needs relay; last, since it replaces
 // the stub's daemon): a first contact that copies the kit from local
 // fixtures (a stage, a Node zip, a node-pty tarball) and starts the kit's
-// own daemon, then a file restaged at the same version reaching the host
+// own daemon over a stale daemon.json with no wrong-token refusal (fix
+// 1183), then a file restaged at the same version reaching the host
 // through a re-setup that stops the host's daemon first (fix 1166), then
 // the Linux refusal. Block restart (fix 1165, needs relay and kit, after
 // kit): an older kit's daemon started through its own relay under a record
@@ -38,6 +39,7 @@
 // written from the plan's contracts (C4 to C7) and run first at the
 // batch's close-out on the merged tree.
 // Block cli (fixes 1167 and 1168, needs nothing; last): emmer shell --host stub and emmer ls --host stub from the harness's CLI, carried by its daemon to this window and run on the stub, then the refusals that need the window.
+// Block sessions (fixes 1181 and 1182, needs nothing; last): a stub session removed, cleared and killed and removed from the CLI stays gone after the line drops and comes back, and a clear refused on a lost line says so in a toast.
 // Run: npm run verify:remote -w @emerald/app [-- --only relay]
 import { createHash } from 'node:crypto';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
@@ -56,11 +58,12 @@ const { block, blocksRun } = blockRunner([
   { name: 'row', fixes: ['1087', '1088', '1094', '1095'], needs: ['relay'] },
   { name: 'marks', fixes: ['1089', '1090', '1096', '1097'], needs: ['relay'] },
   // Replaces the stub's daemon with the kit's, so it stays last.
-  { name: 'kit', fixes: ['1083', '1084', '1166'], needs: ['relay'] },
+  { name: 'kit', fixes: ['1083', '1084', '1166', '1183'], needs: ['relay'] },
   // Starts where kit ends (the kit's own daemon on R), so it follows it.
   { name: 'restart', fixes: ['1165'], needs: ['relay', 'kit'] },
   { name: 'clip', fixes: ['1091'], needs: [] },
   { name: 'cli', fixes: ['1167', '1168'], needs: [] },
+  { name: 'sessions', fixes: ['1181', '1182'], needs: [] },
 ]);
 
 let app = null;
@@ -725,6 +728,16 @@ try {
     // 2. The record with no kit.
     const { nodeVersion: _n, kitVersion: _k, ...bare } = stubRecord();
     await zreq(s, 'hosts.set', { host: bare });
+    // M9 fix 1183: a daemon.json a daemon that died without unlinking it
+    // left, its token stale, which the relay that starts the kit's daemon
+    // must not say on the hello. 999999 is no multiple of 4, so no Windows
+    // process holds it, and the finally's killDaemonIfSame reads it gone if
+    // the run dies before the fresh daemon replaces the file.
+    fs.mkdirSync(R, { recursive: true });
+    fs.writeFileSync(
+      path.join(R, 'daemon.json'),
+      JSON.stringify({ pid: 999999, pipe: stubPipe, pipeToken: 'f'.repeat(64), protocolVersion: 1, version: '0.1.1079', startedAt: Date.now() - 86_400_000, hookPort: 0, hookToken: '' }, null, 2) + '\n',
+    );
 
     // 3. The fixtures: a stage, a Node zip and a node-pty tarball, all local.
     const { stage, stageDir } = await import('./stage.mjs');
@@ -808,6 +821,16 @@ try {
     const scpLines = fs.readFileSync(path.join(H, 'stub-scp.log'), 'utf8').trim().split('\n');
     expect(scpLines.length === 2, `two copies, got ${scpLines.length}`);
     step('fix 1084 (5): the kit copied in two archives, unpacked with none left, the record pinned to it');
+
+    // M9 fix 1183: the first contact went through first time over the
+    // stale daemon.json seeded above.
+    const info1183 = JSON.parse(fs.readFileSync(path.join(R, 'daemon.json'), 'utf8'));
+    expect(info1183.pipeToken !== 'f'.repeat(64), 'fix 1183: the stale daemon.json was replaced by the kit daemon\'s own');
+    const emmerdLog1183 = path.join(R, 'logs', 'emmerd.log');
+    const refused1183 = fs.existsSync(emmerdLog1183) && fs.readFileSync(emmerdLog1183, 'utf8').includes('hello refused: wrong token');
+    expect(!refused1183, 'fix 1183: no hello refused: wrong token in the stub daemon\'s log');
+    expect(!s.logs.join('').includes('host stub: setup failed'), 'fix 1183: no host stub: setup failed in the window\'s log');
+    step('fix 1183 (5): a first contact over a stale daemon.json connected first time: the record replaced, no wrong-token refusal in the stub daemon\'s log');
 
     // 6. A shell through the kit's own relay, CLI and daemon.
     const terms = await s.evalJs(`document.querySelectorAll('.term-host').length`);
@@ -1093,6 +1116,138 @@ try {
     // The clean-up: the shell exits, so the block leaves the stub as it found it.
     await typeRaw(cliShell.id, 'exit\r');
     await s.waitFor(`(async () => (await window.emerald.request('session.list', { removed: true })).sessions.find((x) => x.id === ${JSON.stringify(cliShell.id)})?.state === 'exited')()`, 'the cli-1167 shell listed exited', 10_000);
+  });
+
+  await block('sessions', async () => {
+    // M9 fixes 1181 and 1182: a stub session's row goes when it is removed
+    // and stays gone across a reconnect, and a refused clear says so in a
+    // toast. Run whole, the earlier blocks leave exited rows (some local,
+    // some stub) and the stub up on the kit's daemon; run alone, the stub
+    // idle on the prelude's record. The two lines below put either right.
+    setModes({});
+    await zreq(s, 'hosts.set', { host: stubRecord() });
+    await s.evalJs(`window.emerald.hostConnect('stub')`);
+    // An earlier block's reload or restart leaves no listener; the block's
+    // reads count from its own start, so a fresh one is right either way.
+    await listenPushes();
+    const exitedGroup = '.sidebar-group[data-group="exited"]';
+    const exitedRow = (id) => `${exitedGroup} .sidebar-row[data-session-id=${JSON.stringify(id)}]`;
+    const anyRow = (id) => `.sidebar-row[data-session-id=${JSON.stringify(id)}]`;
+    const clearButton = `${exitedGroup} .sidebar-clear-exited`;
+    // A powershell on stub started from the CLI and exited, its row in the exited group.
+    const exitedStubShell = async (name) => {
+      const r = cli(process.env, 'shell', '--host', 'stub', '~', '--shell', 'powershell', '--name', name, '--json');
+      expect(r.code === 0, `emmer shell --host stub for ${name} exit 0, got ${r.code}: ${r.out}${r.err}`);
+      const id = JSON.parse(r.out).session.id;
+      await sleep(1500);
+      await typeRaw(id, 'exit\r');
+      await s.waitFor(`!!${q(exitedRow(id))}`, `${name}'s row in the exited group`, 10_000);
+      return id;
+    };
+    // The stub's line dropped and back up. Main pushes each listed record
+    // before the up push on the same channel, so a read after the up push
+    // sees the store after the connect's list.
+    const dropAndBack = async () => {
+      const from = await pushCount();
+      killStubSsh();
+      await waitPush(from, (m) => m.state === 'lost', 'stub lost after its ssh was killed', 5000);
+      await waitPush(from, (m) => m.state === 'up', 'stub up again', 15_000);
+      await sleep(500);
+    };
+    const exitedIds = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(exitedGroup + ' .sidebar-row')})].map((r) => r.dataset.sessionId)`);
+    const toastText = () => s.evalJs(`document.querySelector('.app-toast')?.textContent ?? null`);
+
+    // 1. Removed through the window, by its kept id.
+    const gone = await exitedStubShell('gone-1181');
+    await s.evalJs(`window.emerald.request('session.remove', { sessionId: ${JSON.stringify(gone)} })`);
+    await s.waitFor(`!${q(anyRow(gone))}`, 'gone-1181 left the sidebar', 10_000);
+    step('fix 1181 (1): a stub shell exited and removed leaves the sidebar');
+
+    // 2. Clear exited takes a stub row with the rest.
+    const cleared = await exitedStubShell('clear-1181');
+    await s.evalJs(`${q(clearButton)}.click()`);
+    try {
+      await s.waitFor(`!${q(exitedGroup)}`, 'the exited group gone after Clear exited', 10_000);
+    } catch (err) {
+      throw new Error(`${err.message}; rows still exited ${JSON.stringify(await exitedIds())}, toast ${JSON.stringify(await toastText())}`);
+    }
+    expect((await toastText()) === null, `no toast after a clear that succeeded, got ${JSON.stringify(await toastText())}`);
+    step('fix 1181 (2): Clear exited cleared a stub row with the rest, no toast');
+
+    // 3. Neither comes back as a row once the line drops and returns, though
+    // the connect's list carries both (so the absence is the store's rule).
+    await dropAndBack();
+    for (const id of [gone, cleared]) {
+      expect(!(await s.evalJs(`!!${q(anyRow(id))}`)), `removed stub session ${id} came back as a row after the reconnect`);
+      const rec = await listed(id);
+      expect(typeof rec?.removedAt === 'number', `the connect's list keeps ${id} with its removedAt, got ${JSON.stringify(rec)}`);
+    }
+    expect(!(await s.evalJs(`!!${q(exitedGroup)}`)), `no exited group after the reconnect, rows ${JSON.stringify(await exitedIds())}`);
+    step('fix 1181 (3): after the line dropped and came back neither removed stub session is a row');
+
+    // 4. A clear refused on a lost line says so in a toast; it clears once
+    // the line is back.
+    await exitedStubShell('toast-1181');
+    setModes({ stub: 'down' });
+    {
+      const from = await pushCount();
+      killStubSsh();
+      await waitPush(from, (m) => m.state === 'lost', 'stub lost for the refused clear', 5000);
+    }
+    await s.evalJs(`${q(clearButton)}.click()`);
+    const want1181 = 'Could not clear 1 of 1 exited session: stub is unreachable';
+    try {
+      await s.waitFor(`document.querySelector('.app-toast')?.textContent === ${JSON.stringify(want1181)}`, 'the refused clear\'s toast', 10_000);
+    } catch (err) {
+      throw new Error(`${err.message}; toast ${JSON.stringify(await toastText())}, rows ${JSON.stringify(await exitedIds())}`);
+    }
+    // The frame for the person to judge the toast's look by.
+    await s.screenshot('m76-remote-toast-1181.png');
+    setModes({});
+    {
+      const from = await pushCount();
+      await s.evalJs(`window.emerald.hostTryNow('stub')`);
+      await waitPush(from, (m) => m.state === 'up', 'stub up for the second clear', 20_000);
+    }
+    await s.evalJs(`${q(clearButton)}.click()`);
+    await s.waitFor(`!${q(exitedGroup)}`, 'the exited group gone after the second clear', 10_000);
+    // The toast may have run out its time already; a click takes it if not.
+    await s.evalJs(`document.querySelector('.app-toast')?.click()`);
+    await s.waitFor(`!document.querySelector('.app-toast')`, 'the toast gone on its click', 3000);
+    step('fix 1181 (4): a clear refused on a lost line says so in a toast with the count and the reason; cleared once the line is back');
+
+    // 5. M9 fix 1182: emmer kill --host and emmer rm --host end and forget a
+    // stub shell through this window.
+    let r = cli(process.env, 'shell', '--host', 'stub', '~', '--shell', 'powershell', '--name', 'end-1182', '--json');
+    expect(r.code === 0, `emmer shell --host stub for end-1182 exit 0, got ${r.code}: ${r.out}${r.err}`);
+    const ended = JSON.parse(r.out).session.id;
+    await sleep(1500);
+    r = cli(process.env, 'kill', '--host', 'stub', 'end-1182');
+    expect(r.code === 0 && r.out.trim() === `killed ${ended.slice(0, 8)} end-1182`, `emmer kill --host stub end-1182: exit 0 and the killed line, got ${r.code} ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`);
+    await s.waitFor(`!!${q(exitedRow(ended))}`, 'end-1182 in the exited group after the kill', 10_000);
+    r = cli(process.env, 'rm', '--host', 'stub', 'end-1182');
+    expect(r.code === 0 && r.out.trim() === `removed ${ended.slice(0, 8)} end-1182`, `emmer rm --host stub end-1182: exit 0 and the removed line, got ${r.code} ${JSON.stringify(r.out)} ${JSON.stringify(r.err)}`);
+    await s.waitFor(`!${q(anyRow(ended))}`, 'end-1182 left the sidebar after the rm', 10_000);
+    r = cli(process.env, 'ls', '--host', 'stub', '--json');
+    expect(r.code === 0 && !JSON.parse(r.out).sessions.some((x) => x.id === ended), `ls --host stub no longer lists end-1182, got ${r.code} ${r.out}${r.err}`);
+    step('fix 1182 (5): emmer kill --host stub and emmer rm --host stub ended and forgot a stub shell, its row gone');
+
+    // 6. It stays gone across a reconnect (fix 1181's store rule).
+    await dropAndBack();
+    expect(!(await s.evalJs(`!!${q(anyRow(ended))}`)), `the CLI-removed end-1182 came back as a row after the reconnect`);
+    expect(typeof (await listed(ended))?.removedAt === 'number', `the connect's list keeps end-1182 with its removedAt, got ${JSON.stringify(await listed(ended))}`);
+    step('fix 1182 (6): the CLI-removed stub row stays gone after the line drops and comes back');
+
+    // 7. The refusals: a bare kill that matches nothing names --host (this
+    // daemon's record holds stub), and the host's own no-match and an
+    // unknown host are one line each.
+    r = cli(process.env, 'kill', 'nosuch-1182');
+    expect(r.code === 1 && r.err.trim() === 'emmer: no session matches "nosuch-1182" (see emmer ls); a session on a remote host needs --host <name>', `a bare kill of nothing: exit 1 and the hint, got ${r.code} ${JSON.stringify(r.err)}`);
+    r = cli(process.env, 'kill', '--host', 'stub', 'nosuch-1182');
+    expect(r.code === 1 && r.err.trim() === 'emmer: no session matches "nosuch-1182" (see emmer ls --host stub)', `kill --host stub of nothing: exit 1 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+    r = cli(process.env, 'rm', '--host', 'nosuch', 'x');
+    expect(r.code === 1 && r.err.trim() === 'emmer: no host named nosuch; the window lists stub', `rm --host nosuch: exit 1 and one line, got ${r.code} ${JSON.stringify(r.err)}`);
+    step('fix 1182 (7): a bare kill that matches nothing names --host, and the host refusals are one line each');
   });
 
   step(`PASS (${blocksRun()})`);

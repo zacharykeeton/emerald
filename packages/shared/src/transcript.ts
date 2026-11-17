@@ -187,14 +187,17 @@ export type Step =
   // M9 fix 797: a progress line Claude Code shows as ● prose: a non-empty thinking part on a line written with thinkingDisplay "updates", where the model's own thinking is stored empty.
   | { kind: 'update'; text: string; at: number | null }
   // M9 fix 798: what a Claude Code command printed (its local-command stdout or stderr), drawn as a divider in the turn it lands in. M9 fix 889: remote control's connect line carries its URL, drawn as a link.
-  | { kind: 'command'; text: string; at: number | null; url?: string }
+  // M9 fix 1176: a skill forked into the background, its launch line's agentId and skillName, so the task notification that ends it can be matched to it.
+  | { kind: 'command'; text: string; at: number | null; url?: string; fork?: { agentId: string; skillName: string } }
   | { kind: 'note'; text: 'Interrupted'; at: number | null }
   // M9 fix 754: a message the person sent while the turn ran, which
   // Claude read mid-turn; `at` is its send time.
   | { kind: 'queued'; text: string; at: number | null }
   // M9 fix 805: a line Claude Code wrote for itself, a background task's end, an agent's report or another session's message, read as one line in the open turn.
   // M9 fix 1170: a task's `report` is its <result>, where a background /code-review's findings land.
-  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null; report?: string }
+  | { kind: 'notification'; source: 'task' | 'agent' | 'peer'; text: string; tone: 'quiet' | 'error'; output: string | null; title: string; at: number | null; report?: string;
+      // M9 fix 1177: a task's <task-id>, which for a forked skill is its launch line's fork.agentId.
+      taskId?: string }
   // M9 fix 920: a compaction, its note's words (compactNoteText) and the summary Claude Code wrote after it, null until that line lands.
   | { kind: 'compact'; text: string; summary: string | null; at: number | null }
   // M9 fix 921: a bash-mode run (a `!` command), its output null until the output line lands.
@@ -512,7 +515,7 @@ export function stepFoldEntry(state: StepState, o: Record<string, unknown>): voi
     }
     // The note does not move the turn's endAt, so a rename ten minutes
     // after a reply does not stretch the turn's length on its prompt row.
-    const note: Step = { kind: 'command', text: said.text, at, ...(said.url === undefined ? {} : { url: said.url }) };
+    const note: Step = { kind: 'command', text: said.text, at, ...(said.url === undefined ? {} : { url: said.url }), ...(said.fork === undefined ? {} : { fork: said.fork }) };
     // A command before the first prompt opens a bare turn of its own.
     if (turn === null) openBareTurn(state, note, at);
     else turn.steps.push(note);
@@ -866,7 +869,7 @@ export const COMMAND_LEFTOVER = /^(?:.+ dialog dismissed|.+ cancell?ed\.?|Cancel
 // 'drop' a line that says nothing worth drawing: an empty output, a
 // dialog's leftover, and a system line naming the command itself, which
 // is dropped rather than left to move the open turn's endAt.
-function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string } | 'drop' | null {
+function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string; fork?: { agentId: string; skillName: string } } | 'drop' | null {
   // M9 fix 889: remote control's connect line (bridge_status) and an error's disconnect line (informational), each a note; any other informational line stays as it was.
   if (o['type'] === 'system' && o['subtype'] === 'bridge_status') {
     const text = typeof o['content'] === 'string' ? o['content'].trim() : '';
@@ -891,10 +894,26 @@ function commandNoteOf(o: Record<string, unknown>): { text: string; url?: string
     }
   }
   if (source === null) return system ? 'drop' : null;
+  // M9 fix 1176: a skill forked into the background ends its output with a launch tail; it is never part of what the command printed, and its agentId and skillName tie the later task notification to it.
+  let fork: { agentId: string; skillName: string } | undefined;
+  const launch = /\r?\n?<forked-skill-launch>([\s\S]*?)<\/forked-skill-launch>\s*$/.exec(source);
+  if (launch !== null) {
+    source = source.slice(0, launch.index);
+    try {
+      const parsed: unknown = JSON.parse(launch[1]!);
+      if (isObject(parsed)) {
+        const agentId = parsed['agentId'];
+        const skillName = parsed['skillName'];
+        if (typeof agentId === 'string' && agentId !== '' && typeof skillName === 'string' && skillName !== '') fork = { agentId, skillName };
+      }
+    } catch {
+      // A broken tail leaves fork off; the line still draws.
+    }
+  }
   const m = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>\s*$/.exec(source);
   if (m === null) return system ? 'drop' : null;
   const text = m[2]!.replace(/\x1b\[[0-9;]*m/g, '').trim();
-  return text === '' || COMMAND_LEFTOVER.test(text) ? 'drop' : { text };
+  return text === '' || COMMAND_LEFTOVER.test(text) ? 'drop' : { text, ...(fork === undefined ? {} : { fork }) };
 }
 
 // M9 fix 993: a compaction's boundary line, which parseTurns and countPrompts note for repeatsPrompt.
@@ -995,7 +1014,21 @@ function taskNote(text: string, at: number | null): Step {
   // fork, whose reply (a JSON array of findings) arrives here as the
   // result; the chat view reads it in a /code-review turn.
   const report = field('result');
-  return report === null ? step : { ...step, report };
+  const withReport = report === null ? step : { ...step, report };
+  // M9 fix 1177: the task's id, which for a forked skill is its launch line's fork.agentId.
+  const id = field('task-id');
+  return id === null ? withReport : { ...withReport, taskId: id };
+}
+
+// M9 fix 1177: the agentId of every launch of a skill forked into the background (M9 fix 1176), in any turn.
+export function forkAgentIds(turns: readonly StepTurn[], skillName: string): Set<string> {
+  const ids = new Set<string>();
+  for (const turn of turns) {
+    for (const s of turn.steps) {
+      if (s.kind === 'command' && s.fork !== undefined && s.fork.skillName === skillName) ids.add(s.fork.agentId);
+    }
+  }
+  return ids;
 }
 
 // M9 fix 977: what /rename prints, and the turn's last note of it.

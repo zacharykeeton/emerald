@@ -2909,6 +2909,30 @@ try {
     await s.waitFor(`(() => { const t = ${q(tlSel)}; return t.scrollTop + t.clientHeight >= t.scrollHeight - 2; })()`, 'the view stuck to the end after the anchor', 3000);
     step('fix 752: opening and closing a fold keeps the reply under the calls where it was, tinted once, and the view sticks to the end after');
 
+    // M9 fix 1171: a prompt sent with the timeline scrolled up jumps the
+    // view to the end, the Sending bubble in view.
+    await s.evalJs(`(() => { ${q(tlSel)}.scrollTop = 0; })()`);
+    await sleep(200);
+    expect(await s.evalJs(`(() => { const t = ${q(tlSel)}; return t.scrollTop + t.clientHeight < t.scrollHeight - 100; })()`), 'the timeline is scrolled up before the send');
+    await s.evalJs(`${q(TP + ' .chat-box')}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(TP + ' .chat-box')}`, 'the turns box holds the keyboard', 3000);
+    await s.type('echo top1171');
+    await s.key('Enter', 'Enter', 13);
+    const view1171 = `(() => { const t = ${q(tlSel)}; const tr = t.getBoundingClientRect(); const b = [...t.querySelectorAll('.chat-prompt-pending')].find((p) => p.querySelector('.chat-prompt-pending-text')?.textContent === 'echo top1171'); if (b === undefined) return { end: t.scrollTop + t.clientHeight >= t.scrollHeight - 2, bubble: null }; const br = b.getBoundingClientRect(); return { end: t.scrollTop + t.clientHeight >= t.scrollHeight - 2, bubble: br.top >= tr.top - 1 && br.bottom <= tr.bottom + 1 }; })()`;
+    try {
+      await s.waitFor(`(() => { const v = ${view1171}; return v.end && v.bubble === true; })()`, 'fix 1171: the view jumped to the end on the send', 3000);
+    } catch (err) {
+      throw new Error(`${err.message}: ${JSON.stringify(await s.evalJs(view1171))}, scroll ${JSON.stringify(await s.evalJs(`(() => { const t = ${q(tlSel)}; return { top: t.scrollTop, client: t.clientHeight, height: t.scrollHeight }; })()`))}`);
+    }
+    // Land the prompt so no Sending bubble is left for the later blocks;
+    // the typed echo ran in the stub's shell, so a Stop binds it again.
+    fs.appendFileSync(turnsFixture, userLine('echo top1171', 650) + '\n');
+    await s.waitFor(`!${q(TP + ' .chat-prompt-pending')}`, 'fix 1171: the sent prompt landed', 5000);
+    await waitRecord(turnsId, (r) => r.command == null || r.command.state !== 'running', 'the typed echo ended', 10000);
+    await postTurns({ hook_event_name: 'Stop', stop_hook_active: false });
+    await toChat(turnsPane);
+    step('fix 1171: a prompt sent from the chat box with the timeline scrolled to its top jumps the view to the end, the Sending bubble in view');
+
     // Fix 753: turn B's last call fails, turn C's call is still out.
     fs.appendFileSync(
       turnsFixture,
@@ -5556,6 +5580,41 @@ try {
     console.log(`[verify] note: fix 1147 (e): Send's left ${Math.round(sendE.left)} against the pane's ${Math.round(ge.left)} at ${Math.round(ge.width)} px`);
     step('fix 1147 (e): at the 0.05 clamp nothing of the chat paints past the pane\'s edges, Send\'s right edge inside it, and the view and the wrap clip');
 
+    // M9 fix 1172: a paste marker Claude Code wrapped onto a second row of
+    // its box (read on a real 2.1.325 at 30 columns, the rule 30 long) is
+    // one chip. The pane widened first so the terminal does not wrap the
+    // stub's own rows.
+    await widthAt(0.95, 460, 2000);
+    // The mode loop above ends after its second Tab, which the steps
+    // before never send: one Tab ends it, so the draw reaches the prompt.
+    if (!(await screen(narrowId)).rows.some((r) => r.trim() === 'tabs 2')) {
+      await typeRaw(narrowId, '\t');
+      const until = Date.now() + 5000;
+      while (Date.now() < until && !(await screen(narrowId)).rows.some((r) => r.trim() === 'tabs 2')) await sleep(200);
+      expect((await screen(narrowId)).rows.some((r) => r.trim() === 'tabs 2'), `fix 1172: the stub's mode loop ended, got ${JSON.stringify((await screen(narrowId)).rows)}`);
+    }
+    // The loop ending at the shell's prompt reads as Claude leaving (the
+    // box block's rebind); a Stop binds the stub again.
+    await waitRecord(narrowId, (r) => r.command == null || r.command.state !== 'running', 'fix 1172: the mode loop ended', 10000);
+    await postNarrow({ hook_event_name: 'Stop', stop_hook_active: false });
+    await sleep(300);
+    await toChat('n1147-a');
+    await typeRaw(narrowId, "cls; $r = [string][char]0x2500 * 30; Write-Host $r; Write-Host ([char]0x276F + ' [Pasted text #1 +23'); Write-Host '  lines]'; Write-Host $r; $a = Read-Host\r");
+    {
+      const until = Date.now() + 5000;
+      while (Date.now() < until && !(await screen(narrowId)).rows.some((r) => r.startsWith('❯ [Pasted text #1 +23'))) await sleep(200);
+      const rows = (await screen(narrowId)).rows;
+      expect(rows.some((r) => r.startsWith('❯ [Pasted text #1 +23')), `fix 1172: the stub drew the wrapped box, got ${JSON.stringify(rows)}`);
+    }
+    await s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:chat-paste', { detail: { sessionId: ${JSON.stringify(narrowId)} } }))`);
+    const chips1172 = `[...document.querySelectorAll(${JSON.stringify(NP + ' .chat-paste-chip')})].map((c) => c.querySelector('.chat-paste-chip-label')?.textContent ?? null)`;
+    try {
+      await s.waitFor(`(() => { const cs = ${chips1172}; return cs.length === 1 && cs[0] === 'Pasted text #1 · 23 lines'; })()`, 'fix 1172: one paste chip off the wrapped marker', 5000);
+    } catch (err) {
+      throw new Error(`${err.message}: chips ${JSON.stringify(await s.evalJs(chips1172))}, hint ${JSON.stringify(await s.evalJs(`${q(NP + ' .chat-hint')}?.textContent ?? null`))}, screen ${JSON.stringify((await screen(narrowId)).rows)}`);
+    }
+    step('fix 1172: a paste marker Claude Code wrapped onto a second row of its box shows as one chip, Pasted text #1 · 23 lines');
+
     await zreq(s, 'session.kill', { sessionId: narrowId });
     await waitRecord(narrowId, (r) => r.state === 'exited', 'the narrow stub ended', 10000);
     narrowId = null;
@@ -5856,29 +5915,51 @@ try {
     // first run, so the tool is named.
     await s.type('Do not read, search or run anything. Plan how to add a file named hello-1169.txt holding the word hi: one heading and two numbered steps, nothing else, then call the ExitPlanMode tool to present the plan for approval.');
     await s.key('Enter', 'Enter', 13);
+    // The transcript's ExitPlanMode tool uses; none for a null path or a
+    // file not written yet.
+    const planUses = (transcriptPath) => {
+      if (transcriptPath == null || !fs.existsSync(transcriptPath)) return [];
+      return fs
+        .readFileSync(transcriptPath, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .flatMap((l) => {
+          try {
+            const o = JSON.parse(l);
+            return Array.isArray(o.message?.content) ? o.message.content.filter((p) => p?.type === 'tool_use' && p.name === 'ExitPlanMode') : [];
+          } catch {
+            return [];
+          }
+        });
+    };
+    // M9 fix 1174: a real Claude that ends its turn with the plan as text
+    // and no ExitPlanMode call (the close-out of fixes 1158 to 1170 met it
+    // in 4 s) is asked once more by name; a second text answer fails.
     const askUntil = Date.now() + 120000;
     let opened = false;
+    let sawWorking = false;
+    let nudged = false;
     while (Date.now() < askUntil && !opened) {
       opened = await s.evalJs(`!!${q(PP + ' .chat-ask-plan-open')}`);
-      if (!opened) await sleep(500);
+      if (opened) break;
+      const r = await record(planRealId);
+      if (r?.state === 'working') sawWorking = true;
+      else if (!nudged && sawWorking && (r?.state === 'idle' || r?.state === 'done') && planUses(r.transcriptPath).length === 0) {
+        nudged = true;
+        console.log('[verify] note: fix 1169: the real Claude answered in text; asked once more for ExitPlanMode');
+        await s.evalJs(`${q(PP + ' .chat-box')}.focus()`);
+        await s.waitFor(`document.activeElement === ${q(PP + ' .chat-box')}`, 'fix 1174: the box holds the keyboard for the nudge', 3000);
+        await s.type('Call the ExitPlanMode tool now to present that plan.');
+        await s.key('Enter', 'Enter', 13);
+      }
+      await sleep(500);
     }
     if (!opened) {
       const r = await record(planRealId);
-      expect(false, `fix 1169: no plan card on the real Claude in 120 s, record ${JSON.stringify({ state: r.state, reason: r.needsInputReason, askedFor: r.askedFor ?? null })}, last rows ${JSON.stringify((await screen(planRealId)).rows.filter((x) => x.trim() !== '').slice(-6))}`);
+      expect(false, `fix 1169: no plan card on the real Claude in 120 s, record ${JSON.stringify({ state: r.state, reason: r.needsInputReason, askedFor: r.askedFor ?? null })}, last rows ${JSON.stringify((await screen(planRealId)).rows.filter((x) => x.trim() !== '').slice(-6))}, nudged ${nudged}`);
     }
     const transcriptPath = (await record(planRealId)).transcriptPath;
-    const toolUses = fs
-      .readFileSync(transcriptPath, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((l) => {
-        try {
-          const o = JSON.parse(l);
-          return Array.isArray(o.message?.content) ? o.message.content.filter((p) => p?.type === 'tool_use' && p.name === 'ExitPlanMode') : [];
-        } catch {
-          return [];
-        }
-      });
+    const toolUses = planUses(transcriptPath);
     const use = toolUses.at(-1);
     expect(use !== undefined, 'fix 1169: the real transcript holds an ExitPlanMode tool_use');
     console.log(`[verify] note: fix 1169: the real plan's input carries plan ${typeof use.input?.plan === 'string' ? use.input.plan.length : 'no'} chars, planFilePath ${use.input?.planFilePath ?? 'none'}`);
@@ -5996,6 +6077,7 @@ try {
             rows: [...c.querySelectorAll('.chat-finding')].map((r) => [r.dataset.n ?? null, r.dataset.file ?? null, r.dataset.line ?? null, r.querySelector('.chat-finding-place')?.textContent ?? null, r.querySelector('.chat-finding-summary')?.textContent ?? null, r.querySelector('.chat-finding-scenario')?.textContent ?? null, r.querySelector('.chat-finding-fix')?.textContent ?? null]),
           })),
           notes: [...p.querySelectorAll('.chat-command-note-text')].map((e) => e.textContent),
+          fork: [...p.querySelectorAll('.chat-command-note[data-fork]')].map((e) => e.dataset.fork),
         };
       })()`);
     const wantCards = [
@@ -6022,11 +6104,11 @@ try {
         rows: [['1', 'notes.txt', '3', 'notes.txt:3', 'The last line is dropped.', 'Three lines read as two.', 'Fix this one']],
       },
     ];
-    const cardsOk = (r) => r !== null && JSON.stringify(r.cards) === JSON.stringify(wantCards) && r.notes.at(-1) === 'No findings.';
+    const cardsOk = (r) => r !== null && JSON.stringify(r.cards) === JSON.stringify(wantCards) && JSON.stringify(r.notes.slice(-2)) === JSON.stringify(['No findings.', 'Running in the background as @code-review']) && JSON.stringify(r.fork) === '["code-review"]';
     let cards = await readCards();
     for (const end = Date.now() + 5000; Date.now() < end && !cardsOk(cards); await sleep(200)) cards = await readCards();
     expect(cardsOk(cards), `fix 1170 (a): three cards and the divider, got ${JSON.stringify(cards)}`);
-    step("fix 1170 (a): a /code-review reply draws as a card in each of its three shapes (the formatter's list, the fork's lines, a background review's JSON), and No findings. as the divider");
+    step("fix 1170 (a), fix 1176: a /code-review reply draws as a card in each of its three shapes (the formatter's list, the fork's lines, a background review's JSON), No findings. as the divider, and the background launch as the divider Running in the background as @code-review");
 
     // (b) A place opens the review on the session's start at its line;
     // Walk through in diff at the first finding's.
@@ -6081,6 +6163,58 @@ try {
     await waitSent('Fix findings 1 and 3 of the code review above. 1: notes.txt:2, The second line is never read. 3: src/a.ts, The save is not awaited.', [1, 2, 3], 'fix 1170 (c): Apply fixes');
     expect(await s.evalJs(`${q(card1 + ' .chat-findings-apply')}.disabled === true`), 'fix 1170 (c): Apply fixes disabled once every finding is sent');
     step('fix 1170 (c): Fix this one types its finding, and Apply fixes one prompt naming the two still open');
+
+    // M9 fix 1177: a background review that ends after the next prompt, and
+    // a background agent's result in a fold.
+    const taskOrigin = { kind: 'task-notification', producer: 'session-task', runId: 'r1177' };
+    fs.appendFileSync(
+      fixture1170,
+      [
+        userLine("<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>", 60, { isMeta: true }),
+        userLine('/code-review low', 60),
+        line({ type: 'system', subtype: 'local_command', content: '<local-command-stdout>Running in the background as @code-review</local-command-stdout>\n<forked-skill-launch>{"agentId":"a1177","skillName":"code-review","description":"/code-review low"}</forked-skill-launch>', level: 'info', isMeta: false, timestamp: at(61) }),
+        userLine('and the footer', 62),
+        asstLine([{ type: 'text', text: 'Looking.' }], 63),
+        userLine('<task-notification>\n<task-id>a1177</task-id>\n<status>completed</status>\n<summary>Agent "/code-review low" finished</summary>\n<result>[{"file":"notes.txt","line":2,"summary":"The second line is never read."}]</result>\n</task-notification>', 70, { origin: taskOrigin }),
+        userLine(`<task-notification>\n<task-id>b1177</task-id>\n<output-file>${path.join(repo1170, 'b1177.output')}</output-file>\n<status>completed</status>\n<summary>Agent "survey the docs" finished</summary>\n<result>The docs hold **three** pages.</result>\n</task-notification>`, 71, { origin: taskOrigin }),
+        asstLine([{ type: 'text', text: 'Both done.' }], 72),
+      ].join('\n') + '\n',
+    );
+    const read1177 = `(() => {
+      const p = ${q(FP)};
+      if (!p) return null;
+      const turns = [...p.querySelectorAll('.chat-turn')];
+      const later = turns.find((t) => t.querySelector('.chat-prompt')?.textContent.trim() === 'and the footer');
+      // An earlier fixture turn (fix 1170's lines review) has the same prompt; the launch is the last.
+      const launch = [...turns].reverse().find((t) => t.querySelector('.chat-prompt')?.textContent.trim() === '/code-review low');
+      const card = later?.querySelector('.chat-findings[data-shape="json"]') ?? null;
+      return {
+        card: card === null ? null : { title: card.querySelector('.chat-findings-title')?.textContent ?? null, rows: [...card.querySelectorAll('.chat-finding')].map((r) => [r.dataset.n ?? null, r.dataset.file ?? null, r.dataset.line ?? null]) },
+        fork: launch?.querySelector('.chat-command-note[data-fork="code-review"] .chat-command-note-text')?.textContent ?? null,      };
+    })()`;
+    const ok1177d = (r) => r !== null && r.card !== null && r.card.title === 'Code review · 1 finding' && JSON.stringify(r.card.rows) === JSON.stringify([['1', 'notes.txt', '2']]) && r.fork === 'Running in the background as @code-review';
+    let got1177 = await s.evalJs(read1177);
+    for (const end = Date.now() + 5000; Date.now() < end && !ok1177d(got1177); await sleep(200)) got1177 = await s.evalJs(read1177);
+    expect(ok1177d(got1177), `fix 1177 (d): the review's card in the later turn and the launch's divider, got ${JSON.stringify(got1177)}`);
+    step('fix 1177 (d): a background review that ends after the next prompt draws its findings as a card in that later turn');
+
+    const note1177 = `(() => {
+      const n = [...document.querySelectorAll(${JSON.stringify(FP + ' .chat-notification')})].find((e) => e.querySelector('.chat-notification-text')?.textContent === 'Agent "survey the docs" finished');
+      if (!n) return null;
+      return { output: n.querySelector('.chat-notification-output')?.textContent ?? null, fold: n.querySelector('.chat-notification-fold')?.textContent ?? null, report: n.querySelector('.chat-notification-report') !== null, strong: n.querySelector('.chat-notification-report .chat-md strong')?.textContent ?? null };
+    })()`;
+    const click1177 = () => s.evalJs(`[...document.querySelectorAll(${JSON.stringify(FP + ' .chat-notification')})].find((e) => e.querySelector('.chat-notification-text')?.textContent === 'Agent "survey the docs" finished').querySelector('.chat-notification-fold').click()`);
+    const waitNote1177 = async (want, what) => {
+      let r = await s.evalJs(note1177);
+      for (const end = Date.now() + 5000; Date.now() < end && !want(r); await sleep(200)) r = await s.evalJs(note1177);
+      expect(want(r), `${what}, got ${JSON.stringify(r)}`);
+    };
+    await waitNote1177((r) => r !== null && r.output === 'output' && r.fold === 'Show result' && !r.report, 'fix 1177 (e): the line with output and a closed fold');
+    await click1177();
+    await waitNote1177((r) => r !== null && r.fold === 'Hide result' && r.report && r.strong === 'three', 'fix 1177 (e): the fold open on the Markdown result');
+    await click1177();
+    await waitNote1177((r) => r !== null && r.fold === 'Show result' && !r.report, 'fix 1177 (e): the fold closed again');
+    step("fix 1177 (e): a background agent's result opens in a fold under its line, the output link kept");
   });
 
   await block('findings-real', async () => {
@@ -6140,7 +6274,7 @@ try {
       const turn = [...p.querySelectorAll('.chat-turn')].find((t) => t.querySelector('.chat-prompt')?.textContent.trim() === '/code-review medium');
       if (!turn) return { turn: false };
       const card = turn.querySelector('.chat-findings');
-      const note = turn.querySelector('.chat-command-note');
+      const note = [...turn.querySelectorAll('.chat-command-note')].filter((n) => !n.title.startsWith('Running in the background as ')).at(-1) ?? null;
       return { turn: true, card: card === null ? null : { shape: card.dataset.shape, files: [...card.querySelectorAll('.chat-finding')].map((r) => r.dataset.file) }, note: note === null ? null : note.title };
     })()`;
     let got = null;

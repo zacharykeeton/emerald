@@ -140,7 +140,7 @@ interface ServerHooks {
   browserRunDone: (runId: number, answer: BrowserAnswer) => void;
   // Push host.requested to one window at level 83 (M9 fix 1167) and hold
   // the reply for its host.done, or the deadline.
-  requestHostRelay: (host: string, ask: HostAsk) => Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }>;
+  requestHostRelay: (host: string, ask: HostAsk) => Promise<{ session: SessionInfo } | { sessions: SessionInfo[] } | Record<string, never>>;
   hostRelayDone: (relayId: number, answer: HostRelayAnswer) => void;
   // A session.submit, handed to the session's mod over its poll (M9 fix
   // 741, the poll since M9 fix 1125).
@@ -154,6 +154,10 @@ type FileOpenAnswer = Requests['file.open']['res'];
 type BrowserRunAsk = Requests['browser.run']['req'];
 type BrowserRunAnswer = Requests['browser.run']['res'];
 type HostRelayAnswer = Omit<Requests['host.done']['req'], 'relayId'>;
+// A reply held for a window's answer (M9 fix 1184): the windows the push
+// went to, what an answer does, and what happens when the last of those
+// windows closes with none.
+type WindowWait<A> = { windows: Set<ClientConnection>; answer: (answer: A) => void; gone: () => void };
 
 // How long a file.open that waits waits for the window's answer
 // before replying with the count alone (M9 fix 375): a window that
@@ -185,6 +189,8 @@ export const BROWSER_UPLOAD_SELECTOR_LEVEL = 76;
 export const HOST_RELAY_LEVEL = 83;
 // How long a request naming a host waits for the window's host.done (M9 fix 1167): a first contact that copies the kit took 20.7 s on wfs-db.
 export const HOST_RELAY_WAIT_MS = 60_000;
+// The first app level whose main process answers a kill or a remove naming a remote host (M9 fix 1182); a window at 83 would read the ask as a spawn.
+export const HOST_END_LEVEL = 84;
 
 // The first app level whose store appends a sessions.load push (M9 fix
 // 703); an older window gets each sampled session's record as
@@ -349,11 +355,11 @@ export class PipeServer {
   // The browser.run replies held for a window's browser.done (M9 fix
   // 672), by the runId the push carried.
   private runSeq = 0;
-  private readonly runWaits = new Map<number, (answer: BrowserAnswer) => void>();
+  private readonly runWaits = new Map<number, WindowWait<BrowserAnswer>>();
   // The requests naming a host held for the window's host.done (M9 fix
   // 1167), by the relayId the push carried.
   private relaySeq = 0;
-  private readonly relayWaits = new Map<number, (answer: HostRelayAnswer) => void>();
+  private readonly relayWaits = new Map<number, WindowWait<HostRelayAnswer>>();
   // The sessions whose channel has been up once (M9 fix 776), so one whose
   // channel died goes straight to typed; emptied of a session on its exit,
   // so a resumed one waits again. And the sends waiting for a channel.
@@ -506,26 +512,15 @@ export class PipeServer {
         resolve(answer);
       },
       requestBrowserRun: (req) => this.requestBrowserRun(req),
-      browserRunDone: (runId, answer) => {
-        // An unknown or late runId is dropped, as fileOpenDone drops one.
-        const resolve = this.runWaits.get(runId);
-        if (resolve === undefined) return;
-        this.runWaits.delete(runId);
-        resolve(answer);
-      },
+      browserRunDone: (runId, answer) => this.answerWait(this.runWaits, runId, answer),
       requestHostRelay: (host, ask) => this.requestHostRelay(host, ask),
-      hostRelayDone: (relayId, answer) => {
-        // An unknown or late relayId is dropped, as browserRunDone drops one.
-        const resolve = this.relayWaits.get(relayId);
-        if (resolve === undefined) return;
-        this.relayWaits.delete(relayId);
-        resolve(answer);
-      },
+      hostRelayDone: (relayId, answer) => this.answerWait(this.relayWaits, relayId, answer),
       submitToMod: (req) => this.submitToMod(req),
       askContext: (sessionId, detail) => this.askContext(sessionId, detail),
     });
     this.clients.add(client);
     socket.once('close', () => {
+      this.windowClosed(client);
       this.clients.delete(client);
       if (client.isApp) this.onAppClose();
     });
@@ -776,49 +771,116 @@ export class PipeServer {
         this.opts.log.info(`browser: no answer from the window for ${verb} within ${wait} ms`);
         resolve({ apps, drivers: drivers.length, answered: false });
       }, wait);
-      this.runWaits.set(runId, (answer) => {
-        clearTimeout(timer);
-        resolve({ apps, drivers: drivers.length, answered: true, answer });
-      });
+      // Every driver got the push, so the run is settled only when the last
+      // of them closes (M9 fix 1184).
+      this.holdForWindows(
+        this.runWaits,
+        runId,
+        drivers,
+        (answer) => {
+          clearTimeout(timer);
+          resolve({ apps, drivers: drivers.length, answered: true, answer });
+        },
+        () => {
+          clearTimeout(timer);
+          this.opts.log.info(`browser: the window closed before it answered ${verb}`);
+          resolve({ apps, drivers: drivers.length, answered: false, closed: true });
+        },
+      );
     });
+  }
+
+  // The waits on a window's answer (M9 fix 1184): a browser run held for
+  // every driver it went to, a host ask for its one window. A wait is
+  // deleted before its answer or gone runs, so the timer that finds it
+  // missing does nothing, and a late or unknown id is dropped.
+  private holdForWindows<A>(waits: Map<number, WindowWait<A>>, id: number, windows: Iterable<ClientConnection>, answer: (answer: A) => void, gone: () => void): void {
+    waits.set(id, { windows: new Set(windows), answer, gone });
+  }
+
+  private answerWait<A>(waits: Map<number, WindowWait<A>>, id: number, answer: A): void {
+    const wait = waits.get(id);
+    if (wait === undefined) return;
+    waits.delete(id);
+    wait.answer(answer);
+  }
+
+  // A window's socket closed (M9 fix 1184): every wait it was part of loses
+  // it, and one left with no window is settled at once rather than at its
+  // timeout, since nobody is left to answer it.
+  private windowClosed(client: ClientConnection): void {
+    for (const waits of [this.runWaits, this.relayWaits] as Map<number, WindowWait<unknown>>[]) {
+      for (const [id, wait] of [...waits]) {
+        if (!wait.windows.delete(client) || wait.windows.size > 0) continue;
+        waits.delete(id);
+        wait.gone();
+      }
+    }
   }
 
   // The relay of a request naming a remote host (M9 fix 1167): the daemon
   // holds no line to a host, the window's main process does, so the ask
   // goes to one window on the app topic at level 83, never two, since two
   // would each start the session, and the reply waits for its host.done.
-  private requestHostRelay(host: string, ask: HostAsk): Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }> {
+  private requestHostRelay(host: string, ask: HostAsk): Promise<{ session: SessionInfo } | { sessions: SessionInfo[] } | Record<string, never>> {
     const apps = this.subscribedCount('app');
-    const target = [...this.clients].find((c) => c.isApp && c.subscribed('app') && c.appLevel >= HOST_RELAY_LEVEL);
+    // M9 fix 1182: a kill or a remove needs a window that reads them as such.
+    const ends = ask.type === 'session.kill' || ask.type === 'session.remove';
+    const need = ends ? HOST_END_LEVEL : HOST_RELAY_LEVEL;
+    const target = [...this.clients].find((c) => c.isApp && c.subscribed('app') && c.appLevel >= need);
     if (apps === 0) {
       this.opts.log.info(`host: ${ask.type} on ${host} with no window open`);
       return Promise.reject(new SessionError('no-window', 'no window answered; open the Emerald app, which holds the line to every host'));
     }
     if (target === undefined) {
-      this.opts.log.info(`host: no window at level ${HOST_RELAY_LEVEL} for ${ask.type} on ${host}`);
-      return Promise.reject(new SessionError('no-window', `no window answered; the open window is older than level ${HOST_RELAY_LEVEL}`));
+      this.opts.log.info(`host: no window at level ${need} for ${ask.type} on ${host}`);
+      return Promise.reject(new SessionError('no-window', `no window answered; the open window is older than level ${need}`));
     }
     const relayId = ++this.relaySeq;
     this.opts.log.info(`host: ${ask.type} on ${host} relayed to the app`);
     target.send({ type: 'host.requested', relayId, host, ask });
     const ms = this.opts.hostRelayWaitMs ?? HOST_RELAY_WAIT_MS;
-    return new Promise<{ session: SessionInfo } | { sessions: SessionInfo[] }>((resolve, reject) => {
+    // What a reply that never came says the ask may still do on the host,
+    // for the timer and a closed window alike. A list started nothing, so it
+    // has no tail (M9 fix 1168).
+    const tail =
+      ask.type === 'session.spawn'
+        ? `; the session may still start on ${host}`
+        : ask.type === 'session.kill'
+          ? `; the session may still end on ${host}`
+          : ask.type === 'session.remove'
+            ? `; the session may still be forgotten on ${host}`
+            : '';
+    return new Promise<{ session: SessionInfo } | { sessions: SessionInfo[] } | Record<string, never>>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.relayWaits.delete(relayId)) return;
         this.opts.log.info(`host: no answer from the window for ${ask.type} on ${host} within ${ms} ms`);
-        const waited = `no window answered within ${Math.ceil(ms / 1000)} s`;
-        // A list started nothing, so it has no tail (M9 fix 1168).
-        reject(new SessionError('no-answer', ask.type === 'session.spawn' ? `${waited}; the session may still start on ${host}` : waited));
+        reject(new SessionError('no-answer', `no window answered within ${Math.ceil(ms / 1000)} s${tail}`));
       }, ms);
-      this.relayWaits.set(relayId, (answer) => {
-        clearTimeout(timer);
-        if (answer.error !== undefined) reject(new SessionError('host', answer.error));
-        else if (ask.type === 'session.list') {
-          if (answer.sessions !== undefined) resolve({ sessions: answer.sessions });
-          else reject(new SessionError('host', `the window's answer for ${host} held no sessions`));
-        } else if (answer.session !== undefined) resolve({ session: answer.session });
-        else reject(new SessionError('host', `the window's answer for ${host} held no session`));
-      });
+      this.holdForWindows(
+        this.relayWaits,
+        relayId,
+        [target],
+        (answer) => {
+          clearTimeout(timer);
+          if (answer.error !== undefined) reject(new SessionError('host', answer.error));
+          else if (ask.type === 'session.list') {
+            if (answer.sessions !== undefined) resolve({ sessions: answer.sessions });
+            else reject(new SessionError('host', `the window's answer for ${host} held no sessions`));
+          } else if (ends) {
+            // M9 fix 1182: a kill or a remove answers done.
+            if (answer.done === true) resolve({});
+            else reject(new SessionError('host', `the window's answer for ${host} held no done`));
+          } else if (answer.session !== undefined) resolve({ session: answer.session });
+          else reject(new SessionError('host', `the window's answer for ${host} held no session`));
+        },
+        // M9 fix 1184: the window quit mid-ask, so nobody will answer.
+        () => {
+          clearTimeout(timer);
+          this.opts.log.info(`host: the window closed before it answered ${ask.type} on ${host}`);
+          reject(new SessionError('no-answer', `the window closed before it answered${tail}`));
+        },
+      );
     });
   }
 
@@ -1182,18 +1244,35 @@ class ClientConnection {
         // refused without one (M9 fix 971).
         return this.spawnEnv().then((layer) => ({ session: this.manager.spawn(spawnReq, layer) }));
       }
-      case 'session.kill':
-        this.manager.kill(expectString(req, 'sessionId'), req.remove === undefined ? false : expectBoolean(req, 'remove'));
+      case 'session.kill': {
+        const sessionId = expectString(req, 'sessionId');
+        const remove = req.remove === undefined ? false : expectBoolean(req, 'remove');
+        if (req.host !== undefined) {
+          // M9 fix 1182: a session on a remote host; only the window holds a line to it.
+          const host = expectString(req, 'host');
+          if (host.trim() === '') throw new SessionError('bad-request', 'host must name a host');
+          return this.hooks.requestHostRelay(host, { type: 'session.kill', body: remove ? { sessionId, remove } : { sessionId } }).then(() => ({}));
+        }
+        this.manager.kill(sessionId, remove);
         return {};
+      }
       case 'session.resume': {
         const sessionId = expectString(req, 'sessionId');
         const cols = expectNumber(req, 'cols');
         const rows = expectNumber(req, 'rows');
         return this.spawnEnv().then((layer) => ({ session: this.manager.resume(sessionId, cols, rows, layer) }));
       }
-      case 'session.remove':
-        this.manager.remove(expectString(req, 'sessionId'));
+      case 'session.remove': {
+        const sessionId = expectString(req, 'sessionId');
+        if (req.host !== undefined) {
+          // M9 fix 1182: a session on a remote host; only the window holds a line to it.
+          const host = expectString(req, 'host');
+          if (host.trim() === '') throw new SessionError('bad-request', 'host must name a host');
+          return this.hooks.requestHostRelay(host, { type: 'session.remove', body: { sessionId } }).then(() => ({}));
+        }
+        this.manager.remove(sessionId);
         return {};
+      }
       case 'session.rename':
         this.manager.rename(expectString(req, 'sessionId'), expectName(req));
         return {};
@@ -1388,8 +1467,13 @@ class ClientConnection {
           if (!Array.isArray(raw['sessions'])) throw new SessionError('bad-request', 'sessions must be a list');
           answer.sessions = raw['sessions'] as SessionInfo[];
         }
-        const given = [answer.error, answer.session, answer.sessions].filter((x) => x !== undefined).length;
-        if (given !== 1) throw new SessionError('bad-request', 'host.done takes one of session, sessions or error');
+        // M9 fix 1182: a kill's or a remove's answer.
+        if (raw['done'] !== undefined) {
+          if (raw['done'] !== true) throw new SessionError('bad-request', 'done must be true');
+          answer.done = true;
+        }
+        const given = [answer.error, answer.session, answer.sessions, answer.done].filter((x) => x !== undefined).length;
+        if (given !== 1) throw new SessionError('bad-request', 'host.done takes one of session, sessions, done or error');
         this.hooks.hostRelayDone(relayId, answer);
         return {};
       }

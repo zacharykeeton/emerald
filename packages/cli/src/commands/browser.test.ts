@@ -132,6 +132,11 @@ test('no window, an older window, no answer and a timeout each exit with their o
   err = await failure(runBrowser(['snapshot']));
   assert.equal(err.exitCode, EXIT.failure);
   assert.equal(err.message, 'the window is older than emmer browser (it needs level 63); quit Emerald and open it again');
+  // M9 fix 1184: the windows closed before any answered.
+  runReply = { apps: 1, drivers: 1, answered: false, closed: true };
+  err = await failure(runBrowser(['snapshot']));
+  assert.equal(err.exitCode, EXIT.noAnswer);
+  assert.equal(err.message, 'sent to the window; the window closed before it answered');
   runReply = { apps: 1, drivers: 1, answered: false };
   err = await failure(runBrowser(['snapshot']));
   assert.equal(err.exitCode, EXIT.noAnswer);

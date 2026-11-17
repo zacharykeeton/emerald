@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { allPanes, browserPartition, findPane, focusPane, guestNavigationAllowed, isLocalPageUrl, paneUrl, setPaneView } from '@emerald/shared';
 import type { BrowserPaneView } from '@emerald/shared';
 import { adoptFrames, allBrowserSlots, browserSlot, dropPageState, framePageState, frameRect, LIVE_RELOAD_MS, paneOfWebContents, patchPageState, refusalLine, refusedFrame, refusedLink, rememberLocalRoot, setFrameElement, setPaneFrames, subscribeSlots, useFramePage, withPageUrl, withPageZoom, ZOOM_WRITE_MS, zoomToKeep } from './browser-layer.ts';
@@ -7,8 +7,11 @@ import { browserZoomKept } from './daemon-model.ts';
 import { localPageFolders, normalizePath } from './files-model.ts';
 import { wireDrivenPage } from './browser-drive-store.ts';
 import { editTab, getState, useStore } from './store.ts';
-import { useUi } from './ui.ts';
+import { getUiState, useUi } from './ui.ts';
 import { paneDropLight } from './drop-zone-model.ts';
+import { Menu } from './Menu.tsx';
+import { guestMenuRows } from './guest-menu-model.ts';
+import type { GuestMenu } from '../../preload/api.ts';
 
 type NavigateEvent = Event & { url: string; isMainFrame?: boolean };
 type TitleEvent = Event & { title: string };
@@ -116,9 +119,33 @@ export function BrowserLayer() {
   // M9 fix 670: a click into a page focuses its pane, as a press on any
   // other pane does, so a chord pressed next acts on that pane. The
   // page's press never reaches the window; main hears it on the guest.
+  // M9 fix 1178: a right-click in a page opens the window's own menu at
+  // the press. Electron gives a guest's x and y in the window's own
+  // coordinates already, at any page zoom (read at 100 and 150 percent:
+  // adding the page's box put the menu off by exactly that box's corner).
+  // The right press itself reaches main's input-event before Chromium
+  // asks for the menu, so the close below never closes the menu it opens.
+  const [guestMenu, setGuestMenu] = useState<{ paneId: string; menu: GuestMenu; seq: number } | null>(null);
+  const menuSeq = useRef(0);
+  useEffect(
+    () =>
+      window.emerald.keys.onGuestMenu((menu) => {
+        const paneId = paneOfWebContents(menu.webContentsId);
+        if (paneId === null) return;
+        // Design Mode on that pane: a right-click opens nothing new.
+        if (getUiState().designPaneId === paneId) return;
+        if (guestMenuRows(menu).length === 0) return;
+        setGuestMenu({ paneId, menu, seq: ++menuSeq.current });
+      }),
+    [],
+  );
+
   useEffect(
     () =>
       window.emerald.keys.onGuestInput(({ webContentsId, kind }) => {
+        // M9 fix 1178: a later press or key in any page closes its menu,
+        // since neither reaches the window, where the menu listens.
+        setGuestMenu(null);
         if (kind !== 'mouse') return;
         const paneId = paneOfWebContents(webContentsId);
         if (paneId === null) return;
@@ -135,6 +162,26 @@ export function BrowserLayer() {
         const drop = paneDropLight(sessionDrag, paneId, false);
         return <Frame key={frameId} frameId={frameId} paneId={paneId} url={urlOf.get(paneId) ?? ''} root={rootOf.get(paneId)} profile={profileOf.get(paneId)} zoom={zoomOf.get(paneId)} dropZone={drop?.zone ?? null} dropWord={drop?.word ?? null} />;
       })}
+      {guestMenu !== null && (
+        <Menu
+          key={guestMenu.seq}
+          x={guestMenu.menu.x}
+          y={guestMenu.menu.y}
+          className="browser-guest-menu"
+          data={{ pane: guestMenu.paneId }}
+          items={guestMenuRows(guestMenu.menu).map((row) => ({
+            label: row.label,
+            disabled: row.disabled,
+            separator: row.separator,
+            id: `${row.act}:${row.word ?? row.label}`,
+            onClick: () => {
+              setGuestMenu(null);
+              void window.emerald.keys.guestMenuAct(guestMenu.menu.webContentsId, row.act, row.word).catch(warn('the page menu'));
+            },
+          }))}
+          onClose={() => setGuestMenu(null)}
+        />
+      )}
     </div>
   );
 }

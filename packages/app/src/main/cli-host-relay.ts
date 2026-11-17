@@ -1,5 +1,6 @@
 // M9 fix 1167: the CLI's requests naming a remote host, emmer new --host,
-// emmer shell --host and (M9 fix 1168) emmer ls --host. The daemon cannot
+// emmer shell --host, (M9 fix 1168) emmer ls --host and (M9 fix 1182) emmer
+// kill --host and emmer rm --host. The daemon cannot
 // reach a host; this process holds the line to each (hostClients in
 // index.ts), so the daemon pushes host.requested to one window and holds
 // the CLI's reply for its host.done. An ask runs as the empty pane's Start
@@ -22,6 +23,8 @@ export interface CliHostDeps {
   record: (host: string) => RemoteHost | undefined;
   spawn: (host: string, body: Extract<HostAsk, { type: 'session.spawn' }>['body']) => Promise<{ session: SessionInfo }>;
   list: (host: string, body: Extract<HostAsk, { type: 'session.list' }>['body']) => Promise<{ sessions: SessionInfo[] }>;
+  kill: (host: string, body: Extract<HostAsk, { type: 'session.kill' }>['body']) => Promise<void>;
+  remove: (host: string, body: Extract<HostAsk, { type: 'session.remove' }>['body']) => Promise<void>;
   log: (msg: string) => void;
 }
 
@@ -44,6 +47,15 @@ export async function answerHostAsk(host: string, ask: HostAsk, deps: CliHostDep
     await deps.connect(host);
     // M9 fix 1168: a list has no folder to expand.
     if (ask.type === 'session.list') return { sessions: (await deps.list(host, ask.body)).sessions };
+    // M9 fix 1182: the host's own session.removed or session.changed push reaches the sidebar through onHostMessage.
+    if (ask.type === 'session.kill') {
+      await deps.kill(host, ask.body);
+      return { done: true };
+    }
+    if (ask.type === 'session.remove') {
+      await deps.remove(host, ask.body);
+      return { done: true };
+    }
     let cwd = ask.body.cwd;
     if (/^~([\\/]|$)/.test(cwd)) {
       // The home and the shell are what first contact read of the host.

@@ -77,6 +77,11 @@ test('nothing matching, or an empty reference, is an error', () => {
   failure(() => resolveSession([], 'a'), /no session matches "a"/);
 });
 
+test('the no-match line names the command that lists what was searched (M9 fix 1182)', () => {
+  failure(() => resolveSession(all, 'nope'), /^no session matches "nope" \(see emmer ls\)$/);
+  failure(() => resolveSession(all, 'nope', 'emmer ls --host stub'), /^no session matches "nope" \(see emmer ls --host stub\)$/);
+});
+
 test('shortId is the first UUID block', () => {
   assert.equal(shortId(A.id), 'a1b2c3d4');
 });

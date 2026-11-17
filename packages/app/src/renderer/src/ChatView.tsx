@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { contextWords, describeState, effortFold, effortState, folderName, formatDuration, markKind, queueFold, queueList, queueState, resultText, stepFold, stepState, teamCounts } from '@emerald/shared';
+import { contextWords, describeState, effortFold, effortState, folderName, forkAgentIds, formatDuration, markKind, queueFold, queueList, queueState, resultText, stepFold, stepState, teamCounts } from '@emerald/shared';
 import type { EffortState, QueueState, SessionInfo, SessionState, Step, StepState, StepTurn } from '@emerald/shared';
 import { ackIfDone, sendCtrlC, sendPrompt, typeInto } from './actions.ts';
 import { sendAskSubmit, sendFreeAnswer } from './actions.ts';
@@ -29,7 +29,7 @@ import type { SkillEntry, TailMark } from '../../preload/api.ts';
 import { parentPath, relativePath } from './files-model.ts';
 import { ChatPromptText, ChatReply, ChatThumbRow, EditCardHead, PromptImages, usePathLinks } from './ChatParts.tsx';
 import { openWebLink } from './ChatParts.tsx';
-import { ChatBash, ChatCompact } from './ChatParts.tsx';
+import { ChatBash, ChatCompact, ChatMarkdown } from './ChatParts.tsx';
 import { pendingEdit } from './chat-hunk.ts';
 import { LIVE_ROWS_CAP, dropTaken, liveTurns } from './chat-feed.ts';
 import type { LiveRow } from './chat-feed.ts';
@@ -223,6 +223,8 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   }, [session.id, path]);
   useEffect(() => setLive((rows) => dropTaken(rows, fed.steps.uuids, Date.now())), [fed]);
   const turns = useMemo(() => liveTurns(fed.steps, live), [fed, live]);
+  // M9 fix 1177: the background reviews the turns launched, so a result landing in a later turn still draws as the findings card.
+  const reviewTasks = useMemo(() => forkAgentIds(turns, 'code-review'), [turns]);
 
   // M9 fix 754: the person's messages queued behind the turn. An idle,
   // done or exited session shows none, so a queue a crash left behind
@@ -693,6 +695,8 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
   };
   const dispatch = (prompt: string, typed: boolean, pasted: boolean) => {
     const menu = opensMenu(prompt);
+    // M9 fix 1171: a send is the person asking to see the end; the layout effect reads a zero height as at the end.
+    lastHeight.current = 0;
     // M9 fix 1005: a /btw with a question opens the side strip. One sent
     // with chips is typed after the images and is no command, so it goes
     // as any prompt.
@@ -1506,7 +1510,7 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
             </div>
           )}
           {turns.map((turn, i) => (
-            <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} onSend={sendFromCard} />
+            <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} onSend={sendFromCard} reviewTasks={reviewTasks} />
           ))}
           {/* M9 fix 808: a starting Claude says so until its first word or its trust dialog. */}
           {session.state === 'starting' && <div className="chat-starting">{`Starting Claude in ${folderName(session.cwd) || session.cwd}…`}</div>}
@@ -2273,7 +2277,7 @@ function foldAnchorIn(timeline: Element, turn: number): HTMLElement | null {
   return replies[replies.length - 1] ?? (rows[at] as HTMLElement);
 }
 
-function ChatTurn({ index, turn, paneId, session, mode, open, onToggle, onSend }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void; onSend: (text: string) => boolean }) {
+function ChatTurn({ index, turn, paneId, session, mode, open, onToggle, onSend, reviewTasks }: { index: number; turn: StepTurn; paneId: string; session: SessionInfo; mode: ChatMode; open: boolean; onToggle: () => void; onSend: (text: string) => boolean; reviewTasks: ReadonlySet<string> }) {
   const when = timeOf(turn.at);
   const length = turn.at !== null && turn.endAt !== null ? formatDuration(turn.at, turn.endAt) : null;
   const stamp = when !== null || length !== null ? [when, length].filter((x) => x !== null).join(' · ') : null;
@@ -2311,7 +2315,7 @@ function ChatTurn({ index, turn, paneId, session, mode, open, onToggle, onSend }
               </Fragment>
             ) : (
               <Fragment key={i}>
-                <ChatStep step={item.step} paneId={paneId} session={session} time={item.step === turn.steps[0] ? bashStamp : null} reviewTurn={reviewTurn} onSend={onSend} />
+                <ChatStep step={item.step} paneId={paneId} session={session} time={item.step === turn.steps[0] ? bashStamp : null} reviewTurn={reviewTurn} reviewTasks={reviewTasks} onSend={onSend} />
                 <ChatThumbRow step={item.step} />
               </Fragment>
             ),
@@ -2417,7 +2421,25 @@ function FindingsCard({ reply, text, session, onSend }: { reply: FindingsReply; 
   );
 }
 
-function ChatStep({ step, paneId, session, time, reviewTurn, onSend }: { step: Step; paneId: string; session: SessionInfo; time: string | null; reviewTurn: boolean; onSend: (text: string) => boolean }) {
+// M9 fix 1177: a background agent's result under its notification line, closed on every draw.
+function TaskResult({ report, cwd }: { report: string; cwd: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {' · '}
+      <button type="button" className="chat-notification-fold" data-open={open ? '' : undefined} onClick={() => setOpen(!open)}>
+        {open ? 'Hide result' : 'Show result'}
+      </button>
+      {open && (
+        <div className="chat-notification-report">
+          <ChatMarkdown text={report} cwd={cwd} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function ChatStep({ step, paneId, session, time, reviewTurn, reviewTasks, onSend }: { step: Step; paneId: string; session: SessionInfo; time: string | null; reviewTurn: boolean; reviewTasks: ReadonlySet<string>; onSend: (text: string) => boolean }) {
   if (step.kind === 'thinking') {
     return (
       <div className="chat-step" data-kind="thinking">
@@ -2461,7 +2483,7 @@ function ChatStep({ step, paneId, session, time, reviewTurn, onSend }: { step: S
         );
     }
     return (
-      <div className="chat-step chat-command-note" data-kind="command" data-url={url} title={step.text}>
+      <div className="chat-step chat-command-note" data-kind="command" data-url={url} data-fork={step.fork?.skillName} title={step.text}>
         <span className="chat-command-note-text">{text}</span>
       </div>
     );
@@ -2488,12 +2510,15 @@ function ChatStep({ step, paneId, session, time, reviewTurn, onSend }: { step: S
   if (step.kind === 'notification') {
     // M9 fix 1170: a background /code-review's end carries the fork's
     // findings as its report; in a /code-review turn they draw as the card.
-    const reply = reviewTurn && step.source === 'task' && step.report !== undefined ? findingsOf(step.report) : null;
+    // M9 fix 1177: also in a later turn, when the task is a review this view saw launched.
+    const isReview = step.source === 'task' && step.report !== undefined && (reviewTurn || (step.taskId !== undefined && reviewTasks.has(step.taskId)));
+    const reply = isReview && step.report !== undefined ? findingsOf(step.report) : null;
     if (reply !== null) return <FindingsCard reply={reply} text={step.report ?? ''} session={session} onSend={onSend} />;
+    const report = step.report;
     // M9 fix 805: a task's end, an agent's report or another session's
     // message as one line; the output link opens like any chat path.
     return (
-      <div className="chat-step chat-notification" data-kind="notification" data-source={step.source} data-tone={step.tone}>
+      <div className="chat-step chat-notification" data-kind="notification" data-source={step.source} data-tone={step.tone} data-has-result={report === undefined ? undefined : ''}>
         <span className="chat-notification-text" title={step.title}>
           {step.text}
         </span>
@@ -2505,6 +2530,7 @@ function ChatStep({ step, paneId, session, time, reviewTurn, onSend }: { step: S
             </span>
           </>
         )}
+        {report !== undefined && <TaskResult report={report} cwd={session.cwd} />}
       </div>
     );
   }

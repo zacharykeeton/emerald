@@ -204,6 +204,17 @@ try {
   expect((await pressed(inPane('.browser-design'))) === 'true' && (await hostIn()), 'the mode is still on');
   step('(c) S copies the crop and C the markdown, and the mode stays on');
 
+  // (c2) M9 fix 1178: a right-click on the page while the mode is on opens
+  // no page menu, and makes no pick. It passes on code with no menu at
+  // all; it is the guard that the menu never opens over the picker.
+  await guest.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: centre(cta).x, y: centre(cta).y, button: 'right', clickCount: 1 });
+  await guest.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: centre(cta).x, y: centre(cta).y, button: 'right', clickCount: 1 });
+  await sleep(500);
+  expect(!(await s.evalJs(`!!document.querySelector('.browser-guest-menu')`)), 'fix 1178: no page menu over the picker');
+  expect((await pressed(inPane('.browser-design'))) === 'true' && (await hostIn()), 'fix 1178: the mode is still on after a right-click');
+  expect((await ev('window.pageClicks')) === 0, `fix 1178: the page saw no click on the right press (${await ev('window.pageClicks')})`);
+  step('(c2) M9 fix 1178: a right-click on the page while Design Mode is on opens no menu, and the mode stays on');
+
   // (d) The click: one block pasted into the stub, the crop on disk, the
   // page seeing no click, and the mode ended.
   await guestClick(centre(cta));

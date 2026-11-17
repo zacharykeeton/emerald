@@ -5,7 +5,7 @@
 //   3   emmer prompt sent the text and the session never started working
 //   64  the command line itself was wrong (sysexits EX_USAGE)
 //   69  the command needs a window and none is open (emmer open, emmer update, and --host on emmer new, shell and ls; sysexits EX_UNAVAILABLE)
-//   75  emmer open reached a window that did not answer within 3 s, or a --host command one that did not within 60 s; the open or the start may still land (sysexits EX_TEMPFAIL)
+//   75  emmer open reached a window that did not answer within 3 s, or a --host command one that did not within 60 s, or one whose window closed first; the open or the start may still land (sysexits EX_TEMPFAIL)
 //   77  emmer browser: the person clicked or typed in the driven page; emmer browser resume hands it back (sysexits EX_NOPERM)
 export const EXIT = {
   ok: 0,

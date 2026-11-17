@@ -2,7 +2,7 @@ import { decodeRequestError } from '../main/request-error.ts';
 import { fanOut } from '../main/ipc-fan-out.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget } from './api.ts';
+import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, GuestMenu, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget } from './api.ts';
 
 // M9 fix 1137: one listener per channel, fanned out, so Node's count stays at one; ipc-fan-out.ts warns at 50 handlers instead.
 const filesChanged = fanOut<[string, { renamed: boolean } | undefined]>('emerald:files-changed');
@@ -53,6 +53,12 @@ const api: EmeraldApi = {
       ipcRenderer.on('emerald:guest-refused', listener);
       return () => ipcRenderer.off('emerald:guest-refused', listener);
     },
+    onGuestMenu: (handler) => {
+      const listener = (_e: IpcRendererEvent, menu: GuestMenu) => handler(menu);
+      ipcRenderer.on('emerald:guest-menu', listener);
+      return () => ipcRenderer.off('emerald:guest-menu', listener);
+    },
+    guestMenuAct: (webContentsId, act, word) => ipcRenderer.invoke('emerald:guest-menu-act', webContentsId, act, word),
   },
   files: {
     list: (dir, keep) => ipcRenderer.invoke('emerald:files-list', dir, keep),

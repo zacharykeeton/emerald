@@ -181,3 +181,28 @@ export class HooksWatch {
     this.recheck.unref();
   }
 }
+
+// The first launch's hooks install (M9 fix 1179): the window's first status read waits for it, so it never reads the settings or the skill the install is about to replace.
+export class HooksInstallGate {
+  private pending: Promise<void> | null = null;
+
+  track(run: Promise<unknown>): void {
+    const p: Promise<void> = run
+      .then(
+        () => {},
+        () => {},
+      )
+      .finally(() => {
+        if (this.pending === p) this.pending = null;
+      });
+    this.pending = p;
+  }
+
+  // True when a run was pending and has now settled; false when none was.
+  async wait(): Promise<boolean> {
+    const p = this.pending;
+    if (p === null) return false;
+    await p;
+    return true;
+  }
+}

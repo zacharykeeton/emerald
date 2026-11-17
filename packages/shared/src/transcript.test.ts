@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assistantText, compactNoteText, editCounts, effortFold, effortOf, effortState, modRowLine, movesEnd, movesHead, parseSteps, parseTurns, resultText, saidFold, saidState, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
+import { assistantText, compactNoteText, editCounts, effortFold, effortOf, effortState, forkAgentIds, modRowLine, movesEnd, movesHead, parseSteps, parseTurns, resultText, saidFold, saidState, stepFold, stepFoldEntry, stepFork, stepList, stepState, usageFold, usageList, usageOf, usageState } from './transcript.ts';
 import { Limits } from './limits.ts';
 import type { Step, StepTurn } from './transcript.ts';
 
@@ -485,6 +485,19 @@ test("parseSteps (M9 fix 1170): a task notification carries its <result> as the 
   assert.equal(notes[1]!.kind === 'notification' ? 'report' in notes[1]! : null, false);
 });
 
+test("parseSteps (M9 fix 1177): a task notification keeps its <task-id>, and forkAgentIds finds a skill's launches", () => {
+  const launch = (skill: string, id: string, sec: number) =>
+    line({ type: 'system', subtype: 'local_command', content: `<local-command-stdout>Running in the background as @${skill}</local-command-stdout>\n<forked-skill-launch>{"agentId":"${id}","skillName":"${skill}","description":"d"}</forked-skill-launch>`, timestamp: new Date(Date.parse('2026-10-16T14:00:00.000Z') + sec * 1000).toISOString() });
+  const bare = taskText('completed', 'Agent finished', null).replace('<task-id>b0dgbzd9d</task-id>\n', '');
+  const text = [userAt('/code-review', 0), launch('code-review', 'a1', 1), userAt('/simplify', 2), launch('simplify', 'a2', 3), taskLine('completed', 'Agent finished', null, 30), userAt(bare, 31, { origin: { kind: 'task-notification', producer: 'session-task', runId: 'r1' } })].join('\n');
+  const turns = parseFolded(text);
+  const notes = turns.flatMap((t) => t.steps).filter((s) => s.kind === 'notification');
+  assert.equal(notes.length, 2);
+  assert.equal(notes[0]!.kind === 'notification' ? notes[0]!.taskId : null, 'b0dgbzd9d');
+  assert.equal(notes[1]!.kind === 'notification' ? 'taskId' in notes[1]! : null, false);
+  assert.deepEqual(forkAgentIds(turns, 'code-review'), new Set(['a1']));
+});
+
 test('parseSteps: a failed or killed task reads in the error tone, and one with no summary reads its status (M9 fix 805)', () => {
   const text = [userAt('go', 0), taskLine('failed', 'Background command "Slow gate" failed with exit code 1', null, 1), taskLine('killed', 'Background command "x" was stopped', null, 2), taskLine('failed', null, null, 3), taskLine('completed', null, null, 4)].join('\n');
   assert.deepEqual(noteOf(parseFolded(text)[0]!.steps), [
@@ -608,6 +621,17 @@ test('parseSteps: a /rename before any prompt opens a bare turn holding its note
   assert.equal(turns.length, 1);
   assert.equal(turns[0]!.prompt, '');
   assert.deepEqual(turns[0]!.steps.map((s) => (s.kind === 'command' ? s.text : s.kind)), ['Session renamed to: story time']);
+});
+
+test("parseSteps (M9 fix 1176): a forked skill's launch line is a command step carrying its fork, and a broken tail leaves fork off", () => {
+  const t0 = '2026-11-16T10:00:00.000Z';
+  const t1 = '2026-11-16T10:00:01.000Z';
+  const head = '<local-command-stdout>Running in the background as @code-review</local-command-stdout>\n';
+  const good = head + '<forked-skill-launch>{"agentId":"a1176","skillName":"code-review","description":"/code-review medium"}</forked-skill-launch>';
+  const turns = parseFolded([user('/code-review medium', t0), sys(good, t1)].join('\n'));
+  assert.deepEqual(turns[0]!.steps.at(-1), { kind: 'command', text: 'Running in the background as @code-review', at: Date.parse(t1), fork: { agentId: 'a1176', skillName: 'code-review' } });
+  const broken = parseFolded([user('/code-review medium', t0), sys(head + '<forked-skill-launch>{not json</forked-skill-launch>', t1)].join('\n'));
+  assert.deepEqual(broken[0]!.steps.at(-1), { kind: 'command', text: 'Running in the background as @code-review', at: Date.parse(t1) });
 });
 
 // M9 fix 977: a /rename writes a custom-title line (no time, no uuid) and,

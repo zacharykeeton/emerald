@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
-import { RELAY_LOST, pumpRelay } from './relay.ts';
+import { RELAY_LOST, pumpRelay, waitForToken } from './relay.ts';
 
 // A private pipe name so the test never meets a running emmerd.
 const PIPE = `\\\\.\\pipe\\emmer-relay-test-${process.pid}`;
@@ -86,5 +89,56 @@ test('the daemon going first resolves the pump with RELAY_LOST (M9 fix 1079)', a
     assert.equal(RELAY_LOST, 3);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+// M9 fix 1183: the token wait. Each file is written through a temp file and
+// a rename, as the daemon writes daemon.json.
+function writeInfo(home: string, token: string, startedAt: number): void {
+  const tmp = path.join(home, 'daemon.json.tmp');
+  fs.writeFileSync(tmp, JSON.stringify({ pid: 999999, pipeToken: token, startedAt }));
+  fs.renameSync(tmp, path.join(home, 'daemon.json'));
+}
+
+function scratchHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'emerald-relay-token-'));
+}
+
+test('a relay that started the daemon waits past a stale daemon.json for its own (M9 fix 1183)', async () => {
+  const home = scratchHome();
+  try {
+    writeInfo(home, 'a'.repeat(64), Date.now() - 86_400_000);
+    const since = Date.now();
+    const t0 = Date.now();
+    setTimeout(() => writeInfo(home, 'b'.repeat(64), Date.now()), 300);
+    const token = await waitForToken(home, since, 5000);
+    assert.equal(token, 'b'.repeat(64));
+    assert.ok(Date.now() - t0 >= 250, `answered after ${Date.now() - t0} ms`);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a relay that found the daemon running takes the token there at once (M9 fix 1183)', async () => {
+  const home = scratchHome();
+  try {
+    writeInfo(home, 'a'.repeat(64), Date.now() - 86_400_000);
+    const t0 = Date.now();
+    assert.equal(await waitForToken(home, null, 5000), 'a'.repeat(64));
+    assert.ok(Date.now() - t0 < 100, `answered after ${Date.now() - t0} ms`);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('with only an older daemon.json the wait runs out and answers its token (M9 fix 1183)', async () => {
+  const home = scratchHome();
+  try {
+    writeInfo(home, 'a'.repeat(64), Date.now() - 86_400_000);
+    const t0 = Date.now();
+    assert.equal(await waitForToken(home, Date.now(), 300), 'a'.repeat(64));
+    assert.ok(Date.now() - t0 >= 290, `answered after ${Date.now() - t0} ms`);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

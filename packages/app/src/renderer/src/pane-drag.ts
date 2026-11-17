@@ -6,7 +6,7 @@ import { pastEdge, tabDropTarget, zoneAt } from './drop-zone-model.ts';
 import type { TabDropTarget } from './drop-zone-model.ts';
 import { viewName } from './show-model.ts';
 import { editLayout, getState } from './store.ts';
-import { beginSessionDrag, beginViewDrag, endSessionDrag, flashCornerNote, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
+import { beginSessionDrag, beginTreeDrag, beginViewDrag, endSessionDrag, flashCornerNote, getUiState, revealInPane, setSessionDropTarget, setTabDropTarget } from './ui.ts';
 import { dropOutsideWindows } from './window-drop.ts';
 import type { DropTarget } from './ui.ts';
 import { railDropAt } from './explorer-drop.ts';
@@ -122,7 +122,7 @@ export function startDrag(payload: DragPayload | null, press: MouseEvent, onBegi
   const begin = () => {
     dragging = true;
     onBegin();
-    if (payload === null) beginSessionDrag(null);
+    if (payload === null) beginTreeDrag();
     else if (payload.kind === 'session') beginSessionDrag(payload.sessionId);
     else beginViewDrag(payload.view);
     document.body.classList.add('dragging-session');

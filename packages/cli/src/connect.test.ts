@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { CliError } from './cli-error.ts';
 import { JsonLinesDecoder, encodeJsonLine } from '@emerald/shared/jsonlines';
-import { tryConnect } from './connect.ts';
+import { findSessionHinted, tryConnect } from './connect.ts';
+import type { PipeClient } from '@emerald/shared/pipe-client';
 
 // M9 fix 612: the CLI's hello carries daemon.json's pipeToken, and a token
 // refusal is tried once more at once when the file now holds another one.
@@ -105,4 +106,20 @@ test('a bad-token refusal with the same token still in the file stands after one
   answer = () => ({ code: 'bad-token', message: 'hello token does not match' });
   await assert.rejects(tryConnect(), (err: unknown) => err instanceof CliError && err.message === 'emmerd refused the connection: hello token does not match');
   assert.equal(hellos.length, 1);
+});
+
+test('findSessionHinted names --host on a no-match only when the daemon lists a host (M9 fix 1182)', async () => {
+  // A client in the shape findSessionHinted reads: session.list, then hosts.list.
+  const fake = (hosts: () => Promise<unknown>) =>
+    ({
+      request: async (type: string) => {
+        if (type === 'session.list') return { sessions: [] };
+        if (type === 'hosts.list') return hosts();
+        throw new Error(`unexpected ${type}`);
+      },
+    }) as unknown as PipeClient;
+  const bare = 'no session matches "nope" (see emmer ls)';
+  await assert.rejects(findSessionHinted(fake(async () => ({ hosts: [{ name: 'stub' }] })), 'nope'), (err: unknown) => err instanceof CliError && err.message === `${bare}; a session on a remote host needs --host <name>` && err.exitCode === 1);
+  await assert.rejects(findSessionHinted(fake(async () => ({ hosts: [] })), 'nope'), (err: unknown) => err instanceof CliError && err.message === bare);
+  await assert.rejects(findSessionHinted(fake(async () => { throw new Error('unknown request type hosts.list'); }), 'nope'), (err: unknown) => err instanceof CliError && err.message === bare);
 });

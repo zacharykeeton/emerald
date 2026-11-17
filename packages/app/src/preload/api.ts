@@ -922,6 +922,24 @@ export interface GuestKey {
   metaKey: boolean;
 }
 
+// A right-click in a browser pane's page (M9 fix 1178), what main read off Electron's context-menu, for the window's own menu.
+export interface GuestMenu {
+  webContentsId: number;
+  x: number;
+  y: number;
+  editable: boolean;
+  canCut: boolean;
+  canCopy: boolean;
+  canPaste: boolean;
+  canSelectAll: boolean;
+  link: string;
+  image: string;
+  misspelled: string;
+  suggestions: string[];
+}
+
+export type GuestMenuAct = 'cut' | 'copy' | 'paste' | 'select-all' | 'copy-link' | 'copy-image' | 'spell';
+
 // The app's chords while a page has the keyboard (M9 fix 670): the
 // renderer tells main its chords, its prefix and whether the prefix (or
 // the cheat sheet) is up; main sends back the keys of a page that are
@@ -934,6 +952,9 @@ export interface KeysApi {
   onGuestInput(handler: (hit: { webContentsId: number; kind: 'mouse' | 'key' }) => void): () => void;
   // M9 fix 967: a page's own navigation main's guard refused, for the pane's error line; fix 987: frame when it was a frame inside the page.
   onGuestRefused(handler: (refused: { webContentsId: number; url: string; frame?: true }) => void): () => void;
+  // M9 fix 1178: a right-click in a page, and the row picked from its menu (word is the suggestion for spell).
+  onGuestMenu(handler: (menu: GuestMenu) => void): () => void;
+  guestMenuAct(webContentsId: number, act: GuestMenuAct, word?: string): Promise<void>;
 }
 
 // The usage record (M9 fix 676): send-only; main checks every line

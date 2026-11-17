@@ -218,6 +218,8 @@ export async function runBrowser(argv: string[]): Promise<number> {
     const res = await client.request('browser.run', { paneId: pane.id, verb: verb as BrowserVerb, args, by, timeoutMs, ...(filtered ? { filter } : {}) });
     if (res.apps === 0) throw new CliError(NO_WINDOW, EXIT.noWindow);
     if (res.drivers === 0) throw new CliError(`the window is older than ${what} (it needs level ${needs}); quit Emerald and open it again`);
+    // M9 fix 1184: every window the run went to closed before any answered.
+    if (res.closed === true) throw new CliError('sent to the window; the window closed before it answered', EXIT.noAnswer);
     if (res.answered === false || res.answer === undefined) {
       throw new CliError(`sent to the window; it did not answer within ${Math.round((timeoutMs + 5000) / 1000)} s`, EXIT.noAnswer);
     }
