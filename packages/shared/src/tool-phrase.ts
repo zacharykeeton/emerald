@@ -97,6 +97,16 @@ export function askWords(toolName: unknown, toolInput: unknown): string | null {
   return subject === null ? toolName : `${toolName}: ${subject}`;
 }
 
+// The ask's subject in full (M9 fix 1199), for the card's head and the toast: the field askWords names, uncut, as the mod sent it (already cut to 200 characters by its shortInput).
+export function askInput(toolName: unknown, toolInput: unknown): string | null {
+  if (typeof toolName !== 'string' || toolName.trim() === '') return null;
+  const input: ToolInput = typeof toolInput === 'object' && toolInput !== null ? (toolInput as ToolInput) : {};
+  for (const value of [input.command, input.file_path, input.notebook_path, input.url, input.pattern, input.query, input.skill, input.description]) {
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return null;
+}
+
 export function toolPhrase(toolName: unknown, toolInput: unknown): string | null {
   if (typeof toolName !== 'string' || toolName.trim() === '') return null;
   const input: ToolInput = typeof toolInput === 'object' && toolInput !== null ? (toolInput as ToolInput) : {};

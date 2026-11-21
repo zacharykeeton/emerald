@@ -2,6 +2,30 @@
 
 The notes the app opens after an install, newest batch first. Each section is one batch of fixes, written for someone who was not there: an opening line on the batch and whether the daemon needs a restart, then Highlights, the few changes worth trying first and how to try them, and Details, a paragraph for every other change you can see. Click a heading to fold or unfold its section; the older batches open folded. The longer record of every batch, with the measurements and the gotchas, is kept in the working repository and not published; this file is the short version, and the app's What's New tab shows it (Ctrl+Shift+P, then `what`, brings it back once it has been closed).
 
+## Fixes 1186 to 1201, 2026-11-20
+
+Sixteen fixes: the Statistics tab counting a project's whole life, its agents' requests and tokens among the figures, Allow once and Deny on a permission ask's notification, the page menu's Copy and the chat box's spelling suggestions, a page a session opens landing beside it, and a sparkle on the taskbar button while sessions work. The daemon goes to level 85; the update stops the old one, so nothing asks for a restart, and your sessions come back through Resume.
+
+### Highlights
+
+**A project's whole life in Statistics.** The tab now counts the sessions the daemon no longer remembers, by the folder their own log lines name, and a month that has rolled out of the log is kept in a ledger first, so a project's price no longer shrinks as it ages. When a project's commits go back further than its first activity in Emerald, the span counts from that activity and a note under it says on which day the figures start. After a checkout is renamed or moved, `emmer former add <folder> <old folder>` counts the old folder's history with it, and the tab names it.
+
+**The agents count too.** The requests and tokens include the subagents' own from today, read from their transcripts at the end of each turn, and the last month's are recounted once from the transcripts still on disk; the tab says from which day the agents are counted. The price already included them.
+
+**Allow once from the notification.** A permission ask's notification shows the command on its own line and two buttons, Allow once and Deny; a press answers Claude without bringing the window up, and the chat notes what was answered. The ask card in the chat and the sidebar's answer card now head with the tool, the exact command and the rule that asked, rather than an excerpt of the screen.
+
+**Copy from a page's menu.** A browser page's right-click Copy, Cut and Paste reach your clipboard, and a picked spelling suggestion replaces the word; before, they did nothing. A right-click on a misspelt word in the chat box lists its spelling suggestions and Add to dictionary above Cut, Copy and Paste.
+
+### Details
+
+**A page beside its session.** A page a session opens with `emmer open <url>` or `--browser` lands beside that session's own pane, on its own tab, and the tab you are looking at stays in front.
+
+**A refused Resume says so.** A Resume or a rename that is refused says why at the bottom of the window, `Could not resume: stub is unreachable`, where before it said nothing.
+
+**Remote hosts after an update.** A host with nothing running on it gets its daemon restarted onto the new kit at the connect, without the banner's ask; a host with a live session keeps the row and its Restart. An old kit's removal that a held file blocks is tried again five seconds later.
+
+**The taskbar button.** While sessions work and nobody wants you, the gem on the taskbar button sparkles once every ten seconds; a permission ask replaces it with the badge at once, which now breathes a little slower. It stays still when Windows' animation effects are off.
+
 ## Fixes 1171 to 1185, 2026-11-16
 
 Fifteen fixes, fourteen of them shipped: a right-click menu in a browser pane's page, a chat that jumps to what you just sent, the chat's cards for a background agent's result, Clear exited for a remote host's sessions, `emmer kill --host` and `emmer rm --host`, and a first contact with a host that is not refused. The daemon goes to level 84; the update stops the old one, so nothing asks for a restart, and your sessions come back through Resume.

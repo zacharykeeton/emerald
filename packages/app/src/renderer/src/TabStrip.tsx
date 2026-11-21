@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { failedToast } from './toast-store.ts';
 import type { LayoutTab, SessionInfo } from '@emerald/shared';
 import { describeState, findPane, markKind, workingMotion } from '@emerald/shared';
 import { closeLayoutTab, moveTabToNewWindow, newTab, renameLayoutTab, showLayoutTab } from './actions.ts';
@@ -193,7 +194,7 @@ export function TabStrip() {
   };
   const rename = (tab: LayoutTab, name: string | null) => {
     setRenaming(null);
-    if (name !== null && name !== '') void renameLayoutTab(tab.id, name).catch(warn('rename tab'));
+    if (name !== null && name !== '') void renameLayoutTab(tab.id, name).catch(failedToast('rename', 'rename tab'));
   };
   const close = (tab: LayoutTab) => void closeLayoutTab(tab.id).catch(warn('close tab'));
   const layoutTab = (tab: LayoutTab) => {

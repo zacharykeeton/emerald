@@ -204,6 +204,14 @@ const statsFirstCommitAt = hm(dayAgo(20).getTime(), 9, 0);
     status(hm(D7, 16, 1), id, cwd, [10, 0, 0], 10, usd);
     conv(hm(D7, 16, 5), id, cwd, 'Stop', { edge: { from: 'working', to: 'done' } });
   }
+  // M9 fix 1186: a hosted track no session record names, in a folder of
+  // its own beside the repository (not under it, so the fix 837 reads
+  // stand): activity.totals places it by the folder its own lines name.
+  const hosted = (at, id, cwd, event, extra = {}) => seed.push(JSON.stringify({ at, sessionId: id, event, outcome: 'applied', ...extra.edge, payload: { hook_event_name: event, session_id: id, cwd, ...extra.payload } }));
+  const gone = `${statsRepo}-gone`;
+  hosted(hm(D7, 16, 30), 'stats-gone', gone, 'UserPromptSubmit', { edge: { from: 'idle', to: 'working' } });
+  hosted(hm(D7, 16, 31), 'stats-gone', gone, 'StatusLine', { payload: { model: { display_name: 'Opus 5' }, cost: { total_cost_usd: 0.4 }, context_window: { used_percentage: 10, current_usage: { input_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 20 } } } });
+  hosted(hm(D7, 16, 35), 'stats-gone', gone, 'Stop', { edge: { from: 'working', to: 'done' } });
 }
 seed.sort((x, y) => JSON.parse(x).at - JSON.parse(y).at);
 fs.mkdirSync(path.join(process.env['EMERALD_HOME'], 'logs'), { recursive: true });
@@ -247,6 +255,17 @@ const historyWant = () => {
 const usageClaudeHome = path.join(process.env['EMERALD_HOME'], 'claude-home');
 fs.mkdirSync(usageClaudeHome, { recursive: true });
 fs.writeFileSync(path.join(usageClaudeHome, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'verify-token-m54', expiresAt: Date.now() + 3600_000 } }));
+// M9 fix 1201: one agent transcript of stats-wt's (the unhosted
+// conversation in the worktree beside the stats folder, a folder no step
+// reads the figures of) with two responses seven days back, for the
+// daemon's one-time recount at its first start.
+{
+  const D7 = dayAgo(7).getTime();
+  const file1201 = path.join(usageClaudeHome, 'projects', 'verify-1201', 'stats-wt', 'subagents', 'agent-r1201.jsonl');
+  const reply1201 = (id, at) => JSON.stringify({ type: 'assistant', timestamp: new Date(at).toISOString(), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 } } });
+  fs.mkdirSync(path.dirname(file1201), { recursive: true });
+  fs.writeFileSync(file1201, reply1201('msg_1201a', hm(D7, 16, 2)) + '\n' + reply1201('msg_1201b', hm(D7, 16, 3)) + '\n');
+}
 process.env['EMERALD_USAGE_FLOOR_MS'] = '0';
 const usageResetsAt = new Date(Date.now() + 41 * 60_000).toISOString();
 const usageReply = { status: 200, body: { five_hour: { utilization: 17, resets_at: usageResetsAt }, seven_day: { utilization: 5, resets_at: new Date(Date.now() + 6 * 24 * 3_600_000).toISOString() } } };
@@ -257,6 +276,8 @@ const usageServer = http.createServer((req, res) => {
 });
 await new Promise((r) => usageServer.listen(0, '127.0.0.1', r));
 process.env['EMERALD_USAGE_URL'] = `http://127.0.0.1:${usageServer.address().port}/api/oauth/usage`;
+// Before the launch, for fix 1201's read of where the agents' count starts.
+const launchAt1201 = Date.now();
 // Reassigned by the M69 relaunch at the end.
 let s = await launch(freshPort(), { freshState: true });
 app = s;
@@ -2324,7 +2345,7 @@ try {
   // one tag. The worktree's and the other folder's requests must be left
   // out: three or four requests would mean one was counted.
   {
-    const { spanText, tokensText, usdText } = await import('../src/renderer/src/stats-model.ts');
+    const { spanNoteText, spanText, tokensText, usdText } = await import('../src/renderer/src/stats-model.ts');
     const { session: statsShell } = await zreq(s, 'session.spawn', { kind: 'shell', cwd: statsRepo, name: 'stats-shell', cols: 100, rows: 30 });
     // M9 fix 885: the rail's Stats tab, before the document tab below so
     // its ask is the first on the folder. The stats shell goes onto the
@@ -2413,7 +2434,13 @@ try {
     const want837 = ['Commits|2|', 'Releases|1|tags on main', 'Requests|2|', `Tokens in|${tokensText(t.total.up)}|`, `Tokens out|${tokensText(t.total.down)}|`, `At API prices|${usdText(t.total.usd, true)}|`, 'Agent time|30m|'];
     expect(JSON.stringify(view837.figures) === JSON.stringify(want837), `the tab's figures (wanted ${JSON.stringify(want837)}, read ${JSON.stringify(view837.figures)})`);
     const spanWant = spanText(statsFirstCommitAt, t.firstAt, view837.now);
-    expect(view837.span === spanWant && spanWant.startsWith('21 days, '), `the span runs from the first commit, 21 days (wanted ${spanWant}, read ${view837.span})`);
+    // M9 fix 1190: the first commit is 20 days back and stats-a's first
+    // line 7, so the span counts the 8 days of activity, and a note under
+    // it names both days.
+    expect(view837.span === spanWant && spanWant.startsWith('8 days of activity, '), `the span runs from the first activity line, 8 days (wanted ${spanWant}, read ${view837.span})`);
+    const noteWant1190 = spanNoteText(statsFirstCommitAt, t.firstAt, view837.now);
+    const note1190 = await s.evalJs(`document.querySelector('.stats-view .stats-span-note')?.textContent ?? null`);
+    expect(note1190 === noteWant1190 && typeof noteWant1190 === 'string' && noteWant1190.startsWith('These figures start on '), `the note under the span names where the figures start and the first commit (wanted ${JSON.stringify(noteWant1190)}, read ${JSON.stringify(note1190)})`);
     expect(view837.history !== null && view837.history.startsWith(historyWant()) && view837.history.endsWith('; the requests, tokens, price and agent time before it are not in the log'), `the history line names the log's start and says what it leaves out (${view837.history})`);
     // M9 fix 885: the first commit is 20 days back and the log's first line
     // 13, so one commit and one release (the tag made now) fall from the
@@ -2424,7 +2451,22 @@ try {
     expect(/^as of \d\d:\d\d$/.test(view837.asOf ?? ''), `the as-of time sits beside the span (${view837.asOf})`);
     expect(view837.tab === `Statistics · ${path.basename(statsRepo)}`, `the strip's tab is named for the folder (${view837.tab})`);
     await s.screenshot('m9-fix837-stats-tab.png');
-    step('M9 fix 837: Statistics in a tab from the + menu reads the folder\'s commits, its tag as the release, its two requests with the estimate, the tokens, the price and the agent time, the worktree and the other folder left out, the span from the first commit, and the yield counted from the log\'s first day (fix 885)');
+    step('M9 fix 837: Statistics in a tab from the + menu reads the folder\'s commits, its tag as the release, its two requests with the estimate, the tokens, the price and the agent time, the worktree and the other folder left out, the span from the first activity line, later than the first commit, with a note naming both (fix 1190), and the yield counted from the log\'s first day (fix 885)');
+
+    // M9 fix 1186: stats-gone, a hosted track no session record names, is
+    // counted in the folder its own hook lines name. One pipe read; the
+    // window stays as the fix 837 step left it.
+    const gone1186 = await zreq(s, 'activity.totals', { folder: `${statsRepo}-gone` });
+    expect(gone1186.total.requests === 1 && Math.abs(gone1186.total.usd - 0.4) < 1e-9, `activity.totals counts stats-gone's one request at $0.40 in its own folder (${JSON.stringify({ requests: gone1186.total.requests, usd: gone1186.total.usd })})`);
+    // M9 fix 1187: the daemon wrote its track folders once, on a private
+    // home with no history file and no sessions.json, and warned nothing.
+    // A rerun on the same home finds the first run's file and reads true.
+    const logs1187 = path.join(process.env['EMERALD_HOME'], 'logs');
+    expect(fs.existsSync(path.join(logs1187, 'track-folders.json')), 'fix 1187: logs/track-folders.json is written at the start');
+    const emmerd1187 = fs.readFileSync(path.join(logs1187, 'emmerd.log'), 'utf8');
+    expect(!emmerd1187.includes('track folders not written') && !emmerd1187.includes('track-folders.json could not be read'), 'fix 1187: the daemon log carries no track folders warning');
+    step('M9 fix 1186: a track no session record names is counted in the folder its own hook lines name');
+    step('M9 fix 1187: the daemon wrote its track folders on a private home with no history file, and warned nothing');
 
     // M9 fix 838: a Max 20x plan entered in the tab, read against the
     // pure sums, kept across a reload (emerald.plan) and removed again.
@@ -2442,13 +2484,126 @@ try {
     const paid838 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); const p = v.querySelector('.stats-paid'); return { paid: Number(p.dataset.paid), text: p.textContent, from: Number(v.querySelector('.stats-span').dataset.from), now: Number(v.dataset.now) }; })()`);
     const plan838 = [{ plan: 'Max 20x', monthlyUsd: 200, from: planDay }];
     const paidWant = paidOver(plan838, paid838.from, paid838.now);
-    const textWant = paidText(t.total.usd, t.total.estimated, paid838.paid, Number(spanWant.split(' ')[0]));
+    const textWant = paidText(t.total.usd, t.total.estimated, paid838.paid, Number(spanWant.split(' ')[0]), true);
     expect(Math.abs(paid838.paid - paidWant) < 0.005 && paid838.text === textWant, `the line pays the plan over the span (wanted ${paidWant} and ${JSON.stringify(textWant)}, read ${JSON.stringify(paid838)})`);
     await s.send('Page.reload');
     await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready' && document.querySelectorAll('.stats-plan-entry').length === 1`, 'the tab back after a reload with the plan kept', 20000);
     await s.evalJs(`document.querySelector('.stats-plan-remove').click()`);
     await s.waitFor(`document.querySelectorAll('.stats-plan-entry').length === 0 && document.querySelector('.stats-paid')?.textContent === ${JSON.stringify(noPlan)}`, 'the entry removed and the line back to no plan');
     step('M9 fix 838: a Max 20x plan entered in the tab sets what it paid over the span against the API price, kept across a reload and removed again');
+
+    // M9 fix 1189: an agent's requests and tokens, read off its transcript
+    // at the parent's Stop. An unhosted conversation in the stats folder
+    // whose transcript has a subagents folder beside it holding one agent
+    // of two responses (the first streamed over two lines); its Stop reads
+    // them into the folder's totals at no price, a second Stop reads
+    // nothing more, and a third response read at a SubagentStop adds one.
+    {
+      const { agentsText } = await import('../src/renderer/src/stats-model.ts');
+      const conv1189 = 'conv-1189-agents';
+      const transcript1189 = path.join(process.env['EMERALD_HOME'], 'claude-1189', `${conv1189}.jsonl`);
+      const agentFile1189 = path.join(process.env['EMERALD_HOME'], 'claude-1189', conv1189, 'subagents', 'agent-a1189.jsonl');
+      const reply1189 = (id, usage, output) => JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { id, model: 'claude-opus-5-5', usage: { input_tokens: usage[0], cache_creation_input_tokens: usage[1], cache_read_input_tokens: usage[2], output_tokens: output } } }) + '\n';
+      fs.mkdirSync(path.dirname(agentFile1189), { recursive: true });
+      fs.writeFileSync(transcript1189, '');
+      fs.writeFileSync(agentFile1189, reply1189('msg_1189a', [3, 1000, 2000], 50) + reply1189('msg_1189a', [3, 1000, 2000], 60) + reply1189('msg_1189b', [2, 0, 3000], 40));
+      const post1189 = async (payload) => {
+        const d = daemon();
+        const res = await fetch(`http://127.0.0.1:${d.hookPort}/hook`, {
+          method: 'POST',
+          headers: { 'X-Emerald-Token': d.hookToken, 'X-Emerald-Session': conv1189, 'X-Emerald-Unhosted': '1' },
+          body: JSON.stringify({ session_id: conv1189, cwd: statsRepo, transcript_path: transcript1189, ...payload }),
+        });
+        expect(res.status === 204, `sink answered 204 for the fix 1189 ${payload.hook_event_name}`);
+      };
+      const totals1189 = () => zreq(s, 'activity.totals', { folder: statsRepo });
+      const waitRequests1189 = async (n, what) => {
+        const until = Date.now() + 10_000;
+        let last = await totals1189();
+        while (last.total.requests !== n && Date.now() < until) {
+          await sleep(200);
+          last = await totals1189();
+        }
+        expect(last.total.requests === n, `${what}: wanted ${n} requests, read ${last.total.requests}`);
+        return last;
+      };
+      await post1189({ hook_event_name: 'SessionStart', source: 'startup' });
+      await post1189({ hook_event_name: 'UserPromptSubmit', prompt: 'send an agent' });
+      await sleep(1000);
+      await post1189({ hook_event_name: 'Stop', stop_hook_active: false });
+      const got1189 = await waitRequests1189(4, "the Stop counted the agent's two responses beside stats-a's two");
+      expect(Math.abs(got1189.total.usd - t.total.usd) < 1e-9 && got1189.total.up === t.total.up + 6005 && got1189.total.down === t.total.down + 100 && typeof got1189.agentsFrom === 'number', `the agent's tokens and no price of its own, and where the count starts (${JSON.stringify({ usd: got1189.total.usd, was: t.total.usd, up: got1189.total.up - t.total.up, down: got1189.total.down - t.total.down, agentsFrom: got1189.agentsFrom })})`);
+      const agentLines1189 = () =>
+        fs
+          .readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'hooks.jsonl'), 'utf8')
+          .split('\n')
+          .filter((l) => l.includes('"agentUsage"'))
+          .map((l) => JSON.parse(l).agentUsage)
+          // This conversation's own: the start's recount (fix 1201) writes one for stats-wt.
+          .filter((a) => a.sessionId === conv1189);
+      const line1189 = agentLines1189().at(-1);
+      expect(line1189?.agentId === 'a1189' && line1189.sessionId === conv1189 && line1189.requests === 2 && line1189.upTo === fs.statSync(agentFile1189).size, `the daemon's agentUsage line names the agent, its two requests and where the read stopped (${JSON.stringify(line1189)})`);
+      await post1189({ hook_event_name: 'Stop', stop_hook_active: false });
+      await sleep(2000);
+      expect((await totals1189()).total.requests === 4 && agentLines1189().length === 1, `a second Stop with nothing appended counts nothing again (${agentLines1189().length} agent lines)`);
+      fs.appendFileSync(agentFile1189, reply1189('msg_1189c', [1, 0, 3100], 30));
+      await post1189({ hook_event_name: 'SubagentStop', agent_id: 'a1189', agent_type: 'general-purpose' });
+      const got1189b = await waitRequests1189(5, "the SubagentStop read the agent's third response");
+      await s.send('Page.reload');
+      await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready'`, 'the Statistics tab ready after the reload (fix 1189)', 20000);
+      const view1189 = await s.evalJs(`(() => { const v = document.querySelector('.stats-view'); return { now: Number(v.dataset.now), from: Number(v.querySelector('.stats-span')?.dataset.from), agents: v.querySelector('.stats-agents')?.textContent ?? null, requests: [...v.querySelectorAll('.stats-figure')].map((f) => [f.querySelector('.stats-figure-label')?.textContent ?? '', f.querySelector('.stats-figure-value')?.textContent ?? '', f.querySelector('.stats-figure-note')?.textContent ?? ''].join('|')).find((x) => x.startsWith('Requests|')) ?? null }; })()`);
+      const agentsWant1189 = agentsText(got1189b.agentsFrom, view1189.from, view1189.now);
+      expect(agentsWant1189 !== null && view1189.agents === agentsWant1189 && view1189.requests === 'Requests|5|', `the tab marks where the agents' count starts and counts five requests (wanted ${JSON.stringify(agentsWant1189)}, read ${JSON.stringify(view1189)})`);
+      step("M9 fix 1189: an agent's requests and tokens are read off its transcript at the parent's Stop into the folder's totals at no price, a second Stop reads nothing again, a SubagentStop reads its next response, and the tab marks where the agents' count starts");
+    }
+
+    // M9 fix 1201: the daemon's one-time recount at its first start read
+    // stats-wt's agent transcript seeded in the harness Claude home, so the
+    // worktree folder counts its two responses beside its status line and
+    // its mark of where the agents' count starts is the later response's
+    // time, seven days back; a folder with nothing recounted keeps the
+    // daemon's own start.
+    {
+      const wt1201 = `${statsRepo}-wt`;
+      const until1201 = Date.now() + 15_000;
+      let t1201 = await zreq(s, 'activity.totals', { folder: wt1201 });
+      while (t1201.total.requests !== 3 && Date.now() < until1201) {
+        await sleep(300);
+        t1201 = await zreq(s, 'activity.totals', { folder: wt1201 });
+      }
+      const at1201 = hm(dayAgo(7).getTime(), 16, 3);
+      expect(t1201.total.requests === 3 && t1201.agentsFrom === at1201, `the worktree folder counts its one request and the two recounted, its agents counted from ${new Date(at1201).toISOString()} (${JSON.stringify({ requests: t1201.total.requests, agentsFrom: t1201.agentsFrom === undefined ? null : new Date(t1201.agentsFrom).toISOString() })})`);
+      const repo1201 = await zreq(s, 'activity.totals', { folder: statsRepo });
+      expect(typeof repo1201.agentsFrom === 'number' && repo1201.agentsFrom >= launchAt1201, `the stats folder, with nothing recounted, keeps the daemon's own start (${repo1201.agentsFrom} against the launch at ${launchAt1201})`);
+      const marker1201 = JSON.parse(fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'agents-counted.json'), 'utf8'));
+      expect(typeof marker1201.recountDone === 'number' && marker1201.from === repo1201.agentsFrom, `agents-counted.json marks the recount done beside the count's start (${JSON.stringify(marker1201)})`);
+      const daemonLog1201 = fs.readFileSync(path.join(process.env['EMERALD_HOME'], 'logs', 'emmerd.log'), 'utf8');
+      const recountLine1201 = daemonLog1201.split('\n').find((l) => l.includes('agent recount: ')) ?? null;
+      expect(recountLine1201 !== null && recountLine1201.includes('agent recount: 1 agent files read') && recountLine1201.includes('1 agents counted on 1 sessions') && !daemonLog1201.includes('agent usage: could not read'), `the daemon logged its recount, one file and one agent, and no read failed (${recountLine1201})`);
+      step("M9 fix 1201: the daemon's one-time recount read the worktree's agent transcript into its folder's totals, dated by its last response, marked the recount done, and left the stats folder's mark on the daemon's own start");
+    }
+
+    // M9 fix 1191: a former folder counted with the folder. The sibling
+    // folder stats-other (one request seven days back, at 16:00, after
+    // stats-a's first line) is made a former folder of the stats folder
+    // with the CLI, so its request joins the totals and the tab names it;
+    // removed again, the totals go back. The folder need not exist (fix
+    // 885's step removed it).
+    {
+      const other1191 = `${statsRepo}-other`;
+      const added1191 = (await cli('former', 'add', statsRepo, other1191)).trim();
+      expect(added1191 === `added ${other1191} as a former folder of ${statsRepo}`, `emmer former add prints what it added (${JSON.stringify(added1191)})`);
+      const with1191 = await zreq(s, 'activity.totals', { folder: statsRepo });
+      expect(with1191.total.requests === 6 && JSON.stringify(with1191.former) === JSON.stringify([other1191]) && with1191.firstAt === t.firstAt, `the totals count stats-other's request with the folder's five and name the former folder, the first line unchanged (${JSON.stringify({ requests: with1191.total.requests, former: with1191.former, firstAt: with1191.firstAt, was: t.firstAt })})`);
+      await s.send('Page.reload');
+      await s.waitFor(`document.querySelector('.stats-view')?.dataset.state === 'ready'`, 'the Statistics tab ready after the reload (fix 1191)', 20000);
+      const formerLine1191 = await s.evalJs(`document.querySelector('.stats-view .stats-former')?.textContent ?? null`);
+      expect(formerLine1191 === `Counted with its former folder ${other1191}`, `the tab names the former folder under the history line (${JSON.stringify(formerLine1191)})`);
+      await cli('former', 'rm', statsRepo, other1191);
+      const without1191 = await zreq(s, 'activity.totals', { folder: statsRepo });
+      expect(without1191.total.requests === 5 && !('former' in without1191), `removed, the totals go back to five with no former key (${JSON.stringify({ requests: without1191.total.requests, former: without1191.former })})`);
+      step("M9 fix 1191: emmer former add counts a former folder's activity with the folder and the tab names it; emmer former rm takes it back out");
+    }
 
     await s.evalJs(`document.querySelector('.tab.tab-file[data-key=' +${JSON.stringify(JSON.stringify(view837.key))} + '] .tab-close').click()`);
     await s.waitFor(`!document.querySelector('.stats-view')`, 'the Statistics tab closed');

@@ -1288,3 +1288,37 @@ export function strayLanded(seen: ReadonlySet<string>, counts: ReadonlyMap<strin
 
 // M9 fix 783: a Ctrl+C within about a second of a turn's Stop left the [Image #N] marker in Claude Code's prompt (fix 748's runs), so the × waits this long after the session leaves working or needs-input.
 export const CHIP_SETTLE_MS = 1500;
+
+// M9 fix 1193: how long the box's right-click waits for main's spelling before it opens the plain menu.
+export const BOX_SPELL_WAIT_MS = 200;
+
+const SPELL_CHAR = /[\p{L}\p{M}'’]/u;
+const SPELL_WORD = /^[\p{L}\p{M}'’]+$/u;
+const APOSTROPHE = /['’]/u;
+
+// The word a right-click in the box is on (M9 fix 1193): a selection of one
+// word, else the run of letters around the caret with its apostrophes
+// trimmed off both ends; null when there is no word there.
+export function spellWordAt(text: string, from: number, to: number): { start: number; end: number; word: string } | null {
+  if (from !== to) {
+    const word = text.slice(from, to);
+    return SPELL_WORD.test(word) ? { start: from, end: to, word } : null;
+  }
+  let start = from;
+  let end = from;
+  while (start > 0 && SPELL_CHAR.test(text[start - 1]!)) start--;
+  while (end < text.length && SPELL_CHAR.test(text[end]!)) end++;
+  while (start < end && APOSTROPHE.test(text[start]!)) start++;
+  while (end > start && APOSTROPHE.test(text[end - 1]!)) end--;
+  return start === end ? null : { start, end, word: text.slice(start, end) };
+}
+
+// The spelling rows for the box's menu (M9 fix 1193): main's push names the
+// misspelt word under the press, and the rows replace it only when the box's
+// own word there is that word, so a pick never replaces other text.
+export function boxSpell(text: string, from: number, to: number, push: { misspelled: string; suggestions: string[] }): { start: number; end: number; misspelled: string; words: string[] } | null {
+  if (push.misspelled === '') return null;
+  const at = spellWordAt(text, from, to);
+  if (at === null || at.word !== push.misspelled) return null;
+  return { start: at.start, end: at.end, misspelled: push.misspelled, words: push.suggestions };
+}

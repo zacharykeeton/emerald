@@ -93,6 +93,46 @@ test('activityStats sums the request points inside the window, prices the costle
   assert.equal(tokensStats(activityStats([session('a', [[0, 10]])], 0, 60 * MIN)), null);
 });
 
+// M9 fix 1189: an agent's point stands for its count of requests, and its
+// price is already in its parent's, so it adds nothing to the dollars.
+test('an agent point with a count counts that many requests and adds no price and no estimate (M9 fix 1189)', () => {
+  const own: ActivityRequest = { at: 1 * MIN, fresh: 10, cacheWrite: 0, cacheRead: 0, output: 5, usd: 0.25, model: 'Opus 5' };
+  const agent: ActivityRequest = { at: 2 * MIN, fresh: 1, cacheWrite: 2, cacheRead: 3, output: 4, usd: 0, model: 'claude-opus-5-5', agent: 'ag1', count: 3 };
+  const stats = activityStats([{ ...session('a', [[0, 10]]), requests: [own, agent] }], 0, 60 * MIN);
+  assert.equal(stats.requests, 4);
+  assert.equal(stats.usd, 0.25);
+  assert.equal(stats.estimated, false);
+  assert.equal(stats.up, 16);
+  assert.equal(stats.down, 9);
+});
+
+// M9 fix 1201: the folder's mark of where the agents' count starts is the
+// earlier of the daemon's start and the folder's earliest agent point.
+test('activityTotals with agentsFrom answers the earlier of it and a scoped agent point, and carries no key without it (M9 fix 1201)', () => {
+  const agent = (at: number): ActivityRequest => ({ at: at * MIN, fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1, usd: 0, model: null, agent: 'ag', count: 2 });
+  const own = (at: number): ActivityRequest => ({ at: at * MIN, fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1, usd: 0.1, model: 'Opus 5' });
+  const a: ActivitySession = { ...session('a', [[0, 60]]), cwd: 'C:/code/p', groupCwd: 'C:/code/p', requests: [own(1), agent(5)] } as ActivitySession;
+  const b: ActivitySession = { ...session('b', [[0, 60]]), cwd: 'C:/code/q', groupCwd: 'C:/code/q', requests: [agent(2)] } as ActivitySession;
+  assert.equal(activityTotals([a, b], 'C:/code/p', 0, 120 * MIN, 0, 30 * MIN).agentsFrom, 5 * MIN, "the folder's earliest agent point, not the other folder's");
+  assert.equal(activityTotals([a, b], 'C:/code/p', 0, 120 * MIN, 0, 3 * MIN).agentsFrom, 3 * MIN, 'the daemon\'s start when it is earlier');
+  assert.equal(activityTotals([{ ...a, requests: [own(1)] }], 'C:/code/p', 0, 120 * MIN, 0, 30 * MIN).agentsFrom, 30 * MIN);
+  assert.equal('agentsFrom' in activityTotals([a, b], 'C:/code/p', 0, 120 * MIN, 0), false);
+});
+
+// M9 fix 1191: a renamed checkout's old folder counted with it.
+test('activityTotals counts the rows of a former folder with the folder and names the list, and carries no former key without one (M9 fix 1191)', () => {
+  const req = (at: number): ActivityRequest => ({ at: at * MIN, fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1, usd: 0.1, model: 'Opus 5' });
+  const now: ActivitySession = { ...session('n', [[30, 40]]), cwd: 'C:/code/emerald', groupCwd: 'C:/code/emerald', requests: [req(31)] } as ActivitySession;
+  const old: ActivitySession = { ...session('o', [[0, 10]]), cwd: 'C:/code/zorca/packages/app', groupCwd: 'C:/code/zorca', requests: [req(1)] } as ActivitySession;
+  const with1191 = activityTotals([now, old], 'C:/code/emerald', 0, 60 * MIN, 0, null, ['C:\\code\\zorca']);
+  assert.equal(with1191.total.requests, 2);
+  assert.deepEqual(with1191.former, ['C:\\code\\zorca']);
+  assert.equal(with1191.firstAt, 0, "the old folder's first line");
+  const without = activityTotals([now, old], 'C:/code/emerald', 0, 60 * MIN, 0);
+  assert.equal(without.total.requests, 1);
+  assert.deepEqual(Object.keys(without).sort(), ['firstAt', 'folder', 'from', 'historyFrom', 'months', 'to', 'total']);
+});
+
 // M9 fix 207: the count running at this instant is the drawn rows in the
 // working set, null without one (a past window, the CLI), and the line
 // carries it as ` · N running now`, `0` included once they stop.

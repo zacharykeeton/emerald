@@ -20,6 +20,7 @@ export * from './prompts.ts';
 export * from './folders.ts';
 export * from './activity.ts';
 export * from './activity-model.ts';
+export * from './activity-ledger.ts';
 export * from './activity-load.ts';
 export * from './load-model.ts';
 export * from './stale.ts';

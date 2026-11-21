@@ -7,6 +7,8 @@ import { Limits, PROTOCOL_VERSION } from '@emerald/shared';
 import { pipePathOf } from '@emerald/shared/pipe-name';
 import type { UsageEdge } from '@emerald/shared';
 import { ActivityLog, ROTATE_AT_BYTES } from './activity.ts';
+import { AGENTS_COUNTED_NAME, AgentUsageScanner, agentsCountedFrom, markRecountDone, readAgentsCounted, recountAgents } from './agent-usage.ts';
+import { claudeHome } from '@emerald/shared/claude-home';
 import { UnhostedSessions } from './unhosted.ts';
 import { feedHostSettings, startFeedHost } from './feed-host.ts';
 import type { FeedHost } from './feed-host.ts';
@@ -23,9 +25,10 @@ import { LayoutStore } from './layout-store.ts';
 import { SpawnEnv } from './spawn-path.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
+import { FormerStore } from './former-store.ts';
 import { ConflictWatch } from './conflicts.ts';
 import { HostsStore } from './hosts-store.ts';
-import { bashrcPath, daemonInfoPath, foldersPath, hostsPath, loadScriptPath, logsDir, promptsPath, sessionsPath, statePath, emeraldHome } from './paths.ts';
+import { bashrcPath, daemonInfoPath, foldersPath, formerFoldersPath, hostsPath, loadScriptPath, logsDir, promptsPath, sessionsPath, statePath, emeraldHome } from './paths.ts';
 import { PipeServer, claimPipe } from './pipe-server.ts';
 import type { ClaimedPipe } from './pipe-server.ts';
 import { SessionManager } from './session-manager.ts';
@@ -33,6 +36,7 @@ import { findShells } from './shells.ts';
 import { LOAD_TICK_MS } from './load-sampler.ts';
 import { SessionStore } from './session-store.ts';
 import { sweepStaleTemps } from './store-file.ts';
+import { writeTrackFoldersOnce } from './track-folders.ts';
 import { applyDaemonArgs } from './daemon-args.ts';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
@@ -131,6 +135,10 @@ async function main(): Promise<void> {
   // the background, so nothing on the way to `listening` waits on them.
   // A hook that lands meanwhile moves its session at once and is held
   // for the log until the load is done; activity.spans waits on it.
+  // The track folders first (M9 fix 1187), written once from the records
+  // and Claude Code's prompt history, since the open's rotation can drop
+  // a generation whose tracks are placed through them.
+  writeTrackFoldersOnce(logsDir(), sessionsPath(), path.join(claudeHome(), 'history.jsonl'), log);
   const activity = ActivityLog.open(hookLogPath, log, { rotateAtBytes });
   // A Claude emerald did not start (M9 fix 233) posts under its own
   // conversation id, and its hooks run the state machine on a record of
@@ -140,10 +148,21 @@ async function main(): Promise<void> {
   // The mod's prompt channel (M9 fix 1125), the sink's /channel route and
   // the pipe's sends sharing one record of who is up.
   const modPoll = new ModPoll();
+  // Where the agents' count starts (M9 fix 1189), once per home, and the
+  // scan that counts them, built once the sink can take its lines.
+  const agentsFrom = agentsCountedFrom(path.join(emeraldHome(), AGENTS_COUNTED_NAME), Date.now(), log);
+  activity.setAgentsFrom(agentsFrom);
+  let agentScanner: AgentUsageScanner | null = null;
   const hooks = await HookSink.listen(
     (sessionId, payload, at, isUnhosted) => {
       const result = isUnhosted ? unhosted.apply(sessionId, payload, at) : (manager?.applyHook(sessionId, payload, at) ?? { outcome: 'unknown-session' });
       activity.recordHook(sessionId, payload, at, result, isUnhosted);
+      // The agents' transcripts read on at each turn's end and each agent's
+      // (M9 fix 1189), after the load, as the presence lines are.
+      const transcript = payload.transcript_path;
+      if ((payload.hook_event_name === 'Stop' || payload.hook_event_name === 'SubagentStop') && typeof transcript === 'string' && transcript !== '') {
+        void activity.loaded.then(() => agentScanner?.scan(sessionId, transcript, at));
+      }
       return result;
     },
     {
@@ -158,6 +177,38 @@ async function main(): Promise<void> {
       modPoll,
     },
   );
+  agentScanner = new AgentUsageScanner({
+    known: (sessionId, agentId) => activity.agentRead(sessionId, agentId),
+    // Nothing before the count began, nor before the log's first line.
+    since: () => Math.max(agentsFrom, activity.historyFrom ?? 0),
+    write: (line) => {
+      activity.recordAgentUsage(line);
+      hooks.append(line as unknown as Record<string, unknown>);
+    },
+    log,
+  });
+  // The one-time recount (M9 fix 1201): once the log is folded, the agents'
+  // figures from before the count began, off the subagent transcripts
+  // still on disk and the drop folder the install fills from a backup, in
+  // the background; never awaited on the way to listening.
+  void activity.loaded
+    .then(async () => {
+      const countedFile = path.join(emeraldHome(), AGENTS_COUNTED_NAME);
+      if (readAgentsCounted(countedFile)?.recountDone != null) return;
+      await recountAgents([path.join(claudeHome(), 'projects'), path.join(emeraldHome(), 'recount-subagents')], {
+        trackOfClaude: (id) => activity.trackOfClaude(id),
+        recounted: (sessionId, agentId) => activity.isRecounted(sessionId, agentId),
+        since: activity.historyFrom ?? agentsFrom,
+        until: agentsFrom,
+        write: (line) => {
+          activity.recordAgentUsage(line);
+          hooks.append(line as unknown as Record<string, unknown>);
+        },
+        log,
+      });
+      markRecountDone(countedFile, agentsFrom, Date.now(), log);
+    })
+    .catch((err: unknown) => log.warn('agent recount failed; it runs again at the next start', err));
   // The live rotation (M9 fix 429): the load rotates only at the start,
   // so an hourly stat keeps a daemon left up for weeks under the same
   // threshold. About 5 MB a day lands on a busy box, so an hour is ample.
@@ -232,6 +283,9 @@ async function main(): Promise<void> {
   prompts.load();
   const folders = new FoldersStore(foldersPath(), log);
   folders.load();
+  // A folder's former folders (M9 fix 1191), counted with it by activity.totals.
+  const former = new FormerStore(formerFoldersPath(), log);
+  former.load();
   // The remote hosts record (M9 fix 1080), beside the folder labels.
   const hosts = new HostsStore(hostsPath(), log);
   hosts.load();
@@ -293,6 +347,7 @@ async function main(): Promise<void> {
     log,
     prompts,
     folders,
+    former,
     hosts,
     conflicts,
     onPresence: presence,

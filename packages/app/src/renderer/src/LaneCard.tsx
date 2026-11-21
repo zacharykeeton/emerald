@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { failedToast } from './toast-store.ts';
 import { formatSpanLength, markKind, paneShowingIn, workingMotion } from '@emerald/shared';
 import type { GitCommit } from '../../preload/api.ts';
 import { resumeSessionBeside, resumeTranscript, showSession, showSessionAuto } from './actions.ts';
@@ -176,8 +177,8 @@ export function LaneCard({ session, shown, now, anchorId, agent, layout, lines, 
   const resume = () => {
     onClose();
     const removed = session.removedAt !== undefined && session.removedAt !== null;
-    if (removed && session.conversation !== null) void resumeTranscript(session.conversation.cwd, session.conversation.id, true).catch(warn('resume'));
-    else void resumeSessionBeside(session.id).catch(warn('resume'));
+    if (removed && session.conversation !== null) void resumeTranscript(session.conversation.cwd, session.conversation.id, true).catch(failedToast('resume'));
+    else void resumeSessionBeside(session.id).catch(failedToast('resume'));
   };
   const transcript = () => {
     onClose();

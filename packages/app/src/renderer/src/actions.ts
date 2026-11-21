@@ -37,6 +37,7 @@ import {
 import type { Layout, LayoutTab, PaneContent, PaneView, ShellId, SplitDirection, SplitPlace } from '@emerald/shared';
 import type { SplitKind } from './pane-menu-model.ts';
 import { folderTabName, newTabNameFor, viewName } from './show-model.ts';
+import { besideTarget } from './open-beside-model.ts';
 import { zoneToSplit } from './drop-zone-model.ts';
 import type { DropZone } from './drop-zone-model.ts';
 import { markFresh } from './fresh-panes.ts';
@@ -350,7 +351,10 @@ export async function openBeside(view: PaneView, fromPaneId: string | null): Pro
 // path is a page for a browser pane, never a tab and never normalized,
 // beside the named session's pane or the focused one. M9 fix 936: with
 // browser the path is an .html file rendered in a browser pane on
-// emerald-file:.
+// emerald-file:. M9 fix 1197: with no beside, a page from a session
+// (opener) goes beside that session's own pane on its own tab, which is not
+// put in front; a session on no pane of this window falls to the focused
+// pane as before.
 export async function openFileFromOutside(path: string, pane = false, extra: { scheme?: string | null; openId?: number; beside?: string; url?: boolean; browser?: boolean; opener?: string } = {}): Promise<void> {
   const page = extra.url === true;
   const p = page ? path : normalizePath(path);
@@ -387,16 +391,25 @@ export async function openFileFromOutside(path: string, pane = false, extra: { s
       console.warn('[emerald] open from outside: --browser on a file that is not .html');
       return;
     }
+    // M9 fix 1197: a typed --beside as before (its tab put in front, the
+    // reply naming the pane and tab); with none, a page a session opens
+    // goes beside that session's own pane on its own tab, which is not put
+    // in front, and the reply says nothing of it. A session on no pane of
+    // this window falls through to the focused pane, as before.
+    const target = besideTarget(getState().layout, extra.beside, extra.opener);
+    if (target !== null && target.typed) {
+      besidePane = target.paneId;
+      besideTab = target.tabName;
+      showTab(PANES);
+      await roomBeside(target.paneId, view);
+      return;
+    }
+    if (target !== null) {
+      if (target.inFront) showTab(PANES);
+      await roomBeside(target.paneId, view, target.inFront);
+      return;
+    }
     if (extra.beside !== undefined) {
-      const layout = getState().layout;
-      const shown = layout === null ? null : paneShowingIn(layout, extra.beside);
-      if (shown !== null) {
-        besidePane = shown.pane.id;
-        besideTab = shown.tab.name;
-        showTab(PANES);
-        await roomBeside(shown.pane.id, view);
-        return;
-      }
       besideFound = false;
       pane = true;
     }
@@ -1217,9 +1230,10 @@ export async function roomBesideFocused(view?: PaneView): Promise<string> {
 // roomBesideFocused's above. M9 fix 932: a view passed is set in the same
 // edit as the split, so the focused pane is never empty for a render and
 // the Files rail keeps its lift.
-export async function roomBeside(paneId: string, view?: PaneView): Promise<string> {
+// M9 fix 1197: inFront false leaves the tab where it is and the zoom alone, for a page a session opens on its own tab behind the one on show.
+export async function roomBeside(paneId: string, view?: PaneView, inFront = true): Promise<string> {
   let newId: string | null = null;
-  clearZoom();
+  if (inFront) clearZoom();
   await editLayout((l) => {
     const tab = tabHolding(l, paneId);
     if (tab === null) return l;
@@ -1227,7 +1241,8 @@ export async function roomBeside(paneId: string, view?: PaneView): Promise<strin
     const id = split.focusedPaneId;
     newId = id;
     if (view === undefined) markFresh(id);
-    return switchTab(replaceTab(l, view === undefined ? split : setPaneView(split, id, view)), tab.id);
+    const placed = replaceTab(l, view === undefined ? split : setPaneView(split, id, view));
+    return inFront ? switchTab(placed, tab.id) : placed;
   });
   if (newId === null) throw new Error(`no pane ${paneId}`);
   inheritFontSize(paneId, newId);

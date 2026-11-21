@@ -9,14 +9,18 @@ import type { NotifyDeps, ToastHandle } from './notify-policy.ts';
 interface FakeToast extends ToastHandle {
   fire(event: 'show' | 'close' | 'click'): void;
   fail(error: string): void;
+  // M9 fix 1199: a button pressed, by its place.
+  press(index: number): void;
   shown: boolean;
+  actions: readonly string[] | undefined;
 }
 
-function fakeToast(): FakeToast {
-  const listeners = new Map<string, Array<(e?: string) => void>>();
+function fakeToast(actions?: readonly string[]): FakeToast {
+  const listeners = new Map<string, Array<(e?: string | number) => void>>();
   const t = {
     shown: false,
-    on(event: string, fn: (e?: string) => void) {
+    actions,
+    on(event: string, fn: (e?: string | number) => void) {
       listeners.set(event, [...(listeners.get(event) ?? []), fn]);
     },
     show() {
@@ -27,6 +31,9 @@ function fakeToast(): FakeToast {
     },
     fail(error: string) {
       for (const fn of listeners.get('failed') ?? []) fn(error);
+    },
+    press(index: number) {
+      for (const fn of listeners.get('action') ?? []) fn(index);
     },
   };
   return t as unknown as FakeToast;
@@ -39,6 +46,7 @@ function setup(over: Partial<NotifyDeps> = {}) {
   const lines: Array<[string, string]> = [];
   const made: FakeToast[] = [];
   const clicked: string[] = [];
+  const actioned: Array<[string, string, number]> = [];
   let createThrows = false;
   const deps: NotifyDeps = {
     logFile: undefined,
@@ -49,14 +57,15 @@ function setup(over: Partial<NotifyDeps> = {}) {
     appendLine: (file, line) => lines.push([file, line]),
     toasts: {
       supported: () => true,
-      create: () => {
+      create: (_title, _body, actions) => {
         if (createThrows) throw new Error('no toast');
-        const t = fakeToast();
+        const t = fakeToast(actions);
         made.push(t);
         return t;
       },
     },
     onClick: (id) => clicked.push(id),
+    onAction: (id, toolUseId, index) => actioned.push([id, toolUseId, index]),
     log: (m) => logs.push(m),
     ...over,
   };
@@ -67,6 +76,7 @@ function setup(over: Partial<NotifyDeps> = {}) {
     lines,
     made,
     clicked,
+    actioned,
     tick: (ms: number) => (clock += ms),
     setFocused: (v: boolean) => (focused = v),
     throwOnCreate: () => (createThrows = true),
@@ -119,6 +129,12 @@ test('notify policy: held logs its line and creates no toast', async () => {
   assert.equal(s.made.length, 0);
 });
 
+test('notify policy (M9 fix 1199): a held permission ask writes its body on one line and names its buttons', async () => {
+  const s = setup({ held: true });
+  assert.equal(await s.policy.post({ sessionId: 's1', title: 'T', body: 'Claude asks to run Bash:\necho hi', ask: { toolUseId: 'u1', command: 'echo hi' } }), 'held');
+  assert.deepEqual(s.logs, ['notification held under a private EMERALD_HOME: T: Claude asks to run Bash: echo hi [Allow once, Deny]']);
+});
+
 test('notify policy: a log file gets one JSON line, and an append that throws answers failed', async () => {
   const s = setup({ logFile: 'C:/x/notify.log' });
   assert.equal(await s.policy.post(req()), 'logged');
@@ -135,6 +151,15 @@ test('notify policy: a log file gets one JSON line, and an append that throws an
   });
   assert.equal(await f.policy.post(req()), 'failed');
   assert.deepEqual(f.logs, ['notification log C:/gone/notify.log not written: ENOENT']);
+});
+
+test('notify policy (M9 fix 1199): a permission ask carries its ask in the log file line', async () => {
+  const s = setup({ logFile: 'C:/x/notify.log' });
+  assert.equal(await s.policy.post({ ...req(), ask: { toolUseId: 'u1', command: 'echo hi' } }), 'logged');
+  assert.deepEqual(JSON.parse(s.lines[0]![1]), { sessionId: 's1', title: 'T', body: 'B', ask: { toolUseId: 'u1', command: 'echo hi' }, at: 1_000_000 });
+  const bad = setup({ logFile: 'C:/x/notify.log' });
+  await bad.policy.post({ ...req(), ask: { toolUseId: 7 } } as never);
+  assert.equal('ask' in JSON.parse(bad.lines[0]![1]), false, 'a malformed ask is posted as none');
 });
 
 test('notify policy: unsupported toasts answer unsupported', async () => {
@@ -179,4 +204,17 @@ test('notify policy: 51 toasts hold 50, the oldest dropped, and close, click and
   assert.deepEqual(s.clicked, ['s2'], 'click calls onClick with the session id');
   s.made[3]!.fail('x');
   assert.equal(s.policy.heldToasts(), 47, 'failed takes one away');
+});
+
+test('notify policy (M9 fix 1199): a permission ask\'s toast carries Allow once and Deny and routes a press with its toolUseId; every other toast has no actions', async () => {
+  const s = setup();
+  void s.policy.post({ ...req(), ask: { toolUseId: 'u1', command: 'echo hi' } });
+  assert.deepEqual(s.made[0]!.actions, ['Allow once', 'Deny']);
+  assert.equal(s.policy.heldToasts(), 1);
+  s.made[0]!.press(1);
+  assert.deepEqual(s.actioned, [['s1', 'u1', 1]]);
+  assert.equal(s.policy.heldToasts(), 0, 'a press takes the toast away');
+  assert.deepEqual(s.clicked, [], 'a press is not a click');
+  void s.policy.post(req('s2'));
+  assert.equal(s.made[1]!.actions, undefined, 'no ask, no actions argument');
 });

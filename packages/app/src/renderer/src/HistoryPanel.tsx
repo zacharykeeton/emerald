@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { failedToast } from './toast-store.ts';
 import { describeState, folderName, formatDuration, formatUsd } from '@emerald/shared';
 import type { SessionInfo, Turn } from '@emerald/shared';
 import type { HistoryScan, HistorySession, TranscriptTurns } from '../../preload/api.ts';
@@ -182,8 +183,8 @@ export function HistoryPanel() {
   const act = (s: HistorySession, split: boolean) => {
     const own = live.get(s.id);
     if (own !== undefined && own.state !== 'exited') void showSessionAuto(own.id).catch(warn('show'));
-    else if (own !== undefined) void resumeSession(own.id).catch(warn('resume'));
-    else if (s.cwdExists) void resumeTranscript(s.cwd, s.id, split).catch(warn('resume'));
+    else if (own !== undefined) void resumeSession(own.id).catch(failedToast('resume'));
+    else if (s.cwdExists) void resumeTranscript(s.cwd, s.id, split).catch(failedToast('resume'));
   };
   const openMenu = (s: HistorySession, x: number, y: number) => setMenu({ session: s, x, y });
 

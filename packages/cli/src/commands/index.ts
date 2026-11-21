@@ -24,6 +24,7 @@ export const commands: CommandEntry[] = [
   { name: 'explain', summary: 'say why a session is in its state, from its hook events', load: () => import('./explain.ts').then((m) => m.default) },
   { name: 'activity', summary: "the day's activity: each session's working spans and how much ran in parallel", load: () => import('./activity.ts').then((m) => m.default) },
   { name: 'usage', summary: 'a markdown digest of how emerald is used, from the usage record and the hook log', load: () => import('./usage.ts').then((m) => m.default) },
+  { name: 'former', summary: "list, add or remove a folder's former folders, whose activity its Statistics count with it", load: () => import('./former.ts').then((m) => m.default) },
   {
     name: 'conflicts',
     summary: "the conflict forecast: which live sessions' branches would conflict on a merge, on what, and how far each is behind the default",

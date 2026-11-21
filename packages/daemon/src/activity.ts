@@ -1,11 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { activityTotals, parseRunning, summarize } from '@emerald/shared';
+import { activityTotals, addLedger, heldDrops, ledgerDrop, parseRunning, summarize } from '@emerald/shared';
+import type { Ledger } from '@emerald/shared';
 import { DEBT_GRACE_MS } from '@emerald/shared';
-import { DROPPING_NAME, HOOK_LOG_BUDGET_BYTES, ROTATING_NAME, SLIMMING_NAME, generationNumber, generationPaths, isFullPayloadLine, rotatedPath, slimHookLine } from '@emerald/shared/hook-log';
+import { DROPPING_NAME, HOOK_LOG_BUDGET_BYTES, ROTATING_NAME, SLIMMING_NAME, generationNumber, generationPaths, hookLineSlimmer, isFullPayloadLine, rotatedPath } from '@emerald/shared/hook-log';
+import { setAsideBadFile, writeFileAtomic } from './store-file.ts';
+import { readTrackFolders } from './track-folders.ts';
+import type { TrackFolders } from './track-folders.ts';
 import type { ActivityCommit, ActivityRequest, ActivitySession, ActivitySpan, ActivityTotals, CappedSpan, DebtKind, DebtSpan, HookPayload, PresenceKind, SessionCommit, SessionInfo, SessionState } from '@emerald/shared';
 import type { Logger } from './log.ts';
+import type { AgentRead } from './agent-usage.ts';
 
 // The day's activity (M54): which stretches each session spent working,
 // rebuilt from hooks.jsonl. The sink writes one line per accepted hook
@@ -74,8 +79,9 @@ export interface ActivityLine {
   usd: number | null;
   model: string | null;
   effort: string | null;
-  // The sink's unhosted mark (M9 fix 233) and the folder the hook named,
-  // read for such a line only.
+  // The sink's unhosted mark (M9 fix 233); and the folder the hook named,
+  // on any line that carries one (M9 fix 1186; the slimmed generations
+  // keep it on a track's first line per file).
   unhosted: boolean;
   cwd: string | null;
 }
@@ -93,6 +99,33 @@ export interface PresenceLine {
 // when a usage window reached 100 percent (with its reset) or dropped
 // under, written as the daemon's own line beside the presence ones.
 export type UsageLine = { at: number; capped: { window: string; resetsAt: number } } | { at: number; freed: { window: string } };
+
+// An agent's requests and tokens (M9 fix 1189), the daemon's own line too,
+// written when a parent's Stop or SubagentStop read new responses off the
+// agent's transcript: the counts the read added, under the parent's track
+// (its X-Emerald-Session), and where the read left the file, so the next
+// start's reader goes on from there. No top-level sessionId, so an older
+// daemon's parse, the slim, emmer explain and the usage report skip it.
+export interface AgentUsageLine {
+  at: number;
+  agentUsage: {
+    sessionId: string;
+    agentId: string;
+    model: string | null;
+    requests: number;
+    fresh: number;
+    cacheWrite: number;
+    cacheRead: number;
+    output: number;
+    upTo: number;
+    lastId: string | null;
+    lastOutput: number;
+    // A line of the one-time recount (M9 fix 1201): dated by the agent's
+    // last counted response, its offsets zero, and never the live
+    // reader's offset.
+    recount?: true;
+  };
+}
 
 // A stretch of time, an away or a capped one, for the docking.
 interface Stretch {
@@ -129,6 +162,10 @@ interface Track {
   // The request points (M9 fix 217), oldest first; the last one is still
   // open to the next streaming line.
   requests: RequestPoint[];
+  // The agents' points (M9 fix 1189), one per agentUsage line, in the
+  // order the lines came; each stands for its count of requests, at no
+  // price of its own.
+  agentPoints: ActivityRequest[];
   // The last status line's input split, which says whether the next line
   // is the same request; and the last cost total seen on any line.
   split: { fresh: number; cacheWrite: number; cacheRead: number } | null;
@@ -140,6 +177,15 @@ interface Track {
   // carried the mark; and the folder its last such line named.
   outside: boolean;
   cwd: string | null;
+  // The first folder any of the track's lines named (M9 fix 1186), hosted
+  // or not: Claude Code's cwd follows the session's cd, so the folder a
+  // track is placed by is the first it names, never the last. Read only
+  // where a row has no session record and the figures need a folder.
+  lineCwd: string | null;
+  // The first project Claude Code's prompt history named for the track's
+  // conversation (M9 fix 1187), off track-folders.json; for a track of a
+  // generation slimmed before fix 1186 whose record is gone.
+  conversationCwd: string | null;
 }
 
 interface AgentTrack {
@@ -154,7 +200,7 @@ interface AgentTrack {
 
 // Lines that are not JSON, or not shaped like the sink's, are skipped: the
 // log is append-only and a daemon killed mid-write leaves a torn last line.
-export function parseLogLine(raw: string): ActivityLine | PresenceLine | UsageLine | null {
+export function parseLogLine(raw: string): ActivityLine | PresenceLine | UsageLine | AgentUsageLine | null {
   let line: unknown;
   try {
     line = JSON.parse(raw);
@@ -167,6 +213,8 @@ export function parseLogLine(raw: string): ActivityLine | PresenceLine | UsageLi
   if (l['presence'] === 'away' || l['presence'] === 'back') return { at: l['at'], presence: l['presence'] };
   const usage = parseUsageLine(l['at'], l['capped'], l['freed']);
   if (usage !== null) return usage;
+  const agentUsage = parseAgentUsageLine(l['at'], l['agentUsage']);
+  if (agentUsage !== null) return agentUsage;
   if (typeof l['sessionId'] !== 'string') return null;
   const payload = typeof l['payload'] === 'object' && l['payload'] !== null ? (l['payload'] as HookPayload) : {};
   return lineOf(l['at'], l['sessionId'], typeof l['event'] === 'string' ? l['event'] : null, l['from'], l['to'], payload, l['unhosted'] === true);
@@ -189,6 +237,25 @@ function parseUsageLine(at: number, capped: unknown, freed: unknown): UsageLine 
     if (typeof f['window'] === 'string') return { at, freed: { window: f['window'] } };
   }
   return null;
+}
+
+// The agent line (M9 fix 1189): every count a non-negative number, the
+// ids strings; anything else is not one.
+function parseAgentUsageLine(at: number, raw: unknown): AgentUsageLine | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const a = raw as Record<string, unknown>;
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  const sessionId = nonEmpty(a['sessionId']);
+  const agentId = nonEmpty(a['agentId']);
+  const requests = n(a['requests']);
+  const fresh = n(a['fresh']);
+  const cacheWrite = n(a['cacheWrite']);
+  const cacheRead = n(a['cacheRead']);
+  const output = n(a['output']);
+  const upTo = n(a['upTo']);
+  const lastOutput = n(a['lastOutput']);
+  if (sessionId === null || agentId === null || requests === null || fresh === null || cacheWrite === null || cacheRead === null || output === null || upTo === null || lastOutput === null) return null;
+  return { at, agentUsage: { sessionId, agentId, model: nonEmpty(a['model']), requests, fresh, cacheWrite, cacheRead, output, upTo, lastId: nonEmpty(a['lastId']), lastOutput, ...(a['recount'] === true ? { recount: true as const } : {}) } };
 }
 
 function nonEmpty(value: unknown): string | null {
@@ -218,7 +285,7 @@ function lineOf(at: number, sessionId: string, event: string | null, from: unkno
     model: null,
     effort: null,
     unhosted,
-    cwd: unhosted ? nonEmpty(payload.cwd) : null,
+    cwd: nonEmpty(payload.cwd),
   };
   if (event === 'StatusLine') {
     const count = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
@@ -371,7 +438,9 @@ export function rotateHookLog(file: string, log: Logger, budgetBytes: number = H
     // slims it.
     let bytes: number | null = null;
     try {
-      bytes = passLinesSync(rotating, slimming, rotatedLine);
+      // One slimmer per file (M9 fix 1186): each track's first line keeps its folder.
+      const slim = hookLineSlimmer();
+      bytes = passLinesSync(rotating, slimming, (raw) => rotatedLine(raw, slim));
     } catch (err) {
       log.warn('hooks.jsonl could not be slimmed, rotated whole', err);
       fs.rmSync(slimming, { force: true });
@@ -429,6 +498,10 @@ function dropPastBudget(file: string, budgetBytes: number, log: Logger): void {
   let total = gens.reduce((sum, [, bytes]) => sum + bytes, 0);
   while (total > budgetBytes && gens.length > 1) {
     const [gen, bytes] = gens.shift()!;
+    // The generation's months go into the ledger first (M9 fix 1188); one
+    // that cannot be folded stays, as a held file does, so a generation
+    // never leaves the folder without its ledger entry.
+    if (!foldIntoLedger(gen, path.dirname(file), log)) return;
     try {
       fs.renameSync(gen, dropping);
       fs.rmSync(dropping, { force: true });
@@ -438,6 +511,90 @@ function dropPastBudget(file: string, budgetBytes: number, log: Logger): void {
     }
     total -= bytes;
     log.info(`${path.basename(gen)} dropped`, { bytes, kept: total, budget: budgetBytes });
+  }
+}
+
+// The ledger of the dropped generations (M9 fix 1188), beside the log.
+export const LEDGER_NAME = 'ledger.json';
+
+// The ledger as the open reads it: null when absent, and null with a
+// warning when it is unreadable (the next drop's fold sets it aside).
+function readLedger(dir: string, log: Logger): Ledger | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(dir, LEDGER_NAME), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log.warn('ledger.json could not be read; the dropped generations are left out of the totals', err);
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text) as Ledger;
+    if (parsed?.version === 1 && Array.isArray(parsed.drops)) return parsed;
+  } catch {
+    // Falls to the warning.
+  }
+  log.warn('ledger.json could not be read; the dropped generations are left out of the totals');
+  return null;
+}
+
+// Folds one generation about to be dropped into the ledger (M9 fix 1188):
+// a scratch fold of its lines, placed by fix 1187's track folders and the
+// lines' own folders (the open's rotation runs before the store loads, so
+// no live record is handed in), its months written per place. True when
+// the generation's entry is in the ledger, already or now; false, with a
+// warning, when anything failed, and the generation is then kept until
+// the next rotation. An entry is keyed by the generation's first and last
+// line, never its name, which shifts at every rotation.
+function foldIntoLedger(gen: string, dir: string, log: Logger): boolean {
+  const name = path.basename(gen);
+  const started = Date.now();
+  try {
+    const file = path.join(dir, LEDGER_NAME);
+    let ledger: Ledger = { version: 1, drops: [] };
+    if (fs.existsSync(file)) {
+      // A read that fails throws to the warning below; only a file that
+      // reads and does not parse is set aside.
+      const text = fs.readFileSync(file, 'utf8');
+      let read: Ledger | null = null;
+      try {
+        const parsed = JSON.parse(text) as Ledger;
+        if (parsed?.version === 1 && Array.isArray(parsed.drops)) read = parsed;
+      } catch {
+        read = null;
+      }
+      // A ledger that does not parse is set aside whole, so its older
+      // months are kept for a hand repair, and the fold starts afresh.
+      if (read === null) setAsideBadFile(file, log);
+      else ledger = read;
+    }
+    const scratch = new ActivityLog();
+    scratch.useTrackFolders(readTrackFolders(dir, log));
+    const ends: { from: number | null; to: number | null } = { from: null, to: null };
+    // A line parseLogLine answers null for is skipped and counts toward
+    // neither end: a torn line, and a daemon line with no session.
+    scanLinesSync(gen, Infinity, (raw) => {
+      const line = parseLogLine(raw);
+      if (line === null) return false;
+      if (ends.from === null || line.at < ends.from) ends.from = line.at;
+      if (ends.to === null || line.at > ends.to) ends.to = line.at;
+      scratch.record(line);
+      return false;
+    });
+    if (ends.from === null || ends.to === null) return true;
+    const a = ends.from;
+    const b = ends.to;
+    if (ledger.drops.some((d) => d.from === a && d.to === b)) {
+      log.info(`${name} already in the ledger`);
+      return true;
+    }
+    const drop = ledgerDrop(scratch.spans(a, b + 1, b + 1, [], null, [], true), a, b, { name, bytes: fs.statSync(gen).size, droppedAt: Date.now() });
+    ledger.drops.push(drop);
+    writeFileAtomic(file, JSON.stringify(ledger), log);
+    log.info(`${name} folded into the ledger`, { from: new Date(a).toISOString(), to: new Date(b).toISOString(), places: drop.places.length, usd: Object.values(drop.allUsd).reduce((sum, usd) => sum + usd, 0), ms: Date.now() - started });
+    return true;
+  } catch (err) {
+    log.warn(`${name} could not be folded into the ledger; kept until the next rotation`, err);
+    return false;
   }
 }
 
@@ -528,10 +685,10 @@ function isFixtureLine(line: Record<string, unknown>): boolean {
 
 // What a rotation writes for one line of the current file (M9 fix 629):
 // the slim, with a fixture line dropped.
-function rotatedLine(raw: string): string | null {
+function rotatedLine(raw: string, slim: (raw: string) => string): string | null {
   const line = parsedLine(raw);
   if (line !== null && typeof line['sessionId'] === 'string' && isFixtureLine(line)) return null;
-  return slimHookLine(raw);
+  return slim(raw);
 }
 
 // The `at` of a file's first line that has one, any kind of line; null
@@ -595,6 +752,7 @@ export function slimGenerations(file: string, log: Logger): void {
     }
     const started = Date.now();
     const temp = `${gen}.slimming`;
+    const slim = hookLineSlimmer();
     const cutoff = newerFrom;
     let overlap = 0;
     let fixtures = 0;
@@ -615,7 +773,7 @@ export function slimGenerations(file: string, log: Logger): void {
           }
           if (keptFrom === null && typeof at === 'number') keptFrom = at;
         }
-        return slimHookLine(raw);
+        return slim(raw);
       });
       fs.renameSync(temp, gen);
       log.info(`${name} slimmed`, { from, to, overlap, fixtures, keptFrom: keptFrom === null ? null : new Date(keptFrom).toISOString(), ms: Date.now() - started });
@@ -731,6 +889,35 @@ export class ActivityLog {
   // recomputed: a rotation or a trim while the daemon runs changes the
   // files, not what is held here.
   private oldest: number | null = null;
+  // The folders of the tracks whose generations were slimmed before fix
+  // 1186 (M9 fix 1187): the session records as they were and Claude
+  // Code's prompt history, read once from track-folders.json.
+  private folders: TrackFolders | null = null;
+
+  // The ledger of the generations dropped past the budget (M9 fix 1188),
+  // read at the open. A drop while the daemon runs needs no reload: its
+  // lines are still in memory, so heldDrops leaves it out anyway.
+  private ledger: Ledger | null = null;
+
+  // The tests' way to hand the fold a map without the file.
+  useTrackFolders(map: TrackFolders | null): void {
+    this.folders = map;
+  }
+
+  // The tests' way to hand the totals a ledger without the file.
+  useLedger(ledger: Ledger | null): void {
+    this.ledger = ledger;
+  }
+
+  // Where each agent's transcript was last read to (M9 fix 1189), keyed
+  // by the parent's track and the agent, off the agent lines; and when
+  // the agents began to be counted.
+  private readonly agentReads = new Map<string, AgentRead>();
+  private agentsFrom: number | null = null;
+  // The recount (M9 fix 1201): each Claude conversation's track, the last
+  // line naming it winning, and the agents a recount line already covers.
+  private readonly claudeIds = new Map<string, string>();
+  private readonly recounted = new Set<string>();
 
   // Opens the log the sink has written so far and reads it in the
   // background, so the daemon's pipe is not held behind it (M9 fix 517:
@@ -770,6 +957,10 @@ export class ActivityLog {
     try {
       for (const name of fs.readdirSync(path.dirname(file))) {
         if (name.endsWith('.jsonl.slimming') || name.endsWith('.jsonl.trimming')) fs.rmSync(path.join(path.dirname(file), name), { force: true });
+        // writeFileAtomic's temporaries of the ledger and the track
+        // folders (M9 fix 1188), left by a daemon that died between its
+        // write and its rename; the start's sweep covers the home alone.
+        else if (/^(ledger|track-folders)\.json\.\d+\.tmp$/.test(name)) fs.rmSync(path.join(path.dirname(file), name), { force: true });
       }
     } catch {
       // No folder yet.
@@ -792,6 +983,11 @@ export class ActivityLog {
       }
     });
     activity.log = log;
+    // The track folders written once at the first start with fix 1187,
+    // read before any line is recorded so each track takes its
+    // conversation's folder as its lines arrive.
+    activity.folders = readTrackFolders(path.dirname(file), log);
+    activity.ledger = readLedger(path.dirname(file), log);
     activity.loading = true;
     activity.heldCap = opts.heldCap ?? HELD_DURING_LOAD;
     activity.loaded = (async () => {
@@ -938,8 +1134,42 @@ export class ActivityLog {
     return out;
   }
 
-  record(line: ActivityLine | PresenceLine | UsageLine): void {
-    if (this.oldest === null || line.at < this.oldest) this.oldest = line.at;
+  // When the agents' count began (M9 fix 1189), set once at the start off
+  // agents-counted.json; null in a test that never sets it.
+  setAgentsFrom(at: number): void {
+    this.agentsFrom = at;
+  }
+
+  // Where the log's agent lines left an agent's transcript, for the scan.
+  agentRead(sessionId: string, agentId: string): AgentRead | null {
+    return this.agentReads.get(agentKey(sessionId, agentId)) ?? null;
+  }
+
+  // The scan's line on the live path, beside its write to the log.
+  recordAgentUsage(line: AgentUsageLine): void {
+    this.record(line);
+  }
+
+  // The track a Claude conversation's lines were folded under (M9 fix
+  // 1201), for the recount's match of a transcript folder.
+  trackOfClaude(id: string): string | null {
+    return this.claudeIds.get(id) ?? null;
+  }
+
+  // Whether a recount line covers the agent already (M9 fix 1201).
+  isRecounted(sessionId: string, agentId: string): boolean {
+    return this.recounted.has(agentKey(sessionId, agentId));
+  }
+
+  record(line: ActivityLine | PresenceLine | UsageLine | AgentUsageLine): void {
+    // A recount line (M9 fix 1201) is dated by an agent's last response and
+    // appended out of time order, so it never moves how far back the log
+    // reaches: once the oldest generation is dropped, a recount line dated
+    // inside it would put historyFrom before the drop's end, and heldDrops
+    // (M9 fix 1188) would read the drop as still in memory and leave its
+    // ledger months out of the totals.
+    const recount = 'agentUsage' in line && line.agentUsage.recount === true;
+    if (!recount && (this.oldest === null || line.at < this.oldest)) this.oldest = line.at;
     if ('presence' in line) {
       this.recordPresence(line.presence, line.at);
       return;
@@ -952,19 +1182,36 @@ export class ActivityLog {
       this.recordFreed(line.freed.window, line.at);
       return;
     }
-    let track = this.tracks.get(line.sessionId);
+    const sessionId = 'agentUsage' in line ? line.agentUsage.sessionId : line.sessionId;
+    let track = this.tracks.get(sessionId);
     if (track === undefined) {
-      track = { spans: [], open: null, debt: [], openDebt: null, lastPrompt: null, lastAt: line.at, claudeSessionId: null, requests: [], split: null, lastUsd: null, started: false, outside: false, cwd: null };
-      this.tracks.set(line.sessionId, track);
+      track = { spans: [], open: null, debt: [], openDebt: null, lastPrompt: null, lastAt: line.at, claudeSessionId: null, requests: [], agentPoints: [], split: null, lastUsd: null, started: false, outside: false, cwd: null, lineCwd: null, conversationCwd: null };
+      this.tracks.set(sessionId, track);
+    }
+    if ('agentUsage' in line) {
+      // An agent's read (M9 fix 1189): a point of its own, never priced,
+      // and the offset the next scan reads on from.
+      const a = line.agentUsage;
+      track.lastAt = Math.max(track.lastAt, line.at);
+      track.agentPoints.push({ at: line.at, fresh: a.fresh, cacheWrite: a.cacheWrite, cacheRead: a.cacheRead, output: a.output, usd: 0, model: a.model, effort: null, agent: a.agentId, count: a.requests });
+      // A recount line (M9 fix 1201) marks its agent covered and leaves the
+      // live reader's offset where the live lines put it.
+      if (a.recount === true) this.recounted.add(agentKey(a.sessionId, a.agentId));
+      else this.agentReads.set(agentKey(a.sessionId, a.agentId), { upTo: a.upTo, lastId: a.lastId, lastOutput: a.lastOutput, at: line.at });
+      return;
     }
     track.lastAt = Math.max(track.lastAt, line.at);
     if (line.unhosted) {
       track.outside = true;
       if (line.cwd !== null) track.cwd = line.cwd;
-    }
+    } else if (line.cwd !== null && track.lineCwd === null) track.lineCwd = line.cwd;
     if (line.event === 'SessionStart') track.started = true;
     if (line.prompt !== null) track.lastPrompt = line.prompt;
-    if (line.claudeSessionId !== null) track.claudeSessionId = line.claudeSessionId;
+    if (line.claudeSessionId !== null) {
+      track.claudeSessionId = line.claudeSessionId;
+      this.claudeIds.set(line.claudeSessionId, sessionId);
+    }
+    if (track.conversationCwd === null && line.claudeSessionId !== null) track.conversationCwd = this.folders?.conversations[line.claudeSessionId] ?? null;
     if (line.usage !== null) this.recordRequest(track, line, line.usage);
     if (line.to === 'working' && line.from !== 'working') {
       // A working session cannot enter working; a stale span left open by
@@ -1093,14 +1340,39 @@ export class ActivityLog {
   // folds into that record's row.
   // One folder's totals (M9 fix 836): the rows of the window, from the
   // log's first line when no start is given, folded by activityTotals, so
-  // a whole life goes over the pipe as a total and a row per month.
-  totals(folder: string, from: number | null, to: number | null, now: number, sessions: SessionInfo[], unhosted: SessionInfo[] = []): ActivityTotals {
-    const a = from ?? this.historyFrom ?? now;
+  // a whole life goes over the pipe as a total and a row per month. The
+  // ledger's months of the generations dropped past the budget are added
+  // (M9 fix 1188), and the answer's start, its first month and its
+  // historyFrom reach back to the first drop it adds. The folder's former
+  // folders (M9 fix 1191) are counted with it, in the rows and in the
+  // ledger's places alike.
+  totals(folder: string, from: number | null, to: number | null, now: number, sessions: SessionInfo[], unhosted: SessionInfo[] = [], former: readonly string[] = []): ActivityTotals {
+    const held = heldDrops(this.ledger, from, to ?? now, this.historyFrom);
+    const reach = held.length === 0 ? this.historyFrom : Math.min(...held.map((d) => d.from), this.historyFrom ?? Infinity);
+    const a = from ?? reach ?? now;
     const b = to ?? now;
-    return activityTotals(this.spans(a, b, now, sessions, null, unhosted), folder, a, b, this.historyFrom);
+    // Where the agents' count starts (M9 fix 1189), for the tab's mark,
+    // moved back per folder to its earliest recounted agent (fix 1201).
+    return addLedger(activityTotals(this.spans(a, b, now, sessions, null, unhosted, true), folder, a, b, reach, this.agentsFrom, former), held, [folder, ...former]);
   }
 
-  spans(from: number, to: number, now: number, sessions: SessionInfo[], requestsSince: number | null = null, unhosted: SessionInfo[] = []): ActivitySession[] {
+  // Where a track no live session record names is counted (M9 fix 1186):
+  // the record as track-folders.json kept it (M9 fix 1187; a record beats
+  // the line, as a live one does), then the first folder its own lines
+  // named, then the project the prompt history names for its
+  // conversation. Only the totals ask (placed true); the activity view's
+  // rows keep a recordless track folderless, as its folder scope expects.
+  private placeOf(sessionId: string, track: Track): { cwd: string; groupCwd: string } | null {
+    const kept = this.folders?.sessions[sessionId];
+    if (kept !== undefined) return kept;
+    if (track.lineCwd !== null) return { cwd: track.lineCwd, groupCwd: track.lineCwd };
+    if (track.conversationCwd !== null) return { cwd: track.conversationCwd, groupCwd: track.conversationCwd };
+    return null;
+  }
+
+  // placed (M9 fix 1186): a row with no record takes the track's own
+  // folder, for the totals; false leaves every row as before.
+  spans(from: number, to: number, now: number, sessions: SessionInfo[], requestsSince: number | null = null, unhosted: SessionInfo[] = [], placed: boolean = false): ActivitySession[] {
     const listed = new Map(sessions.map((s) => [s.id, s]));
     const outsideInfos = new Map(unhosted.map((s) => [s.id, s]));
     const out: ActivitySession[] = [];
@@ -1139,9 +1411,9 @@ export class ActivityLog {
         kind: info?.kind ?? 'claude',
         claudeSessionId: info?.claudeSessionId ?? track.claudeSessionId,
         removedAt: outside ? null : (info?.removedAt ?? null),
-        cwd: outside ? (info?.cwd ?? track.cwd) : (info?.cwd ?? null),
-        groupCwd: outside ? (info?.groupCwd ?? track.cwd) : (info?.groupCwd ?? null),
-        requests: clipRequests(track.requests, from, to, requestsSince),
+        cwd: outside ? (info?.cwd ?? track.cwd) : (info?.cwd ?? (placed ? (this.placeOf(sessionId, track)?.cwd ?? null) : null)),
+        groupCwd: outside ? (info?.groupCwd ?? track.cwd) : (info?.groupCwd ?? (placed ? (this.placeOf(sessionId, track)?.groupCwd ?? null) : null)),
+        requests: withAgentPoints(clipRequests(track.requests, from, to, requestsSince), track.agentPoints, from, to, requestsSince),
         commits: clipCommits(info?.commits ?? [], from, to),
         lifetime: false,
         spans,
@@ -1163,13 +1435,13 @@ export class ActivityLog {
       out.push({ sessionId: info.id, name: info.name, color: info.color, kind: info.kind, claudeSessionId: info.claudeSessionId, removedAt: info.removedAt ?? null, cwd: info.cwd, groupCwd: info.groupCwd, requests: [], commits: clipCommits(info.commits ?? [], from, to), lifetime: true, spans, debt: [], awayMs: 0, cappedMs: 0, parentId: null, agentId: null, agentType: null, outside: false });
     }
     out.sort((a, b) => (a.spans[0]?.from ?? 0) - (b.spans[0]?.from ?? 0));
-    return this.withAgents(out, from, to, now, listed, joined);
+    return this.withAgents(out, from, to, now, listed, joined, placed);
   }
 
   // An agent of an outside conversation that joined a record's row (M9
   // fix 463) follows it there: its parent is the owner, whose record
   // gives its colour and folder.
-  private withAgents(rows: ActivitySession[], from: number, to: number, now: number, listed: Map<string, SessionInfo>, joined: Map<string, string>): ActivitySession[] {
+  private withAgents(rows: ActivitySession[], from: number, to: number, now: number, listed: Map<string, SessionInfo>, joined: Map<string, string>, placed: boolean = false): ActivitySession[] {
     const byParent = new Map<string, ActivitySession[]>();
     for (const agent of this.agents.values()) {
       const parentId = joined.get(agent.parentId) ?? agent.parentId;
@@ -1181,6 +1453,9 @@ export class ActivityLog {
       }
       const spans = clip([{ from: agent.from, to: Math.max(agent.from, end), prompt: null }], from, to);
       if (spans.length === 0) continue;
+      // An agent with no record follows its parent's own lines (M9 fix 1186).
+      const parentTrack = placed && info === undefined ? this.tracks.get(agent.parentId) : undefined;
+      const parentPlace = parentTrack === undefined ? null : this.placeOf(agent.parentId, parentTrack);
       const row: ActivitySession = {
         sessionId: parentId,
         name: agent.description ?? agent.type,
@@ -1188,8 +1463,8 @@ export class ActivityLog {
         kind: 'agent',
         claudeSessionId: info?.claudeSessionId ?? null,
         removedAt: info?.removedAt ?? null,
-        cwd: info?.cwd ?? null,
-        groupCwd: info?.groupCwd ?? null,
+        cwd: info?.cwd ?? (placed ? (parentPlace?.cwd ?? null) : null),
+        groupCwd: info?.groupCwd ?? (placed ? (parentPlace?.groupCwd ?? null) : null),
         requests: [],
         commits: clipCommits(info?.team?.find((m) => m.id === agent.agentId)?.commits ?? [], from, to),
         lifetime: false,
@@ -1368,6 +1643,17 @@ function clipRequests(points: RequestPoint[], from: number, to: number, since: n
     out.push({ at: p.at, fresh: p.fresh, cacheWrite: p.cacheWrite, cacheRead: p.cacheRead, output: p.output, usd: p.usd, model: p.model, effort: p.effort ?? null });
   }
   return out;
+}
+
+// The agents' points (M9 fix 1189) joined to a row's own, in time order,
+// clipped the same way. An agent's point is never updated after its line,
+// so its own time serves as its last touch for a `since`. Sorted, never
+// taken in the order the lines came: a recount line (M9 fix 1201) is
+// appended long after the work it dates.
+function withAgentPoints(own: ActivityRequest[], agents: readonly ActivityRequest[], from: number, to: number, since: number | null): ActivityRequest[] {
+  const picked = agents.filter((p) => p.at >= from && p.at <= to && (since === null || p.at >= since));
+  if (picked.length === 0) return own;
+  return [...own, ...picked].sort((a, b) => a.at - b.at);
 }
 
 // The record's credited commits claimed inside the window (M9 fix 218),

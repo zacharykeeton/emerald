@@ -13,6 +13,7 @@ import {
   pruneCommand,
   pruneOldKits,
   resetPruned,
+  restartsUnasked,
   setupHost,
   spawnRunner,
 } from './host-setup.ts';
@@ -126,9 +127,12 @@ test("the kit's own command builders in both shells", () => {
   assert.equal(kitCliCommand(sh, ['hooks', 'install', '--home', '/Users/z/.emerald-remote']), `"/Users/z/.emerald-remote/node-24.20.0/bin/node" "/Users/z/.emerald-remote/${V}/cli/dist/main.js" hooks install --home "/Users/z/.emerald-remote"`);
   assert.equal(
     pruneCommand(ps, V, '24.20.0'),
-    `Get-ChildItem -Directory -LiteralPath "${R}" | Where-Object { ($_.Name -match '^\\d+\\.\\d+\\.\\d+$' -and $_.Name -ne '${V}') -or ($_.Name -like 'node-*' -and $_.Name -ne 'node-24.20.0') } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue`,
+    `$gone = @(Get-ChildItem -Directory -LiteralPath "${R}" | Where-Object { ($_.Name -match '^\\d+\\.\\d+\\.\\d+$' -and $_.Name -ne '${V}') -or ($_.Name -like 'node-*' -and $_.Name -ne 'node-24.20.0') }); $gone | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; $gone | Where-Object { Test-Path -LiteralPath $_.FullName } | ForEach-Object { $_.Name }`,
   );
-  assert.equal(pruneCommand(sh, V, '24.20.0'), `cd "/Users/z/.emerald-remote" && for d in [0-9]*.[0-9]*.[0-9]* node-*; do [ -d "$d" ] && [ "$d" != "${V}" ] && [ "$d" != "node-24.20.0" ] && rm -rf "$d"; done; true`);
+  assert.equal(
+    pruneCommand(sh, V, '24.20.0'),
+    `cd "/Users/z/.emerald-remote" && for d in [0-9]*.[0-9]*.[0-9]* node-*; do if [ -d "$d" ] && [ "$d" != "${V}" ] && [ "$d" != "node-24.20.0" ]; then rm -rf "$d"; [ -d "$d" ] && echo "$d"; fi; done; true`,
+  );
 });
 
 test('spawnRunner runs a node stub named by EMERALD_SSH and keeps the last stderr line', async () => {
@@ -310,4 +314,52 @@ test('the old kits are pruned once per run, at a connect whose daemon is the rec
   assert.equal(await pruneOldKits(host, { ...DAEMON, pid: 8, startedAt: 2 }, { run, log: (m) => void logs.push(m) }), true);
   assert.equal(calls.length, 2);
   assert.deepEqual(logs, ['host wfs-db: old kits removed', 'host wfs-db: old kits removed']);
+});
+
+test('a failed removal names what is still there, waits 5 s and tries once more, and logs the removal when the retry clears it (M9 fix 1196)', async () => {
+  resetPruned();
+  let n = 0;
+  const { run, calls } = fakeRunner(() => (n++ === 0 ? { code: 0, stdout: '0.1.1078\r\n', stderrLast: '' } : ok()));
+  const logs: string[] = [];
+  const slept: number[] = [];
+  const sleep = async (ms: number) => void slept.push(ms);
+  const host: RemoteHost = { ...wfs, home: WFS_HOME, shell: 'powershell', kitVersion: V, nodeVersion: '24.20.0' };
+  assert.equal(await pruneOldKits(host, DAEMON, { run, log: (m) => void logs.push(m), sleep }), true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(slept, [5000]);
+  assert.deepEqual(logs, ['host wfs-db: old kit removal failed (exit 0): still there: 0.1.1078; trying again in 5 s', 'host wfs-db: old kits removed']);
+});
+
+test('a removal that fails twice is left to the next connect, which tries it again for the same daemon (M9 fix 1196)', async () => {
+  resetPruned();
+  const { run, calls } = fakeRunner(() => ({ code: 1, stdout: '', stderrLast: '' }));
+  const logs: string[] = [];
+  const sleep = async () => {};
+  const host: RemoteHost = { ...wfs, home: WFS_HOME, shell: 'powershell', kitVersion: V, nodeVersion: '24.20.0' };
+  assert.equal(await pruneOldKits(host, DAEMON, { run, log: (m) => void logs.push(m), sleep }), true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(logs, [
+    'host wfs-db: old kit removal failed (exit 1): no folder named; trying again in 5 s',
+    'host wfs-db: old kit removal failed again (exit 1): no folder named; left for the next connect',
+  ]);
+  assert.equal(await pruneOldKits(host, DAEMON, { run, log: (m) => void logs.push(m), sleep }), true);
+  assert.equal(calls.length, 4);
+});
+
+test('a daemon on an older kit with nothing live is restarted unasked once per daemon, never with a live session, on its own or a newer kit, or under a record naming no kit (M9 fix 1195)', () => {
+  const done = new Set<string>();
+  const host: RemoteHost = { ...wfs, home: WFS_HOME, shell: 'powershell', kitVersion: V, nodeVersion: '24.20.0' };
+  const older = { ...DAEMON, version: '0.1.1048' };
+  assert.equal(restartsUnasked(host, older, [], done), true);
+  assert.equal(restartsUnasked(host, older, [], done), false, 'once per daemon');
+  assert.equal(restartsUnasked(host, { ...older, pid: 8, startedAt: 2 }, [], done), true, 'a new daemon is met again');
+  assert.equal(restartsUnasked(host, { ...older, pid: 10, startedAt: 3 }, [{ state: 'exited' }, { state: 'exited' }], done), true, 'exited sessions count as nothing running');
+  assert.equal(restartsUnasked(host, { ...older, pid: 11, startedAt: 4 }, [{ state: 'exited' }, { state: 'idle' }], done), false);
+  assert.equal(restartsUnasked(host, { ...older, pid: 12, startedAt: 5 }, [{ state: 'errored' }], done), false);
+  assert.equal(restartsUnasked(host, { ...older, pid: 13, startedAt: 6 }, [{ state: 'done' }], done), false);
+  assert.equal(restartsUnasked(host, DAEMON, [], done), false, 'the record\'s own kit');
+  const { kitVersion: _k, ...noKit } = host;
+  assert.equal(restartsUnasked(noKit, { ...older, pid: 14, startedAt: 7 }, [], done), false, 'a record naming no kit');
+  assert.equal(restartsUnasked(host, { ...DAEMON, version: '0.1.1080', pid: 9 }, [], done), false, 'a daemon newer than the record');
+  assert.equal(restartsUnasked({ ...host, kitVersion: '0.1.1171' }, { ...DAEMON, version: '0.1.999', pid: 15, startedAt: 8 }, [], done), true, 'compared as numbers, where a string compare says otherwise');
 });

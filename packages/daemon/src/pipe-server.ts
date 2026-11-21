@@ -15,6 +15,7 @@ import type { Logger } from './log.ts';
 import type { OutputSink } from './pty-session.ts';
 import { PromptsStore } from './prompts-store.ts';
 import { FoldersStore } from './folders-store.ts';
+import { FormerStore } from './former-store.ts';
 import { HostsStore } from './hosts-store.ts';
 import type { ConflictWatch } from './conflicts.ts';
 import { SessionError, SessionManager, type LoadTick, type SpawnRequest } from './session-manager.ts';
@@ -54,6 +55,8 @@ export interface PipeServerOptions {
   prompts?: PromptsStore;
   // The folder labels (M9 fix 194), the same way.
   folders?: FoldersStore;
+  // A folder's former folders (M9 fix 1191), the same way.
+  former?: FormerStore;
   // The remote hosts record (M9 fix 1080), the same way.
   hosts?: HostsStore;
   // The conflict forecast (M9 fix 320); a server without one (tests)
@@ -379,7 +382,7 @@ export class PipeServer {
   constructor(manager: SessionManager, layouts: LayoutStore, opts: PipeServerOptions) {
     this.manager = manager;
     this.layouts = layouts;
-    this.opts = { ...opts, prompts: opts.prompts ?? new PromptsStore('', opts.log), folders: opts.folders ?? new FoldersStore('', opts.log), hosts: opts.hosts ?? new HostsStore('', opts.log) };
+    this.opts = { ...opts, prompts: opts.prompts ?? new PromptsStore('', opts.log), folders: opts.folders ?? new FoldersStore('', opts.log), hosts: opts.hosts ?? new HostsStore('', opts.log), former: opts.former ?? new FormerStore('', opts.log) };
     // The hosts record after a change (M9 fix 1080), to app windows at
     // level 80 on the sessions topic; an older window has no use for it.
     this.opts.hosts?.on('changed', (hosts: HostRecord[]) => this.broadcastHosts(hosts));
@@ -1537,6 +1540,15 @@ class ClientConnection {
       case 'folders.set':
         this.folders.set(expectString(req, 'folder'), req.label === null ? null : expectString(req, 'label'));
         return {};
+      // M9 fix 1191: a folder's former folders; no push, since the tab asks once a minute.
+      case 'former.list':
+        return { former: this.opts.former?.list() ?? [] };
+      case 'former.set': {
+        if (typeof req.on !== 'boolean') throw new SessionError('bad-request', 'on must be true or false');
+        const store = this.opts.former;
+        if (store === undefined) throw new SessionError('bad-request', 'this daemon keeps no former folders');
+        return { changed: store.set(expectString(req, 'folder'), expectString(req, 'former'), req.on) };
+      }
       case 'hosts.list':
         return { hosts: this.hosts.list() };
       case 'hosts.set':
@@ -1578,7 +1590,7 @@ class ClientConnection {
           const now = Date.now();
           return activityTotals([], folder, from ?? now, to ?? now, null);
         }
-        return activity.loaded.then(() => activity.totals(folder, from, to, Date.now(), this.manager.list({ removed: true }), this.opts.unhosted?.list() ?? []));
+        return activity.loaded.then(() => activity.totals(folder, from, to, Date.now(), this.manager.list({ removed: true }), this.opts.unhosted?.list() ?? [], this.opts.former?.of(folder) ?? []));
       }
       // M9 fix 1094: asked by the empty pane on a pick, so the hello stays inside its 500 ms.
       case 'claude.auth':

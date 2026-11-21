@@ -12,6 +12,8 @@ import { AskTabs } from './AskTabs.tsx';
 import { answeredElsewhere, askBoxShown, askHeading } from './chat-model.ts';
 import { acknowledgeAttention } from './ui.ts';
 import { TrustPopover } from './TrustCard.tsx';
+import { AskHead } from './AskHead.tsx';
+import { askAgentName, askHeadShown } from './ask-notify-model.ts';
 
 // M55: the badge of a needs-input row opens a card with what the session
 // is asking, read off its screen, and the answers as buttons, so a person
@@ -248,6 +250,9 @@ export function AnswerPopover({ session, anchor, onClose, onEnter, onLeave }: Ca
           {askTabs.length > 0 && <AskTabs tabs={askTabs} prefix="answer-popover" sent={pressed !== null} onPress={(to) => pressTab(askTabs, to)} />}
           <div className="answer-popover-question">{ask.question}</div>
         </>
+      ) : askHeadShown(session) && session.askedFor ? (
+        // M9 fix 1199: the same head as the chat's ask card, off the mod's record.
+        <AskHead asked={session.askedFor} agent={session.needsInputReason === 'agent-permission' ? askAgentName(session) : null} />
       ) : (
         <pre className="answer-popover-screen" data-rows={excerpt.length}>
           {shown === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}

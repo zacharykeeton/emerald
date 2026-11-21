@@ -23,3 +23,11 @@ export function refusalReason(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err);
   return text.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '');
 }
+
+// A single refused Resume or rename (M9 fix 1198): what was asked and why,
+// with no session named, since the click was on it.
+export type FailedVerb = 'resume' | 'rename';
+
+export function failedText(verb: FailedVerb, err: unknown): string {
+  return `Could not ${verb}: ${refusalReason(err)}`;
+}

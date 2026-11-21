@@ -6,6 +6,7 @@ import { LayoutAction, LinesActions } from './LaneCard.tsx';
 import type { CardLayout, CardLines } from './LaneCard.tsx';
 import { PopoverCard } from './Popover.tsx';
 import type { CardProps } from './Popover.tsx';
+import { failedToast } from './toast-store.ts';
 import { openTranscriptTab } from './ui.ts';
 
 // The card on a history lane of the Commits graph (M70): the lane stands
@@ -33,10 +34,9 @@ interface Props extends CardProps {
 
 export function HistoryCard({ transcript, mine, color, now, anchorId, layout, lines, anchor, onClose, onEnter, onLeave }: Props): ReactNode {
   const model = historyCardModel(transcript, mine, now);
-  const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
   const resume = () => {
     onClose();
-    void resumeTranscript(transcript.cwd, transcript.id, true).catch(warn('resume'));
+    void resumeTranscript(transcript.cwd, transcript.id, true).catch(failedToast('resume'));
   };
   const open = () => {
     onClose();

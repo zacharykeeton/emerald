@@ -24,6 +24,11 @@ export const REPEAT_MS = 5000;
 // is capped by letting the oldest go.
 export const HELD_TOASTS = 50;
 
+// A permission ask's toast buttons (M9 fix 1199): the index a press
+// answers is the place here, 0 Allow once and 1 Deny. Never "don't ask
+// again": a standing rule is given in the dialog, where its scope is said.
+export const ASK_ACTIONS = ['Allow once', 'Deny'] as const;
+
 export type NotifyLog = (msg: string) => void;
 
 export type NotifyOutcome = 'shown' | 'failed' | 'held' | 'logged' | 'unsupported' | 'skipped';
@@ -31,12 +36,13 @@ export type NotifyOutcome = 'shown' | 'failed' | 'held' | 'logged' | 'unsupporte
 export interface ToastHandle {
   on(event: 'show' | 'close' | 'click', fn: () => void): void;
   on(event: 'failed', fn: (error: string) => void): void;
+  on(event: 'action', fn: (index: number) => void): void;
   show(): void;
 }
 
 export interface ToastMaker {
   supported(): boolean;
-  create(title: string, body: string): ToastHandle;
+  create(title: string, body: string, actions?: readonly string[]): ToastHandle;
 }
 
 export interface NotifyDeps {
@@ -48,7 +54,19 @@ export interface NotifyDeps {
   appendLine: (file: string, line: string) => void;
   toasts: ToastMaker;
   onClick: (sessionId: string) => void;
+  // A button pressed on a permission ask's toast (M9 fix 1199), with the
+  // call it was posted for; the window is not raised.
+  onAction: (sessionId: string, toolUseId: string, index: number) => void;
   log: NotifyLog;
+}
+
+// The ask a request carries (M9 fix 1199), or null when it carries none or
+// a malformed one, which is then posted as a toast with no buttons.
+function askOf(req: NotifyRequest): { toolUseId: string; command: string } | null {
+  const ask: unknown = (req as { ask?: unknown }).ask;
+  if (typeof ask !== 'object' || ask === null) return null;
+  const { toolUseId, command } = ask as { toolUseId?: unknown; command?: unknown };
+  return typeof toolUseId === 'string' && typeof command === 'string' ? { toolUseId, command } : null;
 }
 
 export function createNotifyPolicy(deps: NotifyDeps): { post(req: NotifyRequest, opts?: { always?: boolean }): Promise<NotifyOutcome>; heldToasts(): number } {
@@ -63,8 +81,11 @@ export function createNotifyPolicy(deps: NotifyDeps): { post(req: NotifyRequest,
       const last = lastAt.get(req.sessionId);
       if (last !== undefined && now - last < REPEAT_MS) return Promise.resolve('skipped');
       lastAt.set(req.sessionId, now);
+      const ask = askOf(req);
       if (deps.held) {
-        deps.log(`notification held under a private EMERALD_HOME: ${req.title}: ${req.body}`);
+        // M9 fix 1199: an ask's two-line body on one line, its buttons named.
+        if (ask !== null) deps.log(`notification held under a private EMERALD_HOME: ${req.title}: ${req.body.replace(/\r?\n/g, ' ')} [${ASK_ACTIONS.join(', ')}]`);
+        else deps.log(`notification held under a private EMERALD_HOME: ${req.title}: ${req.body}`);
         return Promise.resolve('held');
       }
       if (deps.logFile !== undefined) {
@@ -73,7 +94,7 @@ export function createNotifyPolicy(deps: NotifyDeps): { post(req: NotifyRequest,
         // uncaught main-process exception whose modal lands on the
         // person's screen (M9 fix 480, L41).
         try {
-          deps.appendLine(deps.logFile, `${JSON.stringify({ sessionId: req.sessionId, title: req.title, body: req.body, at: now })}\n`);
+          deps.appendLine(deps.logFile, `${JSON.stringify({ sessionId: req.sessionId, title: req.title, body: req.body, ...(ask === null ? {} : { ask }), at: now })}\n`);
         } catch (err) {
           deps.log(`notification log ${deps.logFile} not written: ${err instanceof Error ? err.message : String(err)}`);
           return Promise.resolve('failed');
@@ -83,7 +104,7 @@ export function createNotifyPolicy(deps: NotifyDeps): { post(req: NotifyRequest,
       if (!deps.toasts.supported()) return Promise.resolve('unsupported');
       return new Promise((resolve) => {
         try {
-          const toast = deps.toasts.create(req.title, req.body);
+          const toast = ask === null ? deps.toasts.create(req.title, req.body) : deps.toasts.create(req.title, req.body, ASK_ACTIONS);
           toasts.add(toast);
           if (toasts.size > HELD_TOASTS) {
             const oldest = toasts.values().next().value;
@@ -94,6 +115,12 @@ export function createNotifyPolicy(deps: NotifyDeps): { post(req: NotifyRequest,
             toasts.delete(toast);
             deps.onClick(req.sessionId);
           });
+          if (ask !== null) {
+            toast.on('action', (index) => {
+              toasts.delete(toast);
+              deps.onAction(req.sessionId, ask.toolUseId, index);
+            });
+          }
           toast.on('show', () => resolve('shown'));
           toast.on('failed', (error) => {
             toasts.delete(toast);

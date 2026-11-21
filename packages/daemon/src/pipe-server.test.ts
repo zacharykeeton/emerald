@@ -2001,3 +2001,18 @@ test('claude.auth answers the manager\'s read, two asks at once reading once (M9
     await srv.close();
   }
 });
+
+// M9 fix 1191: a folder's former folders over the pipe, on the shared
+// server's in-memory store.
+test('former.set adds and removes a former folder, a repeat answers changed false, and one inside the folder is refused (M9 fix 1191)', async () => {
+  const client = await PipeClient.connect(PIPE);
+  const folder = 'C:\\code\\emerald-1191-test';
+  const old = 'C:\\code\\zorca-1191-test';
+  assert.deepEqual(await client.request('former.set', { folder, former: old, on: true }), { changed: true });
+  assert.deepEqual(await client.request('former.list', {}), { former: [{ folder, former: [old] }] });
+  assert.deepEqual(await client.request('former.set', { folder, former: old, on: true }), { changed: false });
+  await assert.rejects(client.request('former.set', { folder, former: `${folder}\\packages`, on: true }), { code: 'bad-request', message: 'a former folder cannot be the folder, inside it or around it' });
+  assert.deepEqual(await client.request('former.set', { folder, former: old, on: false }), { changed: true });
+  assert.deepEqual(await client.request('former.list', {}), { former: [] });
+  client.close();
+});

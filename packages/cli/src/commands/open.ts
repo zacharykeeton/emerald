@@ -145,7 +145,7 @@ const command: Command = {
   summary:
     "open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane (the one on the tab in front, else the first in tab order); --scheme picks the file's own colour scheme; a URL opens a browser pane, and --browser renders an .html file in one",
   usage:
-    'emmer open <path | url> [--pane | --beside [<session>]] [--scheme <name> | --clear-scheme] [--browser] [--json]\n--beside takes the session\'s pane on the tab in front, else its first in tab order, and the reply names the pane and the tab\na url (http://, https:// or host:port, such as localhost:3000) opens in a browser pane, beside the focused one or beside --beside\'s session\n--browser renders an .html or .htm file in a browser pane, served from the Files rail\'s folder when the file is under it, else from its own folder',
+    'emmer open <path | url> [--pane | --beside [<session>]] [--scheme <name> | --clear-scheme] [--browser] [--json]\n--beside takes the session\'s pane on the tab in front, else its first in tab order, and the reply names the pane and the tab\na url (http://, https:// or host:port, such as localhost:3000) opens in a browser pane, beside the session\'s own pane when run from one, else beside the focused one, or beside --beside\'s session\n--browser renders an .html or .htm file in a browser pane, served from the Files rail\'s folder when the file is under it, else from its own folder',
   run: (argv) => runOpen(argv),
 };
 

@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { kitDirOf, mkdirCommand, nodeDirOf, relayCommand, remoteHomeOf, removeCommand, untarCommand } from '@emerald/shared';
-import type { HostRecord, RemoteHost } from '@emerald/shared';
+import { isNewerVersion, kitDirOf, mkdirCommand, nodeDirOf, relayCommand, remoteHomeOf, removeCommand, untarCommand } from '@emerald/shared';
+import type { HostRecord, RemoteHost, SessionInfo } from '@emerald/shared';
 import { sshCommand, sshTarget } from './host-client.ts';
 import type { Runner } from './node-runner.ts';
 import type { DaemonInfo } from './pipe-client.ts';
@@ -164,12 +164,12 @@ export function kitCliCommand(h: KitPlace, words: readonly string[]): string {
   return h.shell === 'powershell' ? `& ${line}` : line;
 }
 
-// Every kit and Node folder under the remote home but the ones named.
+// Every kit and Node folder under the remote home but the ones named; prints each one it could not remove (M9 fix 1196), since PowerShell's SilentlyContinue leaves the exit and stderr saying nothing.
 export function pruneCommand(h: KitPlace, keepKit: string, keepNode: string): string {
   const home = remoteHomeOf(h);
   return h.shell === 'powershell'
-    ? `Get-ChildItem -Directory -LiteralPath "${home}" | Where-Object { ($_.Name -match '^\\d+\\.\\d+\\.\\d+$' -and $_.Name -ne '${keepKit}') -or ($_.Name -like 'node-*' -and $_.Name -ne 'node-${keepNode}') } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue`
-    : `cd "${home}" && for d in [0-9]*.[0-9]*.[0-9]* node-*; do [ -d "$d" ] && [ "$d" != "${keepKit}" ] && [ "$d" != "node-${keepNode}" ] && rm -rf "$d"; done; true`;
+    ? `$gone = @(Get-ChildItem -Directory -LiteralPath "${home}" | Where-Object { ($_.Name -match '^\\d+\\.\\d+\\.\\d+$' -and $_.Name -ne '${keepKit}') -or ($_.Name -like 'node-*' -and $_.Name -ne 'node-${keepNode}') }); $gone | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; $gone | Where-Object { Test-Path -LiteralPath $_.FullName } | ForEach-Object { $_.Name }`
+    : `cd "${home}" && for d in [0-9]*.[0-9]*.[0-9]* node-*; do if [ -d "$d" ] && [ "$d" != "${keepKit}" ] && [ "$d" != "node-${keepNode}" ]; then rm -rf "$d"; [ -d "$d" ] && echo "$d"; fi; done; true`;
 }
 
 const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'] as const;
@@ -214,6 +214,11 @@ export function setupHost(host: RemoteHost, deps: SetupDeps): Promise<SetupResul
   return p;
 }
 
+// M9 fix 1195: the setup running for a host, if any, so a restart unasked waits for its record to be written.
+export function setupRunning(name: string): Promise<SetupResult> | undefined {
+  return running.get(name);
+}
+
 class SetupFailed extends Error {}
 
 // M9 fix 1166: a same-version setup unpacks over the folder a just-stopped
@@ -224,6 +229,8 @@ class SetupFailed extends Error {}
 // UNPACK_TRIES times, UNPACK_RETRY_MS apart.
 export const UNPACK_TRIES = 3;
 export const UNPACK_RETRY_MS = 2000;
+// M9 fix 1196: how long a failed old kit removal waits before its one retry; the old daemon's pty.node is freed within its reaper's 4 s.
+export const PRUNE_RETRY_MS = 5000;
 
 async function runSetup(host: RemoteHost, deps: SetupDeps): Promise<SetupResult> {
   const name = host.name;
@@ -359,21 +366,53 @@ const pruned = new Set<string>();
 // time), at the first connect whose daemon is the record's kit (a Windows
 // host holds a running daemon's pty.node open, and an app update leaves the
 // old kit's daemon serving the pipe until it restarts, M9 fix 1165's
-// Restart). Never changes a phase.
-export async function pruneOldKits(host: RemoteHost, daemon: DaemonInfo, deps: { run: RemoteRunner; log: (msg: string) => void }): Promise<boolean> {
+// Restart). Never changes a phase. A failed removal is tried once more after
+// PRUNE_RETRY_MS and, failing again, left to the next connect (M9 fix 1196).
+export async function pruneOldKits(host: RemoteHost, daemon: DaemonInfo, deps: { run: RemoteRunner; log: (msg: string) => void; sleep?: (ms: number) => Promise<void> }): Promise<boolean> {
   if (host.kitVersion === undefined || host.home === undefined || host.shell === undefined || daemon.version !== host.kitVersion) return false;
   const key = `${host.name}\0${daemon.pid}\0${daemon.startedAt ?? ''}`;
   if (pruned.has(key)) return false;
+  // Kept through the retry's wait, so a reconnect then starts no second removal beside it.
   pruned.add(key);
   const nodeVersion = host.nodeVersion ?? KIT_NODE_VERSION;
   const h: KitPlace = { home: host.home, shell: host.shell, nodeVersion, kitVersion: host.kitVersion };
-  const out = await deps.run('ssh', sshArgs(host, pruneCommand(h, host.kitVersion, nodeVersion))).done;
-  if (out.code === 0) deps.log(`host ${host.name}: old kits removed`);
-  else deps.log(`host ${host.name}: old kit removal failed (exit ${out.code}): ${out.stderrLast}`);
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const out = await deps.run('ssh', sshArgs(host, pruneCommand(h, host.kitVersion, nodeVersion))).done;
+    const left = out.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '');
+    if (out.code === 0 && left.length === 0) {
+      deps.log(`host ${host.name}: old kits removed`);
+      return true;
+    }
+    const detail = [left.length > 0 ? `still there: ${left.join(', ')}` : '', out.stderrLast].filter((p) => p !== '').join('; ') || 'no folder named';
+    if (attempt === 1) {
+      deps.log(`host ${host.name}: old kit removal failed (exit ${out.code}): ${detail}; trying again in ${PRUNE_RETRY_MS / 1000} s`);
+      await sleep(PRUNE_RETRY_MS);
+    } else {
+      deps.log(`host ${host.name}: old kit removal failed again (exit ${out.code}): ${detail}; left for the next connect`);
+      pruned.delete(key);
+    }
+  }
   return true;
 }
 
 // For the test: forget which hosts were pruned this run.
 export function resetPruned(): void {
   pruned.clear();
+}
+
+// M9 fix 1195: whether a host's daemon is restarted without the banner's
+// ask: the record names a kit newer than the one the daemon runs (never an
+// older or merely other one, so two PCs on different versions sharing an
+// idle host do not restart each other's daemon back and forth), and nothing
+// on the host is live (an exited session loses nothing to a restart). Once
+// per daemon (name, pid and start time, since Windows recycles pids): the
+// key goes into done when the answer is yes, so a daemon that will not stop
+// is met again with the banner's row.
+export function restartsUnasked(host: RemoteHost, daemon: DaemonInfo, sessions: readonly Pick<SessionInfo, 'state'>[], done: Set<string>): boolean {
+  if (host.kitVersion === undefined || !isNewerVersion(host.kitVersion, daemon.version) || sessions.some((s) => s.state !== 'exited')) return false;
+  const key = `${host.name}\0${daemon.pid}\0${daemon.startedAt ?? ''}`;
+  if (done.has(key)) return false;
+  done.add(key);
+  return true;
 }

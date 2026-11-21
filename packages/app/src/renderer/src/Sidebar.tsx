@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { failedToast } from './toast-store.ts';
 import type { CSSProperties } from 'react';
 import type { SavedPrompt, SessionInfo } from '@emerald/shared';
 import { ackIfDone, clearExited, killSession, newGroupTab, openViewBeside, pauseRemoval, removeSession, renameSession, resumeAll, resumeSession, roomBesideFocused, sendPrompt, setKeepWhole, setSessionComment, showSession, showSessionBeside, showSessionInNewTab, setFolderLabel, startShellBeside, startShellBesideFocused, sweepSessions, unpauseRemoval } from './actions.ts';
@@ -217,7 +218,7 @@ export function Sidebar() {
             .catch(warn('send prompt'));
         }}
         onShow={onShow}
-        onResume={(id) => void resumeSession(id).catch(warn('resume'))}
+        onResume={(id) => void resumeSession(id).catch(failedToast('resume'))}
         onMenu={(id, x, y) => setMenu({ sessionId: id, x, y })}
         onAdd={(folder, host) => void startShellBeside(folder, undefined, host === '' ? undefined : host).catch(warn('shell from the heading'))}
         onAddMenu={(folder, host, x, y) => setAddMenu({ folder, host, x, y })}
@@ -232,7 +233,7 @@ export function Sidebar() {
         onGroupTab={(name, ids) => void newGroupTab(name, ids).catch(warn('tab for the group'))}
         onRenamed={(id, name) => {
           setRenaming(null);
-          if (name !== null) void renameSession(id, name).catch(warn('rename'));
+          if (name !== null) void renameSession(id, name).catch(failedToast('rename'));
         }}
       />
   );
@@ -468,7 +469,7 @@ export function Sidebar() {
           }}
           onResume={() => {
             setMenu(null);
-            void resumeSession(menu.sessionId).catch(warn('resume'));
+            void resumeSession(menu.sessionId).catch(failedToast('resume'));
           }}
           onRemove={() => {
             setMenu(null);

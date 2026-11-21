@@ -1,4 +1,4 @@
-import { app, nativeImage } from 'electron';
+import { app, nativeImage, systemPreferences } from 'electron';
 import type { BrowserWindow, NativeImage } from 'electron';
 import type { AttentionRequest } from '../preload/api.ts';
 import { BADGE_SIZE, badgeColour, createTaskbarPolicy, drawBadge } from './taskbar-policy.ts';
@@ -33,12 +33,23 @@ export function createTaskbar(getWindow: () => BrowserWindow | null, log: Taskba
   const frames = new Map<string, NativeImage>();
   const frame = (count: number, isBright: boolean): NativeImage => {
     // The skin is in the key (M9 fix 569), so a flip shows on the badge's
-    // next frame; the pulse repaints every 800 ms while anything wants.
+    // next frame; the pulse repaints every 900 ms while anything wants.
     const key = `${currentSkin()}:${count}:${isBright ? 'bright' : 'dim'}`;
     let img = frames.get(key);
     if (img === undefined) {
       img = nativeImage.createFromBitmap(drawBadge(count, isBright, badgeColour(currentSkin())), { width: BADGE_SIZE, height: BADGE_SIZE });
       frames.set(key, img);
+    }
+    return img;
+  };
+  // M9 fix 1200: the glint's images, keyed on the policy's own buffers,
+  // which it draws once and hands over every sweep.
+  const glints = new Map<Buffer, NativeImage>();
+  const glintImage = (buf: Buffer): NativeImage => {
+    let img = glints.get(buf);
+    if (img === undefined) {
+      img = nativeImage.createFromBitmap(buf, { width: BADGE_SIZE, height: BADGE_SIZE });
+      glints.set(buf, img);
     }
     return img;
   };
@@ -54,6 +65,10 @@ export function createTaskbar(getWindow: () => BrowserWindow | null, log: Taskba
       // Electron removes the bar below zero; the mode is normal by default.
       setProgress: (fraction) => win.setProgressBar(fraction === null ? -1 : fraction),
       setTooltip: (text) => win.setThumbnailToolTip(text),
+      setGlint: (buf, description) => {
+        if (buf === null) win.setOverlayIcon(null, '');
+        else win.setOverlayIcon(glintImage(buf), description);
+      },
     };
   };
   // On a Mac the dock stands in for the button, and no badge frame is drawn.
@@ -73,6 +88,14 @@ export function createTaskbar(getWindow: () => BrowserWindow | null, log: Taskba
       const timer = setInterval(fn, ms);
       return () => clearInterval(timer);
     },
+    // M9 fix 1200: the glint's one timeout at a time, its clock, and the
+    // system's reduced motion, read at each turn-on.
+    timeout: (ms, fn) => {
+      const t = setTimeout(fn, ms);
+      return () => clearTimeout(t);
+    },
+    now: () => performance.now(),
+    reducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion,
   });
   return {
     set: (req) => policy.set(req),

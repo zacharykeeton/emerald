@@ -400,7 +400,8 @@ function sumRequests(sessions: readonly ActivitySession[], from: number, to: num
   for (const s of drawnSessions(sessions)) {
     for (const r of s.requests ?? []) {
       if (r.at < from || r.at >= to) continue;
-      requests += 1;
+      // An agent's point stands for its count of requests (M9 fix 1189).
+      requests += r.count ?? 1;
       up += r.fresh + r.cacheWrite + r.cacheRead;
       fresh += r.fresh;
       cacheWrite += r.cacheWrite;
@@ -571,8 +572,15 @@ export function monthBounds(key: string): { from: number; to: number } | null {
 // so the daemon folds a whole life into one small answer. The months
 // start at the later of the window's start and the log's first line, so a
 // caller asking from 0 gets the log's months rather than 1970's.
-export function activityTotals(rows: readonly ActivitySession[], folder: string, from: number, to: number, historyFrom: number | null): ActivityTotals {
-  const scoped = rows.filter((s) => (s.groupCwd != null && underFolder(s.groupCwd, folder)) || (s.cwd != null && underFolder(s.cwd, folder)));
+// With agentsFrom (M9 fixes 1189 and 1201), the day the agents began to
+// be counted, the answer carries it, moved back to the folder's earliest
+// agent point when the one-time recount reached earlier. With former
+// folders (M9 fix 1191), where a renamed or moved checkout lived before,
+// a row under any of them counts too, and the answer names them.
+export function activityTotals(rows: readonly ActivitySession[], folder: string, from: number, to: number, historyFrom: number | null, agentsFrom: number | null = null, former: readonly string[] = []): ActivityTotals {
+  const folders = [folder, ...former];
+  const under = (p: string | null | undefined): boolean => p != null && folders.some((f) => underFolder(p, f));
+  const scoped = rows.filter((s) => under(s.groupCwd) || under(s.cwd));
   const part = (month: string | null, a: number, b: number): ActivityTotalsPart => {
     const st = activityStats(scoped, a, b);
     return { month, from: a, to: b, requests: st.requests, up: st.up, fresh: st.fresh, cacheWrite: st.cacheWrite, cached: st.cached, down: st.down, usd: st.usd, estimated: st.estimated, agentMs: st.agentMs, commits: st.commits, merges: st.merges, allUsd: activityStats(rows, a, b).usd };
@@ -593,7 +601,13 @@ export function activityTotals(rows: readonly ActivitySession[], folder: string,
       if (at !== undefined && (firstAt === null || at < firstAt)) firstAt = at;
     }
   }
-  return { folder, from, to, total: part(null, from, to), months, firstAt, historyFrom };
+  const out: ActivityTotals = { folder, from, to, total: part(null, from, to), months, firstAt, historyFrom, ...(former.length === 0 ? {} : { former: [...former] }) };
+  if (agentsFrom === null) return out;
+  let agentsAt = agentsFrom;
+  for (const s of drawnSessions(scoped)) {
+    for (const r of s.requests ?? []) if (r.agent !== undefined && r.at < agentsAt) agentsAt = r.at;
+  }
+  return { ...out, agentsFrom: agentsAt };
 }
 
 // The clock time of an instant, `09:12`, local.

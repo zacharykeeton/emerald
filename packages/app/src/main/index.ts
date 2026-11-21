@@ -3,7 +3,7 @@ import type { WebContents } from 'electron';
 import { BROWSER_PARTITION, FIRST_WINDOW_ID, frontWindow, HOSTS_LEVEL, hostNameOf, isLocalPageUrl, LOCAL_PAGE_SCHEME, mergeRemoteHosts, paneShowingIn, sshConfigHosts, windowHolding, windowsOf } from '@emerald/shared';
 import type { HostRecord, RemoteHost, SessionInfo } from '@emerald/shared';
 import { HostClient } from './host-client.ts';
-import { cancelSetup, pruneOldKits, setupHost, spawnRunner } from './host-setup.ts';
+import { cancelSetup, pruneOldKits, restartsUnasked, setupHost, setupRunning, spawnRunner } from './host-setup.ts';
 import type { ConnectRefusal } from './host-setup.ts';
 import { assembleKit, kitRoot, kitSources, stageEntries, stageId } from './remote-kit.ts';
 import type { KitArch, KitOs } from './remote-kit.ts';
@@ -92,7 +92,7 @@ import type { DaemonInfo } from './pipe-client.ts';
 import { claudeConfigDir } from '@emerald/shared/claude-home';
 import { claudeThemePaths, readClaudeTheme } from './claude-theme.ts';
 import type { ClaudeThemeRead } from '../preload/api.ts';
-import { guestMenuOf } from './guest-menu.ts';
+import { guestMenuOf, guestMenuSteps, windowSpellOf } from './guest-menu.ts';
 import type { GuestMenu, GuestMenuAct } from '../preload/api.ts';
 
 // Where emmerd's main.js lives. In development this file is bundled to
@@ -480,6 +480,8 @@ const hostLast = new Map<string, HostChanged>();
 // again; their connecting and lost states are not pushed, so a restart the
 // person asked for does not read as a lost line.
 const hostRestarting = new Set<string>();
+// M9 fix 1195: the daemons a connect restarted without the banner's ask, keyed as restartsUnasked keys them.
+const hostRestartedUnasked = new Set<string>();
 // What always goes to this PC's daemon, whatever host a request names.
 const LOCAL_ONLY = /^(layout|window|folders|hosts|prompts|conflicts)\./;
 
@@ -602,6 +604,8 @@ function hostClientFor(name: string): Promise<HostClient> {
       pushHostState(c);
       // M9 fix 1084: the old kits go once the recorded kit's daemon answers.
       void pruneOldKits(c.record, _daemon, { run: remoteRunner, log });
+      // M9 fix 1195: a daemon on an older kit with nothing live is restarted at once, off the event since the restart reconnects this client.
+      if (restartsUnasked(c.record, _daemon, sessions, hostRestartedUnasked)) setImmediate(() => void restartIdleHost(c, _daemon));
       // Every pane on the host replays and resets as on a window reload.
       for (const id of broker.held()) {
         if (!kept.has(id)) continue;
@@ -781,6 +785,22 @@ async function hostRestart(name: string): Promise<void> {
   } finally {
     hostRestarting.delete(name);
     pushHostState(c);
+  }
+}
+
+// M9 fix 1195: the restart a connect asks for itself: after any setup in
+// flight has written its record (else hostConnect would set the host up
+// again), and only while this client is still up on that same daemon with
+// no Restart under way. A failure leaves the banner's row and its Restart,
+// as before this fix.
+async function restartIdleHost(c: HostClient, daemon: DaemonInfo): Promise<void> {
+  await setupRunning(c.name);
+  if (hostClients.get(c.name) !== c || c.state !== 'up' || c.daemon?.pid !== daemon.pid || hostRestarting.has(c.name)) return;
+  log(`host ${c.name}: emmerd pid ${daemon.pid} runs the ${daemon.version} kit with nothing running, restarting it`);
+  try {
+    await hostRestart(c.name);
+  } catch (err) {
+    log(`host ${c.name}: the restart of emmerd pid ${daemon.pid} failed: ${err instanceof Error ? err.message : String(err)}; its banner row stays`);
   }
 }
 
@@ -1465,47 +1485,64 @@ function writeClipboardText(text: string): void {
   }
   clipboard.writeText(text);
 }
+// M9 fix 1192: the menu's Paste reads here, held or the person's own.
+async function readClipboardText(): Promise<string> {
+  return heldClipboard !== null ? heldClipboard.text : await clipboard.readText();
+}
 // A page's last right-click by guest (M9 fix 1178): the selection and
 // the menu sent, so a row acts once on the right-click it came from and
 // a held clipboard gets the selection's text, which the guest's own copy
 // would put on the person's clipboard instead.
 const guestMenus = new Map<number, { selection: string; menu: GuestMenu }>();
+// M9 fix 1193: each window's last misspelt word under a right-click, so Add to dictionary takes only the word the menu showed.
+const windowSpells = new Map<number, string>();
+ipcMain.handle('emerald:spell-add-word', (event, word: string) => {
+  if (typeof word !== 'string' || word === '' || windowSpells.get(event.sender.id) !== word) return false;
+  windowSpells.delete(event.sender.id);
+  // Electron also writes the word to the OS custom dictionary, so a
+  // harness holds it to the log rather than touch the person's own.
+  if (process.env['EMERALD_HOME'] !== undefined) {
+    log(`dictionary word held under a private EMERALD_HOME: ${word}`);
+    return true;
+  }
+  return event.sender.session.addWordToSpellCheckerDictionary(word);
+});
 ipcMain.handle('emerald:guest-menu-act', async (event, webContentsId: number, act: GuestMenuAct, word?: string) => {
   const contents = webContents.fromId(webContentsId);
   if (contents === undefined || contents.isDestroyed() || contents.getType() !== 'webview' || contents.hostWebContents !== event.sender) return;
   const kept = guestMenus.get(webContentsId);
   if (kept === undefined) return;
   guestMenus.delete(webContentsId);
-  switch (act) {
-    case 'cut':
-      if (heldClipboard !== null) {
-        writeClipboardText(kept.selection);
+  // M9 fix 1192: the same steps on the held clipboard and the person's own;
+  // the guest's cut(), copy() and paste() did nothing on a person's window.
+  for (const step of guestMenuSteps(act, kept, word)) {
+    switch (step.kind) {
+      case 'write':
+        writeClipboardText(step.text);
+        break;
+      case 'delete':
         contents.delete();
-      } else contents.cut();
-      return;
-    case 'copy':
-      if (heldClipboard !== null) writeClipboardText(kept.selection);
-      else contents.copy();
-      return;
-    case 'paste':
-      if (heldClipboard !== null) {
-        if (heldClipboard.text !== '') await contents.insertText(heldClipboard.text);
-      } else contents.paste();
-      return;
-    case 'select-all':
-      contents.selectAll();
-      return;
-    case 'copy-link':
-      if (kept.menu.link !== '') writeClipboardText(kept.menu.link);
-      return;
-    case 'copy-image':
-      if (kept.menu.image !== '') writeClipboardText(kept.menu.image);
-      return;
-    case 'spell':
-      if (word !== undefined && kept.menu.suggestions.includes(word)) contents.replaceMisspelling(word);
-      return;
-    default:
-      return;
+        break;
+      case 'paste': {
+        const text = await readClipboardText();
+        if (text !== '') await contents.insertText(text);
+        break;
+      }
+      case 'select-all':
+        contents.selectAll();
+        break;
+      case 'spell':
+        // The pick typed over the misspelt word when the right-click
+        // selected it, as Blink's does on a misspelling: insertText
+        // reaches the guest's field from the menu (the held Paste reads
+        // it), where replaceMisspelling did nothing on the person's window.
+        // With no such selection, today's call, so no text goes in at a
+        // bare caret. No harness page is spellchecked, so this is the
+        // install's read.
+        if (kept.selection !== '' && kept.selection === kept.menu.misspelled) await contents.insertText(step.word);
+        else contents.replaceMisspelling(step.word);
+        break;
+    }
   }
 });
 async function writeClipboardPng(png: Buffer): Promise<void> {
@@ -1636,6 +1673,14 @@ function createWindow(id: string | null, index: number): void {
     },
   });
   const contentsId = win.webContents.id;
+  // M9 fix 1193: a right-click in one of the window's own fields sends its spelling to the page, for the chat box's menu; the box no longer cancels its contextmenu, which is what lets this fire.
+  win.webContents.on('context-menu', (_e, params) => {
+    if (!params.isEditable) return;
+    const spell = windowSpellOf(params);
+    if (spell.misspelled === '') windowSpells.delete(contentsId);
+    else windowSpells.set(contentsId, spell.misspelled);
+    win.webContents.send('emerald:window-spell', spell);
+  });
   if (id === null) startup = win;
   else windows.set(id, win);
   spotIndex.set(win, index);
@@ -1730,6 +1775,7 @@ function createWindow(id: string | null, index: number): void {
     log(rendererLogLine(details.level, details.message, details.sourceId, details.lineNumber));
   });
   win.on('closed', () => {
+    windowSpells.delete(contentsId);
     // M9 fix 866: the window's own holds go with it; the layout loses
     // its record (and its tabs) only when the person closed it, another
     // window is still open and the app is not quitting.

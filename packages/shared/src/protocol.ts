@@ -1,6 +1,6 @@
 import type { Layout, SingleTree } from './layout.ts';
 import type { SavedPrompt } from './prompts.ts';
-import type { FolderLabel } from './folders.ts';
+import type { FolderLabel, FormerFolders } from './folders.ts';
 import type { ActivitySession, ActivityTotals, CappedSpan } from './activity.ts';
 import type { LoadSample, SessionInfo, SessionKind, SessionPhase, ShellId, ShellOption } from './session.ts';
 import type { UpdateState } from './update.ts';
@@ -139,7 +139,12 @@ export const PROTOCOL_VERSION = 1;
 //  83: M9 fix 1168, host on session.list, carried to the window the same way, so emmer ls --host lists a remote host's sessions
 //  84: M9 fix 1184, a request naming a host and a browser.run settled at once when every window they went to closes, the host ask failing no-answer with the window closed before it answered and the run answering closed
 //  84: M9 fix 1182, host on session.kill and session.remove, carried to one app window at level 84 as host.requested and answered by its host.done with done, so emmer kill --host and emmer rm --host end and forget a remote host's session through the window
-export const DAEMON_FEATURE_LEVEL = 84;
+//  85: M9 fix 1199, askedFor on SessionInfo gains tool, input, description, rule and reason off the mod's ToolAsk post, for the ask card's head and the toast's Allow once and Deny
+//  85: M9 fix 1186, activity.totals places a track whose session record is gone by the folder on its own hook lines
+//  85: M9 fix 1188, activity.totals adds the ledger's months of the generations dropped past the budget, and its historyFrom reaches back to the first of them
+//  85: M9 fix 1189, agent request points on activity.spans (agent and count on a point, read from the subagents' transcripts at each Stop and SubagentStop and kept as the daemon's own agentUsage lines in hooks.jsonl) and agentsFrom on activity.totals, the day the agents' requests and tokens began to be counted
+//  85: M9 fix 1191, former.list and former.set, a folder's former folders (former-folders.json), counted with it by activity.totals, which names them in former
+export const DAEMON_FEATURE_LEVEL = 85;
 
 // The level at which the daemon keeps the remote hosts record and pushes
 // hosts.changed (M9 fix 1080).
@@ -300,6 +305,9 @@ export interface Requests {
   // change goes out as folders.changed on the sessions topic.
   'folders.list':   { req: {};                                                             res: { folders: FolderLabel[] } };
   'folders.set':    { req: { folder: string; label: string | null };                      res: {} };
+  // M9 fix 1191: a folder's former folders, counted with it by activity.totals.
+  'former.list':    { req: {};                                                             res: { former: FormerFolders[] } };
+  'former.set':     { req: { folder: string; former: string; on: boolean };                res: { changed: boolean } };
   // The remote hosts record (M9 fix 1080): hosts.set upserts by name,
   // hosts.remove of an unknown name changes nothing. Every change goes out
   // as hosts.changed on the sessions topic to app windows at level 80.

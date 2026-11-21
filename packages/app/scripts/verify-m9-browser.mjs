@@ -258,7 +258,7 @@ try {
   // window's held clipboard (any EMERALD_HOME), never the person's.
   const paneId1178 = await s.evalJs(`document.querySelector(${JSON.stringify(browserPane)}).dataset.paneId`);
   const page1178 = `.browser-frame[data-browser-pane="${paneId1178}"] .browser-page`;
-  await guest.evalJs(`document.body.insertAdjacentHTML('beforeend', '<p id="words1178">copy these words</p><input id="field1178">')`);
+  await guest.evalJs(`document.body.insertAdjacentHTML('beforeend', '<p id="words1178">copy these words</p><input id="field1178" spellcheck="true">')`);
   const at1178 = async (id) => {
     const f = await s.evalJs(`(() => { const r = document.querySelector(${JSON.stringify(page1178)}).getBoundingClientRect(); return { x: r.x, y: r.y }; })()`);
     const r = await guest.evalJs(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
@@ -300,6 +300,62 @@ try {
   await clickRow1178('Paste');
   await menuGone1178('the menu closed after Paste');
   await guest.waitFor(`document.getElementById('field1178').value === 'copy these words'`, 'fix 1178: Paste put the copied words into the field', 3000);
+  // M9 fix 1192: a spelling pick replaces the misspelt word, and Cut moves
+  // the field's selection to the window's held clipboard. The harness is
+  // focus-emulated on the window and not the guest, so a pass here guards
+  // the seam; the unit test of guestMenuSteps carries the person's branch.
+  // A harness page's field is never spellchecked: at the batch of fixes
+  // 1186 to 1201 every right-click's params read spellcheckEnabled false
+  // with the partition's en-US dictionary initialised and the field's
+  // spellcheck property true, so the pick is a logged read here, an expect
+  // only on a box where a suggestion shows, and the install's by hand.
+  const wordIn1192 = async () => {
+    const at = await at1178('field1178');
+    const w = await guest.evalJs(`document.getElementById('field1178').getBoundingClientRect().width`);
+    return { x: at.x - w / 2 + 20, y: at.y };
+  };
+  await guest.evalJs(`(() => { const f = document.getElementById('field1178'); f.value = ''; f.focus(); })()`);
+  await s.evalJs(`document.querySelector(${JSON.stringify(page1178)}).focus()`);
+  await s.waitFor(`document.activeElement?.tagName === 'WEBVIEW'`, 'fix 1192: the page holds the keyboard', 3000);
+  await s.type('recieve then');
+  await guest.waitFor(`document.getElementById('field1178').value === 'recieve then'`, 'fix 1192: the misspelt words typed into the field', 3000);
+  await sleep(1000);
+  const spellAt = await wordIn1192();
+  await s.rightClick(spellAt.x, spellAt.y);
+  await menuOpen1178('fix 1192: the page menu opened on a misspelt word');
+  let spellLabels = await labels1178();
+  if (!spellLabels.split(',').includes('receive')) {
+    console.log(`[verify] note: fix 1192: no suggestion on the first right-click (${spellLabels}); again after 2 s`);
+    await s.click(spellAt.x - 100, spellAt.y);
+    await menuGone1178('fix 1192: a press in the page closed the menu with no suggestion');
+    await sleep(2000);
+    await s.rightClick(spellAt.x, spellAt.y);
+    await menuOpen1178('fix 1192: the page menu opened on the misspelt word again');
+    spellLabels = await labels1178();
+  }
+  console.log(`[1192] the right press selected ${await guest.evalJs(`(() => { const f = document.getElementById('field1178'); return f.selectionStart + '..' + f.selectionEnd; })()`)}`);
+  if (spellLabels.split(',').includes('receive')) {
+    await clickRow1178('receive');
+    await menuGone1178('the menu closed after the pick');
+    await guest.waitFor(`document.getElementById('field1178').value === 'receive then'`, 'fix 1192: the picked suggestion replaced the misspelt word', 3000);
+  } else {
+    console.log(`[1192] the spelling pick in the harness left the field at ${await guest.evalJs(`document.getElementById('field1178').value`)}: no suggestion offered (${spellLabels})`);
+    await s.click(spellAt.x - 100, spellAt.y);
+    await menuGone1178('fix 1192: a press in the page closed the menu with no suggestion');
+    await guest.evalJs(`document.getElementById('field1178').value = 'receive then'`);
+  }
+  await guest.evalJs(`document.getElementById('field1178').select()`);
+  const cutAt = await wordIn1192();
+  await s.rightClick(cutAt.x, cutAt.y);
+  await menuOpen1178('fix 1192: the page menu opened on the selected field');
+  const cutRows = await rows1178();
+  expect(cutRows.map((r) => r.label).join() === 'Cut,Copy,Paste,Select all' && !cutRows[0].disabled, `fix 1192: the selected field's menu reads Cut, Copy, Paste, Select all with Cut enabled (${JSON.stringify(cutRows)})`);
+  await clickRow1178('Cut');
+  await menuGone1178('the menu closed after Cut');
+  await guest.waitFor(`document.getElementById('field1178').value === ''`, 'fix 1192: Cut emptied the field', 3000);
+  const cut1192 = await s.evalJs('window.emerald.clipboard.read()');
+  expect(cut1192.text === 'receive then', `fix 1192: Cut wrote the field's selection to the window's clipboard (${JSON.stringify(cut1192)})`);
+  step('(c1) M9 fix 1192: a picked spelling suggestion replaces the misspelt word in a page\'s field where one is offered, and the page menu\'s Cut moves the selection to the window\'s clipboard');
   // A link: its address, through the same clipboard.
   const linkAt = await at1178('next');
   await s.rightClick(linkAt.x, linkAt.y);

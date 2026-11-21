@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { failedToast } from './toast-store.ts';
 import type { CSSProperties, ReactNode } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -423,7 +424,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
               style={{ minWidth: `max(12ch, ${nameWidth.current}px)` }}
               onDone={(name) => {
                 setRenaming(false);
-                if (name !== null) void renameSession(session.id, name).catch(warn('rename'));
+                if (name !== null) void renameSession(session.id, name).catch(failedToast('rename'));
               }}
             />
           ) : (
@@ -494,7 +495,7 @@ export function Pane({ paneId, sessionId, focused, onlyPane }: Props) {
             <button
               className="pane-resume"
               title={resumeTitle(session)}
-              onClick={() => void resumeSession(session.id).catch(warn('resume'))}
+              onClick={() => void resumeSession(session.id).catch(failedToast('resume'))}
             >
               Resume
             </button>
@@ -1185,7 +1186,7 @@ function TerminalView({ paneId, sessionId, focused, shaded, autoShade, wanting, 
                 title={resumeTitle(session)}
                 onClick={(ev) => {
                   ev.stopPropagation();
-                  void resumeSession(session.id).catch(warn('resume'));
+                  void resumeSession(session.id).catch(failedToast('resume'));
                 }}
               >
                 Resume

@@ -5,8 +5,8 @@ import type { TaskbarWindow } from './taskbar-policy.ts';
 // Mac has one dock icon for every window. So each window's taskbar gets a
 // TaskbarWindow that keeps that window's last count here, the badge is the
 // largest count over the windows, and the flash is one informational bounce
-// held until the policy clears it. The pulse, the bar and the tooltip are
-// Windows' and do nothing here. No electron import: Electron's Dock fits
+// held until the policy clears it. The pulse, the bar, the tooltip and the
+// glint (M9 fix 1200) are Windows' and do nothing here. No electron import: Electron's Dock fits
 // DockLike, and the test hands a fake.
 
 export interface DockLike {
@@ -52,6 +52,7 @@ export function createDockSignal(dock: DockLike): DockSignal {
         },
         setProgress() {},
         setTooltip() {},
+        setGlint() {},
       };
     },
     drop(key) {

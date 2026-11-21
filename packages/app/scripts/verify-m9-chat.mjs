@@ -107,6 +107,7 @@ const { CTRL, SHIFT, blockRunner, clickNewShell, emeraldHome, expect, freshPort,
 const { block, blocksRun, partial } = blockRunner([
   { name: 'stub', fixes: ['689', '830'], needs: [] },
   { name: 'ask', fixes: ['690'], needs: ['stub'] },
+  { name: 'ask-allow', fixes: ['1199'], needs: ['stub'] },
   { name: 'footer', fixes: ['713', '715', '743', '744', '745', '799'], needs: ['stub'] },
   { name: 'views', fixes: ['714'], needs: ['footer'] },
   { name: 'story', fixes: ['797', '798', '919', '920', '921', '956', '958', '993'], needs: ['stub'] },
@@ -130,7 +131,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'ask-tabs', fixes: ['922', '959'], needs: ['stub'] },
   { name: 'switch', fixes: ['976', '1004'], needs: ['stub'] },
   { name: 'btw', fixes: ['1005', '1058', '1134'], needs: ['stub'] },
-  { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957'], needs: [] },
+  { name: 'box', fixes: ['779', '780', '809', '810', '811', '846', '957', '1193'], needs: [] },
   { name: 'send', fixes: ['781', '782', '783', '784', '921', '980', '1002', '1003', '1059', '1060'], needs: [] },
   { name: 'chips', fixes: ['785', '786'], needs: [] },
   { name: 'model-names', fixes: ['1150'], needs: [] },
@@ -143,7 +144,7 @@ const { block, blocksRun, partial } = blockRunner([
   { name: 'narrow', fixes: ['1147'], needs: [] },
   // Restarts the daemon; the blocks after it start their own sessions on the new one.
   { name: 'exited', fixes: ['804', '846'], needs: [] },
-  { name: 'plan-doc', fixes: ['1169'], needs: [] },
+  { name: 'plan-doc', fixes: ['1169', '1194'], needs: [] },
   // M9 fix 1170: after fix 1169's plan-doc, each binding its own session into the first pane.
   { name: 'findings', fixes: ['1170'], needs: [] },
   { name: 'findings-real', fixes: ['1170'], needs: [] },
@@ -597,6 +598,103 @@ try {
     await s.evalJs(`${q(paneSel(stubPane) + ' .chat-fallback-show')}.click()`);
     await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === undefined && !${q(paneSel(stubPane) + ' .chat-fallback')}`, 'Show the terminal flipped the face');
     step('fix 690: /model shows the fallback bar; Escape, the transcript growing and Show the terminal each close it');
+  });
+
+  await block('ask-allow', async () => {
+    // M9 fix 1199: a permission ask the mod named (a ToolAsk before the
+    // dialog) heads its card with the tool, the description, the exact
+    // command and the rule, and a toast's Allow once and Deny type 1 and
+    // Escape into the session. A harness shows no real toast, so the press
+    // is the window event main's notify-action re-dispatches as, the path
+    // a real toast takes from the preload on. The fake dialog reads one
+    // key and prints its code, so the screen says what arrived.
+    const sel1199 = (rest) => paneSel(stubPane) + rest;
+    // The stub's own artifact (the ask block's note): a command typed into
+    // it that ended with hooks landed reads as Claude leaving the shell, so
+    // the pane is a plain shell until a hook lands at the prompt (a Stop,
+    // as the ask block posts), and then it is put back on the chat face,
+    // as the footer block's backOnChat does. The stub's simId is no
+    // session id shape, so no SessionStart binds it (fix 508) and its
+    // claudeSessionId is null throughout.
+    const onChat1199 = async () => {
+      if ((await s.evalJs(`${q(paneSel(stubPane))}.dataset.face ?? null`)) === 'chat') return;
+      await post({ hook_event_name: 'Stop', stop_hook_active: false });
+      await s.waitFor(`!!${q(sel1199(' .pane-face-toggle'))}`, 'fix 1199: the face button');
+      if ((await s.evalJs(`${q(paneSel(stubPane))}.dataset.face ?? null`)) !== 'chat') await s.evalJs(`${q(sel1199(' .pane-face-toggle'))}.click()`);
+      await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === 'chat'`, 'fix 1199: the stub on the chat face');
+    };
+    const dialog1199 = `cls; Write-Host ''; Write-Host ' Bash command'; Write-Host '  echo ask-1199'; Write-Host ' Do you want to proceed?'; Write-Host ' > 1. Yes'; Write-Host '   2. No'; Write-Host -NoNewline ' Esc to cancel'; $k = [Console]::ReadKey($true); cls; Write-Host -NoNewline ('key ' + [int]$k.KeyChar); Read-Host | Out-Null\r`;
+    const input1199 = { command: 'echo ask-1199', description: 'Print a marker' };
+    const askTurn = async (toolUseId) => {
+      await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the echo' });
+      await post({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: input1199 });
+      await waitRecord(stubId, (r) => r.state === 'working', 'fix 1199: the stub working', 5000);
+      await typeRaw(stubId, dialog1199);
+      await waitCursorRow(stubId, (row) => row.trim().endsWith('cancel'), 'fix 1199: the fake dialog waits for a key');
+      await post({ hook_event_name: 'ToolAsk', tool_name: 'Bash', tool_input: input1199, tool_use_id: toolUseId, rule: 'Bash(echo:*)' });
+      await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: input1199 });
+      await s.waitFor(`!!${q(sel1199(' .chat-ask-option[data-key="2"]'))}`, 'fix 1199: the ask card with its options', 5000);
+    };
+    const press1199 = (toolUseId, index) =>
+      s.evalJs(`window.dispatchEvent(new CustomEvent('emerald:notify-action', { detail: { sessionId: ${JSON.stringify(stubId)}, toolUseId: ${JSON.stringify(toolUseId)}, index: ${index} } }))`);
+    // The key's command ends at the shell's prompt, then the call and the turn.
+    const endTurn = async (toolUseId) => {
+      await typeRaw(stubId, '\r');
+      await waitRecord(stubId, (r) => r.command?.state !== 'running', 'fix 1199: the Read-Host ended at the prompt', 10000);
+      await post({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: toolUseId });
+      await post({ hook_event_name: 'Stop', stop_hook_active: false });
+      await onChat1199();
+    };
+
+    await onChat1199();
+    // (a) The card's head off the mod's record.
+    await askTurn('toolu_1199a');
+    const card1199 = await s.evalJs(`(() => { const c = ${q(sel1199(' .chat-step[data-kind="ask"]'))}; return { heading: c.querySelector('.chat-ask-heading')?.textContent ?? null, tool: c.querySelector('.chat-ask-tool')?.textContent ?? null, desc: c.querySelector('.chat-ask-desc-line')?.textContent ?? null, command: c.querySelector('.chat-ask-command')?.textContent ?? null, why: c.querySelector('.chat-ask-why')?.textContent ?? null, screen: !!c.querySelector('.chat-ask-screen'), keys: [...c.querySelectorAll('.chat-ask-option')].map((b) => b.dataset.key) }; })()`);
+    expect(
+      card1199.heading === 'Claude is asking permission' && card1199.tool === 'Bash' && card1199.desc === 'Print a marker' && card1199.command === 'echo ask-1199' && card1199.why === 'Rule: Bash(echo:*)' && !card1199.screen && JSON.stringify(card1199.keys) === JSON.stringify(['1', '2', 'esc']),
+      `fix 1199: the card's head off the mod's record, got ${JSON.stringify(card1199)}`,
+    );
+    await s.screenshot('m9-chat-ask-1199.png');
+    step('fix 1199: the ask card heads with the tool, its description, the exact command and the rule, off the mod\'s record');
+
+    // (b) A press for another ask sends nothing and leaves the window be.
+    const c0 = s.consoleLog.length;
+    await press1199('toolu_other', 0);
+    await sleep(800);
+    expect((await cursorRow(stubId)).trim().endsWith('cancel'), `fix 1199: a stale press typed nothing, got ${JSON.stringify(await cursorRow(stubId))}`);
+    expect(s.consoleLog.slice(c0).some((l) => l.includes('toast answer dropped: another ask is up')), `fix 1199: the stale press logged its drop, got ${JSON.stringify(s.consoleLog.slice(c0))}`);
+    expect(s.logs.join('').includes('notification answer dropped, the window left where it is under a private EMERALD_HOME'), 'fix 1199: main left the harness window where it is');
+
+    // (c) Allow once types 1, the quiet line says so, a second press drops.
+    await press1199('toolu_1199a', 0);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('key 49'), 'fix 1199: Allow once typed 1');
+    const line1199 = sel1199(' .chat-notify-answer[data-tool-use-id="toolu_1199a"]');
+    await s.waitFor(`(${q(line1199)}?.textContent ?? '').includes('Allowed once from the notification:') && ${q(line1199 + ' .chat-notify-answer-command')}?.textContent === 'echo ask-1199'`, 'fix 1199: the allowed line under the reply', 5000);
+    const c1 = s.consoleLog.length;
+    await press1199('toolu_1199a', 0);
+    await sleep(800);
+    expect(s.consoleLog.slice(c1).some((l) => l.includes('toast answer dropped: already answered')), `fix 1199: a second press logged its drop, got ${JSON.stringify(s.consoleLog.slice(c1))}`);
+    expect((await cursorRow(stubId)).trim().endsWith('key 49'), `fix 1199: a second press typed nothing, got ${JSON.stringify(await cursorRow(stubId))}`);
+    await endTurn('toolu_1199a');
+
+    // (d) Deny types Escape; the new prompt put the allowed line away.
+    await askTurn('toolu_1199b');
+    await s.waitFor(`!${q(line1199)}`, 'fix 1199: the new prompt put the allowed line away', 5000);
+    await press1199('toolu_1199b', 1);
+    await waitCursorRow(stubId, (row) => row.trim().endsWith('key 27'), 'fix 1199: Deny typed Escape');
+    const denied1199 = sel1199(' .chat-notify-answer[data-tool-use-id="toolu_1199b"]');
+    await s.waitFor(`(${q(denied1199)}?.textContent ?? '').includes('Denied from the notification:')`, 'fix 1199: the denied line under the reply', 5000);
+    await endTurn('toolu_1199b');
+    try {
+      await s.waitFor(`!${q(sel1199(' .chat-step[data-kind="ask"]'))} && ${q(sel1199(' .chat-box'))}?.disabled === false`, 'fix 1199: the card gone and the box back');
+    } catch (err) {
+      throw new Error(`${err.message}: face ${await s.evalJs(`${q(paneSel(stubPane))}?.dataset.face ?? null`)}, record ${JSON.stringify(await record(stubId))?.slice(0, 300)}`);
+    }
+    step('fix 1199: a toast\'s Allow once types 1 and Deny types Escape into the session, a press for another ask or a second press sends nothing, and the chat draws the quiet line');
+    // The footer block flips the stub to the chat itself, so it is handed
+    // back on its terminal face, as the ask block leaves it.
+    await s.evalJs(`${q(sel1199(' .pane-face-toggle'))}.click()`);
+    await s.waitFor(`${q(paneSel(stubPane))}.dataset.face === undefined`, 'fix 1199: the stub back on its terminal face');
   });
 
   await block('footer', async () => {
@@ -3918,6 +4016,91 @@ try {
     await s.evalJs(`${q(`.tab.tab-panes[data-tab-id=${JSON.stringify(secondTab)}] .tab-close`)}.click()`);
     await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === 1`, 'the second tab closed', 10000);
     step('fix 957: a chat box mounted in a hidden layout tab keeps its two rows when the tab comes back; fix 975: text set while hidden grows the box to four lines when the tab comes back');
+
+    // M9 fix 1193: a right-click on a misspelt word lists its suggestions
+    // and Add to dictionary above Cut, Copy and Paste, through main's
+    // context-menu params; Add to dictionary is held to main.log under a
+    // private home, since Electron writes the word to the OS dictionary.
+    const spellPoint = () =>
+      s.evalJs(`(() => { const b = ${q(boxSel)}; const r = b.getBoundingClientRect(); const cs = getComputedStyle(b); return { x: r.left + parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth) + 8, y: r.top + parseFloat(cs.paddingTop) + 9 }; })()`);
+    const boxMenuLabels = () => s.evalJs(`[...document.querySelectorAll('.chat-box-menu .menu-item .menu-label')].map((e) => e.textContent)`);
+    const caretAt = (n) => s.evalJs(`${q(boxSel)}.setSelectionRange(${n}, ${n})`);
+    const boxRightClick = async () => {
+      const at = await spellPoint();
+      await s.rightClick(at.x, at.y);
+      await s.waitFor(`!!document.querySelector('.chat-box-menu')`, 'fix 1193: the box menu opened', 3000);
+      return boxMenuLabels();
+    };
+    const escBoxMenu = async () => {
+      await s.key('Escape', 'Escape', 27);
+      await s.waitFor(`!document.querySelector('.chat-box-menu')`, 'fix 1193: Escape closed the box menu', 3000);
+    };
+    const spellMenu = async (text, caret) => {
+      let labels = await boxRightClick();
+      if (!labels.includes('receive')) {
+        console.log(`[verify] note: fix 1193: no suggestion on the first right-click (${JSON.stringify(labels)}); again after 2 s`);
+        await escBoxMenu();
+        await sleep(2000);
+        await setBoxText(text);
+        await caretAt(caret);
+        labels = await boxRightClick();
+      }
+      return labels;
+    };
+    const mainLog1193 = path.join(emeraldHome, 'logs', 'main.log');
+    await s.evalJs(`${q(boxSel)}.focus()`);
+    await s.waitFor(`document.activeElement === ${q(boxSel)}`, 'fix 1193: the box holds the keyboard', 3000);
+    await setBoxText('');
+    await s.type('recieve then');
+    await sleep(1000);
+    await caretAt(12);
+    // A harness window was not spellchecked at the batch of fixes 1186 to
+    // 1201: no squiggle drew under recieve (the box's spellcheck property
+    // true) and main's params read spellcheckEnabled false with no
+    // misspelt word, as a browser page's did. So the spelling rows are an
+    // expect where a suggestion shows and a logged read where none does;
+    // the uncancelled contextmenu still reaching main and the plain menu
+    // are read either way, and the person's window is the install's read.
+    const labels1193 = await spellMenu('recieve then', 12);
+    if (labels1193.includes('receive')) {
+      const addAt = labels1193.indexOf('Add to dictionary');
+      expect(
+        labels1193.indexOf('receive') < addAt && labels1193[addAt + 1] === 'Cut' && labels1193.slice(-3).join() === 'Cut,Copy,Paste',
+        `fix 1193: the suggestions and Add to dictionary above Cut, Copy and Paste, got ${JSON.stringify(labels1193)}`,
+      );
+      await s.evalJs(`[...document.querySelectorAll('.chat-box-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'receive').click()`);
+      await s.waitFor(`${q(boxSel)}.value === 'receive then' && ${q(boxSel)}.selectionStart === 7`, 'fix 1193: the pick replaced the misspelt word, the caret after it', 3000);
+      await setBoxText('recieve then');
+      await caretAt(12);
+      const labelsAdd = await spellMenu('recieve then', 12);
+      expect(labelsAdd.includes('Add to dictionary'), `fix 1193: Add to dictionary on the second right-click, got ${JSON.stringify(labelsAdd)}`);
+      await s.evalJs(`[...document.querySelectorAll('.chat-box-menu .menu-item')].find((b) => b.querySelector('.menu-label').textContent === 'Add to dictionary').click()`);
+      await s.waitFor(`!document.querySelector('.chat-box-menu')`, 'fix 1193: the menu gone after Add to dictionary', 3000);
+      {
+        const until = Date.now() + 3000;
+        const held = () => (fs.existsSync(mainLog1193) ? fs.readFileSync(mainLog1193, 'utf8') : '').split('\n').filter((l) => l.includes('dictionary word held under a private EMERALD_HOME: recieve')).length;
+        while (Date.now() < until && held() === 0) await sleep(100);
+        expect(held() === 1, `fix 1193: one held dictionary line for recieve in main.log, got ${held()}`);
+      }
+      expect((await s.evalJs(`${q(boxSel)}.value`)) === 'recieve then', 'fix 1193: Add to dictionary left the box text as it was');
+    } else {
+      console.log(`[1193] no misspelling reached the box's menu in this harness (${JSON.stringify(labels1193)}, spellcheck property ${await s.evalJs(`${q(boxSel)}.spellcheck`)}); the spelling rows are the install's read`);
+      expect(JSON.stringify(labels1193) === '["Cut","Copy","Paste"]', `fix 1193: with no misspelling the menu is Cut, Copy and Paste, got ${JSON.stringify(labels1193)}`);
+      await escBoxMenu();
+      expect((await s.evalJs(`window.emerald.spell.addWord('recieve')`)) === false, 'fix 1193: Add to dictionary refuses a word no menu showed');
+    }
+    expect((await s.evalJs(`document.activeElement === ${q(boxSel)}`)) === true, 'fix 1193: the box kept the keyboard through the right-click and its menu');
+    {
+      const lines = (fs.existsSync(mainLog1193) ? fs.readFileSync(mainLog1193, 'utf8') : '').split('\n');
+      expect(!lines.some((l) => l.includes('dictionary word held under a private EMERALD_HOME: ') && !l.includes(': recieve')), 'fix 1193: no other dictionary word held');
+    }
+    await setBoxText('then');
+    await caretAt(4);
+    const plain1193 = await boxRightClick();
+    expect(JSON.stringify(plain1193) === '["Cut","Copy","Paste"]', `fix 1193: a right-click on a word spelt right opens Cut, Copy and Paste alone, got ${JSON.stringify(plain1193)}`);
+    await escBoxMenu();
+    await setBoxText('');
+    step('fix 1193: a right-click in the chat box reaches main and opens its menu with the box keeping the keyboard; where a misspelling is offered, its suggestions and Add to dictionary sit above Cut, Copy and Paste, a pick replaces the word and Add to dictionary is held under a private home');
   });
 
   await block('send', async () => {
@@ -5913,7 +6096,8 @@ try {
     // The plan's own words ("then present the plan for approval") had a
     // real Opus 5.5 answer with the plan as text and no ExitPlanMode at its
     // first run, so the tool is named.
-    await s.type('Do not read, search or run anything. Plan how to add a file named hello-1169.txt holding the word hi: one heading and two numbered steps, nothing else, then call the ExitPlanMode tool to present the plan for approval.');
+    // M9 fix 1194: ExitPlanMode is deferred on 2.1.325 and loads through ToolSearch, which "do not search" forbade.
+    await s.type('Do not read files or run commands. Plan how to add a file named hello-1169.txt holding the word hi: one heading and two numbered steps, nothing else, then load the ExitPlanMode tool with ToolSearch if it is deferred and call it to present the plan for approval.');
     await s.key('Enter', 'Enter', 13);
     // The transcript's ExitPlanMode tool uses; none for a null path or a
     // file not written yet.

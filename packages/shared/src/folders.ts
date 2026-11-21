@@ -23,6 +23,25 @@ export function isFolderLabelEntry(v: unknown): v is FolderLabel {
   return typeof o['folder'] === 'string' && o['folder'].length > 0 && isFolderLabel(o['label']);
 }
 
+// A folder's former folders (M9 fix 1191): where a checkout lived before
+// it was renamed or moved, whose activity its Statistics count with it.
+// ~/.emerald/former-folders.json is a bare array of these, the folder in
+// realFolder's spelling and each former one as given, since it usually no
+// longer exists.
+export interface FormerFolders {
+  folder: string;
+  former: string[];
+}
+
+export const FORMER_FOLDERS_MAX = 8;
+
+// Whether a former folder is the folder, inside it or around it, which
+// the list refuses: either would count rows twice or count the folder's
+// own as another's.
+export function overlapsFolder(a: string, b: string): boolean {
+  return underFolder(a, b) || underFolder(b, a);
+}
+
 // Equal to the folder or inside it, whichever way the slashes lean and
 // whatever the case, since both spellings reach the store. In shared
 // since M9 fix 836, so the activity view's folder scope and the daemon's

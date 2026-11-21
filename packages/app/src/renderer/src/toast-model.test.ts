@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { refusalReason, refusedText } from './toast-model.ts';
+import { failedText, refusalReason, refusedText } from './toast-model.ts';
+import { dismissToast, failedToast, getToast } from './toast-store.ts';
 
 test('refusedText says how many of how many and why (M9 fix 1181)', () => {
   assert.equal(refusedText('clear', 1, 1, 'stub is unreachable'), 'Could not clear 1 of 1 exited session: stub is unreachable');
@@ -14,4 +15,22 @@ test('refusalReason cuts Electron\'s prefix and leaves a clean message alone (M9
   assert.equal(refusalReason(new Error("Error invoking remote method 'emerald:request': Error: stub is unreachable")), 'stub is unreachable');
   assert.equal(refusalReason(new Error('no session abc')), 'no session abc');
   assert.equal(refusalReason('x'), 'x');
+});
+
+test('failedText and failedToast say what was refused and why, and log as warn did (M9 fix 1198)', () => {
+  assert.equal(failedText('resume', new Error("Error invoking remote method 'emerald:request': Error: stub is unreachable")), 'Could not resume: stub is unreachable');
+  assert.equal(failedText('rename', new Error('no session abc')), 'Could not rename: no session abc');
+  const logged: unknown[] = [];
+  const real = console.warn;
+  console.warn = (...args: unknown[]) => {
+    logged.push(args[0]);
+  };
+  try {
+    failedToast('rename', 'rename tab')(new Error('x'));
+  } finally {
+    console.warn = real;
+  }
+  assert.equal(logged[0], '[emerald] rename tab failed');
+  assert.equal(getToast()?.text, 'Could not rename: x');
+  dismissToast();
 });

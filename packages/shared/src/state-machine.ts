@@ -2,7 +2,7 @@ import { isSessionId } from './session.ts';
 import type { ContextBreakdown, ContextWindow, NeedsInputReason, SessionCache, SessionCommit, SessionInfo, SessionKind, SessionSpan, SessionState, SessionTask, SessionTaskStatus, SessionTokens, SessionTouched, ShellCommand, TeamMember, WaitingTask } from './session.ts';
 import { Limits } from './limits.ts';
 import { ackable, folderName, runningKind, staleSince, titleGlyph, titleText } from './session-label.ts';
-import { askWords, toolPhrase } from './tool-phrase.ts';
+import { askInput, askWords, toolPhrase } from './tool-phrase.ts';
 import { HEAD_TOOLS } from './command-dir.ts';
 import { memberParts } from './team.ts';
 
@@ -751,8 +751,29 @@ function reduceLiveHook(session: SessionInfo, payload: HookPayload, at: number):
       // for and moves nothing: in auto mode an ask goes to the classifier
       // and nobody is asked, and a needs-input would chime falsely. The
       // PermissionRequest that follows a real dialog moves the row, and
-      // transition keeps the field through it.
-      return { ...next, askedFor: { words: askWords(payload.tool_name, payload.tool_input) ?? 'a tool call', toolUseId: payload.tool_use_id ?? null, agentId: payload.ask_agent_id ?? null, at } };
+      // transition keeps the field through it. M9 fix 1199: the tool, its
+      // subject in full, the input's own description (once, when it is not
+      // the subject itself) and the decision's rule and reason, for the
+      // card's head and the toast.
+      {
+        const filled = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v : null);
+        const input = askInput(payload.tool_name, payload.tool_input);
+        const description = filled(payload.tool_input?.description);
+        return {
+          ...next,
+          askedFor: {
+            words: askWords(payload.tool_name, payload.tool_input) ?? 'a tool call',
+            tool: filled(payload.tool_name) ?? 'a tool call',
+            input,
+            description: description !== null && description !== input ? description : null,
+            rule: filled(payload.rule),
+            reason: filled(payload.reason),
+            toolUseId: payload.tool_use_id ?? null,
+            agentId: payload.ask_agent_id ?? null,
+            at,
+          },
+        };
+      }
     // The mod's ToolRunning (M9 fix 775): the call's progress row drew, so
     // the call is running and its dialog was answered Allow. Only the
     // parent's own permission ask moves; an agent's is settled by the

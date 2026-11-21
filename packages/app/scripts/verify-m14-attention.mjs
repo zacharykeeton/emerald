@@ -1460,6 +1460,36 @@ try {
   await s.waitFor(`document.querySelector(${JSON.stringify(frontRow)})?.dataset.attention === undefined`, 'fix 701: a click on pane 1 clears the pulse', 5000);
   step('M9 fix 701: a question into the focused pane a key after the last one came with no chime, flash, toast or pulse, the badge still saying needs input; the same question after ten quiet seconds chimed, flashed, posted and pulsed');
 
+  // M9 fix 1199: a permission ask the mod named (a ToolAsk before the
+  // dialog) posts its toast with the command on its own line and an ask
+  // carrying the call's id and the command, for Allow once and Deny; no
+  // earlier line of the run carries one. The target, pane 2's fake Claude,
+  // enters acked after fix 247's done and leaves acked and done.
+  {
+    const lastTarget = notified().filter((l) => l.sessionId === target).at(-1)?.at ?? 0;
+    while (Date.now() - lastTarget <= 5500) await sleep(100);
+    await s.pastRecentInput();
+    const before1199 = notified().length;
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'run the echo' });
+    await s.waitFor(`document.querySelector('.sidebar-row[data-session-id=${JSON.stringify(target)}]')?.dataset.state === 'working'`, 'fix 1199: the fake Claude working', 5000);
+    await post({ hook_event_name: 'ToolAsk', tool_name: 'Bash', tool_input: { command: 'echo ask-1199' }, tool_use_id: 'toolu_1199' });
+    await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+    await waitAttention('needs-input', 'fix 1199: the ask arrives');
+    await waitNotified(before1199 + 1, 'fix 1199: the permission ask posts');
+    const line1199 = notified().at(-1);
+    const name1199 = (await zreq(s, 'session.list', {})).sessions.find((x) => x.id === target)?.name;
+    expect(
+      line1199.sessionId === target && line1199.title === name1199 && line1199.body === 'Claude asks to run Bash:\necho ask-1199' && JSON.stringify(line1199.ask) === '{"toolUseId":"toolu_1199","command":"echo ask-1199"}',
+      `fix 1199: the ask's line carries its command and the call, got ${JSON.stringify(line1199)} for ${name1199}`,
+    );
+    expect(notified().slice(0, before1199).every((l) => !('ask' in l)), 'fix 1199: no earlier line of the run carries an ask');
+    await post({ hook_event_name: 'Stop', last_assistant_message: 'Echoed.' });
+    await waitAttention('done', 'fix 1199: the turn ends as done');
+    await ackSix();
+    await waitClear('fix 1199: acked, nothing pulsing');
+  }
+  step('M9 fix 1199: a permission ask the mod named posts its toast with the command on its own line and an ask carrying the call\'s id and the command, and no other line carries one');
+
   // M9 fix 702: zoomed on pane 1, a question in pane 2 (hidden by the
   // zoom) pulses the tab on show, and a real click on that tab undoes the
   // zoom with the focus kept on pane 1; zoomed on pane 2 itself, the tab
@@ -1508,6 +1538,36 @@ try {
   await ackSix();
   await waitClear('fix 702: acked, nothing pulsing');
   step('M9 fix 702, 728 and 1064: zoomed on pane 1, a question in hidden pane 2 pulsed the tab on show and the target\'s row read behind the Focus while hidden; a click on the tab undid the zoom with the focus kept on pane 1, pane 2\'s ring and the tab still pulsing; zoomed on pane 2 itself, the tab pulsed too and a click left the zoom');
+
+  // M9 fix 1200: the taskbar glint, held to the log under this private
+  // home under a prefix of its own (so the badge's and the bar's reads
+  // above never see it): on while the fake Claude works with nobody
+  // wanting, off at its permission ask, since a want turns it off whatever
+  // works. The step before it leaves the target acked and not working,
+  // nothing wanting, so the glint's last line is off or there is none; the
+  // ack among six panes is fix 702's, which this leaves as it found it.
+  const glintLines = () =>
+    s.logs
+      .join('')
+      .split('\n')
+      .filter((l) => l.includes('taskbar glint held under a private EMERALD_HOME: '))
+      .map((l) => l.slice(l.indexOf('EMERALD_HOME: ') + 'EMERALD_HOME: '.length).trimEnd());
+  const waitGlint = async (count, want, what) => {
+    for (let i = 0; i < 30 && !(glintLines().length > count && glintLines().at(-1) === want); i += 1) await sleep(100);
+    expect(glintLines().length > count && glintLines().at(-1) === want, `fix 1200: ${what}, got ${JSON.stringify(glintLines().slice(count))} after ${count} lines`);
+  };
+  const glintBefore = glintLines();
+  expect(glintBefore.length === 0 || glintBefore.at(-1) === 'off', `fix 1200: the glint is off before the step (no session working, nothing wanting), got ${JSON.stringify(glintBefore.slice(-4))}`);
+  const glintAt = glintBefore.length;
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'busy for the glint' });
+  await waitGlint(glintAt, 'on', 'the glint on while the fake Claude works');
+  const glintOnAt = glintLines().length;
+  await post({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' });
+  await waitAttention('needs-input', 'fix 1200: the target asks');
+  await waitGlint(glintOnAt, 'off', 'the glint off at the permission ask');
+  await ackSix();
+  await waitClear('fix 1200: acked, nothing pulsing');
+  step('M9 fix 1200: the taskbar glint held to the log, on while the fake Claude worked and off at its permission ask');
 
   step('PASS');
 } catch (err) {

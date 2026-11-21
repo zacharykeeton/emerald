@@ -21,7 +21,7 @@ import path from 'node:path';
 
 process.env['EMERALD_HOME'] ??= path.join(os.tmpdir(), 'emerald-verify', 'browser-drive-home');
 process.env['EMERALD_PIPE'] ??= '\\\\.\\pipe\\emmerd-verify-browser-drive';
-const { CTRL, SHIFT, connect, expect, freshPort, getLayout, killTree, launch, leaves, repoRoot, sleep, startFromEmpty, step, stopDaemon, zreq } = await import('./cdp.mjs');
+const { CTRL, SHIFT, connect, expect, freshPort, getLayout, getTabs, killTree, launch, leaves, repoRoot, sleep, startFromEmpty, step, stopDaemon, zreq } = await import('./cdp.mjs');
 
 let app = null;
 let server = null;
@@ -877,6 +877,37 @@ try {
   expect(r.code === 1 && r.err === `emmer: pane ${theirs.id.slice(0, 8)} was not opened by this session; the person closes it`, `close of the person's pane is refused (${said(r)})`);
   fs.rmSync(pageDir, { recursive: true, force: true });
   step('M9 fix 988: a pane from emmer open <url> or --browser is recorded as the session\'s that asked, so its emmer browser close takes it, and one opened from outside emerald stays the person\'s');
+
+  // (t) M9 fix 1197: a page this session opens with emmer open <url> lands
+  // beside the session's own pane on its own tab, with a second tab in
+  // front, and the tab in front stays.
+  const tabsBefore = await getTabs(s);
+  const homeTab = tabsBefore.currentTabId;
+  expect(leaves(tabsBefore.tabs.find((t) => t.id === homeTab)).some((p) => p.id === shellPane.id), 'the shell pane is on the tab in front before the second tab');
+  await s.evalJs(`document.querySelector('.tab-add').click()`);
+  await s.waitFor(`document.querySelectorAll('.tab.tab-panes').length === ${tabsBefore.tabs.length + 1}`, 'a second layout tab');
+  const frontTab = (await getTabs(s)).currentTabId;
+  expect(frontTab !== homeTab, `the new tab is in front (${frontTab})`);
+  const url1197 = origin + '/two?beside=1197';
+  r = await openAs(ownId, url1197);
+  expect(r.code === 0 && r.out === `opened ${url1197} in a pane`, `emmer open <url> as this session with another tab in front (${said(r)})`);
+  const pagesOf = (l) => l.tabs.flatMap((t) => leaves(t).filter((p) => p.view?.kind === 'browser' && p.view.url === url1197).map((pane) => ({ tab: t.id, pane })));
+  const deadlineT = Date.now() + 8000;
+  let after = await getTabs(s);
+  while (pagesOf(after).length === 0 && Date.now() < deadlineT) {
+    await sleep(100);
+    after = await getTabs(s);
+  }
+  const placed = pagesOf(after);
+  expect(placed.length === 1 && placed[0].pane.view.openedBy === ownId, `one page pane carrying this session's id (${JSON.stringify(placed)})`);
+  expect(placed[0].tab === homeTab, `the page is on the session's tab ${homeTab}, not ${placed[0].tab}`);
+  const besideShell = (n) => (n.kind !== 'split' ? false : (n.first.kind === 'pane' && n.first.id === shellPane.id && n.second.kind === 'pane' && n.second.id === placed[0].pane.id) || besideShell(n.first) || besideShell(n.second));
+  expect(besideShell(after.tabs.find((t) => t.id === homeTab).root), 'the page is split beside the shell pane');
+  expect(after.currentTabId === frontTab, `the tab in front is still the second one (${after.currentTabId})`);
+  expect((await s.evalJs(`document.querySelector('.tab.tab-panes[data-active]')?.dataset.tabId ?? null`)) === frontTab, 'the strip still shows the second tab active');
+  await s.evalJs(`document.querySelector('.tab.tab-panes[data-tab-id=${JSON.stringify(homeTab)}]').click()`);
+  await s.waitFor(`(async () => (await window.emerald.request('layout.get', {})).layout.currentTabId === ${JSON.stringify(homeTab)})()`, 'the first tab back in front');
+  step("M9 fix 1197: a page a session opens lands beside that session's pane on its own tab, and the tab in front stays");
 
   for (const line of s.consoleLog.filter((l) => /error/.test(l))) console.log(`[672] window console: ${line}`);
   step('PASS');

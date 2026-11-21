@@ -294,7 +294,7 @@ try {
   expect(r.code === 64 && /missing file/.test(r.err) && /usage: emmer open <path \| url> \[--pane \| --beside \[<session>\]\] \[--scheme <name> \| --clear-scheme\] \[--browser\] \[--json\]/.test(r.err), 'open with no path: usage, exit 64');
   expect(/^--beside takes the session's pane on the tab in front, else its first in tab order, and the reply names the pane and the tab$/m.test(r.err), `the usage's second line states the rule --beside picks by (${JSON.stringify(r.err)})`);
   // M9 fix 659: the third line says what a URL does.
-  expect(/^a url \(http:\/\/, https:\/\/ or host:port, such as localhost:3000\) opens in a browser pane, beside the focused one or beside --beside's session$/m.test(r.err), `the usage's third line says a url opens a browser pane (${JSON.stringify(r.err)})`);
+  expect(/^a url \(http:\/\/, https:\/\/ or host:port, such as localhost:3000\) opens in a browser pane, beside the session's own pane when run from one, else beside the focused one, or beside --beside's session$/m.test(r.err), `the usage's third line says a url opens a browser pane (${JSON.stringify(r.err)})`);
   expect(/^--browser renders an \.html or \.htm file in a browser pane, served from the Files rail's folder when the file is under it, else from its own folder$/m.test(r.err), `the usage's fourth line says what --browser does (${JSON.stringify(r.err)})`);
   r = emerald('help');
   expect(r.code === 0 && /^  open +open a file in the window as a tab, with --pane in a pane beside the focused one, or with --beside beside a session's pane \(the one on the tab in front, else the first in tab order\); --scheme picks the file's own colour scheme; a URL opens a browser pane, and --browser renders an \.html file in one$/m.test(r.out), 'help lists open with its summary');
@@ -351,6 +351,33 @@ try {
   expect(/^feed: none$/m.test(r.out), `daemon status names no feed, got ${JSON.stringify(r.out)}`);
   expect(/^set aside: folders\.json\.bad-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z$/m.test(r.out) && j.json.setAside?.length === 1, `daemon status names the set-aside folders.json, got ${JSON.stringify(r.out)} and ${JSON.stringify(j.json.setAside)}`);
   log('M9 fix 556: a bad folders.json is set aside at the start and daemon status names it');
+
+  // M9 fix 1191: a folder's former folders, added, listed and removed on
+  // the daemon, the usage errors refused before the pipe.
+  {
+    const usage1191 = /usage: emmer former ls \[<folder>\] \[--json\] \| add <folder> <former> \| rm <folder> <former>/;
+    let f = emerald('former', 'add');
+    expect(f.code === 64 && f.err.includes('missing folder') && usage1191.test(f.out + f.err), `former add with no folder: exit 64, the line and the usage (${f.code}: ${JSON.stringify(f.err)})`);
+    f = emerald('former', 'add', home, path.join(home, 'x'));
+    expect(f.code === 64 && f.err.includes('a former folder cannot be the folder, inside it or around it'), `former add of a folder inside it: exit 64 (${f.code}: ${JSON.stringify(f.err)})`);
+    const old1191 = path.join(os.tmpdir(), 'emerald-verify-old-1191');
+    const home1191 = path.resolve(home);
+    f = emerald('former', 'add', home, old1191);
+    expect(f.code === 0 && f.out.trim() === `added ${old1191} as a former folder of ${home1191}`, `former add prints what it added (${f.code}: ${JSON.stringify(f.out + f.err)})`);
+    f = emerald('former', 'add', home, old1191);
+    expect(f.code === 0 && f.out.trim() === `${old1191} is already a former folder of ${home1191}`, `a second add says it is already there (${f.code}: ${JSON.stringify(f.out + f.err)})`);
+    const ls1191 = emeraldJson('former', 'ls', '--json');
+    expect(ls1191.code === 0 && ls1191.json?.former?.length === 1 && ls1191.json.former[0].former.length === 1 && ls1191.json.former[0].former[0] === old1191, `former ls --json has the one entry (${JSON.stringify(ls1191.json)})`);
+    f = emerald('former', 'rm', home, old1191);
+    expect(f.code === 0 && f.out.trim() === `removed ${old1191} from the former folders of ${home1191}`, `former rm prints what it removed (${f.code}: ${JSON.stringify(f.out + f.err)})`);
+    f = emerald('former', 'rm', home, old1191);
+    expect(f.code === 1 && f.err.includes('is not a former folder of'), `a second rm is exit 1 (${f.code}: ${JSON.stringify(f.err)})`);
+    f = emerald('former', 'ls');
+    expect(f.code === 0 && f.out.trim() === 'no former folders (emmer former add <folder> <former>)', `former ls with none (${f.code}: ${JSON.stringify(f.out + f.err)})`);
+    f = emerald('help');
+    expect(/^  former +list, add or remove a folder's former folders, whose activity its Statistics count with it$/m.test(f.out), `help lists former (${JSON.stringify(f.out)})`);
+  }
+  log('M9 fix 1191: emmer former adds, lists and removes a folder\'s former folders, refuses one inside the folder, and is listed by help');
   // M9 fix 241: the daemon reads its version off its own package.json,
   // which the docs commit bumps with the other three; a batch that
   // forgets one fails here.
@@ -786,6 +813,10 @@ try {
   // M9 fix 742: the fake posts the mod's ToolAsk before its dialog, so the
   // row names the tool and its command rather than a bare tool call.
   expect((j.json?.sessions ?? []).find((s) => s.id === claudish.id)?.askedFor?.words === 'Bash: npm publish', 'ls --json carries the ask the mod posted');
+  {
+    const askedFor = (j.json?.sessions ?? []).find((s) => s.id === claudish.id)?.askedFor;
+    expect(askedFor?.tool === 'Bash' && askedFor?.input === 'npm publish' && askedFor?.rule === null, `fix 1199: ls --json carries the ask's tool and its input in full, got ${JSON.stringify(askedFor)}`);
+  }
   r = emerald('ls');
   expect(r.out.split(/\r?\n/).some((l) => l.includes('claudish') && l.endsWith('Allow? Bash: npm publish')), `ls ends claudish's row with the ask, got ${JSON.stringify(r.out.split(/\r?\n/).find((l) => l.includes('claudish')))}`);
   r = emerald('explain', 'claudish');

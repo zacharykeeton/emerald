@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { askWords, toolPhrase } from './tool-phrase.ts';
+import { askInput, askWords, toolPhrase } from './tool-phrase.ts';
 
 test('toolPhrase: Bash reads its description as it is, else the first line of the command', () => {
   assert.equal(toolPhrase('Bash', { command: 'cat docs/BACKLOG.md', description: 'Reading the backlog file' }), 'Reading the backlog file');
@@ -51,4 +51,14 @@ test('askWords names the tool and its subject, a file by its base name, the bare
   assert.equal(askWords('mcp__x__y', {}), 'mcp__x__y');
   assert.equal(askWords('  ', { command: 'ls' }), null);
   assert.equal(askWords('Bash', { command: 'git add a\ngit commit' }), 'Bash: git add a');
+});
+
+test('askInput (M9 fix 1199): the subject in full, the field askWords names', () => {
+  assert.equal(askInput('Bash', { command: 'npm publish --tag next && echo done', description: 'Publish' }), 'npm publish --tag next && echo done');
+  assert.equal(askInput('Edit', { file_path: 'C:/a/b/session.ts' }), 'C:/a/b/session.ts');
+  assert.equal(askInput('WebFetch', { url: 'https://x.test/a' }), 'https://x.test/a');
+  assert.equal(askInput('Task', { description: 'Look around' }), 'Look around');
+  assert.equal(askInput('Bash', {}), null);
+  assert.equal(askInput('', { command: 'x' }), null);
+  assert.equal(askInput('Bash', { command: 'y'.repeat(300) })?.length, 300, 'no summarize cut');
 });

@@ -1910,6 +1910,16 @@ test("a new prompt clears the ask, and an agent's ToolAsk is applied with its ag
   assert.equal(agentAsk.askedFor?.words, 'Edit: a.ts');
 });
 
+test("a ToolAsk keeps the tool, the input in full, its description, the rule and the reason, and the call's end clears them (M9 fix 1199)", () => {
+  const asked = reduce(session({ state: 'working' }), hook('ToolAsk', { tool_name: 'Bash', tool_input: { command: 'echo hi', description: 'Say hi' }, tool_use_id: 'u1', rule: 'Bash(echo:*)', reason: 'ask rule' }));
+  assert.deepEqual(asked.askedFor, { words: 'Bash: echo hi', tool: 'Bash', input: 'echo hi', description: 'Say hi', rule: 'Bash(echo:*)', reason: 'ask rule', toolUseId: 'u1', agentId: null, at: T0 + 5000 });
+  const task = reduce(session({ state: 'working' }), hook('ToolAsk', { tool_name: 'Task', tool_input: { description: 'Look around' }, tool_use_id: 'u2' }));
+  assert.equal(task.askedFor?.input, 'Look around');
+  assert.equal(task.askedFor?.description, null, 'a description that is the subject shows once');
+  assert.equal(task.askedFor?.rule, null);
+  assert.equal(reduce(asked, hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'u1' })).askedFor, null);
+});
+
 test('an automatic compaction at idle, waiting or done puts the row back when it ends (M9 fix 812)', () => {
   const auto = { trigger: 'auto' };
   for (const state of ['idle', 'done'] as const) {

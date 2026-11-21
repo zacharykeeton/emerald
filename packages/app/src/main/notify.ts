@@ -1,4 +1,4 @@
-import { Notification } from 'electron';
+import { ipcMain, Notification } from 'electron';
 import type { BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import type { NotifyRequest } from '../preload/api.ts';
@@ -33,11 +33,14 @@ export interface Notifier {
 
 // Electron's Notification as the policy's toast: its `failed` event
 // carries the error second, after the event.
-function electronToast(title: string, body: string): ToastHandle {
-  const toast = new Notification({ title, body });
+// M9 fix 1199: a permission ask's toast carries its buttons, and a press
+// fires `action` with the button's place (darwin and win32).
+function electronToast(title: string, body: string, actions?: readonly string[]): ToastHandle {
+  const toast = new Notification({ title, body, ...(actions !== undefined && actions.length > 0 ? { actions: actions.map((text) => ({ type: 'button' as const, text })) } : {}) });
   const handle = {
-    on(event: 'show' | 'close' | 'click' | 'failed', fn: ((error: string) => void) | (() => void)) {
+    on(event: 'show' | 'close' | 'click' | 'failed' | 'action', fn: ((error: string) => void) | (() => void) | ((index: number) => void)) {
       if (event === 'failed') toast.on('failed', (_event, error) => (fn as (error: string) => void)(String(error)));
+      else if (event === 'action') toast.on('action', (details) => (fn as (index: number) => void)(details.actionIndex));
       else if (event === 'show') toast.on('show', () => (fn as () => void)());
       else if (event === 'close') toast.on('close', () => (fn as () => void)());
       else toast.on('click', () => (fn as () => void)());
@@ -59,6 +62,23 @@ export function createNotifier(windows: NotifyWindows, onClick: (sessionId: stri
   const logFile = process.env['EMERALD_NOTIFY_LOG'];
   const always = process.env['EMERALD_NOTIFY_ALWAYS'] !== undefined;
   const held = process.env['EMERALD_HOME'] !== undefined && logFile === undefined && !always;
+  const raise = (sessionId: string): void => {
+    const w = windows.forSession(sessionId);
+    if (w !== null && !w.isDestroyed()) {
+      if (w.isMinimized()) w.restore();
+      w.show();
+      w.focus();
+    }
+    onClick(sessionId);
+  };
+  // M9 fix 1199: a toast answer the renderer would not send raises the
+  // window as a body click does, so the person sees why; a harness window,
+  // on any private EMERALD_HOME, is never raised and only logs it.
+  ipcMain.on('emerald:notify-dropped', (_e, sessionId: unknown) => {
+    if (typeof sessionId !== 'string') return;
+    if (process.env['EMERALD_HOME'] !== undefined) log('notification answer dropped, the window left where it is under a private EMERALD_HOME');
+    else raise(sessionId);
+  });
   return createNotifyPolicy({
     logFile,
     always,
@@ -67,14 +87,12 @@ export function createNotifier(windows: NotifyWindows, onClick: (sessionId: stri
     now: Date.now,
     appendLine: (file, line) => fs.appendFileSync(file, line),
     toasts: { supported: () => Notification.isSupported(), create: electronToast },
-    onClick: (sessionId) => {
+    onClick: raise,
+    // M9 fix 1199: a button's press goes to the session's window as it is,
+    // never raised, restored or focused: the answer is the whole point.
+    onAction: (sessionId, toolUseId, index) => {
       const w = windows.forSession(sessionId);
-      if (w !== null && !w.isDestroyed()) {
-        if (w.isMinimized()) w.restore();
-        w.show();
-        w.focus();
-      }
-      onClick(sessionId);
+      if (w !== null && !w.isDestroyed()) w.webContents.send('emerald:notify-action', { sessionId, toolUseId, index });
     },
     log,
   });

@@ -6,7 +6,7 @@ import { mkTemp, removeTemps } from '@emerald/shared/test-temp';
 import type { SessionInfo } from '@emerald/shared';
 import { costParts, ratesFor } from '@emerald/shared';
 import { spawn } from 'node:child_process';
-import { isFullPayloadLine, slimHookLine } from '@emerald/shared/hook-log';
+import { hookLineSlimmer, isFullPayloadLine, slimHookLine } from '@emerald/shared/hook-log';
 import { ActivityLog, generationPaths, parseActivityLine, parseLogLine, rotateHookLog, rotatedPath } from './activity.ts';
 
 const quiet = { info() {}, warn() {}, error() {} };
@@ -887,6 +887,113 @@ test('generations are kept while their total is under the budget, the oldest dro
   fs.rmSync(listed, { recursive: true, force: true });
 });
 
+// M9 fix 1188: the ledger of the dropped generations. One track per turn,
+// each a record under C:/code/proj and a first status line under the
+// first-request price, so every turn prices the same wherever the log
+// starts; the turns fall in September and October.
+const LEDGER_PROJ = 'C:/code/proj';
+const ledgerTurnAt = [new Date(2026, 8, 10, 10).getTime(), new Date(2026, 8, 20, 10).getTime(), new Date(2026, 9, 5, 10).getTime(), new Date(2026, 9, 10, 10).getTime()];
+const ledgerTurn = (n: number) => {
+  const at = ledgerTurnAt[n - 1]!;
+  const id = `t${n}`;
+  return [line(at, id, 'UserPromptSubmit', 'idle', 'working', `turn${n}`), statusLine(at + MIN, id, { fresh: 100 * n, cacheWrite: 10, cacheRead: 1000, output: 50 }, 0.1 * n), line(at + 10 * MIN, id, 'Stop', 'working', 'done')].join('\n') + '\n';
+};
+const ledgerRecords = [1, 2, 3, 4].map((n) => session(`t${n}`, { cwd: LEDGER_PROJ, groupCwd: LEDGER_PROJ, claudeSessionId: `c-t${n}`, state: 'done', stateSince: ledgerTurnAt[n - 1]! + 10 * MIN }));
+const ledgerNow = new Date(2026, 9, 20).getTime();
+
+// Three generations and the current file: turns 1 to 3 rotated in turn,
+// turn 4 left current; the track folders as the first start writes them.
+async function ledgerLog(dir: string, noting: { info(msg: string, data?: unknown): void; warn(msg: string, data?: unknown): void; error(): void }): Promise<string> {
+  const file = path.join(dir, 'hooks.jsonl');
+  fs.writeFileSync(path.join(dir, 'track-folders.json'), JSON.stringify({ version: 1, writtenAt: 0, sessions: Object.fromEntries(ledgerRecords.map((r) => [r.id, { cwd: LEDGER_PROJ, groupCwd: LEDGER_PROJ }])), conversations: {} }));
+  for (const n of [1, 2, 3]) {
+    fs.writeFileSync(file, ledgerTurn(n));
+    await ActivityLog.load(file, noting, { rotateAtBytes: fs.statSync(file).size - 1 });
+  }
+  fs.writeFileSync(file, ledgerTurn(4));
+  return file;
+}
+
+function noter(): { noting: { info(msg: string, data?: unknown): void; warn(msg: string, data?: unknown): void; error(): void }; logged: Array<Record<string, unknown>> } {
+  const logged: Array<Record<string, unknown>> = [];
+  return { logged, noting: { info: (msg, data) => logged.push({ msg, ...(data as Record<string, unknown>) }), warn: (msg) => logged.push({ msg }), error() {} } };
+}
+
+test('a generation dropped past the budget is folded into the ledger, and the next load answers the same totals (M9 fix 1188)', async () => {
+  const dir = fs.realpathSync.native(mkTemp('emerald-activity-ledger-'));
+  const { noting, logged } = noter();
+  const file = await ledgerLog(dir, noting);
+  const before = (await ActivityLog.load(file, noting)).totals(LEDGER_PROJ, null, null, ledgerNow, ledgerRecords);
+  assert.equal(before.total.requests, 4, 'four turns in the whole log');
+  assert.deepEqual(before.months.map((m) => m.month), ['2026-09', '2026-10']);
+  // The fourth rotation makes four generations; a budget of three and a
+  // half drops the oldest, turn 1's.
+  const each = fs.statSync(rotatedPath(file, 1)).size;
+  logged.length = 0;
+  await ActivityLog.load(file, noting, { rotateAtBytes: fs.statSync(file).size - 1, budgetBytes: 3 * each + Math.floor(each / 2) });
+  assert.deepEqual(logged.filter((l) => String(l['msg']).endsWith('dropped')).map((l) => l['msg']), ['hooks.4.jsonl dropped']);
+  const folded = logged.find((l) => l['msg'] === 'hooks.4.jsonl folded into the ledger')!;
+  assert.ok(folded !== undefined, 'the fold is logged');
+  assert.equal(folded['places'], 1);
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'ledger.json'), 'utf8')) as { drops: unknown[] };
+  assert.equal(ledger.drops.length, 1);
+  const after = (await ActivityLog.load(file, noting)).totals(LEDGER_PROJ, null, null, ledgerNow, ledgerRecords);
+  assert.equal(after.total.requests, before.total.requests);
+  assert.ok(Math.abs(after.total.usd - before.total.usd) < 1e-9, `the price, ${after.total.usd} against ${before.total.usd}`);
+  assert.ok(Math.abs(after.total.allUsd - before.total.allUsd) < 1e-9);
+  assert.equal(after.total.agentMs, before.total.agentMs);
+  assert.deepEqual(after.months.map((m) => m.month), before.months.map((m) => m.month));
+  assert.equal(after.historyFrom, before.historyFrom, 'the history reaches back to the dropped generation');
+  assert.equal(after.firstAt, before.firstAt);
+  after.months.forEach((m, i) => assert.ok(Math.abs(m.allUsd - before.months[i]!.allUsd) < 1e-9 && m.requests === before.months[i]!.requests, `month ${m.month}`));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a drop interrupted after its ledger write writes no second entry (M9 fix 1188)', async () => {
+  const dir = fs.realpathSync.native(mkTemp('emerald-activity-ledger-again-'));
+  const { noting, logged } = noter();
+  const file = await ledgerLog(dir, noting);
+  // The entry the fold writes for turn 1's generation, written as if the
+  // daemon died after the ledger write and before the rename.
+  const oldest = rotatedPath(file, 3);
+  fs.writeFileSync(path.join(dir, 'ledger.json'), JSON.stringify({ version: 1, drops: [{ name: 'hooks.3.jsonl', bytes: fs.statSync(oldest).size, droppedAt: 1, from: ledgerTurnAt[0], to: ledgerTurnAt[0]! + 10 * MIN, allUsd: {}, places: [] }] }));
+  const each = fs.statSync(rotatedPath(file, 1)).size;
+  logged.length = 0;
+  await ActivityLog.load(file, noting, { rotateAtBytes: fs.statSync(file).size - 1, budgetBytes: 3 * each + Math.floor(each / 2) });
+  assert.ok(logged.some((l) => l['msg'] === 'hooks.4.jsonl already in the ledger'), JSON.stringify(logged.map((l) => l['msg'])));
+  assert.ok(logged.some((l) => l['msg'] === 'hooks.4.jsonl dropped'));
+  const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'ledger.json'), 'utf8')) as { drops: unknown[] };
+  assert.equal(ledger.drops.length, 1);
+  assert.equal(fs.existsSync(rotatedPath(file, 4)), false, 'the generation is gone');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a ledger entry whose lines the log still holds is not counted twice (M9 fix 1188)', async () => {
+  const dir = fs.realpathSync.native(mkTemp('emerald-activity-ledger-held-'));
+  const { noting } = noter();
+  const file = await ledgerLog(dir, noting);
+  const plain = (await ActivityLog.load(file, noting)).totals(LEDGER_PROJ, null, null, ledgerNow, ledgerRecords);
+  const month = { requests: 1, up: 1110, fresh: 100, cacheWrite: 10, cached: 1000, down: 50, usd: 0.1, estimated: false, agentMs: 10 * MIN };
+  fs.writeFileSync(path.join(dir, 'ledger.json'), JSON.stringify({ version: 1, drops: [{ name: 'hooks.3.jsonl', bytes: 1, droppedAt: 1, from: ledgerTurnAt[0], to: ledgerTurnAt[0]! + 10 * MIN, allUsd: { '2026-09': 0.1 }, places: [{ cwd: LEDGER_PROJ, groupCwd: LEDGER_PROJ, firstAt: ledgerTurnAt[0], months: { '2026-09': month } }] }] }));
+  const withLedger = (await ActivityLog.load(file, noting)).totals(LEDGER_PROJ, null, null, ledgerNow, ledgerRecords);
+  assert.deepEqual(withLedger, plain);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a ledger that cannot be written keeps the generation (M9 fix 1188)', async () => {
+  const dir = fs.realpathSync.native(mkTemp('emerald-activity-ledger-dir-'));
+  const { noting, logged } = noter();
+  const file = await ledgerLog(dir, noting);
+  fs.mkdirSync(path.join(dir, 'ledger.json'));
+  const each = fs.statSync(rotatedPath(file, 1)).size;
+  logged.length = 0;
+  await ActivityLog.load(file, noting, { rotateAtBytes: fs.statSync(file).size - 1, budgetBytes: 3 * each + Math.floor(each / 2) });
+  assert.ok(logged.some((l) => l['msg'] === 'hooks.4.jsonl could not be folded into the ledger; kept until the next rotation'), JSON.stringify(logged.map((l) => l['msg'])));
+  assert.equal(logged.some((l) => String(l['msg']).endsWith('dropped')), false);
+  assert.equal(fs.existsSync(rotatedPath(file, 4)), true, 'the oldest generation is kept');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // A backup copied in as the oldest generation, or a generation an older
 // daemon rotated, holds payloads as the sink wrote them; the start slims
 // it in place, and drops what is not history (M9 fix 629).
@@ -1228,7 +1335,8 @@ test('a log loaded whole and slimmed answers the same spans over its whole windo
   const wholeFile = path.join(wholeDir, 'hooks.jsonl');
   const slimFile = path.join(slimDir, 'hooks.jsonl');
   fs.writeFileSync(wholeFile, fixture.join('\n') + '\n');
-  const slimmed = fixture.map(slimHookLine);
+  const slimmer = hookLineSlimmer();
+  const slimmed = fixture.map((l) => slimmer(l));
   fs.writeFileSync(slimFile, slimmed.join('\n') + '\n');
   const whole = await ActivityLog.load(wholeFile, quiet);
   const slim = await ActivityLog.load(slimFile, quiet);
@@ -1243,12 +1351,19 @@ test('a log loaded whole and slimmed answers the same spans over its whole windo
   assert.deepEqual(slim.cappedSpans(from, now, now), whole.cappedSpans(from, now, now));
   assert.equal(slim.historyFrom, whole.historyFrom);
   assert.equal(whole.historyFrom, T0 - 5 * MIN);
-  // Each line read alone reads the same too.
-  fixture.forEach((raw, i) => assert.deepEqual(parseLogLine(slimmed[i]!), parseLogLine(raw), `line ${i}`));
+  // Each line read alone reads the same too, but for its folder: a whole
+  // hosted line names it on every line, the slim on a track's first line
+  // of the file alone (M9 fix 1186).
+  const noCwd = (l: ReturnType<typeof parseLogLine>) => (l === null || !('cwd' in l) ? l : { ...l, cwd: null });
+  fixture.forEach((raw, i) => assert.deepEqual(noCwd(parseLogLine(slimmed[i]!)), noCwd(parseLogLine(raw)), `line ${i}`));
+  assert.equal((parseLogLine(slimmed[1]!) as { cwd: string | null }).cwd, 'C:/code/p', "p's SessionStart keeps its folder");
+  assert.equal((parseLogLine(slimmed[3]!) as { cwd: string | null }).cwd, null, "p's later lines drop it");
   const slimText = fs.readFileSync(slimFile, 'utf8');
   assert.ok(slimText.length < fs.readFileSync(wholeFile, 'utf8').length / 4, 'the slimmed file is a fraction of the whole');
   assert.equal(slimText.includes('hook_event_name'), false);
   for (const each of slimmed) assert.equal(slimHookLine(each), each, 'a slimmed line slims to itself');
+  const again = hookLineSlimmer();
+  for (const each of slimmed) assert.equal(again(each), each, 'a slimmed line slims to itself through a fresh slimmer');
   assert.equal(isFullPayloadLine(fixture[1]!), true);
   assert.equal(isFullPayloadLine(slimmed[1]!), false);
   assert.equal(isFullPayloadLine(fixture[0]!), false, 'a presence line is not a hook line');
@@ -1264,6 +1379,79 @@ test('a slimmed StatusLine keeps the prompt cache\'s ttl, expires_at and warm an
   assert.deepEqual(slim.payload['prompt_cache'], { warm: true, ttl: '1h', expires_at: 1792090000 });
 });
 
+test('hookLineSlimmer keeps a hosted line\'s folder on each track\'s first line of a pass, every unhosted line\'s, and slims a slimmed pass to itself (M9 fix 1186)', () => {
+  const fixture = slimFixture();
+  const slimmed = fixture.map(hookLineSlimmer());
+  const cwdOf = (raw: string): unknown => {
+    try {
+      return (JSON.parse(raw) as { payload?: Record<string, unknown> }).payload?.['cwd'];
+    } catch {
+      return undefined;
+    }
+  };
+  assert.equal(cwdOf(slimmed[1]!), 'C:/code/p', "p's SessionStart keeps its folder");
+  const later = fixture.flatMap((raw, i) => (i > 1 && raw.includes('"sessionId":"p"') && raw.endsWith('}') ? [i] : []));
+  assert.equal(later.length, 13, `p's later whole lines, got ${later.join(',')}`);
+  for (const i of later) assert.equal(cwdOf(slimmed[i]!), undefined, `p's later line ${i} keeps no folder`);
+  const outside = slimmed.filter((raw) => raw.includes('"sessionId":"conv-outside"'));
+  assert.equal(outside.length, 3);
+  for (const raw of outside) assert.equal(cwdOf(raw), 'C:/code/elsewhere', 'every unhosted line keeps its folder');
+  assert.deepEqual(slimmed.map(hookLineSlimmer()), slimmed, 'a second pass over the slim gives the same lines');
+});
+
+test('a track whose record is gone is placed by the folder on its own lines, loaded whole and slimmed (M9 fix 1186)', async () => {
+  const fixture = slimFixture();
+  const wholeDir = fs.realpathSync.native(mkTemp('emerald-activity-place-whole-'));
+  const slimDir = fs.realpathSync.native(mkTemp('emerald-activity-place-slim-'));
+  fs.writeFileSync(path.join(wholeDir, 'hooks.jsonl'), fixture.join('\n') + '\n');
+  fs.writeFileSync(path.join(slimDir, 'hooks.jsonl'), fixture.map(hookLineSlimmer()).join('\n') + '\n');
+  const whole = await ActivityLog.load(path.join(wholeDir, 'hooks.jsonl'), quiet);
+  const slim = await ActivityLog.load(path.join(slimDir, 'hooks.jsonl'), quiet);
+  const now = T0 + 20 * MIN;
+  const a = whole.totals('C:/code/p', null, null, now, []);
+  const b = slim.totals('C:/code/p', null, null, now, []);
+  for (const t of [a, b]) {
+    assert.equal(t.total.requests, 1);
+    assert.ok(Math.abs(t.total.usd - 0.4321) < 1e-9, `the track's price, got ${t.total.usd}`);
+  }
+  assert.deepEqual(b, a);
+  fs.rmSync(wholeDir, { recursive: true, force: true });
+  fs.rmSync(slimDir, { recursive: true, force: true });
+});
+
+test('a record\'s folder wins over the line\'s, and the activity view\'s rows are unchanged (M9 fix 1186)', async () => {
+  const dir = fs.realpathSync.native(mkTemp('emerald-activity-place-rec-'));
+  fs.writeFileSync(path.join(dir, 'hooks.jsonl'), slimFixture().join('\n') + '\n');
+  const log = await ActivityLog.load(path.join(dir, 'hooks.jsonl'), quiet);
+  const now = T0 + 20 * MIN;
+  const records = [session('p', { cwd: 'C:/code/q', groupCwd: 'C:/code/q', claudeSessionId: 'c-p' })];
+  assert.equal(log.totals('C:/code/p', null, null, now, records).total.requests, 0);
+  assert.equal(log.totals('C:/code/q', null, null, now, records).total.requests, 1);
+  const row = log.spans(T0 - 10 * MIN, now, now, []).find((s) => s.sessionId === 'p' && s.kind !== 'agent')!;
+  assert.equal(row.cwd, null);
+  assert.equal(row.groupCwd, null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a track with no record and no folder on its lines is placed by the map, a record entry before the line\'s folder (M9 fix 1187)', () => {
+  const now = T0 + 20 * MIN;
+  const turn = (id: string, extra: Record<string, unknown> = {}) =>
+    [
+      line(T0, id, 'UserPromptSubmit', 'idle', 'working', 'go'),
+      JSON.stringify({ at: T0 + MIN, sessionId: id, event: 'StatusLine', outcome: 'applied', payload: { hook_event_name: 'StatusLine', session_id: 'c-' + id, ...extra, context_window: { current_usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 } }, cost: { total_cost_usd: 0.2 } } }),
+      line(T0 + 2 * MIN, id, 'Stop', 'working', 'done'),
+    ].map((raw) => parseLogLine(raw)!);
+  const h = new ActivityLog();
+  h.useTrackFolders({ sessions: {}, conversations: { 'c-h': 'C:/code/h' } });
+  for (const each of turn('h')) h.record(each);
+  assert.equal(h.totals('C:/code/h', null, null, now, []).total.requests, 1, "placed by the conversation's project");
+  const k = new ActivityLog();
+  k.useTrackFolders({ sessions: { k: { cwd: 'C:/code/rec', groupCwd: 'C:/code/rec' } }, conversations: {} });
+  for (const each of turn('k', { cwd: 'C:/code/line' })) k.record(each);
+  assert.equal(k.totals('C:/code/rec', null, null, now, []).total.requests, 1, 'the kept record wins');
+  assert.equal(k.totals('C:/code/line', null, null, now, []).total.requests, 0, "over the line's folder");
+});
+
 test('a rotation slims generation 1 and leaves the current file whole (M9 fix 629)', async () => {
   const dir = fs.realpathSync.native(mkTemp('emerald-activity-rotslim-'));
   const file = path.join(dir, 'hooks.jsonl');
@@ -1273,7 +1461,7 @@ test('a rotation slims generation 1 and leaves the current file whole (M9 fix 62
   const noting = { info: (msg: string, data?: unknown) => logged.push({ msg, ...(data as Record<string, unknown>) }), warn: (msg: string) => logged.push({ msg }), error() {} };
   assert.equal(rotateHookLog(file, noting), true);
   const gen1 = rotatedPath(file, 1);
-  assert.equal(fs.readFileSync(gen1, 'utf8'), fixture.map(slimHookLine).join('\n') + '\n');
+  assert.equal(fs.readFileSync(gen1, 'utf8'), fixture.map(hookLineSlimmer()).join('\n') + '\n');
   const rotated = logged.find((l) => l['msg'] === 'hooks.jsonl rotated')!;
   assert.equal(rotated['slimmed'], fs.statSync(gen1).size);
   assert.ok((rotated['bytes'] as number) > (rotated['slimmed'] as number));
@@ -1386,4 +1574,95 @@ test('activity totals fold one folder\'s rows over the whole log into a total an
   const late = log.totals('C:/code/proj', O, null, now, records);
   assert.deepEqual(late.months.map((m) => m.month), ['2026-10']);
   assert.equal(late.total.requests, 1);
+  // M9 fix 1191: a session recorded under a former folder is counted too.
+  const moved = [...records, session('m', { cwd: 'C:/code/old', groupCwd: 'C:/code/old' })];
+  for (const r of [line(O, 'm', 'UserPromptSubmit', 'idle', 'working', 'go'), statusLine(O + 1 * MIN, 'm', { fresh: 10, cacheWrite: 0, cacheRead: 0, output: 10 }, 0.3), line(O + 5 * MIN, 'm', 'Stop', 'working', 'done')]) log.record(parseActivityLine(r)!);
+  const former = log.totals('C:/code/proj', null, null, now, moved, [], ['C:/code/old']);
+  assert.equal(former.total.requests, 3);
+  assert.deepEqual(former.former, ['C:/code/old']);
+  assert.equal(log.totals('C:/code/proj', null, null, now, moved).total.requests, 2, 'not without the list');
+});
+
+// M9 fix 1189: an agent's line counts its requests and tokens in its
+// parent's folder, at no price of its own, and leaves where the read
+// stopped for the next scan.
+test('an agentUsage line adds the agent\'s requests and tokens to its parent\'s totals with no price and no estimate, slims to itself, and keeps its read offset (M9 fix 1189)', () => {
+  const S = new Date(2026, 10, 5, 10).getTime();
+  const records = [session('a', { cwd: 'C:/code/proj', groupCwd: 'C:/code/proj' })];
+  const base = [line(S, 'a', 'UserPromptSubmit', 'idle', 'working', 'go'), statusLine(S + 1 * MIN, 'a', { fresh: 4000, cacheWrite: 8000, cacheRead: 12000, output: 500 }, 0.25), line(S + 30 * MIN, 'a', 'Stop', 'working', 'done')];
+  const agent = JSON.stringify({ at: S + 30 * MIN, agentUsage: { sessionId: 'a', agentId: 'ag1', model: 'claude-opus-5-5', requests: 3, fresh: 10, cacheWrite: 20, cacheRead: 30, output: 4, upTo: 1234, lastId: 'msg_x', lastOutput: 2 } });
+  const now = S + 60 * MIN;
+  const without = new ActivityLog();
+  for (const r of base) without.record(parseLogLine(r)!);
+  const t0 = without.totals('C:/code/proj', null, null, now, records);
+  const log = new ActivityLog();
+  for (const r of [...base, agent]) {
+    const parsed = parseLogLine(r);
+    assert.ok(parsed !== null, `parsed ${r}`);
+    log.record(parsed);
+  }
+  const t = log.totals('C:/code/proj', null, null, now, records);
+  assert.equal(t.total.requests, 4);
+  assert.equal(t.total.up, t0.total.up + 60);
+  assert.equal(t.total.down, t0.total.down + 4);
+  assert.equal(t.total.usd, 0.25);
+  assert.equal(t.total.estimated, false);
+  assert.equal(slimHookLine(agent), agent);
+  assert.deepEqual(log.agentRead('a', 'ag1'), { upTo: 1234, lastId: 'msg_x', lastOutput: 2, at: S + 30 * MIN });
+  assert.equal(log.agentRead('a', 'other'), null);
+  const row = log.spans(S, now, now, records).find((r) => r.sessionId === 'a' && r.agentId === null);
+  assert.deepEqual(row?.requests.map((r) => [r.at, r.agent ?? null, r.count ?? 1]), [
+    [S + 1 * MIN, null, 1],
+    [S + 30 * MIN, 'ag1', 3],
+  ]);
+});
+
+// M9 fix 1201: a recount line, appended out of time order and dated by
+// the agent's last response, moves its folder's agentsFrom back to it,
+// leaves another folder on the daemon's own start, and never moves the
+// live reader's offset.
+test('a recount line moves its folder\'s agentsFrom back to its time, leaves another folder\'s alone, maps the conversation to its track and leaves the live offset (M9 fix 1201)', () => {
+  const S = new Date(2026, 10, 5, 10).getTime();
+  const DAY = 24 * 60 * MIN;
+  const from = S + 3 * DAY;
+  const records = [session('a', { cwd: 'C:/code/proj', groupCwd: 'C:/code/proj' }), session('o', { cwd: 'C:/code/other', groupCwd: 'C:/code/other' })];
+  const log = new ActivityLog();
+  log.setAgentsFrom(from);
+  const raw = [
+    line(S, 'a', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    line(S + 30 * MIN, 'a', 'Stop', 'working', 'done'),
+    line(S, 'o', 'UserPromptSubmit', 'idle', 'working', 'go'),
+    line(S + 5 * MIN, 'o', 'Stop', 'working', 'done'),
+    line(from + DAY, 'a', 'UserPromptSubmit', 'done', 'working', 'later'),
+    line(from + DAY + 5 * MIN, 'a', 'Stop', 'working', 'done'),
+    JSON.stringify({ at: S + 20 * MIN, agentUsage: { sessionId: 'a', agentId: 'old', model: 'claude-opus-5-5', requests: 4, fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1, upTo: 0, lastId: null, lastOutput: 0, recount: true } }),
+  ];
+  for (const r of raw) log.record(parseLogLine(r)!);
+  const now = from + 2 * DAY;
+  const proj = log.totals('C:/code/proj', null, null, now, records);
+  assert.equal(proj.agentsFrom, S + 20 * MIN);
+  assert.equal(proj.total.requests, 4);
+  assert.equal(log.totals('C:/code/other', null, null, now, records).agentsFrom, from);
+  assert.equal(log.trackOfClaude('c-a'), 'a');
+  assert.equal(log.trackOfClaude('c-nobody'), null);
+  assert.equal(log.agentRead('a', 'old'), null, 'a recount line does not move the live offset');
+  assert.equal(log.isRecounted('a', 'old'), true);
+  const row = log.spans(S, now, now, records).find((r) => r.sessionId === 'a' && r.agentId === null);
+  assert.deepEqual(row?.requests.map((r) => r.at), [S + 20 * MIN], 'the recounted point rides the row, in time order');
+});
+
+// M9 fixes 1188 and 1201, met at the merge: a recount line dated inside a
+// generation the ledger already holds (the oldest dropped after the
+// recount ran) must not pull historyFrom back over that drop, or heldDrops
+// reads the drop as still in memory and its months leave the totals.
+test('a recount line dated inside a dropped generation leaves historyFrom on the log\'s own first line, so the drop\'s ledger months still count (M9 fixes 1188 and 1201)', () => {
+  const log = new ActivityLog();
+  const month = { requests: 1, up: 1110, fresh: 100, cacheWrite: 10, cached: 1000, down: 50, usd: 0.1, estimated: false, agentMs: 10 * MIN };
+  log.useLedger({ version: 1, drops: [{ name: 'hooks.4.jsonl', bytes: 1, droppedAt: 1, from: ledgerTurnAt[0]!, to: ledgerTurnAt[0]! + 10 * MIN, allUsd: { '2026-09': 0.1 }, places: [{ cwd: LEDGER_PROJ, groupCwd: LEDGER_PROJ, firstAt: ledgerTurnAt[0]!, months: { '2026-09': month } }] }] });
+  for (const n of [2, 3, 4]) for (const raw of ledgerTurn(n).trim().split('\n')) log.record(parseLogLine(raw)!);
+  log.record(parseLogLine(JSON.stringify({ at: ledgerTurnAt[0]! + 5 * MIN, agentUsage: { sessionId: 't2', agentId: 'old', model: 'claude-opus-5-5', requests: 2, fresh: 1, cacheWrite: 0, cacheRead: 0, output: 1, upTo: 0, lastId: null, lastOutput: 0, recount: true } }))!);
+  assert.equal(log.historyFrom, ledgerTurnAt[1], 'the recount line does not move how far back the log reaches');
+  const t = log.totals(LEDGER_PROJ, null, null, ledgerNow, ledgerRecords);
+  assert.equal(t.total.requests, 1 + 3 + 2, 'the ledger month, the three turns in memory and the two recounted requests');
+  assert.equal(t.historyFrom, ledgerTurnAt[0], 'the answer reaches back to the drop');
 });

@@ -2,7 +2,8 @@ import { decodeRequestError } from '../main/request-error.ts';
 import { fanOut } from '../main/ipc-fan-out.ts';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
-import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, GuestMenu, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget } from './api.ts';
+import type { BrowserDriveState, FilesProgress, FireAndForget, GuestKey, GuestMenu, HooksStatus, OpenExtra, RendererPush, EmeraldApi, ThemeState, WindowDragTarget, WindowSpell } from './api.ts';
+import type { NotifyAction } from './api.ts';
 
 // M9 fix 1137: one listener per channel, fanned out, so Node's count stays at one; ipc-fan-out.ts warns at 50 handlers instead.
 const filesChanged = fanOut<[string, { renamed: boolean } | undefined]>('emerald:files-changed');
@@ -121,6 +122,14 @@ const api: EmeraldApi = {
       ipcRenderer.on('emerald:notify-clicked', listener);
       return () => ipcRenderer.off('emerald:notify-clicked', listener);
     },
+    // M9 fix 1199: a permission toast's Allow once or Deny, and the answer
+    // the renderer would not send, which main turns into a body click.
+    onAction: (handler) => {
+      const listener = (_event: IpcRendererEvent, action: NotifyAction) => handler(action);
+      ipcRenderer.on('emerald:notify-action', listener);
+      return () => ipcRenderer.off('emerald:notify-action', listener);
+    },
+    dropped: (sessionId) => ipcRenderer.send('emerald:notify-dropped', sessionId),
   },
   // The usage record (M9 fix 676): a line to main, which checks and writes it.
   useRecord: {
@@ -220,6 +229,15 @@ const api: EmeraldApi = {
       ipcRenderer.on('emerald:file-drag-out', listener);
       return () => ipcRenderer.off('emerald:file-drag-out', listener);
     },
+  },
+  // M9 fix 1193: the window's own spelling under a right-click in a field.
+  spell: {
+    onWindowSpell: (handler) => {
+      const listener = (_e: IpcRendererEvent, spell: WindowSpell) => handler(spell);
+      ipcRenderer.on('emerald:window-spell', listener);
+      return () => ipcRenderer.off('emerald:window-spell', listener);
+    },
+    addWord: (word) => ipcRenderer.invoke('emerald:spell-add-word', word),
   },
   daemonCrash: () => ipcRenderer.invoke('emerald:daemon-crash'),
   dismissCrash: () => ipcRenderer.send('emerald:dismiss-crash'),

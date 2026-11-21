@@ -655,6 +655,17 @@ export interface NotifyRequest {
   sessionId: string;
   title: string;
   body: string;
+  // A permission ask's toast (M9 fix 1199): the call it was posted for and
+  // the command in full, so main gives it Allow once and Deny.
+  ask?: { toolUseId: string; command: string };
+}
+
+// A button pressed on a permission ask's toast (M9 fix 1199): index 0
+// Allow once, 1 Deny, for the call the toast was posted with.
+export interface NotifyAction {
+  sessionId: string;
+  toolUseId: string;
+  index: number;
 }
 
 // The renderer's attention set, sent on every change (M9 fix 104) so the
@@ -675,6 +686,12 @@ export interface NotifyApi {
   // A click on a notification: the main process has focused the window and
   // the renderer shows the session.
   onClicked(handler: (sessionId: string) => void): () => void;
+  // A button pressed on a permission toast (M9 fix 1199), 0 Allow once,
+  // 1 Deny; the window is not raised.
+  onAction(handler: (action: NotifyAction) => void): () => void;
+  // A toast answer the renderer would not send (M9 fix 1199), which raises
+  // the window as a body click does.
+  dropped(sessionId: string): void;
 }
 
 // One Claude Code conversation found on disk, for the History panel in
@@ -1033,6 +1050,17 @@ export interface WindowDragApi {
   onHandedOut(handler: () => void): () => void;
 }
 
+// M9 fix 1193: the window's own spelling under a right-click in a field (main's context-menu params), and Add to dictionary for that word.
+export interface WindowSpell {
+  misspelled: string;
+  suggestions: string[];
+}
+
+export interface SpellApi {
+  onWindowSpell(handler: (spell: WindowSpell) => void): () => void;
+  addWord(word: string): Promise<boolean>;
+}
+
 // The window's page zoom (M9 fix 900), through webFrame in this preload, so main is not involved.
 export interface ZoomApi {
   set(level: number): void;
@@ -1055,6 +1083,7 @@ export interface EmeraldApi {
   whatsNew: WhatsNewApi;
   update: UpdateApi;
   windowDrag: WindowDragApi;
+  spell: SpellApi;
   // Facts only the main process knows. The sandboxed preload has no os
   // module and no file access.
   // usageFloorMs: the least time between two usage requests (M9 fix

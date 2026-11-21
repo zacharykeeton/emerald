@@ -53,6 +53,8 @@ test('paidText says no plan, a plan after the span, or the price against what wa
   assert.equal(paidText(5012.33, false, null, 37), 'No plan entered. Add the plan below to set what was paid against the API price.');
   assert.equal(paidText(5012.33, false, 0, 37), '$5,012.33 at API prices; the plan entered starts after the span');
   assert.equal(paidText(5012.33, false, 243.12, 37), '$5,012.33 at API prices for $243.12 paid on the plan over 37 days, 20.6× what was paid');
+  // M9 fix 1190: a span from the first activity says so.
+  assert.equal(paidText(5012.33, false, 243.12, 37, true), '$5,012.33 at API prices for $243.12 paid on the plan over 37 days of activity, 20.6× what was paid');
   assert.equal(paidText(5012.33, true, 243.12, 37), '~$5,012.33 at API prices for $243.12 paid on the plan over 37 days, 20.6× what was paid');
   assert.equal(paidTitle(12.5, 243.12, false), "This folder's share of what was paid, by its API-price spend against every folder's each month: $12.50 of $243.12");
   assert.ok(paidTitle(12.5, 243.12, true).endsWith(". The days before the log's history are left out of the share."));

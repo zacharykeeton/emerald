@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { activityRowKey, dayBounds, dayKey, sessionDebt } from '@emerald/shared';
-import type { ActivityRequest, ActivitySession, CappedSpan, DebtKind, SessionDebt } from '@emerald/shared';
+import type { ActivitySession, CappedSpan, DebtKind, SessionDebt } from '@emerald/shared';
 import { activitySupported, debtSupported } from './daemon-model.ts';
 import { ensureHistoryTitles, nameActivity, needsHistoryTitles, useHistoryTitles } from './history-index.ts';
 import { useStore } from './store.ts';
+import { mergeRequests } from './activity-merge.ts';
 
 // The daemon's answer to activity.spans for one day (M54), kept fresh:
 // asked for on mount, every REFRESH_MS while the day is today, and
@@ -108,22 +109,9 @@ export function useActivity(day: { from: number; to: number }): Activity | null 
   return supported ? named : null;
 }
 
-// The answer's rows with the held rows' earlier points in front of their
-// own (M9 fix 217), by the row's key; a point the answer carries again
-// (one a streaming line updated) replaces the held copy. A row the
-// answer lacks left the window and goes.
-export function mergeRequests(held: readonly ActivitySession[], fresh: readonly ActivitySession[]): ActivitySession[] {
-  const before = new Map(held.map((s) => [activityRowKey(s), s.requests ?? []]));
-  return fresh.map((s) => {
-    const earlier = before.get(activityRowKey(s));
-    const own = s.requests ?? [];
-    if (earlier === undefined || earlier.length === 0) return own === s.requests ? s : { ...s, requests: own };
-    const byAt = new Map<number, ActivityRequest>();
-    for (const r of earlier) byAt.set(r.at, r);
-    for (const r of own) byAt.set(r.at, r);
-    return { ...s, requests: [...byAt.values()].sort((a, b) => a.at - b.at) };
-  });
-}
+// The merge of a since-answer's points (M9 fix 217), in a module of its
+// own since fix 1189 so its test needs no React.
+export { mergeRequests };
 
 // The rows the store says are live now, for the strip's growing ends: a
 // session working, keyed by its id, and an agent its parent's team still

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { failedToast } from './toast-store.ts';
 import { folderName, formatDuration, parseTurns } from '@emerald/shared';
 import type { Turn } from '@emerald/shared';
 import { resumeSession, resumeTranscript, showSession } from './actions.ts';
@@ -30,8 +31,8 @@ export function TranscriptView({ path, text }: { path: string; text: string }) {
   const warn = (what: string) => (err: unknown) => console.warn(`[emerald] ${what} failed`, err);
   const resume = () => {
     if (own !== undefined && own.state !== 'exited') void showSession(own.id).catch(warn('show'));
-    else if (own !== undefined) void resumeSession(own.id).catch(warn('resume'));
-    else if (read.head.cwd !== null) void resumeTranscript(read.head.cwd, id, false).catch(warn('resume'));
+    else if (own !== undefined) void resumeSession(own.id).catch(failedToast('resume'));
+    else if (read.head.cwd !== null) void resumeTranscript(read.head.cwd, id, false).catch(failedToast('resume'));
   };
 
   // The place is kept per file while the app runs, as the markdown view

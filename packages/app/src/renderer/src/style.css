@@ -16369,3 +16369,86 @@ div.rail-context-head-row:hover {
   z-index: 200;
   cursor: pointer;
 }
+
+/* M9 fix 1199: the ask's head off the mod's record, and the line after a toast answer. */
+.chat-ask-tool {
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.chat-ask-desc-line {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The excerpt's box and font stack; it wraps, never cuts. */
+.chat-ask-command {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-ask-why {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-notify-answer {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-notify-answer-mark {
+  color: var(--working);
+}
+
+.chat-notify-answer[data-allowed="false"] .chat-notify-answer-mark {
+  color: var(--muted);
+}
+
+.chat-notify-answer-command {
+  font-family: 'Cascadia Code', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.chat-notify-answer time {
+  margin-left: auto;
+}
+
+/* M9 fix 1189: where the agents' count starts, under the history line and
+   in its type (the body's 12px and muted colour, which .stats-history
+   inherits). */
+.stats-agents {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* M9 fix 1190: the note under the span when the figures start after the
+   first commit's day, in the plan note's size and the body's muted
+   colour. */
+.stats-span-note {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* M9 fix 1191: the former folders counted with the folder, under the
+   history line and in its type, as the agents' mark is. */
+.stats-former {
+  font-size: 12px;
+  color: var(--muted);
+}

@@ -53,8 +53,11 @@ import { answeredElsewhere, askBoxShown } from './chat-model.ts';
 import { SessionMark } from './session-mark.tsx';
 import { copyAndNote } from './actions.ts';
 import { strayLanded } from './chat-model.ts';
+import { BOX_SPELL_WAIT_MS, boxSpell } from './chat-model.ts';
 import { PaneNote } from './CheatSheet.tsx';
 import { TrustCard } from './TrustCard.tsx';
+import { AskHead, NotifyAnswerLine } from './AskHead.tsx';
+import { askAgentName, askHeadShown } from './ask-notify-model.ts';
 // M9 fix 974: the usage band.
 import { usageWarning } from './usage-model.ts';
 import { dismissUsageWarning, usageAgeText, useUsageAge, useUsageReading, useUsageWarningDismissed } from './usage-reading.ts';
@@ -1400,11 +1403,54 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
     const p = await window.emerald.pickFile(session.cwd);
     if (p !== null) takeFile(p, 'file');
   };
-  // The box's own right-click menu: Cut, Copy and Paste.
-  const [boxMenu, setBoxMenu] = useState<{ x: number; y: number } | null>(null);
+  // The box's own right-click menu: the spelling of a misspelt word (M9 fix 1193), then Cut, Copy and Paste.
+  const [boxMenu, setBoxMenu] = useState<{ x: number; y: number; spell: { start: number; end: number; misspelled: string; words: string[] } | null } | null>(null);
+  // M9 fix 1193: a right-click waiting for main's spelling push, with the
+  // box's selection at the press; the fallback opens the plain menu.
+  const boxArm = useRef<{ x: number; y: number; from: number; to: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  useEffect(() => {
+    const off = window.emerald.spell.onWindowSpell((push) => {
+      const a = boxArm.current;
+      if (a === null) return;
+      clearTimeout(a.timer);
+      boxArm.current = null;
+      setBoxMenu({ x: a.x, y: a.y, spell: boxSpell(boxRef.current?.value ?? '', a.from, a.to, push) });
+    });
+    return () => {
+      off();
+      if (boxArm.current !== null) clearTimeout(boxArm.current.timer);
+      boxArm.current = null;
+    };
+  }, []);
   const selection = () => {
     const el = boxRef.current;
     return el === null ? '' : el.value.slice(el.selectionStart, el.selectionEnd);
+  };
+  // M9 fix 1193: a misspelt word's suggestions (or a disabled No
+  // suggestions), then Add to dictionary; a pick replaces the word through
+  // replaceInBox, so the box's value and caret stay React's.
+  const boxSpellItems = (spell: { start: number; end: number; misspelled: string; words: string[] } | null): MenuItem[] => {
+    if (spell === null) return [];
+    const words: MenuItem[] =
+      spell.words.length === 0
+        ? [{ label: 'No suggestions', disabled: true, onClick: () => {} }]
+        : spell.words.map((word) => ({
+            label: word,
+            onClick: () => {
+              setBoxMenu(null);
+              replaceInBox(spell.start, spell.end, word);
+            },
+          }));
+    return [
+      ...words,
+      {
+        label: 'Add to dictionary',
+        onClick: () => {
+          setBoxMenu(null);
+          void window.emerald.spell.addWord(spell.misspelled).catch((err: unknown) => console.warn('[emerald] dictionary add failed', err));
+        },
+      },
+    ];
   };
 
   // A row picked: sent at once (a terminal row shows the fallback bar as
@@ -1512,6 +1558,8 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
           {turns.map((turn, i) => (
             <ChatTurn key={i} index={i} turn={turn} paneId={paneId} session={session} mode={view} open={unfolded.has(i)} onToggle={() => toggleFold(i)} onSend={sendFromCard} reviewTasks={reviewTasks} />
           ))}
+          {/* M9 fix 1199: a permission ask answered from its toast says so under the last reply. */}
+          <NotifyAnswerLine session={session} />
           {/* M9 fix 808: a starting Claude says so until its first word or its trust dialog. */}
           {session.state === 'starting' && <div className="chat-starting">{`Starting Claude in ${folderName(session.cwd) || session.cwd}…`}</div>}
           {asking && (session.needsInputReason === 'trust' ? <TrustCard session={session} screen={askScreen} rootRef={askRef} /> : <AskCard session={session} screen={askScreen} rootRef={askRef} paneId={paneId} edit={pendingEdit(turns)} plan={pendingPlan(turns)} />)}
@@ -1646,9 +1694,18 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               void paste();
             }}
             onContextMenu={(ev) => {
-              ev.preventDefault();
+              // Not cancelled (M9 fix 1193): a cancelled contextmenu never reaches main, whose params carry the spelling.
               ev.stopPropagation();
-              setBoxMenu({ x: ev.clientX, y: ev.clientY });
+              const el = ev.currentTarget;
+              const x = ev.clientX;
+              const y = ev.clientY;
+              if (boxArm.current !== null) clearTimeout(boxArm.current.timer);
+              const timer = setTimeout(() => {
+                if (boxArm.current?.timer !== timer) return;
+                boxArm.current = null;
+                setBoxMenu({ x, y, spell: null });
+              }, BOX_SPELL_WAIT_MS);
+              boxArm.current = { x, y, from: el.selectionStart, to: el.selectionEnd, timer };
             }}
             // A file dropped on the box goes in as the attach button's does:
             // an image pasted into Claude Code's prompt, anything else (a
@@ -1747,9 +1804,11 @@ export function ChatView({ paneId, session, focused, shaded }: { paneId: string;
               className="chat-box-menu"
               onClose={() => setBoxMenu(null)}
               items={[
+                ...boxSpellItems(boxMenu.spell),
                 {
                   label: 'Cut',
                   hint: editKey('KeyX'),
+                  separator: boxMenu.spell !== null,
                   disabled: selection() === '',
                   onClick: () => {
                     setBoxMenu(null);
@@ -2158,9 +2217,14 @@ function AskCard({ session, screen, rootRef, paneId, edit, plan }: { session: Se
         ) : (
           <>
             <div className="chat-ask-heading">{askHeading(session.needsInputReason, shown?.rows)}</div>
-            <pre className="chat-ask-screen" data-rows={excerpt.length}>
-              {shown === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
-            </pre>
+            {/* M9 fix 1199: a permission ask the mod named heads with its tool and exact input in place of the screen's excerpt. */}
+            {askHeadShown(session) && session.askedFor ? (
+              <AskHead asked={session.askedFor} agent={session.needsInputReason === 'agent-permission' ? askAgentName(session) : null} />
+            ) : (
+              <pre className="chat-ask-screen" data-rows={excerpt.length}>
+                {shown === null ? 'Reading the screen…' : excerpt.length === 0 ? '(nothing drawn at the cursor)' : excerpt.join('\n')}
+              </pre>
+            )}
           </>
         )}
         <div className="chat-ask-options">

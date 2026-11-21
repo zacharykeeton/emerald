@@ -1,4 +1,4 @@
-import { TOAST_MS } from './toast-model.ts';
+import { failedText, TOAST_MS, type FailedVerb } from './toast-model.ts';
 
 // The one toast the window shows (M9 fix 1181), its own small store as
 // rates-store.ts is, so a toast re-renders nothing but itself. Node-safe:
@@ -42,4 +42,14 @@ export function dismissToast(): void {
   if (toast === null) return;
   toast = null;
   publish();
+}
+
+// M9 fix 1198: the catch of a single Resume or rename, in place of a
+// component's warn: the same console line (logged names it when the site's
+// own word differed), then the toast.
+export function failedToast(verb: FailedVerb, logged: string = verb): (err: unknown) => void {
+  return (err) => {
+    console.warn(`[emerald] ${logged} failed`, err);
+    showToast(failedText(verb, err));
+  };
 }

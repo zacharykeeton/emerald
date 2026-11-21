@@ -1,7 +1,7 @@
 import type { ActivityTotals } from '@emerald/shared';
 import type { GitProjectCounts } from '../../preload/api.ts';
 import { normalizePath } from './files-model.ts';
-import { STATS_REFRESH_MS, asOfText, historyText, releasesOf, releasesSince, spanStart, spanText, spanTitle, startsBeforeHistory, statsFigures, yieldText } from './stats-model.ts';
+import { STATS_REFRESH_MS, activityStart, agentsText, asOfText, formerText, historyText, projectStart, releasesOf, releasesSince, spanFromActivity, spanNoteText, spanStart, spanText, spanTitle, startsBeforeHistory, statsFigures, yieldText } from './stats-model.ts';
 import type { StatsFigure } from './stats-model.ts';
 
 // The answer to one folder's statistics, kept outside the component (M9
@@ -24,11 +24,20 @@ export interface StatsSheet {
   start: number | null;
   span: string;
   spanTitle: string;
+  // The span counts from the first activity, a later day than the first
+  // commit (M9 fix 1190), and the note under it says so.
+  fromActivity: boolean;
+  spanNote: string | null;
   figures: StatsFigure[];
   releases: number;
   yieldLine: string;
   months: ActivityTotals['months'];
   history: string;
+  // The former folders counted with the folder (M9 fix 1191), null with none.
+  former: string | null;
+  // Where the agents' count starts (M9 fix 1189), null when the span has
+  // nothing before it.
+  agents: string | null;
   asOf: string;
 }
 
@@ -128,16 +137,26 @@ export function statsSheet(folder: string, answer: StatsAnswer): StatsSheet {
   const had = sheetOf.get(answer);
   if (had !== undefined) return had;
   const { totals, counts, now } = answer;
-  const start = spanStart(counts.firstCommitAt, totals.firstAt);
+  // Where the figures start (M9 fix 1190): the first activity line, or a
+  // ledger month before it; the span counts from there when it is a later
+  // day than the first commit, and the history line and the yield from
+  // the project's start, the earlier of the two.
+  const activityAt = activityStart(totals);
+  const start = spanStart(counts.firstCommitAt, activityAt);
+  const project = projectStart(counts.firstCommitAt, activityAt);
   const sheet: StatsSheet = {
     start,
-    span: spanText(counts.firstCommitAt, totals.firstAt, now),
-    spanTitle: spanTitle(counts.firstCommitAt, totals.firstAt, counts.root !== null, now),
+    span: spanText(counts.firstCommitAt, activityAt, now),
+    spanTitle: spanTitle(counts.firstCommitAt, activityAt, counts.root !== null, now),
+    fromActivity: spanFromActivity(counts.firstCommitAt, activityAt),
+    spanNote: spanNoteText(counts.firstCommitAt, activityAt, now),
     figures: statsFigures(totals, counts),
     releases: releasesOf(counts).count,
     yieldLine: '',
     months: [...totals.months].reverse(),
-    history: historyText(totals.historyFrom, start, now),
+    history: historyText(totals.historyFrom, project, now),
+    former: formerText(totals.former),
+    agents: agentsText(totals.agentsFrom, start, now),
     asOf: asOfText(answer.at),
   };
   // A span that starts before the log's first day is priced against the
@@ -145,7 +164,7 @@ export function statsSheet(folder: string, answer: StatsAnswer): StatsSheet {
   // carried them (M9 fix 885).
   const from = counts.since === undefined ? null : releasesSince(counts);
   sheet.yieldLine =
-    start !== null && startsBeforeHistory(start, totals.historyFrom) && counts.since !== undefined && from !== null
+    project !== null && startsBeforeHistory(project, totals.historyFrom) && counts.since !== undefined && from !== null
       ? yieldText(totals.total.usd, totals.total.estimated, from, counts.since.commits, counts.since.from, now)
       : yieldText(totals.total.usd, totals.total.estimated, sheet.releases, counts.commits);
   sheetOf.set(answer, sheet);

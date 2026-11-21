@@ -100,11 +100,13 @@ export function paidShare(plan: readonly PlanEntry[], months: readonly Pick<Acti
   return share;
 }
 
-// The subscription line. `paid` is null with no plan entered.
-export function paidText(usd: number, estimated: boolean, paid: number | null, days: number): string {
+// The subscription line. `paid` is null with no plan entered. With
+// fromActivity (M9 fix 1190) the span runs from the folder's first
+// activity, a later day than its first commit, and the line says so.
+export function paidText(usd: number, estimated: boolean, paid: number | null, days: number, fromActivity = false): string {
   if (paid === null) return 'No plan entered. Add the plan below to set what was paid against the API price.';
   if (paid <= 0) return `${usdText(usd, estimated)} at API prices; the plan entered starts after the span`;
-  return `${usdText(usd, estimated)} at API prices for ${usdText(paid, false)} paid on the plan over ${days} days, ${(usd / paid).toFixed(1)}× what was paid`;
+  return `${usdText(usd, estimated)} at API prices for ${usdText(paid, false)} paid on the plan over ${days} days${fromActivity ? ' of activity' : ''}, ${(usd / paid).toFixed(1)}× what was paid`;
 }
 
 export function paidTitle(share: number, paid: number, leftOut: boolean): string {

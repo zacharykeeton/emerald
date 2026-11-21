@@ -85,6 +85,12 @@ export interface ActivityRequest {
   // The effort level the line ran at (M9 fix 800); optional so an older
   // daemon's reply and a fixture read as none.
   effort?: string | null;
+  // An agent's point (M9 fix 1189): the agent's id, and the requests it
+  // stands for, read off the agent's transcript at a turn's end; absent on
+  // a session's own point, whose count is 1. Its usd is 0, since the
+  // agent's price is already in its parent's running total.
+  agent?: string;
+  count?: number;
 }
 
 // A commit the track landed (M9 fix 218), off the session record's
@@ -132,7 +138,16 @@ export interface ActivityTotals {
   // The earliest working span or request of the folder's own rows in the
   // window, null when it has none.
   firstAt: number | null;
+  // The log's first line; or the first line of the earliest dropped
+  // generation the ledger adds, when it adds one (M9 fix 1188).
   historyFrom: number | null;
+  // When the agents' requests and tokens began to be counted (M9 fix
+  // 1189), the daemon's first start at level 85; absent from an older
+  // daemon, which counted the sessions' own alone.
+  agentsFrom?: number;
+  // The former folders counted with the folder (M9 fix 1191), as stored;
+  // absent when it has none.
+  former?: string[];
 }
 
 export interface ActivitySession {

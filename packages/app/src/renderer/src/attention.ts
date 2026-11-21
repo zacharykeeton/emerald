@@ -2,6 +2,8 @@ import { describeState, findPane } from '@emerald/shared';
 import type { SessionInfo } from '@emerald/shared';
 import type { AttentionRequest } from '../../preload/api.ts';
 import { ackIfDone, showSessionAuto, shownTab } from './actions.ts';
+import { installAskNotify } from './ask-notify.ts';
+import { askNotice } from './ask-notify-model.ts';
 import { answeringSession, attentionState, chiming, isRecentInput, taskbarCounts } from './attention-model.ts';
 import { chime, syncRepeat } from './attention-sound.ts';
 import { isLookFirstKey } from './keys.ts';
@@ -134,7 +136,9 @@ export function installAttention(): () => void {
     if (front && ui.attentionNotify) {
       for (const id of arrived) {
         const session = sessions.get(id);
-        if (session !== undefined) window.emerald.notify.post({ sessionId: id, title: session.name, body: notificationBody(session) });
+        // M9 fix 1199: a permission ask the mod named carries its command
+        // and the call, for Allow once and Deny on the toast.
+        if (session !== undefined) window.emerald.notify.post(askNotice(session) ?? { sessionId: id, title: session.name, body: notificationBody(session) });
       }
     }
     syncRepeat(isFrontWindow() && chiming(ui.attention) && ui.attentionSound === 'repeat', ui.chimeMode);
@@ -181,6 +185,7 @@ export function installAttention(): () => void {
   const unsubStore = subscribe(onSessions);
   const unsubUi = subscribeUi(onUi);
   const unsubClicked = window.emerald.notify.onClicked(onClicked);
+  const unsubAskNotify = installAskNotify();
   const unsubGuest = window.emerald.keys.onGuestInput(() => noteGuestInput());
   window.addEventListener('mousedown', onInput, { capture: true });
   window.addEventListener('keydown', onInput, { capture: true });
@@ -193,6 +198,7 @@ export function installAttention(): () => void {
     unsubStore();
     unsubUi();
     unsubClicked();
+    unsubAskNotify();
     unsubGuest();
     window.removeEventListener('mousedown', onInput, { capture: true });
     window.removeEventListener('keydown', onInput, { capture: true });

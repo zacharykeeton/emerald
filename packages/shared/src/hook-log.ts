@@ -80,7 +80,35 @@ export const SLIMMING_NAME = 'hooks.slimming.jsonl';
 // span that differs. A line that is not a hook line (torn, a presence
 // or a usage line) comes back unchanged, and a slimmed line slims to
 // itself, so a pass over a generation already slim changes nothing.
+// A hosted line keeps its folder only on a track's first line of a file
+// (M9 fix 1186), through hookLineSlimmer, which the rotation and the
+// restore use one per file; this stateless form keeps a hosted line's
+// folder only when the line is already slim, so a line the slimmer wrote
+// slims to itself through either function.
 export function slimHookLine(raw: string): string {
+  return slimLine(raw, (_line, payload) => !('hook_event_name' in payload));
+}
+
+// The slim of one file (M9 fix 1186): a closure that keeps a hosted line's
+// cwd on the first line of each track that names one in this pass, so a
+// track whose session record is pruned can still be placed by the folder
+// on its own lines. A track running across a rotation keeps a folder in
+// every file it touches, so dropping an older file never leaves a newer
+// one unplaced; the cost is one "cwd" per track per generation.
+export function hookLineSlimmer(): (raw: string) => string {
+  const placed = new Set<string>();
+  return (raw) =>
+    slimLine(raw, (line) => {
+      const id = line['sessionId'] as string;
+      if (placed.has(id)) return false;
+      placed.add(id);
+      return true;
+    });
+}
+
+// keepCwd is asked only for a hosted line whose payload carries a
+// non-empty string cwd; every unhosted line keeps its cwd as before.
+function slimLine(raw: string, keepCwd: (line: Record<string, unknown>, payload: HookPayload) => boolean): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -101,7 +129,9 @@ export function slimHookLine(raw: string): string {
   if (str(payload.session_id)) slim['session_id'] = payload.session_id;
   if (str(payload.agent_id)) slim['agent_id'] = payload.agent_id;
   if (str(payload.tool_name)) slim['tool_name'] = payload.tool_name;
-  if (line['unhosted'] === true && str(payload.cwd)) slim['cwd'] = payload.cwd;
+  if (line['unhosted'] === true) {
+    if (str(payload.cwd)) slim['cwd'] = payload.cwd;
+  } else if (str(payload.cwd) && payload.cwd !== '' && keepCwd(line, payload)) slim['cwd'] = payload.cwd;
   if (event === 'UserPromptSubmit') {
     const prompt = summarize(payload.prompt);
     if (prompt !== null) slim['prompt'] = prompt;

@@ -49,6 +49,11 @@ export function foldersPath(): string {
   return path.join(emeraldHome(), 'folders.json');
 }
 
+// A folder's former folders (M9 fix 1191).
+export function formerFoldersPath(): string {
+  return path.join(emeraldHome(), 'former-folders.json');
+}
+
 // The remote hosts record (M9 fix 1080), one list for every window.
 export function hostsPath(): string {
   return path.join(emeraldHome(), 'hosts.json');

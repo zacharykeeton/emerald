@@ -157,6 +157,7 @@ function StatsBody({ sheet, answer }: { sheet: StatsSheet; answer: StatsAnswer }
           {sheet.asOf}
         </span>
       </div>
+      {sheet.spanNote !== null && <div className="stats-span-note">{sheet.spanNote}</div>}
       <div className="stats-figures">
         {sheet.figures.map((f) => (
           <div key={f.key} className="stats-figure" data-figure={f.key} title={f.title}>
@@ -167,7 +168,7 @@ function StatsBody({ sheet, answer }: { sheet: StatsSheet; answer: StatsAnswer }
         ))}
       </div>
       <div className="stats-yield">{sheet.yieldLine}</div>
-      <StatsPaid totals={totals} start={sheet.start} now={now} />
+      <StatsPaid totals={totals} start={sheet.start} fromActivity={sheet.fromActivity} now={now} />
       <div className="stats-months-box">
         <table className="stats-months">
           <thead>
@@ -197,6 +198,8 @@ function StatsBody({ sheet, answer }: { sheet: StatsSheet; answer: StatsAnswer }
         </table>
       </div>
       <div className="stats-history">{sheet.history}</div>
+      {sheet.former !== null && <div className="stats-former">{sheet.former}</div>}
+      {sheet.agents !== null && <div className="stats-agents">{sheet.agents}</div>}
       <StatsPlan now={now} />
     </>
   );
@@ -204,7 +207,7 @@ function StatsBody({ sheet, answer }: { sheet: StatsSheet; answer: StatsAnswer }
 
 // What the plan cost over the span against the API price (M9 fix 838),
 // the folder's share by spend in its title.
-function StatsPaid({ totals, start, now }: { totals: ActivityTotals; start: number | null; now: number }) {
+function StatsPaid({ totals, start, fromActivity, now }: { totals: ActivityTotals; start: number | null; fromActivity: boolean; now: number }) {
   const plan = usePlan();
   const from = start ?? now;
   const days = spanDays(from, now);
@@ -215,7 +218,7 @@ function StatsPaid({ totals, start, now }: { totals: ActivityTotals; start: numb
   const leftOut = startsBeforeHistory(from, totals.historyFrom);
   return (
     <div className="stats-paid" data-paid={paid} data-share={share} title={paidTitle(share, paid, leftOut)}>
-      {paidText(t.usd, t.estimated, paid, days)}
+      {paidText(t.usd, t.estimated, paid, days, fromActivity)}
     </div>
   );
 }

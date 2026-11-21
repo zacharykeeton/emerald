@@ -84,7 +84,7 @@ test('askBoxShown: a question or a read with no options, never once pressed (fix
 // M9 fix 802: an AskUserQuestion the screen read could not parse keeps
 // its buttons and gets no box; the bare question (no askedFor) keeps it.
 test('askBoxShown: no box for an unparsed AskUserQuestion (fix 802)', () => {
-  const asked = { words: 'AskUserQuestion', toolUseId: 'u1', agentId: null, at: 0 };
+  const asked = { words: 'AskUserQuestion', tool: 'AskUserQuestion', input: null, description: null, rule: null, reason: null, toolUseId: 'u1', agentId: null, at: 0 };
   assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: asked }), false);
   assert.equal(askBoxShown({ reason: 'question', recognised: false, options: 3, pressed: false, askedFor: null }), true);
 });
@@ -1070,4 +1070,31 @@ test('a send after a pasted chip is matched by its words at the end of the lande
   assert.deepEqual(pendingAfter([plain], landedCounts([landed], [])), [plain], 'a send with no pasted chip still matches on the whole key');
   const before = pendingItem(3, 'Reply with ok.', 0, [], landedCounts([landed], []), true);
   assert.deepEqual(pendingAfter([before], landedCounts([landed], [])), [before], 'an earlier landed line does not match a later send');
+});
+
+// M9 fix 1193: the box's word under a right-click, and the spelling rows
+// only when main's misspelt word is that word.
+import { boxSpell, spellWordAt } from './chat-model.ts';
+
+test('spellWordAt (M9 fix 1193): the word at the caret or a one-word selection, apostrophes trimmed at its ends', () => {
+  const recieve = { start: 6, end: 13, word: 'recieve' };
+  assert.deepEqual(spellWordAt('hello recieve then', 9, 9), recieve);
+  assert.deepEqual(spellWordAt('hello recieve then', 13, 13), recieve, 'the caret just after the word');
+  assert.deepEqual(spellWordAt('hello recieve then', 6, 6), recieve, 'the caret just before it');
+  assert.deepEqual(spellWordAt('hello recieve then', 5, 5), { start: 0, end: 5, word: 'hello' });
+  assert.deepEqual(spellWordAt("don't", 2, 2), { start: 0, end: 5, word: "don't" });
+  assert.deepEqual(spellWordAt("'quoted'", 3, 3), { start: 1, end: 7, word: 'quoted' });
+  assert.equal(spellWordAt('a  b', 2, 2), null);
+  assert.equal(spellWordAt('123', 1, 1), null);
+  assert.deepEqual(spellWordAt('hello recieve then', 6, 13), recieve);
+  assert.equal(spellWordAt('hello recieve then', 0, 13), null, 'a selection of two words');
+});
+
+test('boxSpell (M9 fix 1193): the rows replace the box word only when it is main\'s misspelt word', () => {
+  const push = { misspelled: 'recieve', suggestions: ['receive'] };
+  assert.deepEqual(boxSpell('recieve then', 3, 3, push), { start: 0, end: 7, misspelled: 'recieve', words: ['receive'] });
+  assert.equal(boxSpell('recieve then', 10, 10, push), null, 'the caret in then');
+  assert.equal(boxSpell('recieve then', 3, 3, { misspelled: 'teh', suggestions: ['the'] }), null);
+  assert.equal(boxSpell('recieve then', 3, 3, { misspelled: '', suggestions: [] }), null);
+  assert.deepEqual(boxSpell('recieve then', 3, 3, { misspelled: 'recieve', suggestions: [] }), { start: 0, end: 7, misspelled: 'recieve', words: [] });
 });
